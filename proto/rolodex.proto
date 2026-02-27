@@ -1,0 +1,191 @@
+syntax = "proto3";
+
+package rolodex;
+
+// RecordType enumerates the supported DNS record types.
+enum RecordType {
+  // A record - IPv4 address mapping
+  A = 0;
+  // AAAA record - IPv6 address mapping
+  AAAA = 1;
+  // CNAME record - canonical name alias
+  CNAME = 2;
+  // MX record - mail exchange
+  MX = 3;
+  // TXT record - text record
+  TXT = 4;
+  // NS record - name server
+  NS = 5;
+  // SOA record - start of authority
+  SOA = 6;
+  // SRV record - service locator
+  SRV = 7;
+  // PTR record - pointer for reverse DNS
+  PTR = 8;
+}
+
+// DnsRecord represents a single DNS record in the database.
+message DnsRecord {
+  // Fully qualified domain name (e.g. "example.com.")
+  string name = 1;
+  // The type of DNS record
+  RecordType record_type = 2;
+  // The record data (e.g. IP address, hostname, etc.)
+  string value = 3;
+  // Time-to-live in seconds (default: 300)
+  uint32 ttl = 4;
+  // Priority for MX and SRV records (ignored for other types)
+  uint32 priority = 5;
+}
+
+// AddRecordRequest adds a new DNS record to the local database.
+message AddRecordRequest {
+  // The record to add
+  DnsRecord record = 1;
+  // Shared secret for authentication (ignored over unix socket)
+  string auth_token = 2;
+}
+
+// AddRecordResponse is returned after adding a record.
+message AddRecordResponse {
+  // Whether the operation succeeded
+  bool success = 1;
+  // Error message if success is false
+  string message = 2;
+}
+
+// RemoveRecordRequest removes a DNS record from the local database.
+message RemoveRecordRequest {
+  // Fully qualified domain name to remove records for
+  string name = 1;
+  // Optional: if set, only remove records of this type. If unset, removes all records for the name.
+  RecordType record_type = 2;
+  // Optional: if set, only remove the record with this exact value
+  string value = 3;
+  // Shared secret for authentication
+  string auth_token = 4;
+}
+
+// RemoveRecordResponse is returned after removing records.
+message RemoveRecordResponse {
+  // Whether the operation succeeded
+  bool success = 1;
+  // Number of records removed
+  uint32 removed_count = 2;
+  // Error message if success is false
+  string message = 3;
+}
+
+// ListRecordsRequest queries the local DNS database.
+message ListRecordsRequest {
+  // Optional: filter by domain name (supports wildcard prefix "*.")
+  string name_filter = 1;
+  // Optional: filter by record type
+  RecordType record_type_filter = 2;
+  // Whether to apply the record_type_filter
+  bool filter_by_type = 3;
+  // Shared secret for authentication
+  string auth_token = 4;
+}
+
+// ListRecordsResponse contains matching DNS records.
+message ListRecordsResponse {
+  // The matching records
+  repeated DnsRecord records = 1;
+}
+
+// SetForwarderRequest configures upstream DNS forwarders.
+message SetForwarderRequest {
+  // List of upstream DNS server addresses (e.g. "8.8.8.8:53")
+  repeated string forwarders = 1;
+  // Shared secret for authentication
+  string auth_token = 2;
+}
+
+// SetForwarderResponse is returned after setting forwarders.
+message SetForwarderResponse {
+  // Whether the operation succeeded
+  bool success = 1;
+  string message = 2;
+}
+
+// RblConfig configures a single RBL provider.
+message RblConfig {
+  // The RBL zone to query (e.g. "zen.spamhaus.org")
+  string zone = 1;
+  // Whether this RBL is enabled (default: true when added)
+  bool enabled = 2;
+}
+
+// SetRblConfigRequest configures RBL providers.
+message SetRblConfigRequest {
+  // The list of RBL providers to use
+  repeated RblConfig providers = 1;
+  // Whether RBL checking is globally enabled
+  bool enabled = 2;
+  // Shared secret for authentication
+  string auth_token = 3;
+}
+
+// SetRblConfigResponse is returned after configuring RBL.
+message SetRblConfigResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// GetRblConfigRequest retrieves the current RBL configuration.
+message GetRblConfigRequest {
+  string auth_token = 1;
+}
+
+// GetRblConfigResponse contains the current RBL configuration.
+message GetRblConfigResponse {
+  bool enabled = 1;
+  repeated RblConfig providers = 2;
+}
+
+// FlushCacheRequest clears the DNS and/or RBL cache.
+message FlushCacheRequest {
+  // Shared secret for authentication
+  string auth_token = 1;
+}
+
+// FlushCacheResponse is returned after flushing the cache.
+message FlushCacheResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// RolodexService provides the gRPC management interface for rolodex.
+//
+// All methods accept an auth_token field for shared-secret authentication.
+// When connecting over a unix socket, the auth_token is ignored.
+service RolodexService {
+  // AddRecord adds a DNS record to the local database.
+  // Path: /rolodex.RolodexService/AddRecord
+  rpc AddRecord(AddRecordRequest) returns (AddRecordResponse);
+
+  // RemoveRecord removes DNS record(s) from the local database.
+  // Path: /rolodex.RolodexService/RemoveRecord
+  rpc RemoveRecord(RemoveRecordRequest) returns (RemoveRecordResponse);
+
+  // ListRecords queries the local DNS database with optional filters.
+  // Path: /rolodex.RolodexService/ListRecords
+  rpc ListRecords(ListRecordsRequest) returns (ListRecordsResponse);
+
+  // SetForwarders configures the upstream DNS forwarders.
+  // Path: /rolodex.RolodexService/SetForwarders
+  rpc SetForwarders(SetForwarderRequest) returns (SetForwarderResponse);
+
+  // SetRblConfig configures RBL (Realtime Blackhole List) settings.
+  // Path: /rolodex.RolodexService/SetRblConfig
+  rpc SetRblConfig(SetRblConfigRequest) returns (SetRblConfigResponse);
+
+  // GetRblConfig retrieves the current RBL configuration.
+  // Path: /rolodex.RolodexService/GetRblConfig
+  rpc GetRblConfig(GetRblConfigRequest) returns (GetRblConfigResponse);
+
+  // FlushCache clears DNS and RBL caches.
+  // Path: /rolodex.RolodexService/FlushCache
+  rpc FlushCache(FlushCacheRequest) returns (FlushCacheResponse);
+}
