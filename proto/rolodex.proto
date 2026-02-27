@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package rolodex;
 
+option go_package = "github.com/erikh/rolodex/go/rolodexpb";
+
 // RecordType enumerates the supported DNS record types.
 enum RecordType {
   // A record - IPv4 address mapping
@@ -156,6 +158,181 @@ message FlushCacheResponse {
   string message = 2;
 }
 
+// NetworkScope defines a DNS view that groups DNS records and associations.
+// Each scope has a reserved .home domain used as the default search domain.
+message NetworkScope {
+  // Unique name for this network scope (e.g. "office", "lab")
+  string name = 1;
+  // The reserved .home domain for this scope (e.g. "office.home.")
+  // If empty on creation, defaults to "<name>.home."
+  string home_domain = 2;
+}
+
+// CreateNetworkScopeRequest creates a new network scope.
+message CreateNetworkScopeRequest {
+  // The network scope to create
+  NetworkScope scope = 1;
+  // Shared secret for authentication
+  string auth_token = 2;
+}
+
+// CreateNetworkScopeResponse is returned after creating a scope.
+message CreateNetworkScopeResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// DeleteNetworkScopeRequest deletes a network scope and all its records and associations.
+message DeleteNetworkScopeRequest {
+  // Name of the scope to delete
+  string name = 1;
+  // Shared secret for authentication
+  string auth_token = 2;
+}
+
+// DeleteNetworkScopeResponse is returned after deleting a scope.
+message DeleteNetworkScopeResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// ListNetworkScopesRequest retrieves all network scopes.
+message ListNetworkScopesRequest {
+  string auth_token = 1;
+}
+
+// ListNetworkScopesResponse contains all network scopes.
+message ListNetworkScopesResponse {
+  repeated NetworkScope scopes = 1;
+}
+
+// JoinNetworkRequest associates an IP address with a network scope.
+// The association has a TTL that must be refreshed to maintain DNS resolution.
+message JoinNetworkRequest {
+  // The IP address to associate (e.g. "192.168.1.100")
+  string ip_address = 1;
+  // The network scope name to join
+  string scope_name = 2;
+  // TTL in seconds for this association. Must be refreshed before expiry.
+  // Default: 300 seconds if set to 0
+  uint64 ttl_seconds = 3;
+  // Shared secret for authentication
+  string auth_token = 4;
+}
+
+// JoinNetworkResponse is returned after joining a network.
+message JoinNetworkResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// LeaveNetworkRequest removes an IP address's association with any network scope.
+message LeaveNetworkRequest {
+  // The IP address to disassociate
+  string ip_address = 1;
+  // Shared secret for authentication
+  string auth_token = 2;
+}
+
+// LeaveNetworkResponse is returned after leaving a network.
+message LeaveNetworkResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// GetNetworkAssociationsRequest retrieves network associations.
+message GetNetworkAssociationsRequest {
+  // Optional: filter by scope name. Empty returns all associations.
+  string scope_name = 1;
+  // Shared secret for authentication
+  string auth_token = 2;
+}
+
+// NetworkAssociation represents a client IP's membership in a network scope.
+message NetworkAssociation {
+  // The associated IP address
+  string ip_address = 1;
+  // The network scope name
+  string scope_name = 2;
+  // TTL in seconds for this association
+  uint64 ttl_seconds = 3;
+}
+
+// GetNetworkAssociationsResponse contains network associations.
+message GetNetworkAssociationsResponse {
+  repeated NetworkAssociation associations = 1;
+}
+
+// AddScopedRecordRequest adds a DNS record to a specific network scope.
+message AddScopedRecordRequest {
+  // The network scope name to add the record to
+  string scope_name = 1;
+  // The DNS record to add
+  DnsRecord record = 2;
+  // Shared secret for authentication
+  string auth_token = 3;
+}
+
+// AddScopedRecordResponse is returned after adding a scoped record.
+message AddScopedRecordResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// RemoveScopedRecordRequest removes DNS records from a specific network scope.
+message RemoveScopedRecordRequest {
+  // The network scope name
+  string scope_name = 1;
+  // Fully qualified domain name to remove records for
+  string name = 2;
+  // Optional: record type filter
+  RecordType record_type = 3;
+  // Optional: exact value filter
+  string value = 4;
+  // Shared secret for authentication
+  string auth_token = 5;
+}
+
+// RemoveScopedRecordResponse is returned after removing scoped records.
+message RemoveScopedRecordResponse {
+  bool success = 1;
+  uint32 removed_count = 2;
+  string message = 3;
+}
+
+// ListScopedRecordsRequest queries DNS records within a network scope.
+message ListScopedRecordsRequest {
+  // The network scope name
+  string scope_name = 1;
+  // Optional: filter by domain name (supports wildcard prefix "*.")
+  string name_filter = 2;
+  // Optional: filter by record type
+  RecordType record_type_filter = 3;
+  // Whether to apply the record_type_filter
+  bool filter_by_type = 4;
+  // Shared secret for authentication
+  string auth_token = 5;
+}
+
+// ListScopedRecordsResponse contains matching scoped DNS records.
+message ListScopedRecordsResponse {
+  repeated DnsRecord records = 1;
+}
+
+// GetSearchDomainsRequest retrieves the search domains for an IP address.
+message GetSearchDomainsRequest {
+  // The IP address to look up search domains for
+  string ip_address = 1;
+  // Shared secret for authentication
+  string auth_token = 2;
+}
+
+// GetSearchDomainsResponse contains the search domains for an IP.
+message GetSearchDomainsResponse {
+  // The search domains (typically the .home domain of the associated scope)
+  repeated string search_domains = 1;
+}
+
 // RolodexService provides the gRPC management interface for rolodex.
 //
 // All methods accept an auth_token field for shared-secret authentication.
@@ -188,4 +365,45 @@ service RolodexService {
   // FlushCache clears DNS and RBL caches.
   // Path: /rolodex.RolodexService/FlushCache
   rpc FlushCache(FlushCacheRequest) returns (FlushCacheResponse);
+
+  // CreateNetworkScope creates a new network scope with a reserved .home domain.
+  // Path: /rolodex.RolodexService/CreateNetworkScope
+  rpc CreateNetworkScope(CreateNetworkScopeRequest) returns (CreateNetworkScopeResponse);
+
+  // DeleteNetworkScope removes a network scope and all its records and associations.
+  // Path: /rolodex.RolodexService/DeleteNetworkScope
+  rpc DeleteNetworkScope(DeleteNetworkScopeRequest) returns (DeleteNetworkScopeResponse);
+
+  // ListNetworkScopes retrieves all configured network scopes.
+  // Path: /rolodex.RolodexService/ListNetworkScopes
+  rpc ListNetworkScopes(ListNetworkScopesRequest) returns (ListNetworkScopesResponse);
+
+  // JoinNetwork associates a client IP address with a network scope.
+  // The association has a TTL and must be refreshed regularly.
+  // Path: /rolodex.RolodexService/JoinNetwork
+  rpc JoinNetwork(JoinNetworkRequest) returns (JoinNetworkResponse);
+
+  // LeaveNetwork removes an IP address's association with its network scope.
+  // Path: /rolodex.RolodexService/LeaveNetwork
+  rpc LeaveNetwork(LeaveNetworkRequest) returns (LeaveNetworkResponse);
+
+  // GetNetworkAssociations retrieves IP-to-scope associations.
+  // Path: /rolodex.RolodexService/GetNetworkAssociations
+  rpc GetNetworkAssociations(GetNetworkAssociationsRequest) returns (GetNetworkAssociationsResponse);
+
+  // AddScopedRecord adds a DNS record within a specific network scope.
+  // Path: /rolodex.RolodexService/AddScopedRecord
+  rpc AddScopedRecord(AddScopedRecordRequest) returns (AddScopedRecordResponse);
+
+  // RemoveScopedRecord removes DNS records from a specific network scope.
+  // Path: /rolodex.RolodexService/RemoveScopedRecord
+  rpc RemoveScopedRecord(RemoveScopedRecordRequest) returns (RemoveScopedRecordResponse);
+
+  // ListScopedRecords queries DNS records within a network scope.
+  // Path: /rolodex.RolodexService/ListScopedRecords
+  rpc ListScopedRecords(ListScopedRecordsRequest) returns (ListScopedRecordsResponse);
+
+  // GetSearchDomains retrieves the search domains for a client IP address.
+  // Path: /rolodex.RolodexService/GetSearchDomains
+  rpc GetSearchDomains(GetSearchDomainsRequest) returns (GetSearchDomainsResponse);
 }

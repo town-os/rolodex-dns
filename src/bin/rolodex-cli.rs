@@ -2,8 +2,11 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use rolodex::grpc_service::proto::rolodex_service_client::RolodexServiceClient;
 use rolodex::grpc_service::proto::{
-    AddRecordRequest, DnsRecord, FlushCacheRequest, GetRblConfigRequest, ListRecordsRequest,
-    RblConfig, RemoveRecordRequest, SetForwarderRequest, SetRblConfigRequest,
+    AddRecordRequest, AddScopedRecordRequest, CreateNetworkScopeRequest, DeleteNetworkScopeRequest,
+    DnsRecord, FlushCacheRequest, GetNetworkAssociationsRequest, GetRblConfigRequest,
+    GetSearchDomainsRequest, JoinNetworkRequest, LeaveNetworkRequest, ListNetworkScopesRequest,
+    ListRecordsRequest, ListScopedRecordsRequest, RblConfig, RemoveRecordRequest,
+    RemoveScopedRecordRequest, SetForwarderRequest, SetRblConfigRequest,
 };
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
@@ -227,6 +230,153 @@ enum Commands {
     /// gRPC path: /rolodex.RolodexService/FlushCache
     #[command(name = "flush-cache")]
     FlushCache,
+
+    /// Create a new network scope with a reserved .home domain.
+    /// Each scope defines a DNS view that associates IPs with scoped records.
+    /// gRPC path: /rolodex.RolodexService/CreateNetworkScope
+    #[command(name = "create-scope")]
+    CreateScope {
+        /// Unique name for the network scope (e.g. "office", "lab")
+        #[arg(short, long)]
+        name: String,
+
+        /// Reserved .home domain for this scope.
+        /// If omitted, defaults to "<name>.home" (e.g. "office.home").
+        /// Used as the default search domain for DHCP clients in this network.
+        #[arg(short = 'd', long)]
+        home_domain: Option<String>,
+    },
+
+    /// Delete a network scope and all its records and associations.
+    /// gRPC path: /rolodex.RolodexService/DeleteNetworkScope
+    #[command(name = "delete-scope")]
+    DeleteScope {
+        /// Name of the scope to delete
+        #[arg(short, long)]
+        name: String,
+    },
+
+    /// List all configured network scopes.
+    /// gRPC path: /rolodex.RolodexService/ListNetworkScopes
+    #[command(name = "list-scopes")]
+    ListScopes,
+
+    /// Associate an IP address with a network scope ("join the network").
+    /// The association has a TTL that must be refreshed to maintain DNS
+    /// resolution. If the TTL expires, the DNS server stops resolving
+    /// queries from this IP.
+    /// gRPC path: /rolodex.RolodexService/JoinNetwork
+    #[command(name = "join-network")]
+    JoinNetwork {
+        /// The client IP address to associate (e.g. "192.168.1.100")
+        #[arg(short, long)]
+        ip: String,
+
+        /// The network scope name to join
+        #[arg(short, long)]
+        scope: String,
+
+        /// TTL in seconds for this association. Must be refreshed before expiry.
+        /// Default: 300 seconds
+        #[arg(long, default_value = "300")]
+        ttl: u64,
+    },
+
+    /// Remove an IP address's association with its network scope ("leave the network").
+    /// gRPC path: /rolodex.RolodexService/LeaveNetwork
+    #[command(name = "leave-network")]
+    LeaveNetwork {
+        /// The client IP address to disassociate
+        #[arg(short, long)]
+        ip: String,
+    },
+
+    /// List IP-to-scope associations.
+    /// gRPC path: /rolodex.RolodexService/GetNetworkAssociations
+    #[command(name = "list-associations")]
+    ListAssociations {
+        /// Filter by scope name. If omitted, lists all associations.
+        #[arg(short, long)]
+        scope: Option<String>,
+    },
+
+    /// Add a DNS record within a specific network scope.
+    /// Scoped records are only visible to IPs associated with the scope.
+    /// gRPC path: /rolodex.RolodexService/AddScopedRecord
+    #[command(name = "add-scoped-record")]
+    AddScopedRecord {
+        /// The network scope name to add the record to
+        #[arg(short, long)]
+        scope: String,
+
+        /// Fully qualified domain name
+        #[arg(short, long)]
+        name: String,
+
+        /// DNS record type
+        #[arg(short = 'r', long, value_enum, default_value = "a")]
+        record_type: RecordTypeArg,
+
+        /// Record data (format depends on record type)
+        #[arg(short, long)]
+        value: String,
+
+        /// Time-to-live in seconds. Default: 300
+        #[arg(long, default_value = "300")]
+        ttl: u32,
+
+        /// Priority for MX and SRV records. Default: 0
+        #[arg(short, long, default_value = "0")]
+        priority: u32,
+    },
+
+    /// Remove DNS record(s) from a specific network scope.
+    /// gRPC path: /rolodex.RolodexService/RemoveScopedRecord
+    #[command(name = "remove-scoped-record")]
+    RemoveScopedRecord {
+        /// The network scope name
+        #[arg(short, long)]
+        scope: String,
+
+        /// Fully qualified domain name to remove records for
+        #[arg(short, long)]
+        name: String,
+
+        /// If specified, only remove records of this type
+        #[arg(short = 'r', long, value_enum)]
+        record_type: Option<RecordTypeArg>,
+
+        /// If specified, only remove the record with this exact value
+        #[arg(short, long)]
+        value: Option<String>,
+    },
+
+    /// List DNS records within a network scope.
+    /// gRPC path: /rolodex.RolodexService/ListScopedRecords
+    #[command(name = "list-scoped-records")]
+    ListScopedRecords {
+        /// The network scope name
+        #[arg(short, long)]
+        scope: String,
+
+        /// Filter by domain name (supports wildcard prefix "*.")
+        #[arg(short, long)]
+        name: Option<String>,
+
+        /// Filter by record type
+        #[arg(short = 'r', long, value_enum)]
+        record_type: Option<RecordTypeArg>,
+    },
+
+    /// Get the search domains for a client IP address.
+    /// Returns the .home domain of the scope the IP is associated with.
+    /// gRPC path: /rolodex.RolodexService/GetSearchDomains
+    #[command(name = "get-search-domains")]
+    GetSearchDomains {
+        /// The IP address to look up search domains for
+        #[arg(short, long)]
+        ip: String,
+    },
 }
 
 async fn connect(cli: &Cli) -> Result<RolodexServiceClient<Channel>> {
@@ -438,6 +588,238 @@ async fn main() -> Result<()> {
                 println!("Cache flushed successfully.");
             } else {
                 anyhow::bail!("Failed to flush cache: {}", resp.message);
+            }
+        }
+
+        Commands::CreateScope { name, home_domain } => {
+            let response = client
+                .create_network_scope(CreateNetworkScopeRequest {
+                    scope: Some(rolodex::grpc_service::proto::NetworkScope {
+                        name: name.clone(),
+                        home_domain: home_domain.unwrap_or_default(),
+                    }),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("create-scope RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("Created network scope: {}", name);
+            } else {
+                anyhow::bail!("Failed to create scope: {}", resp.message);
+            }
+        }
+
+        Commands::DeleteScope { name } => {
+            let response = client
+                .delete_network_scope(DeleteNetworkScopeRequest {
+                    name: name.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("delete-scope RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("Deleted network scope: {}", name);
+            } else {
+                anyhow::bail!("Failed to delete scope: {}", resp.message);
+            }
+        }
+
+        Commands::ListScopes => {
+            let response = client
+                .list_network_scopes(ListNetworkScopesRequest {
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("list-scopes RPC failed")?;
+            let scopes = response.into_inner().scopes;
+            if scopes.is_empty() {
+                println!("No network scopes configured.");
+            } else {
+                println!("{:<30} {}", "NAME", "HOME DOMAIN");
+                println!("{}", "-".repeat(60));
+                for s in &scopes {
+                    println!("{:<30} {}", s.name, s.home_domain);
+                }
+                println!("\n{} scope(s) found.", scopes.len());
+            }
+        }
+
+        Commands::JoinNetwork { ip, scope, ttl } => {
+            let response = client
+                .join_network(JoinNetworkRequest {
+                    ip_address: ip.clone(),
+                    scope_name: scope.clone(),
+                    ttl_seconds: ttl,
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("join-network RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("IP {} joined scope '{}' (TTL: {}s)", ip, scope, ttl);
+            } else {
+                anyhow::bail!("Failed to join network: {}", resp.message);
+            }
+        }
+
+        Commands::LeaveNetwork { ip } => {
+            let response = client
+                .leave_network(LeaveNetworkRequest {
+                    ip_address: ip.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("leave-network RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("IP {} left network", ip);
+            } else {
+                anyhow::bail!("Failed to leave network: {}", resp.message);
+            }
+        }
+
+        Commands::ListAssociations { scope } => {
+            let response = client
+                .get_network_associations(GetNetworkAssociationsRequest {
+                    scope_name: scope.unwrap_or_default(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("list-associations RPC failed")?;
+            let assocs = response.into_inner().associations;
+            if assocs.is_empty() {
+                println!("No network associations found.");
+            } else {
+                println!("{:<20} {:<20} {}", "IP ADDRESS", "SCOPE", "TTL");
+                println!("{}", "-".repeat(50));
+                for a in &assocs {
+                    println!("{:<20} {:<20} {}", a.ip_address, a.scope_name, a.ttl_seconds);
+                }
+                println!("\n{} association(s) found.", assocs.len());
+            }
+        }
+
+        Commands::AddScopedRecord {
+            scope,
+            name,
+            record_type,
+            value,
+            ttl,
+            priority,
+        } => {
+            let response = client
+                .add_scoped_record(AddScopedRecordRequest {
+                    scope_name: scope.clone(),
+                    record: Some(DnsRecord {
+                        name: name.clone(),
+                        record_type: record_type.to_proto_i32(),
+                        value: value.clone(),
+                        ttl,
+                        priority,
+                    }),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("add-scoped-record RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!(
+                    "Added scoped record in '{}': {} {} {} (TTL: {}, Priority: {})",
+                    scope,
+                    name,
+                    RecordTypeArg::from_proto_i32(record_type.to_proto_i32()),
+                    value,
+                    ttl,
+                    priority
+                );
+            } else {
+                anyhow::bail!("Failed to add scoped record: {}", resp.message);
+            }
+        }
+
+        Commands::RemoveScopedRecord {
+            scope,
+            name,
+            record_type,
+            value,
+        } => {
+            let response = client
+                .remove_scoped_record(RemoveScopedRecordRequest {
+                    scope_name: scope.clone(),
+                    name: name.clone(),
+                    record_type: record_type.map(|r| r.to_proto_i32()).unwrap_or(0),
+                    value: value.unwrap_or_default(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("remove-scoped-record RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!(
+                    "Removed {} scoped record(s) from '{}' for {}",
+                    resp.removed_count, scope, name
+                );
+            } else {
+                anyhow::bail!("Failed to remove scoped records: {}", resp.message);
+            }
+        }
+
+        Commands::ListScopedRecords {
+            scope,
+            name,
+            record_type,
+        } => {
+            let response = client
+                .list_scoped_records(ListScopedRecordsRequest {
+                    scope_name: scope.clone(),
+                    name_filter: name.unwrap_or_default(),
+                    record_type_filter: record_type.map(|r| r.to_proto_i32()).unwrap_or(0),
+                    filter_by_type: record_type.is_some(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("list-scoped-records RPC failed")?;
+            let records = response.into_inner().records;
+            if records.is_empty() {
+                println!("No scoped records found in '{}'.", scope);
+            } else {
+                println!(
+                    "{:<40} {:<8} {:<40} {:<6} {}",
+                    "NAME", "TYPE", "VALUE", "TTL", "PRIORITY"
+                );
+                println!("{}", "-".repeat(100));
+                for r in &records {
+                    println!(
+                        "{:<40} {:<8} {:<40} {:<6} {}",
+                        r.name,
+                        RecordTypeArg::from_proto_i32(r.record_type),
+                        r.value,
+                        r.ttl,
+                        r.priority
+                    );
+                }
+                println!("\n{} record(s) found in scope '{}'.", records.len(), scope);
+            }
+        }
+
+        Commands::GetSearchDomains { ip } => {
+            let response = client
+                .get_search_domains(GetSearchDomainsRequest {
+                    ip_address: ip.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("get-search-domains RPC failed")?;
+            let domains = response.into_inner().search_domains;
+            if domains.is_empty() {
+                println!("No search domains for IP {}.", ip);
+            } else {
+                println!("Search domains for {}:", ip);
+                for d in &domains {
+                    println!("  {}", d);
+                }
             }
         }
     }

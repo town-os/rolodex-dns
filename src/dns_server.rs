@@ -19,6 +19,10 @@ const MAX_TCP_SIZE: usize = 65535;
 /// The DNS server handles both UDP and TCP DNS queries.
 /// It performs split-horizon resolution: local database records are preferred,
 /// and unmatched queries are forwarded to upstream resolvers.
+///
+/// When network scoping is active, DNS queries are resolved within the context
+/// of the network scope associated with the source IP. Unassociated IPs receive
+/// REFUSED responses. RBL checks are also scoped to the network.
 pub struct DnsServer {
     db: Database,
     rbl: Arc<RblChecker>,
@@ -32,6 +36,11 @@ impl DnsServer {
             rbl,
             forwarders: Arc::new(RwLock::new(forwarders)),
         }
+    }
+
+    /// Returns a reference to the database.
+    pub fn db(&self) -> &Database {
+        &self.db
     }
 
     /// Updates the upstream forwarder list.
@@ -65,7 +74,7 @@ impl DnsServer {
             let socket_ref = &socket;
             let server = Arc::clone(&self);
 
-            let response = server.handle_query(&data).await;
+            let response = server.handle_query_from(&data, src.ip()).await;
             match response {
                 Ok(resp) => {
                     if let Err(e) = socket_ref.send_to(&resp, src).await {
@@ -130,7 +139,7 @@ impl DnsServer {
             let mut msg_buf = vec![0u8; msg_len];
             reader.read_exact(&mut msg_buf).await?;
 
-            let response = self.handle_query(&msg_buf).await?;
+            let response = self.handle_query_from(&msg_buf, src.ip()).await?;
             let resp_len = (response.len() as u16).to_be_bytes();
             writer.write_all(&resp_len).await?;
             writer.write_all(&response).await?;
@@ -138,7 +147,24 @@ impl DnsServer {
     }
 
     /// Handles a raw DNS query and returns the raw response bytes.
+    /// This is a convenience method that does not enforce network scoping.
+    /// Used for tests where source IP context is not available.
     pub async fn handle_query(&self, query_data: &[u8]) -> Result<Vec<u8>> {
+        self.resolve_query(query_data, None).await
+    }
+
+    /// Handles a raw DNS query with source IP context for network scoping.
+    ///
+    /// When network scopes exist, the source IP must be associated with a
+    /// network scope to receive DNS responses. Unassociated IPs receive
+    /// REFUSED responses. When no network scopes are defined, the server
+    /// operates in legacy mode without scope enforcement.
+    pub async fn handle_query_from(&self, query_data: &[u8], source_ip: IpAddr) -> Result<Vec<u8>> {
+        self.resolve_query(query_data, Some(source_ip)).await
+    }
+
+    /// Core DNS resolution logic with optional network scope context.
+    async fn resolve_query(&self, query_data: &[u8], source_ip: Option<IpAddr>) -> Result<Vec<u8>> {
         let message = match hickory_proto::op::Message::from_bytes(query_data) {
             Ok(m) => m,
             Err(e) => {
@@ -160,17 +186,83 @@ impl DnsServer {
             return Ok(make_error_response(query_data, ResponseCode::FormErr));
         }
 
+        // Determine network scope for this query
+        let scope_name = if let Some(ip) = source_ip {
+            let has_scopes = !self.db.list_network_scopes().unwrap_or_default().is_empty();
+            if has_scopes {
+                let scope = self.db.get_scope_for_ip(&ip.to_string());
+                if scope.is_none() {
+                    // IP is not associated with any scope - refuse resolution
+                    debug!("Refusing DNS query from unassociated IP {}", ip);
+                    return Ok(build_response(&message, ResponseCode::Refused, vec![]));
+                }
+                scope
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let question = &questions[0];
         let qname = question.name().to_string();
         let qtype = question.query_type();
 
-        debug!("DNS query: {} {:?}", qname, qtype);
+        debug!("DNS query: {} {:?} (scope: {:?})", qname, qtype, scope_name);
 
-        // Check RBL for the source IP if it's an A or AAAA query
-        if let Some(ip) = extract_ip_from_name(&qname) {
-            if self.rbl.is_listed(&ip).await {
-                debug!("RBL block: {} is blacklisted", qname);
-                return Ok(build_response(&message, ResponseCode::NXDomain, vec![]));
+        // If we have a network scope, check scoped RBL first
+        if let Some(ref scope) = scope_name {
+            if let Some(ip) = extract_ip_from_name(&qname) {
+                if self.rbl.is_listed(&ip).await {
+                    debug!("RBL block in scope {}: {} is blacklisted", scope, qname);
+                    return Ok(build_response(&message, ResponseCode::NXDomain, vec![]));
+                }
+            }
+
+            // Try scoped records first
+            let record_kind = map_query_type_to_kind(qtype);
+            if let Some(kind) = record_kind {
+                let records = self.db.lookup_scoped(scope, &qname, Some(kind));
+                if !records.is_empty() {
+                    debug!("Scoped hit for {} {:?} in scope {}: {} records", qname, qtype, scope, records.len());
+                    let dns_records = records.iter().filter_map(|r| db_record_to_dns_record(r)).collect();
+                    return Ok(build_response(&message, ResponseCode::NoError, dns_records));
+                }
+            }
+
+            // Check CNAME in scoped records
+            if record_kind.is_some() {
+                let cname_records = self.db.lookup_scoped(scope, &qname, Some(RecordKind::CNAME));
+                if !cname_records.is_empty() {
+                    let dns_records = cname_records.iter().filter_map(|r| db_record_to_dns_record(r)).collect();
+                    return Ok(build_response(&message, ResponseCode::NoError, dns_records));
+                }
+            }
+
+            // Check if name falls under a scoped managed zone
+            if let Ok(zones) = self.db.get_scoped_managed_zones(scope) {
+                let normalized_qname = crate::db::normalize_name(&qname);
+                for zone in &zones {
+                    if normalized_qname.ends_with(zone) || normalized_qname == *zone {
+                        let zone_records = self.db.lookup_scoped(scope, zone, None);
+                        if !zone_records.is_empty() {
+                            debug!("Scoped authoritative NXDOMAIN for {} (scope {} zone {} exists)", qname, scope, zone);
+                            return Ok(build_response(&message, ResponseCode::NXDomain, vec![]));
+                        }
+                    }
+                }
+            }
+
+            // Fall through to global records and forwarding
+        }
+
+        // Check RBL for reverse DNS queries (global, non-scoped)
+        if scope_name.is_none() {
+            if let Some(ip) = extract_ip_from_name(&qname) {
+                if self.rbl.is_listed(&ip).await {
+                    debug!("RBL block: {} is blacklisted", qname);
+                    return Ok(build_response(&message, ResponseCode::NXDomain, vec![]));
+                }
             }
         }
 
@@ -833,5 +925,261 @@ mod tests {
         let response_bytes = make_error_response(&query_bytes, ResponseCode::ServFail);
         let response = Message::from_bytes(&response_bytes).unwrap();
         assert_eq!(response.response_code(), ResponseCode::ServFail);
+    }
+
+    // ================================================================
+    // Network Scoping Tests
+    // ================================================================
+
+    use crate::db::{NetworkAssociation, NetworkScope};
+
+    #[tokio::test]
+    async fn test_scoped_record_lookup() {
+        let db = Database::open_memory().unwrap();
+
+        // Create a scope and add a scoped record
+        db.create_network_scope(&NetworkScope {
+            name: "testnet".to_string(),
+            home_domain: "testnet.home".to_string(),
+        }).unwrap();
+
+        db.add_scoped_record("testnet", &DnsRecord {
+            id: None,
+            name: "server.testnet.home.".to_string(),
+            record_type: RecordKind::A,
+            value: "10.0.0.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        }).unwrap();
+
+        // Associate an IP with the scope
+        db.join_network(&NetworkAssociation {
+            ip_address: "192.168.1.50".to_string(),
+            scope_name: "testnet".to_string(),
+            ttl_seconds: 3600,
+        }).unwrap();
+
+        let server = make_test_server(db);
+        let query = build_query("server.testnet.home.", RecordType::A);
+        let response_bytes = server.handle_query_from(
+            &query,
+            "192.168.1.50".parse().unwrap(),
+        ).await.unwrap();
+        let response = Message::from_bytes(&response_bytes).unwrap();
+
+        assert_eq!(response.response_code(), ResponseCode::NoError);
+        assert_eq!(response.answers().len(), 1);
+        if let RData::A(rdata::A(ip)) = response.answers()[0].data() {
+            assert_eq!(*ip, Ipv4Addr::new(10, 0, 0, 1));
+        } else {
+            panic!("expected A record");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_unassociated_ip_refused_when_scopes_exist() {
+        let db = Database::open_memory().unwrap();
+
+        // Create a scope but don't associate the querying IP
+        db.create_network_scope(&NetworkScope {
+            name: "private".to_string(),
+            home_domain: "private.home".to_string(),
+        }).unwrap();
+
+        let server = make_test_server(db);
+        let query = build_query("anything.com.", RecordType::A);
+        let response_bytes = server.handle_query_from(
+            &query,
+            "192.168.1.99".parse().unwrap(),
+        ).await.unwrap();
+        let response = Message::from_bytes(&response_bytes).unwrap();
+
+        assert_eq!(response.response_code(), ResponseCode::Refused);
+    }
+
+    #[tokio::test]
+    async fn test_no_scopes_allows_all_queries() {
+        let db = Database::open_memory().unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "open.test.".to_string(),
+            record_type: RecordKind::A,
+            value: "1.2.3.4".to_string(),
+            ttl: 300,
+            priority: 0,
+        }).unwrap();
+
+        let server = make_test_server(db);
+        let query = build_query("open.test.", RecordType::A);
+        let response_bytes = server.handle_query_from(
+            &query,
+            "192.168.1.1".parse().unwrap(),
+        ).await.unwrap();
+        let response = Message::from_bytes(&response_bytes).unwrap();
+
+        assert_eq!(response.response_code(), ResponseCode::NoError);
+        assert_eq!(response.answers().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_scoped_records_isolated_between_scopes() {
+        let db = Database::open_memory().unwrap();
+
+        // Create two scopes with different views
+        db.create_network_scope(&NetworkScope {
+            name: "scope_a".to_string(),
+            home_domain: "a.home".to_string(),
+        }).unwrap();
+        db.create_network_scope(&NetworkScope {
+            name: "scope_b".to_string(),
+            home_domain: "b.home".to_string(),
+        }).unwrap();
+
+        // Same name, different values per scope
+        db.add_scoped_record("scope_a", &DnsRecord {
+            id: None,
+            name: "shared.internal.".to_string(),
+            record_type: RecordKind::A,
+            value: "10.0.0.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        }).unwrap();
+        db.add_scoped_record("scope_b", &DnsRecord {
+            id: None,
+            name: "shared.internal.".to_string(),
+            record_type: RecordKind::A,
+            value: "10.0.0.2".to_string(),
+            ttl: 300,
+            priority: 0,
+        }).unwrap();
+
+        // Associate IPs
+        db.join_network(&NetworkAssociation {
+            ip_address: "192.168.1.1".to_string(),
+            scope_name: "scope_a".to_string(),
+            ttl_seconds: 3600,
+        }).unwrap();
+        db.join_network(&NetworkAssociation {
+            ip_address: "192.168.2.1".to_string(),
+            scope_name: "scope_b".to_string(),
+            ttl_seconds: 3600,
+        }).unwrap();
+
+        let server = make_test_server(db);
+        let query = build_query("shared.internal.", RecordType::A);
+
+        // Query from scope_a IP
+        let resp_bytes = server.handle_query_from(&query, "192.168.1.1".parse().unwrap()).await.unwrap();
+        let resp = Message::from_bytes(&resp_bytes).unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        if let RData::A(rdata::A(ip)) = resp.answers()[0].data() {
+            assert_eq!(*ip, Ipv4Addr::new(10, 0, 0, 1));
+        }
+
+        // Query from scope_b IP
+        let resp_bytes = server.handle_query_from(&query, "192.168.2.1".parse().unwrap()).await.unwrap();
+        let resp = Message::from_bytes(&resp_bytes).unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        if let RData::A(rdata::A(ip)) = resp.answers()[0].data() {
+            assert_eq!(*ip, Ipv4Addr::new(10, 0, 0, 2));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_scoped_rbl_blocks_reverse_dns() {
+        let db = Database::open_memory().unwrap();
+
+        db.create_network_scope(&NetworkScope {
+            name: "rblscope".to_string(),
+            home_domain: "rblscope.home".to_string(),
+        }).unwrap();
+        db.join_network(&NetworkAssociation {
+            ip_address: "192.168.1.1".to_string(),
+            scope_name: "rblscope".to_string(),
+            ttl_seconds: 3600,
+        }).unwrap();
+
+        let server = make_test_server_with_rbl(db, true);
+        let query = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
+        let resp_bytes = server.handle_query_from(
+            &query,
+            "192.168.1.1".parse().unwrap(),
+        ).await.unwrap();
+        let resp = Message::from_bytes(&resp_bytes).unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NXDomain);
+    }
+
+    #[tokio::test]
+    async fn test_scoped_cname_lookup() {
+        let db = Database::open_memory().unwrap();
+
+        db.create_network_scope(&NetworkScope {
+            name: "cnamescope".to_string(),
+            home_domain: "cnamescope.home".to_string(),
+        }).unwrap();
+
+        db.add_scoped_record("cnamescope", &DnsRecord {
+            id: None,
+            name: "alias.cnamescope.home.".to_string(),
+            record_type: RecordKind::CNAME,
+            value: "real.cnamescope.home.".to_string(),
+            ttl: 300,
+            priority: 0,
+        }).unwrap();
+
+        db.join_network(&NetworkAssociation {
+            ip_address: "192.168.1.1".to_string(),
+            scope_name: "cnamescope".to_string(),
+            ttl_seconds: 3600,
+        }).unwrap();
+
+        let server = make_test_server(db);
+        let query = build_query("alias.cnamescope.home.", RecordType::A);
+        let resp_bytes = server.handle_query_from(
+            &query,
+            "192.168.1.1".parse().unwrap(),
+        ).await.unwrap();
+        let resp = Message::from_bytes(&resp_bytes).unwrap();
+
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert_eq!(resp.answers().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_scoped_query_falls_through_to_global() {
+        let db = Database::open_memory().unwrap();
+
+        db.create_network_scope(&NetworkScope {
+            name: "fallthrough".to_string(),
+            home_domain: "fallthrough.home".to_string(),
+        }).unwrap();
+
+        // Add a global record (not scoped)
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "global.test.".to_string(),
+            record_type: RecordKind::A,
+            value: "1.2.3.4".to_string(),
+            ttl: 300,
+            priority: 0,
+        }).unwrap();
+
+        db.join_network(&NetworkAssociation {
+            ip_address: "192.168.1.1".to_string(),
+            scope_name: "fallthrough".to_string(),
+            ttl_seconds: 3600,
+        }).unwrap();
+
+        let server = make_test_server(db);
+        let query = build_query("global.test.", RecordType::A);
+        let resp_bytes = server.handle_query_from(
+            &query,
+            "192.168.1.1".parse().unwrap(),
+        ).await.unwrap();
+        let resp = Message::from_bytes(&resp_bytes).unwrap();
+
+        // Should still resolve global records even when in a scope
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert_eq!(resp.answers().len(), 1);
     }
 }

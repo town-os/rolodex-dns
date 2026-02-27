@@ -1,9 +1,12 @@
-use rolodex::db::{Database, DnsRecord, RecordKind};
+use rolodex::db::{Database, DnsRecord, NetworkAssociation, NetworkScope, RecordKind};
 use rolodex::dns_server::DnsServer;
 use rolodex::grpc_service::proto::rolodex_service_server::RolodexService;
 use rolodex::grpc_service::proto::{
-    AddRecordRequest, FlushCacheRequest, GetRblConfigRequest, ListRecordsRequest,
-    RemoveRecordRequest, SetForwarderRequest, SetRblConfigRequest,
+    AddRecordRequest, AddScopedRecordRequest, CreateNetworkScopeRequest,
+    DeleteNetworkScopeRequest, FlushCacheRequest, GetNetworkAssociationsRequest,
+    GetRblConfigRequest, GetSearchDomainsRequest, JoinNetworkRequest, LeaveNetworkRequest,
+    ListNetworkScopesRequest, ListRecordsRequest, ListScopedRecordsRequest, RemoveRecordRequest,
+    RemoveScopedRecordRequest, SetForwarderRequest, SetRblConfigRequest,
 };
 use rolodex::grpc_service::RolodexGrpcService;
 use rolodex::rbl::{RblChecker, RblProvider, RblResolver};
@@ -726,4 +729,477 @@ fn build_dns_query(name: &str, qtype: RecordType) -> Vec<u8> {
     msg.add_query(query);
 
     msg.to_bytes().unwrap()
+}
+
+// ========================================================
+// Integration: Network Scope lifecycle
+// ========================================================
+
+#[tokio::test]
+async fn test_network_scope_lifecycle() {
+    let (_db, _dns_server, _rbl, service) = make_test_stack();
+
+    // Create scope
+    let req = Request::new(CreateNetworkScopeRequest {
+        scope: Some(rolodex::grpc_service::proto::NetworkScope {
+            name: "testnet".to_string(),
+            home_domain: "testnet.home".to_string(),
+        }),
+        auth_token: "test-secret".to_string(),
+    });
+    let resp = service.create_network_scope(req).await.unwrap();
+    assert!(resp.into_inner().success);
+
+    // List scopes
+    let list_req = Request::new(ListNetworkScopesRequest {
+        auth_token: "test-secret".to_string(),
+    });
+    let resp = service.list_network_scopes(list_req).await.unwrap();
+    assert_eq!(resp.into_inner().scopes.len(), 1);
+
+    // Delete scope
+    let del_req = Request::new(DeleteNetworkScopeRequest {
+        name: "testnet".to_string(),
+        auth_token: "test-secret".to_string(),
+    });
+    let resp = service.delete_network_scope(del_req).await.unwrap();
+    assert!(resp.into_inner().success);
+
+    // Verify deleted
+    let list_req = Request::new(ListNetworkScopesRequest {
+        auth_token: "test-secret".to_string(),
+    });
+    let resp = service.list_network_scopes(list_req).await.unwrap();
+    assert!(resp.into_inner().scopes.is_empty());
+}
+
+// ========================================================
+// Integration: Join network, add scoped record, DNS query
+// ========================================================
+
+#[tokio::test]
+async fn test_scoped_dns_resolution_integration() {
+    let (_db, dns_server, _rbl, service) = make_test_stack();
+
+    // Create scope
+    let req = Request::new(CreateNetworkScopeRequest {
+        scope: Some(rolodex::grpc_service::proto::NetworkScope {
+            name: "corp".to_string(),
+            home_domain: "corp.home".to_string(),
+        }),
+        auth_token: "test-secret".to_string(),
+    });
+    service.create_network_scope(req).await.unwrap();
+
+    // Join network
+    let join_req = Request::new(JoinNetworkRequest {
+        ip_address: "192.168.1.10".to_string(),
+        scope_name: "corp".to_string(),
+        ttl_seconds: 3600,
+        auth_token: "test-secret".to_string(),
+    });
+    service.join_network(join_req).await.unwrap();
+
+    // Add scoped record
+    let add_req = Request::new(AddScopedRecordRequest {
+        scope_name: "corp".to_string(),
+        record: Some(rolodex::grpc_service::proto::DnsRecord {
+            name: "intranet.corp.home.".to_string(),
+            record_type: 0,
+            value: "10.10.0.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        }),
+        auth_token: "test-secret".to_string(),
+    });
+    service.add_scoped_record(add_req).await.unwrap();
+
+    // DNS query from associated IP
+    let query = build_dns_query("intranet.corp.home.", hickory_proto::rr::RecordType::A);
+    let resp_bytes = dns_server
+        .handle_query_from(&query, "192.168.1.10".parse().unwrap())
+        .await
+        .unwrap();
+    let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
+    assert_eq!(resp.response_code(), hickory_proto::op::ResponseCode::NoError);
+    assert_eq!(resp.answers().len(), 1);
+
+    // DNS query from unassociated IP should be refused
+    let resp_bytes = dns_server
+        .handle_query_from(&query, "192.168.1.99".parse().unwrap())
+        .await
+        .unwrap();
+    let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
+    assert_eq!(resp.response_code(), hickory_proto::op::ResponseCode::Refused);
+}
+
+// ========================================================
+// Integration: Scoped records are isolated between scopes
+// ========================================================
+
+#[tokio::test]
+async fn test_scope_isolation_integration() {
+    let (_db, dns_server, _rbl, service) = make_test_stack();
+
+    // Create two scopes
+    for (name, domain) in &[("dev", "dev.home"), ("prod", "prod.home")] {
+        let req = Request::new(CreateNetworkScopeRequest {
+            scope: Some(rolodex::grpc_service::proto::NetworkScope {
+                name: name.to_string(),
+                home_domain: domain.to_string(),
+            }),
+            auth_token: "test-secret".to_string(),
+        });
+        service.create_network_scope(req).await.unwrap();
+    }
+
+    // Add same record name with different values in each scope
+    for (scope, ip) in &[("dev", "10.0.0.1"), ("prod", "10.0.0.2")] {
+        let req = Request::new(AddScopedRecordRequest {
+            scope_name: scope.to_string(),
+            record: Some(rolodex::grpc_service::proto::DnsRecord {
+                name: "api.internal.".to_string(),
+                record_type: 0,
+                value: ip.to_string(),
+                ttl: 300,
+                priority: 0,
+            }),
+            auth_token: "test-secret".to_string(),
+        });
+        service.add_scoped_record(req).await.unwrap();
+    }
+
+    // Associate IPs with different scopes
+    for (ip, scope) in &[("192.168.1.1", "dev"), ("192.168.2.1", "prod")] {
+        let req = Request::new(JoinNetworkRequest {
+            ip_address: ip.to_string(),
+            scope_name: scope.to_string(),
+            ttl_seconds: 3600,
+            auth_token: "test-secret".to_string(),
+        });
+        service.join_network(req).await.unwrap();
+    }
+
+    let query = build_dns_query("api.internal.", hickory_proto::rr::RecordType::A);
+
+    // Query from dev scope
+    let resp_bytes = dns_server
+        .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+        .await
+        .unwrap();
+    let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
+    assert_eq!(resp.response_code(), hickory_proto::op::ResponseCode::NoError);
+    if let hickory_proto::rr::RData::A(hickory_proto::rr::rdata::A(ip)) = resp.answers()[0].data() {
+        assert_eq!(*ip, std::net::Ipv4Addr::new(10, 0, 0, 1));
+    } else {
+        panic!("expected A record");
+    }
+
+    // Query from prod scope
+    let resp_bytes = dns_server
+        .handle_query_from(&query, "192.168.2.1".parse().unwrap())
+        .await
+        .unwrap();
+    let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
+    assert_eq!(resp.response_code(), hickory_proto::op::ResponseCode::NoError);
+    if let hickory_proto::rr::RData::A(hickory_proto::rr::rdata::A(ip)) = resp.answers()[0].data() {
+        assert_eq!(*ip, std::net::Ipv4Addr::new(10, 0, 0, 2));
+    } else {
+        panic!("expected A record");
+    }
+}
+
+// ========================================================
+// Integration: Search domains via gRPC
+// ========================================================
+
+#[tokio::test]
+async fn test_search_domains_integration() {
+    let (_db, _dns_server, _rbl, service) = make_test_stack();
+
+    // Create scope
+    let req = Request::new(CreateNetworkScopeRequest {
+        scope: Some(rolodex::grpc_service::proto::NetworkScope {
+            name: "homenet".to_string(),
+            home_domain: "myhome.local".to_string(),
+        }),
+        auth_token: "test-secret".to_string(),
+    });
+    service.create_network_scope(req).await.unwrap();
+
+    // Join network
+    let join_req = Request::new(JoinNetworkRequest {
+        ip_address: "192.168.0.100".to_string(),
+        scope_name: "homenet".to_string(),
+        ttl_seconds: 3600,
+        auth_token: "test-secret".to_string(),
+    });
+    service.join_network(join_req).await.unwrap();
+
+    // Get search domains
+    let sd_req = Request::new(GetSearchDomainsRequest {
+        ip_address: "192.168.0.100".to_string(),
+        auth_token: "test-secret".to_string(),
+    });
+    let resp = service.get_search_domains(sd_req).await.unwrap();
+    let domains = resp.into_inner().search_domains;
+    assert_eq!(domains.len(), 1);
+    assert_eq!(domains[0], "myhome.local.");
+
+    // Unassociated IP gets no search domains
+    let sd_req = Request::new(GetSearchDomainsRequest {
+        ip_address: "192.168.0.200".to_string(),
+        auth_token: "test-secret".to_string(),
+    });
+    let resp = service.get_search_domains(sd_req).await.unwrap();
+    assert!(resp.into_inner().search_domains.is_empty());
+}
+
+// ========================================================
+// Integration: Scoped record CRUD via gRPC
+// ========================================================
+
+#[tokio::test]
+async fn test_scoped_record_crud_integration() {
+    let (_db, _dns_server, _rbl, service) = make_test_stack();
+
+    // Create scope
+    let req = Request::new(CreateNetworkScopeRequest {
+        scope: Some(rolodex::grpc_service::proto::NetworkScope {
+            name: "crud".to_string(),
+            home_domain: "crud.home".to_string(),
+        }),
+        auth_token: "test-secret".to_string(),
+    });
+    service.create_network_scope(req).await.unwrap();
+
+    // Add records
+    for (name, value) in &[("host1.crud.home.", "10.0.0.1"), ("host2.crud.home.", "10.0.0.2")] {
+        let req = Request::new(AddScopedRecordRequest {
+            scope_name: "crud".to_string(),
+            record: Some(rolodex::grpc_service::proto::DnsRecord {
+                name: name.to_string(),
+                record_type: 0,
+                value: value.to_string(),
+                ttl: 300,
+                priority: 0,
+            }),
+            auth_token: "test-secret".to_string(),
+        });
+        service.add_scoped_record(req).await.unwrap();
+    }
+
+    // List all scoped records
+    let list_req = Request::new(ListScopedRecordsRequest {
+        scope_name: "crud".to_string(),
+        name_filter: String::new(),
+        record_type_filter: 0,
+        filter_by_type: false,
+        auth_token: "test-secret".to_string(),
+    });
+    let resp = service.list_scoped_records(list_req).await.unwrap();
+    assert_eq!(resp.into_inner().records.len(), 2);
+
+    // Remove one record
+    let rm_req = Request::new(RemoveScopedRecordRequest {
+        scope_name: "crud".to_string(),
+        name: "host1.crud.home.".to_string(),
+        record_type: 0,
+        value: String::new(),
+        auth_token: "test-secret".to_string(),
+    });
+    let resp = service.remove_scoped_record(rm_req).await.unwrap();
+    assert_eq!(resp.into_inner().removed_count, 1);
+
+    // Verify one remains
+    let list_req = Request::new(ListScopedRecordsRequest {
+        scope_name: "crud".to_string(),
+        name_filter: String::new(),
+        record_type_filter: 0,
+        filter_by_type: false,
+        auth_token: "test-secret".to_string(),
+    });
+    let resp = service.list_scoped_records(list_req).await.unwrap();
+    assert_eq!(resp.into_inner().records.len(), 1);
+}
+
+// ========================================================
+// Integration: Leave network and association cleanup
+// ========================================================
+
+#[tokio::test]
+async fn test_leave_network_integration() {
+    let (_db, dns_server, _rbl, service) = make_test_stack();
+
+    // Create scope and join
+    let req = Request::new(CreateNetworkScopeRequest {
+        scope: Some(rolodex::grpc_service::proto::NetworkScope {
+            name: "leavenet".to_string(),
+            home_domain: "leavenet.home".to_string(),
+        }),
+        auth_token: "test-secret".to_string(),
+    });
+    service.create_network_scope(req).await.unwrap();
+
+    let join_req = Request::new(JoinNetworkRequest {
+        ip_address: "192.168.1.50".to_string(),
+        scope_name: "leavenet".to_string(),
+        ttl_seconds: 3600,
+        auth_token: "test-secret".to_string(),
+    });
+    service.join_network(join_req).await.unwrap();
+
+    // Add scoped record
+    let add_req = Request::new(AddScopedRecordRequest {
+        scope_name: "leavenet".to_string(),
+        record: Some(rolodex::grpc_service::proto::DnsRecord {
+            name: "server.leavenet.home.".to_string(),
+            record_type: 0,
+            value: "10.0.0.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        }),
+        auth_token: "test-secret".to_string(),
+    });
+    service.add_scoped_record(add_req).await.unwrap();
+
+    // Can resolve while joined
+    let query = build_dns_query("server.leavenet.home.", hickory_proto::rr::RecordType::A);
+    let resp_bytes = dns_server
+        .handle_query_from(&query, "192.168.1.50".parse().unwrap())
+        .await
+        .unwrap();
+    let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
+    assert_eq!(resp.response_code(), hickory_proto::op::ResponseCode::NoError);
+
+    // Leave network
+    let leave_req = Request::new(LeaveNetworkRequest {
+        ip_address: "192.168.1.50".to_string(),
+        auth_token: "test-secret".to_string(),
+    });
+    service.leave_network(leave_req).await.unwrap();
+
+    // Can no longer resolve (refused)
+    let resp_bytes = dns_server
+        .handle_query_from(&query, "192.168.1.50".parse().unwrap())
+        .await
+        .unwrap();
+    let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
+    assert_eq!(resp.response_code(), hickory_proto::op::ResponseCode::Refused);
+}
+
+// ========================================================
+// Integration: Global records accessible from scoped IPs
+// ========================================================
+
+#[tokio::test]
+async fn test_global_records_accessible_from_scope() {
+    let (_db, dns_server, _rbl, service) = make_test_stack();
+
+    // Create scope and join
+    let req = Request::new(CreateNetworkScopeRequest {
+        scope: Some(rolodex::grpc_service::proto::NetworkScope {
+            name: "globaltest".to_string(),
+            home_domain: "globaltest.home".to_string(),
+        }),
+        auth_token: "test-secret".to_string(),
+    });
+    service.create_network_scope(req).await.unwrap();
+
+    let join_req = Request::new(JoinNetworkRequest {
+        ip_address: "192.168.1.1".to_string(),
+        scope_name: "globaltest".to_string(),
+        ttl_seconds: 3600,
+        auth_token: "test-secret".to_string(),
+    });
+    service.join_network(join_req).await.unwrap();
+
+    // Add global record
+    let add_req = Request::new(AddRecordRequest {
+        record: Some(rolodex::grpc_service::proto::DnsRecord {
+            name: "public.test.".to_string(),
+            record_type: 0,
+            value: "1.2.3.4".to_string(),
+            ttl: 300,
+            priority: 0,
+        }),
+        auth_token: "test-secret".to_string(),
+    });
+    service.add_record(add_req).await.unwrap();
+
+    // Query from scoped IP should still see global records
+    let query = build_dns_query("public.test.", hickory_proto::rr::RecordType::A);
+    let resp_bytes = dns_server
+        .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+        .await
+        .unwrap();
+    let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
+    assert_eq!(resp.response_code(), hickory_proto::op::ResponseCode::NoError);
+    assert_eq!(resp.answers().len(), 1);
+}
+
+// ========================================================
+// Integration: Delete scope cascades to records and assocs
+// ========================================================
+
+#[tokio::test]
+async fn test_delete_scope_cascade() {
+    let (_db, _dns_server, _rbl, service) = make_test_stack();
+
+    // Create scope, add records, add associations
+    let req = Request::new(CreateNetworkScopeRequest {
+        scope: Some(rolodex::grpc_service::proto::NetworkScope {
+            name: "cascade".to_string(),
+            home_domain: "cascade.home".to_string(),
+        }),
+        auth_token: "test-secret".to_string(),
+    });
+    service.create_network_scope(req).await.unwrap();
+
+    let add_req = Request::new(AddScopedRecordRequest {
+        scope_name: "cascade".to_string(),
+        record: Some(rolodex::grpc_service::proto::DnsRecord {
+            name: "host.cascade.home.".to_string(),
+            record_type: 0,
+            value: "10.0.0.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        }),
+        auth_token: "test-secret".to_string(),
+    });
+    service.add_scoped_record(add_req).await.unwrap();
+
+    let join_req = Request::new(JoinNetworkRequest {
+        ip_address: "192.168.1.1".to_string(),
+        scope_name: "cascade".to_string(),
+        ttl_seconds: 3600,
+        auth_token: "test-secret".to_string(),
+    });
+    service.join_network(join_req).await.unwrap();
+
+    // Delete scope
+    let del_req = Request::new(DeleteNetworkScopeRequest {
+        name: "cascade".to_string(),
+        auth_token: "test-secret".to_string(),
+    });
+    service.delete_network_scope(del_req).await.unwrap();
+
+    // Records should be gone
+    let list_req = Request::new(ListScopedRecordsRequest {
+        scope_name: "cascade".to_string(),
+        name_filter: String::new(),
+        record_type_filter: 0,
+        filter_by_type: false,
+        auth_token: "test-secret".to_string(),
+    });
+    let resp = service.list_scoped_records(list_req).await.unwrap();
+    assert!(resp.into_inner().records.is_empty());
+
+    // Associations should be gone
+    let assoc_req = Request::new(GetNetworkAssociationsRequest {
+        scope_name: "cascade".to_string(),
+        auth_token: "test-secret".to_string(),
+    });
+    let resp = service.get_network_associations(assoc_req).await.unwrap();
+    assert!(resp.into_inner().associations.is_empty());
 }

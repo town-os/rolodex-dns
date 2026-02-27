@@ -19,13 +19,23 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	RolodexService_AddRecord_FullMethodName     = "/rolodex.RolodexService/AddRecord"
-	RolodexService_RemoveRecord_FullMethodName  = "/rolodex.RolodexService/RemoveRecord"
-	RolodexService_ListRecords_FullMethodName   = "/rolodex.RolodexService/ListRecords"
-	RolodexService_SetForwarders_FullMethodName = "/rolodex.RolodexService/SetForwarders"
-	RolodexService_SetRblConfig_FullMethodName  = "/rolodex.RolodexService/SetRblConfig"
-	RolodexService_GetRblConfig_FullMethodName  = "/rolodex.RolodexService/GetRblConfig"
-	RolodexService_FlushCache_FullMethodName    = "/rolodex.RolodexService/FlushCache"
+	RolodexService_AddRecord_FullMethodName              = "/rolodex.RolodexService/AddRecord"
+	RolodexService_RemoveRecord_FullMethodName           = "/rolodex.RolodexService/RemoveRecord"
+	RolodexService_ListRecords_FullMethodName            = "/rolodex.RolodexService/ListRecords"
+	RolodexService_SetForwarders_FullMethodName          = "/rolodex.RolodexService/SetForwarders"
+	RolodexService_SetRblConfig_FullMethodName           = "/rolodex.RolodexService/SetRblConfig"
+	RolodexService_GetRblConfig_FullMethodName           = "/rolodex.RolodexService/GetRblConfig"
+	RolodexService_FlushCache_FullMethodName             = "/rolodex.RolodexService/FlushCache"
+	RolodexService_CreateNetworkScope_FullMethodName     = "/rolodex.RolodexService/CreateNetworkScope"
+	RolodexService_DeleteNetworkScope_FullMethodName     = "/rolodex.RolodexService/DeleteNetworkScope"
+	RolodexService_ListNetworkScopes_FullMethodName      = "/rolodex.RolodexService/ListNetworkScopes"
+	RolodexService_JoinNetwork_FullMethodName            = "/rolodex.RolodexService/JoinNetwork"
+	RolodexService_LeaveNetwork_FullMethodName           = "/rolodex.RolodexService/LeaveNetwork"
+	RolodexService_GetNetworkAssociations_FullMethodName = "/rolodex.RolodexService/GetNetworkAssociations"
+	RolodexService_AddScopedRecord_FullMethodName        = "/rolodex.RolodexService/AddScopedRecord"
+	RolodexService_RemoveScopedRecord_FullMethodName     = "/rolodex.RolodexService/RemoveScopedRecord"
+	RolodexService_ListScopedRecords_FullMethodName      = "/rolodex.RolodexService/ListScopedRecords"
+	RolodexService_GetSearchDomains_FullMethodName       = "/rolodex.RolodexService/GetSearchDomains"
 )
 
 // RolodexServiceClient is the client API for RolodexService service.
@@ -58,6 +68,37 @@ type RolodexServiceClient interface {
 	// FlushCache clears DNS and RBL caches.
 	// Path: /rolodex.RolodexService/FlushCache
 	FlushCache(ctx context.Context, in *FlushCacheRequest, opts ...grpc.CallOption) (*FlushCacheResponse, error)
+	// CreateNetworkScope creates a new network scope with a reserved .home domain.
+	// Path: /rolodex.RolodexService/CreateNetworkScope
+	CreateNetworkScope(ctx context.Context, in *CreateNetworkScopeRequest, opts ...grpc.CallOption) (*CreateNetworkScopeResponse, error)
+	// DeleteNetworkScope removes a network scope and all its records and associations.
+	// Path: /rolodex.RolodexService/DeleteNetworkScope
+	DeleteNetworkScope(ctx context.Context, in *DeleteNetworkScopeRequest, opts ...grpc.CallOption) (*DeleteNetworkScopeResponse, error)
+	// ListNetworkScopes retrieves all configured network scopes.
+	// Path: /rolodex.RolodexService/ListNetworkScopes
+	ListNetworkScopes(ctx context.Context, in *ListNetworkScopesRequest, opts ...grpc.CallOption) (*ListNetworkScopesResponse, error)
+	// JoinNetwork associates a client IP address with a network scope.
+	// The association has a TTL and must be refreshed regularly.
+	// Path: /rolodex.RolodexService/JoinNetwork
+	JoinNetwork(ctx context.Context, in *JoinNetworkRequest, opts ...grpc.CallOption) (*JoinNetworkResponse, error)
+	// LeaveNetwork removes an IP address's association with its network scope.
+	// Path: /rolodex.RolodexService/LeaveNetwork
+	LeaveNetwork(ctx context.Context, in *LeaveNetworkRequest, opts ...grpc.CallOption) (*LeaveNetworkResponse, error)
+	// GetNetworkAssociations retrieves IP-to-scope associations.
+	// Path: /rolodex.RolodexService/GetNetworkAssociations
+	GetNetworkAssociations(ctx context.Context, in *GetNetworkAssociationsRequest, opts ...grpc.CallOption) (*GetNetworkAssociationsResponse, error)
+	// AddScopedRecord adds a DNS record within a specific network scope.
+	// Path: /rolodex.RolodexService/AddScopedRecord
+	AddScopedRecord(ctx context.Context, in *AddScopedRecordRequest, opts ...grpc.CallOption) (*AddScopedRecordResponse, error)
+	// RemoveScopedRecord removes DNS records from a specific network scope.
+	// Path: /rolodex.RolodexService/RemoveScopedRecord
+	RemoveScopedRecord(ctx context.Context, in *RemoveScopedRecordRequest, opts ...grpc.CallOption) (*RemoveScopedRecordResponse, error)
+	// ListScopedRecords queries DNS records within a network scope.
+	// Path: /rolodex.RolodexService/ListScopedRecords
+	ListScopedRecords(ctx context.Context, in *ListScopedRecordsRequest, opts ...grpc.CallOption) (*ListScopedRecordsResponse, error)
+	// GetSearchDomains retrieves the search domains for a client IP address.
+	// Path: /rolodex.RolodexService/GetSearchDomains
+	GetSearchDomains(ctx context.Context, in *GetSearchDomainsRequest, opts ...grpc.CallOption) (*GetSearchDomainsResponse, error)
 }
 
 type rolodexServiceClient struct {
@@ -138,6 +179,106 @@ func (c *rolodexServiceClient) FlushCache(ctx context.Context, in *FlushCacheReq
 	return out, nil
 }
 
+func (c *rolodexServiceClient) CreateNetworkScope(ctx context.Context, in *CreateNetworkScopeRequest, opts ...grpc.CallOption) (*CreateNetworkScopeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateNetworkScopeResponse)
+	err := c.cc.Invoke(ctx, RolodexService_CreateNetworkScope_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) DeleteNetworkScope(ctx context.Context, in *DeleteNetworkScopeRequest, opts ...grpc.CallOption) (*DeleteNetworkScopeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteNetworkScopeResponse)
+	err := c.cc.Invoke(ctx, RolodexService_DeleteNetworkScope_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) ListNetworkScopes(ctx context.Context, in *ListNetworkScopesRequest, opts ...grpc.CallOption) (*ListNetworkScopesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListNetworkScopesResponse)
+	err := c.cc.Invoke(ctx, RolodexService_ListNetworkScopes_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) JoinNetwork(ctx context.Context, in *JoinNetworkRequest, opts ...grpc.CallOption) (*JoinNetworkResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(JoinNetworkResponse)
+	err := c.cc.Invoke(ctx, RolodexService_JoinNetwork_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) LeaveNetwork(ctx context.Context, in *LeaveNetworkRequest, opts ...grpc.CallOption) (*LeaveNetworkResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LeaveNetworkResponse)
+	err := c.cc.Invoke(ctx, RolodexService_LeaveNetwork_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) GetNetworkAssociations(ctx context.Context, in *GetNetworkAssociationsRequest, opts ...grpc.CallOption) (*GetNetworkAssociationsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetNetworkAssociationsResponse)
+	err := c.cc.Invoke(ctx, RolodexService_GetNetworkAssociations_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) AddScopedRecord(ctx context.Context, in *AddScopedRecordRequest, opts ...grpc.CallOption) (*AddScopedRecordResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AddScopedRecordResponse)
+	err := c.cc.Invoke(ctx, RolodexService_AddScopedRecord_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) RemoveScopedRecord(ctx context.Context, in *RemoveScopedRecordRequest, opts ...grpc.CallOption) (*RemoveScopedRecordResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveScopedRecordResponse)
+	err := c.cc.Invoke(ctx, RolodexService_RemoveScopedRecord_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) ListScopedRecords(ctx context.Context, in *ListScopedRecordsRequest, opts ...grpc.CallOption) (*ListScopedRecordsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListScopedRecordsResponse)
+	err := c.cc.Invoke(ctx, RolodexService_ListScopedRecords_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) GetSearchDomains(ctx context.Context, in *GetSearchDomainsRequest, opts ...grpc.CallOption) (*GetSearchDomainsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetSearchDomainsResponse)
+	err := c.cc.Invoke(ctx, RolodexService_GetSearchDomains_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // RolodexServiceServer is the server API for RolodexService service.
 // All implementations must embed UnimplementedRolodexServiceServer
 // for forward compatibility.
@@ -168,6 +309,37 @@ type RolodexServiceServer interface {
 	// FlushCache clears DNS and RBL caches.
 	// Path: /rolodex.RolodexService/FlushCache
 	FlushCache(context.Context, *FlushCacheRequest) (*FlushCacheResponse, error)
+	// CreateNetworkScope creates a new network scope with a reserved .home domain.
+	// Path: /rolodex.RolodexService/CreateNetworkScope
+	CreateNetworkScope(context.Context, *CreateNetworkScopeRequest) (*CreateNetworkScopeResponse, error)
+	// DeleteNetworkScope removes a network scope and all its records and associations.
+	// Path: /rolodex.RolodexService/DeleteNetworkScope
+	DeleteNetworkScope(context.Context, *DeleteNetworkScopeRequest) (*DeleteNetworkScopeResponse, error)
+	// ListNetworkScopes retrieves all configured network scopes.
+	// Path: /rolodex.RolodexService/ListNetworkScopes
+	ListNetworkScopes(context.Context, *ListNetworkScopesRequest) (*ListNetworkScopesResponse, error)
+	// JoinNetwork associates a client IP address with a network scope.
+	// The association has a TTL and must be refreshed regularly.
+	// Path: /rolodex.RolodexService/JoinNetwork
+	JoinNetwork(context.Context, *JoinNetworkRequest) (*JoinNetworkResponse, error)
+	// LeaveNetwork removes an IP address's association with its network scope.
+	// Path: /rolodex.RolodexService/LeaveNetwork
+	LeaveNetwork(context.Context, *LeaveNetworkRequest) (*LeaveNetworkResponse, error)
+	// GetNetworkAssociations retrieves IP-to-scope associations.
+	// Path: /rolodex.RolodexService/GetNetworkAssociations
+	GetNetworkAssociations(context.Context, *GetNetworkAssociationsRequest) (*GetNetworkAssociationsResponse, error)
+	// AddScopedRecord adds a DNS record within a specific network scope.
+	// Path: /rolodex.RolodexService/AddScopedRecord
+	AddScopedRecord(context.Context, *AddScopedRecordRequest) (*AddScopedRecordResponse, error)
+	// RemoveScopedRecord removes DNS records from a specific network scope.
+	// Path: /rolodex.RolodexService/RemoveScopedRecord
+	RemoveScopedRecord(context.Context, *RemoveScopedRecordRequest) (*RemoveScopedRecordResponse, error)
+	// ListScopedRecords queries DNS records within a network scope.
+	// Path: /rolodex.RolodexService/ListScopedRecords
+	ListScopedRecords(context.Context, *ListScopedRecordsRequest) (*ListScopedRecordsResponse, error)
+	// GetSearchDomains retrieves the search domains for a client IP address.
+	// Path: /rolodex.RolodexService/GetSearchDomains
+	GetSearchDomains(context.Context, *GetSearchDomainsRequest) (*GetSearchDomainsResponse, error)
 	mustEmbedUnimplementedRolodexServiceServer()
 }
 
@@ -198,6 +370,36 @@ func (UnimplementedRolodexServiceServer) GetRblConfig(context.Context, *GetRblCo
 }
 func (UnimplementedRolodexServiceServer) FlushCache(context.Context, *FlushCacheRequest) (*FlushCacheResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FlushCache not implemented")
+}
+func (UnimplementedRolodexServiceServer) CreateNetworkScope(context.Context, *CreateNetworkScopeRequest) (*CreateNetworkScopeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateNetworkScope not implemented")
+}
+func (UnimplementedRolodexServiceServer) DeleteNetworkScope(context.Context, *DeleteNetworkScopeRequest) (*DeleteNetworkScopeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteNetworkScope not implemented")
+}
+func (UnimplementedRolodexServiceServer) ListNetworkScopes(context.Context, *ListNetworkScopesRequest) (*ListNetworkScopesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListNetworkScopes not implemented")
+}
+func (UnimplementedRolodexServiceServer) JoinNetwork(context.Context, *JoinNetworkRequest) (*JoinNetworkResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method JoinNetwork not implemented")
+}
+func (UnimplementedRolodexServiceServer) LeaveNetwork(context.Context, *LeaveNetworkRequest) (*LeaveNetworkResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LeaveNetwork not implemented")
+}
+func (UnimplementedRolodexServiceServer) GetNetworkAssociations(context.Context, *GetNetworkAssociationsRequest) (*GetNetworkAssociationsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetNetworkAssociations not implemented")
+}
+func (UnimplementedRolodexServiceServer) AddScopedRecord(context.Context, *AddScopedRecordRequest) (*AddScopedRecordResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AddScopedRecord not implemented")
+}
+func (UnimplementedRolodexServiceServer) RemoveScopedRecord(context.Context, *RemoveScopedRecordRequest) (*RemoveScopedRecordResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveScopedRecord not implemented")
+}
+func (UnimplementedRolodexServiceServer) ListScopedRecords(context.Context, *ListScopedRecordsRequest) (*ListScopedRecordsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListScopedRecords not implemented")
+}
+func (UnimplementedRolodexServiceServer) GetSearchDomains(context.Context, *GetSearchDomainsRequest) (*GetSearchDomainsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetSearchDomains not implemented")
 }
 func (UnimplementedRolodexServiceServer) mustEmbedUnimplementedRolodexServiceServer() {}
 func (UnimplementedRolodexServiceServer) testEmbeddedByValue()                        {}
@@ -346,6 +548,186 @@ func _RolodexService_FlushCache_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RolodexService_CreateNetworkScope_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateNetworkScopeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).CreateNetworkScope(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_CreateNetworkScope_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).CreateNetworkScope(ctx, req.(*CreateNetworkScopeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_DeleteNetworkScope_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteNetworkScopeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).DeleteNetworkScope(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_DeleteNetworkScope_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).DeleteNetworkScope(ctx, req.(*DeleteNetworkScopeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_ListNetworkScopes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListNetworkScopesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).ListNetworkScopes(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_ListNetworkScopes_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).ListNetworkScopes(ctx, req.(*ListNetworkScopesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_JoinNetwork_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(JoinNetworkRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).JoinNetwork(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_JoinNetwork_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).JoinNetwork(ctx, req.(*JoinNetworkRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_LeaveNetwork_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LeaveNetworkRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).LeaveNetwork(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_LeaveNetwork_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).LeaveNetwork(ctx, req.(*LeaveNetworkRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_GetNetworkAssociations_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetNetworkAssociationsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).GetNetworkAssociations(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_GetNetworkAssociations_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).GetNetworkAssociations(ctx, req.(*GetNetworkAssociationsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_AddScopedRecord_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddScopedRecordRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).AddScopedRecord(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_AddScopedRecord_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).AddScopedRecord(ctx, req.(*AddScopedRecordRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_RemoveScopedRecord_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveScopedRecordRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).RemoveScopedRecord(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_RemoveScopedRecord_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).RemoveScopedRecord(ctx, req.(*RemoveScopedRecordRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_ListScopedRecords_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListScopedRecordsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).ListScopedRecords(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_ListScopedRecords_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).ListScopedRecords(ctx, req.(*ListScopedRecordsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_GetSearchDomains_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSearchDomainsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).GetSearchDomains(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_GetSearchDomains_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).GetSearchDomains(ctx, req.(*GetSearchDomainsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // RolodexService_ServiceDesc is the grpc.ServiceDesc for RolodexService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -380,6 +762,46 @@ var RolodexService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "FlushCache",
 			Handler:    _RolodexService_FlushCache_Handler,
+		},
+		{
+			MethodName: "CreateNetworkScope",
+			Handler:    _RolodexService_CreateNetworkScope_Handler,
+		},
+		{
+			MethodName: "DeleteNetworkScope",
+			Handler:    _RolodexService_DeleteNetworkScope_Handler,
+		},
+		{
+			MethodName: "ListNetworkScopes",
+			Handler:    _RolodexService_ListNetworkScopes_Handler,
+		},
+		{
+			MethodName: "JoinNetwork",
+			Handler:    _RolodexService_JoinNetwork_Handler,
+		},
+		{
+			MethodName: "LeaveNetwork",
+			Handler:    _RolodexService_LeaveNetwork_Handler,
+		},
+		{
+			MethodName: "GetNetworkAssociations",
+			Handler:    _RolodexService_GetNetworkAssociations_Handler,
+		},
+		{
+			MethodName: "AddScopedRecord",
+			Handler:    _RolodexService_AddScopedRecord_Handler,
+		},
+		{
+			MethodName: "RemoveScopedRecord",
+			Handler:    _RolodexService_RemoveScopedRecord_Handler,
+		},
+		{
+			MethodName: "ListScopedRecords",
+			Handler:    _RolodexService_ListScopedRecords_Handler,
+		},
+		{
+			MethodName: "GetSearchDomains",
+			Handler:    _RolodexService_GetSearchDomains_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

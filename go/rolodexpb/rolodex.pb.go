@@ -1024,6 +1024,1257 @@ func (x *FlushCacheResponse) GetMessage() string {
 	return ""
 }
 
+// NetworkScope defines a DNS view that groups DNS records and associations.
+// Each scope has a reserved .home domain used as the default search domain.
+type NetworkScope struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Unique name for this network scope (e.g. "office", "lab")
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// The reserved .home domain for this scope (e.g. "office.home.")
+	// If empty on creation, defaults to "<name>.home."
+	HomeDomain    string `protobuf:"bytes,2,opt,name=home_domain,json=homeDomain,proto3" json:"home_domain,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NetworkScope) Reset() {
+	*x = NetworkScope{}
+	mi := &file_rolodex_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NetworkScope) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NetworkScope) ProtoMessage() {}
+
+func (x *NetworkScope) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NetworkScope.ProtoReflect.Descriptor instead.
+func (*NetworkScope) Descriptor() ([]byte, []int) {
+	return file_rolodex_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *NetworkScope) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *NetworkScope) GetHomeDomain() string {
+	if x != nil {
+		return x.HomeDomain
+	}
+	return ""
+}
+
+// CreateNetworkScopeRequest creates a new network scope.
+type CreateNetworkScopeRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The network scope to create
+	Scope *NetworkScope `protobuf:"bytes,1,opt,name=scope,proto3" json:"scope,omitempty"`
+	// Shared secret for authentication
+	AuthToken     string `protobuf:"bytes,2,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateNetworkScopeRequest) Reset() {
+	*x = CreateNetworkScopeRequest{}
+	mi := &file_rolodex_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateNetworkScopeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateNetworkScopeRequest) ProtoMessage() {}
+
+func (x *CreateNetworkScopeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateNetworkScopeRequest.ProtoReflect.Descriptor instead.
+func (*CreateNetworkScopeRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *CreateNetworkScopeRequest) GetScope() *NetworkScope {
+	if x != nil {
+		return x.Scope
+	}
+	return nil
+}
+
+func (x *CreateNetworkScopeRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+// CreateNetworkScopeResponse is returned after creating a scope.
+type CreateNetworkScopeResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateNetworkScopeResponse) Reset() {
+	*x = CreateNetworkScopeResponse{}
+	mi := &file_rolodex_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateNetworkScopeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateNetworkScopeResponse) ProtoMessage() {}
+
+func (x *CreateNetworkScopeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateNetworkScopeResponse.ProtoReflect.Descriptor instead.
+func (*CreateNetworkScopeResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *CreateNetworkScopeResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *CreateNetworkScopeResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+// DeleteNetworkScopeRequest deletes a network scope and all its records and associations.
+type DeleteNetworkScopeRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Name of the scope to delete
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Shared secret for authentication
+	AuthToken     string `protobuf:"bytes,2,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteNetworkScopeRequest) Reset() {
+	*x = DeleteNetworkScopeRequest{}
+	mi := &file_rolodex_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteNetworkScopeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteNetworkScopeRequest) ProtoMessage() {}
+
+func (x *DeleteNetworkScopeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteNetworkScopeRequest.ProtoReflect.Descriptor instead.
+func (*DeleteNetworkScopeRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *DeleteNetworkScopeRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *DeleteNetworkScopeRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+// DeleteNetworkScopeResponse is returned after deleting a scope.
+type DeleteNetworkScopeResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteNetworkScopeResponse) Reset() {
+	*x = DeleteNetworkScopeResponse{}
+	mi := &file_rolodex_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteNetworkScopeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteNetworkScopeResponse) ProtoMessage() {}
+
+func (x *DeleteNetworkScopeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteNetworkScopeResponse.ProtoReflect.Descriptor instead.
+func (*DeleteNetworkScopeResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *DeleteNetworkScopeResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *DeleteNetworkScopeResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+// ListNetworkScopesRequest retrieves all network scopes.
+type ListNetworkScopesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AuthToken     string                 `protobuf:"bytes,1,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListNetworkScopesRequest) Reset() {
+	*x = ListNetworkScopesRequest{}
+	mi := &file_rolodex_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListNetworkScopesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListNetworkScopesRequest) ProtoMessage() {}
+
+func (x *ListNetworkScopesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListNetworkScopesRequest.ProtoReflect.Descriptor instead.
+func (*ListNetworkScopesRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *ListNetworkScopesRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+// ListNetworkScopesResponse contains all network scopes.
+type ListNetworkScopesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Scopes        []*NetworkScope        `protobuf:"bytes,1,rep,name=scopes,proto3" json:"scopes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListNetworkScopesResponse) Reset() {
+	*x = ListNetworkScopesResponse{}
+	mi := &file_rolodex_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListNetworkScopesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListNetworkScopesResponse) ProtoMessage() {}
+
+func (x *ListNetworkScopesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListNetworkScopesResponse.ProtoReflect.Descriptor instead.
+func (*ListNetworkScopesResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *ListNetworkScopesResponse) GetScopes() []*NetworkScope {
+	if x != nil {
+		return x.Scopes
+	}
+	return nil
+}
+
+// JoinNetworkRequest associates an IP address with a network scope.
+// The association has a TTL that must be refreshed to maintain DNS resolution.
+type JoinNetworkRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The IP address to associate (e.g. "192.168.1.100")
+	IpAddress string `protobuf:"bytes,1,opt,name=ip_address,json=ipAddress,proto3" json:"ip_address,omitempty"`
+	// The network scope name to join
+	ScopeName string `protobuf:"bytes,2,opt,name=scope_name,json=scopeName,proto3" json:"scope_name,omitempty"`
+	// TTL in seconds for this association. Must be refreshed before expiry.
+	// Default: 300 seconds if set to 0
+	TtlSeconds uint64 `protobuf:"varint,3,opt,name=ttl_seconds,json=ttlSeconds,proto3" json:"ttl_seconds,omitempty"`
+	// Shared secret for authentication
+	AuthToken     string `protobuf:"bytes,4,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *JoinNetworkRequest) Reset() {
+	*x = JoinNetworkRequest{}
+	mi := &file_rolodex_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JoinNetworkRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JoinNetworkRequest) ProtoMessage() {}
+
+func (x *JoinNetworkRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JoinNetworkRequest.ProtoReflect.Descriptor instead.
+func (*JoinNetworkRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *JoinNetworkRequest) GetIpAddress() string {
+	if x != nil {
+		return x.IpAddress
+	}
+	return ""
+}
+
+func (x *JoinNetworkRequest) GetScopeName() string {
+	if x != nil {
+		return x.ScopeName
+	}
+	return ""
+}
+
+func (x *JoinNetworkRequest) GetTtlSeconds() uint64 {
+	if x != nil {
+		return x.TtlSeconds
+	}
+	return 0
+}
+
+func (x *JoinNetworkRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+// JoinNetworkResponse is returned after joining a network.
+type JoinNetworkResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *JoinNetworkResponse) Reset() {
+	*x = JoinNetworkResponse{}
+	mi := &file_rolodex_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JoinNetworkResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JoinNetworkResponse) ProtoMessage() {}
+
+func (x *JoinNetworkResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JoinNetworkResponse.ProtoReflect.Descriptor instead.
+func (*JoinNetworkResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *JoinNetworkResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *JoinNetworkResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+// LeaveNetworkRequest removes an IP address's association with any network scope.
+type LeaveNetworkRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The IP address to disassociate
+	IpAddress string `protobuf:"bytes,1,opt,name=ip_address,json=ipAddress,proto3" json:"ip_address,omitempty"`
+	// Shared secret for authentication
+	AuthToken     string `protobuf:"bytes,2,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LeaveNetworkRequest) Reset() {
+	*x = LeaveNetworkRequest{}
+	mi := &file_rolodex_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LeaveNetworkRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LeaveNetworkRequest) ProtoMessage() {}
+
+func (x *LeaveNetworkRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LeaveNetworkRequest.ProtoReflect.Descriptor instead.
+func (*LeaveNetworkRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *LeaveNetworkRequest) GetIpAddress() string {
+	if x != nil {
+		return x.IpAddress
+	}
+	return ""
+}
+
+func (x *LeaveNetworkRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+// LeaveNetworkResponse is returned after leaving a network.
+type LeaveNetworkResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LeaveNetworkResponse) Reset() {
+	*x = LeaveNetworkResponse{}
+	mi := &file_rolodex_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LeaveNetworkResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LeaveNetworkResponse) ProtoMessage() {}
+
+func (x *LeaveNetworkResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LeaveNetworkResponse.ProtoReflect.Descriptor instead.
+func (*LeaveNetworkResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *LeaveNetworkResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *LeaveNetworkResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+// GetNetworkAssociationsRequest retrieves network associations.
+type GetNetworkAssociationsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Optional: filter by scope name. Empty returns all associations.
+	ScopeName string `protobuf:"bytes,1,opt,name=scope_name,json=scopeName,proto3" json:"scope_name,omitempty"`
+	// Shared secret for authentication
+	AuthToken     string `protobuf:"bytes,2,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetNetworkAssociationsRequest) Reset() {
+	*x = GetNetworkAssociationsRequest{}
+	mi := &file_rolodex_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetNetworkAssociationsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetNetworkAssociationsRequest) ProtoMessage() {}
+
+func (x *GetNetworkAssociationsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetNetworkAssociationsRequest.ProtoReflect.Descriptor instead.
+func (*GetNetworkAssociationsRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *GetNetworkAssociationsRequest) GetScopeName() string {
+	if x != nil {
+		return x.ScopeName
+	}
+	return ""
+}
+
+func (x *GetNetworkAssociationsRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+// NetworkAssociation represents a client IP's membership in a network scope.
+type NetworkAssociation struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The associated IP address
+	IpAddress string `protobuf:"bytes,1,opt,name=ip_address,json=ipAddress,proto3" json:"ip_address,omitempty"`
+	// The network scope name
+	ScopeName string `protobuf:"bytes,2,opt,name=scope_name,json=scopeName,proto3" json:"scope_name,omitempty"`
+	// TTL in seconds for this association
+	TtlSeconds    uint64 `protobuf:"varint,3,opt,name=ttl_seconds,json=ttlSeconds,proto3" json:"ttl_seconds,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NetworkAssociation) Reset() {
+	*x = NetworkAssociation{}
+	mi := &file_rolodex_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NetworkAssociation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NetworkAssociation) ProtoMessage() {}
+
+func (x *NetworkAssociation) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NetworkAssociation.ProtoReflect.Descriptor instead.
+func (*NetworkAssociation) Descriptor() ([]byte, []int) {
+	return file_rolodex_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *NetworkAssociation) GetIpAddress() string {
+	if x != nil {
+		return x.IpAddress
+	}
+	return ""
+}
+
+func (x *NetworkAssociation) GetScopeName() string {
+	if x != nil {
+		return x.ScopeName
+	}
+	return ""
+}
+
+func (x *NetworkAssociation) GetTtlSeconds() uint64 {
+	if x != nil {
+		return x.TtlSeconds
+	}
+	return 0
+}
+
+// GetNetworkAssociationsResponse contains network associations.
+type GetNetworkAssociationsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Associations  []*NetworkAssociation  `protobuf:"bytes,1,rep,name=associations,proto3" json:"associations,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetNetworkAssociationsResponse) Reset() {
+	*x = GetNetworkAssociationsResponse{}
+	mi := &file_rolodex_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetNetworkAssociationsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetNetworkAssociationsResponse) ProtoMessage() {}
+
+func (x *GetNetworkAssociationsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetNetworkAssociationsResponse.ProtoReflect.Descriptor instead.
+func (*GetNetworkAssociationsResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *GetNetworkAssociationsResponse) GetAssociations() []*NetworkAssociation {
+	if x != nil {
+		return x.Associations
+	}
+	return nil
+}
+
+// AddScopedRecordRequest adds a DNS record to a specific network scope.
+type AddScopedRecordRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The network scope name to add the record to
+	ScopeName string `protobuf:"bytes,1,opt,name=scope_name,json=scopeName,proto3" json:"scope_name,omitempty"`
+	// The DNS record to add
+	Record *DnsRecord `protobuf:"bytes,2,opt,name=record,proto3" json:"record,omitempty"`
+	// Shared secret for authentication
+	AuthToken     string `protobuf:"bytes,3,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddScopedRecordRequest) Reset() {
+	*x = AddScopedRecordRequest{}
+	mi := &file_rolodex_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddScopedRecordRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddScopedRecordRequest) ProtoMessage() {}
+
+func (x *AddScopedRecordRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddScopedRecordRequest.ProtoReflect.Descriptor instead.
+func (*AddScopedRecordRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *AddScopedRecordRequest) GetScopeName() string {
+	if x != nil {
+		return x.ScopeName
+	}
+	return ""
+}
+
+func (x *AddScopedRecordRequest) GetRecord() *DnsRecord {
+	if x != nil {
+		return x.Record
+	}
+	return nil
+}
+
+func (x *AddScopedRecordRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+// AddScopedRecordResponse is returned after adding a scoped record.
+type AddScopedRecordResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddScopedRecordResponse) Reset() {
+	*x = AddScopedRecordResponse{}
+	mi := &file_rolodex_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddScopedRecordResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddScopedRecordResponse) ProtoMessage() {}
+
+func (x *AddScopedRecordResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddScopedRecordResponse.ProtoReflect.Descriptor instead.
+func (*AddScopedRecordResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *AddScopedRecordResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *AddScopedRecordResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+// RemoveScopedRecordRequest removes DNS records from a specific network scope.
+type RemoveScopedRecordRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The network scope name
+	ScopeName string `protobuf:"bytes,1,opt,name=scope_name,json=scopeName,proto3" json:"scope_name,omitempty"`
+	// Fully qualified domain name to remove records for
+	Name string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	// Optional: record type filter
+	RecordType RecordType `protobuf:"varint,3,opt,name=record_type,json=recordType,proto3,enum=rolodex.RecordType" json:"record_type,omitempty"`
+	// Optional: exact value filter
+	Value string `protobuf:"bytes,4,opt,name=value,proto3" json:"value,omitempty"`
+	// Shared secret for authentication
+	AuthToken     string `protobuf:"bytes,5,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveScopedRecordRequest) Reset() {
+	*x = RemoveScopedRecordRequest{}
+	mi := &file_rolodex_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveScopedRecordRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveScopedRecordRequest) ProtoMessage() {}
+
+func (x *RemoveScopedRecordRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveScopedRecordRequest.ProtoReflect.Descriptor instead.
+func (*RemoveScopedRecordRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *RemoveScopedRecordRequest) GetScopeName() string {
+	if x != nil {
+		return x.ScopeName
+	}
+	return ""
+}
+
+func (x *RemoveScopedRecordRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *RemoveScopedRecordRequest) GetRecordType() RecordType {
+	if x != nil {
+		return x.RecordType
+	}
+	return RecordType_A
+}
+
+func (x *RemoveScopedRecordRequest) GetValue() string {
+	if x != nil {
+		return x.Value
+	}
+	return ""
+}
+
+func (x *RemoveScopedRecordRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+// RemoveScopedRecordResponse is returned after removing scoped records.
+type RemoveScopedRecordResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	RemovedCount  uint32                 `protobuf:"varint,2,opt,name=removed_count,json=removedCount,proto3" json:"removed_count,omitempty"`
+	Message       string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveScopedRecordResponse) Reset() {
+	*x = RemoveScopedRecordResponse{}
+	mi := &file_rolodex_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveScopedRecordResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveScopedRecordResponse) ProtoMessage() {}
+
+func (x *RemoveScopedRecordResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveScopedRecordResponse.ProtoReflect.Descriptor instead.
+func (*RemoveScopedRecordResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *RemoveScopedRecordResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *RemoveScopedRecordResponse) GetRemovedCount() uint32 {
+	if x != nil {
+		return x.RemovedCount
+	}
+	return 0
+}
+
+func (x *RemoveScopedRecordResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+// ListScopedRecordsRequest queries DNS records within a network scope.
+type ListScopedRecordsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The network scope name
+	ScopeName string `protobuf:"bytes,1,opt,name=scope_name,json=scopeName,proto3" json:"scope_name,omitempty"`
+	// Optional: filter by domain name (supports wildcard prefix "*.")
+	NameFilter string `protobuf:"bytes,2,opt,name=name_filter,json=nameFilter,proto3" json:"name_filter,omitempty"`
+	// Optional: filter by record type
+	RecordTypeFilter RecordType `protobuf:"varint,3,opt,name=record_type_filter,json=recordTypeFilter,proto3,enum=rolodex.RecordType" json:"record_type_filter,omitempty"`
+	// Whether to apply the record_type_filter
+	FilterByType bool `protobuf:"varint,4,opt,name=filter_by_type,json=filterByType,proto3" json:"filter_by_type,omitempty"`
+	// Shared secret for authentication
+	AuthToken     string `protobuf:"bytes,5,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListScopedRecordsRequest) Reset() {
+	*x = ListScopedRecordsRequest{}
+	mi := &file_rolodex_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListScopedRecordsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListScopedRecordsRequest) ProtoMessage() {}
+
+func (x *ListScopedRecordsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListScopedRecordsRequest.ProtoReflect.Descriptor instead.
+func (*ListScopedRecordsRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *ListScopedRecordsRequest) GetScopeName() string {
+	if x != nil {
+		return x.ScopeName
+	}
+	return ""
+}
+
+func (x *ListScopedRecordsRequest) GetNameFilter() string {
+	if x != nil {
+		return x.NameFilter
+	}
+	return ""
+}
+
+func (x *ListScopedRecordsRequest) GetRecordTypeFilter() RecordType {
+	if x != nil {
+		return x.RecordTypeFilter
+	}
+	return RecordType_A
+}
+
+func (x *ListScopedRecordsRequest) GetFilterByType() bool {
+	if x != nil {
+		return x.FilterByType
+	}
+	return false
+}
+
+func (x *ListScopedRecordsRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+// ListScopedRecordsResponse contains matching scoped DNS records.
+type ListScopedRecordsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Records       []*DnsRecord           `protobuf:"bytes,1,rep,name=records,proto3" json:"records,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListScopedRecordsResponse) Reset() {
+	*x = ListScopedRecordsResponse{}
+	mi := &file_rolodex_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListScopedRecordsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListScopedRecordsResponse) ProtoMessage() {}
+
+func (x *ListScopedRecordsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListScopedRecordsResponse.ProtoReflect.Descriptor instead.
+func (*ListScopedRecordsResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *ListScopedRecordsResponse) GetRecords() []*DnsRecord {
+	if x != nil {
+		return x.Records
+	}
+	return nil
+}
+
+// GetSearchDomainsRequest retrieves the search domains for an IP address.
+type GetSearchDomainsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The IP address to look up search domains for
+	IpAddress string `protobuf:"bytes,1,opt,name=ip_address,json=ipAddress,proto3" json:"ip_address,omitempty"`
+	// Shared secret for authentication
+	AuthToken     string `protobuf:"bytes,2,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetSearchDomainsRequest) Reset() {
+	*x = GetSearchDomainsRequest{}
+	mi := &file_rolodex_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSearchDomainsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSearchDomainsRequest) ProtoMessage() {}
+
+func (x *GetSearchDomainsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSearchDomainsRequest.ProtoReflect.Descriptor instead.
+func (*GetSearchDomainsRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *GetSearchDomainsRequest) GetIpAddress() string {
+	if x != nil {
+		return x.IpAddress
+	}
+	return ""
+}
+
+func (x *GetSearchDomainsRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+// GetSearchDomainsResponse contains the search domains for an IP.
+type GetSearchDomainsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The search domains (typically the .home domain of the associated scope)
+	SearchDomains []string `protobuf:"bytes,1,rep,name=search_domains,json=searchDomains,proto3" json:"search_domains,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetSearchDomainsResponse) Reset() {
+	*x = GetSearchDomainsResponse{}
+	mi := &file_rolodex_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSearchDomainsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSearchDomainsResponse) ProtoMessage() {}
+
+func (x *GetSearchDomainsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSearchDomainsResponse.ProtoReflect.Descriptor instead.
+func (*GetSearchDomainsResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *GetSearchDomainsResponse) GetSearchDomains() []string {
+	if x != nil {
+		return x.SearchDomains
+	}
+	return nil
+}
+
 var File_rolodex_proto protoreflect.FileDescriptor
 
 const file_rolodex_proto_rawDesc = "" +
@@ -1094,7 +2345,104 @@ const file_rolodex_proto_rawDesc = "" +
 	"auth_token\x18\x01 \x01(\tR\tauthToken\"H\n" +
 	"\x12FlushCacheResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage*\\\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"C\n" +
+	"\fNetworkScope\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
+	"\vhome_domain\x18\x02 \x01(\tR\n" +
+	"homeDomain\"g\n" +
+	"\x19CreateNetworkScopeRequest\x12+\n" +
+	"\x05scope\x18\x01 \x01(\v2\x15.rolodex.NetworkScopeR\x05scope\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x02 \x01(\tR\tauthToken\"P\n" +
+	"\x1aCreateNetworkScopeResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"N\n" +
+	"\x19DeleteNetworkScopeRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x02 \x01(\tR\tauthToken\"P\n" +
+	"\x1aDeleteNetworkScopeResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"9\n" +
+	"\x18ListNetworkScopesRequest\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x01 \x01(\tR\tauthToken\"J\n" +
+	"\x19ListNetworkScopesResponse\x12-\n" +
+	"\x06scopes\x18\x01 \x03(\v2\x15.rolodex.NetworkScopeR\x06scopes\"\x92\x01\n" +
+	"\x12JoinNetworkRequest\x12\x1d\n" +
+	"\n" +
+	"ip_address\x18\x01 \x01(\tR\tipAddress\x12\x1d\n" +
+	"\n" +
+	"scope_name\x18\x02 \x01(\tR\tscopeName\x12\x1f\n" +
+	"\vttl_seconds\x18\x03 \x01(\x04R\n" +
+	"ttlSeconds\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x04 \x01(\tR\tauthToken\"I\n" +
+	"\x13JoinNetworkResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"S\n" +
+	"\x13LeaveNetworkRequest\x12\x1d\n" +
+	"\n" +
+	"ip_address\x18\x01 \x01(\tR\tipAddress\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x02 \x01(\tR\tauthToken\"J\n" +
+	"\x14LeaveNetworkResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"]\n" +
+	"\x1dGetNetworkAssociationsRequest\x12\x1d\n" +
+	"\n" +
+	"scope_name\x18\x01 \x01(\tR\tscopeName\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x02 \x01(\tR\tauthToken\"s\n" +
+	"\x12NetworkAssociation\x12\x1d\n" +
+	"\n" +
+	"ip_address\x18\x01 \x01(\tR\tipAddress\x12\x1d\n" +
+	"\n" +
+	"scope_name\x18\x02 \x01(\tR\tscopeName\x12\x1f\n" +
+	"\vttl_seconds\x18\x03 \x01(\x04R\n" +
+	"ttlSeconds\"a\n" +
+	"\x1eGetNetworkAssociationsResponse\x12?\n" +
+	"\fassociations\x18\x01 \x03(\v2\x1b.rolodex.NetworkAssociationR\fassociations\"\x82\x01\n" +
+	"\x16AddScopedRecordRequest\x12\x1d\n" +
+	"\n" +
+	"scope_name\x18\x01 \x01(\tR\tscopeName\x12*\n" +
+	"\x06record\x18\x02 \x01(\v2\x12.rolodex.DnsRecordR\x06record\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x03 \x01(\tR\tauthToken\"M\n" +
+	"\x17AddScopedRecordResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\xb9\x01\n" +
+	"\x19RemoveScopedRecordRequest\x12\x1d\n" +
+	"\n" +
+	"scope_name\x18\x01 \x01(\tR\tscopeName\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x124\n" +
+	"\vrecord_type\x18\x03 \x01(\x0e2\x13.rolodex.RecordTypeR\n" +
+	"recordType\x12\x14\n" +
+	"\x05value\x18\x04 \x01(\tR\x05value\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x05 \x01(\tR\tauthToken\"u\n" +
+	"\x1aRemoveScopedRecordResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12#\n" +
+	"\rremoved_count\x18\x02 \x01(\rR\fremovedCount\x12\x18\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\"\xe2\x01\n" +
+	"\x18ListScopedRecordsRequest\x12\x1d\n" +
+	"\n" +
+	"scope_name\x18\x01 \x01(\tR\tscopeName\x12\x1f\n" +
+	"\vname_filter\x18\x02 \x01(\tR\n" +
+	"nameFilter\x12A\n" +
+	"\x12record_type_filter\x18\x03 \x01(\x0e2\x13.rolodex.RecordTypeR\x10recordTypeFilter\x12$\n" +
+	"\x0efilter_by_type\x18\x04 \x01(\bR\ffilterByType\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x05 \x01(\tR\tauthToken\"I\n" +
+	"\x19ListScopedRecordsResponse\x12,\n" +
+	"\arecords\x18\x01 \x03(\v2\x12.rolodex.DnsRecordR\arecords\"W\n" +
+	"\x17GetSearchDomainsRequest\x12\x1d\n" +
+	"\n" +
+	"ip_address\x18\x01 \x01(\tR\tipAddress\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x02 \x01(\tR\tauthToken\"A\n" +
+	"\x18GetSearchDomainsResponse\x12%\n" +
+	"\x0esearch_domains\x18\x01 \x03(\tR\rsearchDomains*\\\n" +
 	"\n" +
 	"RecordType\x12\x05\n" +
 	"\x01A\x10\x00\x12\b\n" +
@@ -1105,7 +2453,7 @@ const file_rolodex_proto_rawDesc = "" +
 	"\x02NS\x10\x05\x12\a\n" +
 	"\x03SOA\x10\x06\x12\a\n" +
 	"\x03SRV\x10\a\x12\a\n" +
-	"\x03PTR\x10\b2\x9a\x04\n" +
+	"\x03PTR\x10\b2\xa0\v\n" +
 	"\x0eRolodexService\x12B\n" +
 	"\tAddRecord\x12\x19.rolodex.AddRecordRequest\x1a\x1a.rolodex.AddRecordResponse\x12K\n" +
 	"\fRemoveRecord\x12\x1c.rolodex.RemoveRecordRequest\x1a\x1d.rolodex.RemoveRecordResponse\x12H\n" +
@@ -1114,7 +2462,17 @@ const file_rolodex_proto_rawDesc = "" +
 	"\fSetRblConfig\x12\x1c.rolodex.SetRblConfigRequest\x1a\x1d.rolodex.SetRblConfigResponse\x12K\n" +
 	"\fGetRblConfig\x12\x1c.rolodex.GetRblConfigRequest\x1a\x1d.rolodex.GetRblConfigResponse\x12E\n" +
 	"\n" +
-	"FlushCache\x12\x1a.rolodex.FlushCacheRequest\x1a\x1b.rolodex.FlushCacheResponseb\x06proto3"
+	"FlushCache\x12\x1a.rolodex.FlushCacheRequest\x1a\x1b.rolodex.FlushCacheResponse\x12]\n" +
+	"\x12CreateNetworkScope\x12\".rolodex.CreateNetworkScopeRequest\x1a#.rolodex.CreateNetworkScopeResponse\x12]\n" +
+	"\x12DeleteNetworkScope\x12\".rolodex.DeleteNetworkScopeRequest\x1a#.rolodex.DeleteNetworkScopeResponse\x12Z\n" +
+	"\x11ListNetworkScopes\x12!.rolodex.ListNetworkScopesRequest\x1a\".rolodex.ListNetworkScopesResponse\x12H\n" +
+	"\vJoinNetwork\x12\x1b.rolodex.JoinNetworkRequest\x1a\x1c.rolodex.JoinNetworkResponse\x12K\n" +
+	"\fLeaveNetwork\x12\x1c.rolodex.LeaveNetworkRequest\x1a\x1d.rolodex.LeaveNetworkResponse\x12i\n" +
+	"\x16GetNetworkAssociations\x12&.rolodex.GetNetworkAssociationsRequest\x1a'.rolodex.GetNetworkAssociationsResponse\x12T\n" +
+	"\x0fAddScopedRecord\x12\x1f.rolodex.AddScopedRecordRequest\x1a .rolodex.AddScopedRecordResponse\x12]\n" +
+	"\x12RemoveScopedRecord\x12\".rolodex.RemoveScopedRecordRequest\x1a#.rolodex.RemoveScopedRecordResponse\x12Z\n" +
+	"\x11ListScopedRecords\x12!.rolodex.ListScopedRecordsRequest\x1a\".rolodex.ListScopedRecordsResponse\x12W\n" +
+	"\x10GetSearchDomains\x12 .rolodex.GetSearchDomainsRequest\x1a!.rolodex.GetSearchDomainsResponseB'Z%github.com/erikh/rolodex/go/rolodexpbb\x06proto3"
 
 var (
 	file_rolodex_proto_rawDescOnce sync.Once
@@ -1129,25 +2487,47 @@ func file_rolodex_proto_rawDescGZIP() []byte {
 }
 
 var file_rolodex_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_rolodex_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_rolodex_proto_msgTypes = make([]protoimpl.MessageInfo, 38)
 var file_rolodex_proto_goTypes = []any{
-	(RecordType)(0),              // 0: rolodex.RecordType
-	(*DnsRecord)(nil),            // 1: rolodex.DnsRecord
-	(*AddRecordRequest)(nil),     // 2: rolodex.AddRecordRequest
-	(*AddRecordResponse)(nil),    // 3: rolodex.AddRecordResponse
-	(*RemoveRecordRequest)(nil),  // 4: rolodex.RemoveRecordRequest
-	(*RemoveRecordResponse)(nil), // 5: rolodex.RemoveRecordResponse
-	(*ListRecordsRequest)(nil),   // 6: rolodex.ListRecordsRequest
-	(*ListRecordsResponse)(nil),  // 7: rolodex.ListRecordsResponse
-	(*SetForwarderRequest)(nil),  // 8: rolodex.SetForwarderRequest
-	(*SetForwarderResponse)(nil), // 9: rolodex.SetForwarderResponse
-	(*RblConfig)(nil),            // 10: rolodex.RblConfig
-	(*SetRblConfigRequest)(nil),  // 11: rolodex.SetRblConfigRequest
-	(*SetRblConfigResponse)(nil), // 12: rolodex.SetRblConfigResponse
-	(*GetRblConfigRequest)(nil),  // 13: rolodex.GetRblConfigRequest
-	(*GetRblConfigResponse)(nil), // 14: rolodex.GetRblConfigResponse
-	(*FlushCacheRequest)(nil),    // 15: rolodex.FlushCacheRequest
-	(*FlushCacheResponse)(nil),   // 16: rolodex.FlushCacheResponse
+	(RecordType)(0),                        // 0: rolodex.RecordType
+	(*DnsRecord)(nil),                      // 1: rolodex.DnsRecord
+	(*AddRecordRequest)(nil),               // 2: rolodex.AddRecordRequest
+	(*AddRecordResponse)(nil),              // 3: rolodex.AddRecordResponse
+	(*RemoveRecordRequest)(nil),            // 4: rolodex.RemoveRecordRequest
+	(*RemoveRecordResponse)(nil),           // 5: rolodex.RemoveRecordResponse
+	(*ListRecordsRequest)(nil),             // 6: rolodex.ListRecordsRequest
+	(*ListRecordsResponse)(nil),            // 7: rolodex.ListRecordsResponse
+	(*SetForwarderRequest)(nil),            // 8: rolodex.SetForwarderRequest
+	(*SetForwarderResponse)(nil),           // 9: rolodex.SetForwarderResponse
+	(*RblConfig)(nil),                      // 10: rolodex.RblConfig
+	(*SetRblConfigRequest)(nil),            // 11: rolodex.SetRblConfigRequest
+	(*SetRblConfigResponse)(nil),           // 12: rolodex.SetRblConfigResponse
+	(*GetRblConfigRequest)(nil),            // 13: rolodex.GetRblConfigRequest
+	(*GetRblConfigResponse)(nil),           // 14: rolodex.GetRblConfigResponse
+	(*FlushCacheRequest)(nil),              // 15: rolodex.FlushCacheRequest
+	(*FlushCacheResponse)(nil),             // 16: rolodex.FlushCacheResponse
+	(*NetworkScope)(nil),                   // 17: rolodex.NetworkScope
+	(*CreateNetworkScopeRequest)(nil),      // 18: rolodex.CreateNetworkScopeRequest
+	(*CreateNetworkScopeResponse)(nil),     // 19: rolodex.CreateNetworkScopeResponse
+	(*DeleteNetworkScopeRequest)(nil),      // 20: rolodex.DeleteNetworkScopeRequest
+	(*DeleteNetworkScopeResponse)(nil),     // 21: rolodex.DeleteNetworkScopeResponse
+	(*ListNetworkScopesRequest)(nil),       // 22: rolodex.ListNetworkScopesRequest
+	(*ListNetworkScopesResponse)(nil),      // 23: rolodex.ListNetworkScopesResponse
+	(*JoinNetworkRequest)(nil),             // 24: rolodex.JoinNetworkRequest
+	(*JoinNetworkResponse)(nil),            // 25: rolodex.JoinNetworkResponse
+	(*LeaveNetworkRequest)(nil),            // 26: rolodex.LeaveNetworkRequest
+	(*LeaveNetworkResponse)(nil),           // 27: rolodex.LeaveNetworkResponse
+	(*GetNetworkAssociationsRequest)(nil),  // 28: rolodex.GetNetworkAssociationsRequest
+	(*NetworkAssociation)(nil),             // 29: rolodex.NetworkAssociation
+	(*GetNetworkAssociationsResponse)(nil), // 30: rolodex.GetNetworkAssociationsResponse
+	(*AddScopedRecordRequest)(nil),         // 31: rolodex.AddScopedRecordRequest
+	(*AddScopedRecordResponse)(nil),        // 32: rolodex.AddScopedRecordResponse
+	(*RemoveScopedRecordRequest)(nil),      // 33: rolodex.RemoveScopedRecordRequest
+	(*RemoveScopedRecordResponse)(nil),     // 34: rolodex.RemoveScopedRecordResponse
+	(*ListScopedRecordsRequest)(nil),       // 35: rolodex.ListScopedRecordsRequest
+	(*ListScopedRecordsResponse)(nil),      // 36: rolodex.ListScopedRecordsResponse
+	(*GetSearchDomainsRequest)(nil),        // 37: rolodex.GetSearchDomainsRequest
+	(*GetSearchDomainsResponse)(nil),       // 38: rolodex.GetSearchDomainsResponse
 }
 var file_rolodex_proto_depIdxs = []int32{
 	0,  // 0: rolodex.DnsRecord.record_type:type_name -> rolodex.RecordType
@@ -1157,25 +2537,52 @@ var file_rolodex_proto_depIdxs = []int32{
 	1,  // 4: rolodex.ListRecordsResponse.records:type_name -> rolodex.DnsRecord
 	10, // 5: rolodex.SetRblConfigRequest.providers:type_name -> rolodex.RblConfig
 	10, // 6: rolodex.GetRblConfigResponse.providers:type_name -> rolodex.RblConfig
-	2,  // 7: rolodex.RolodexService.AddRecord:input_type -> rolodex.AddRecordRequest
-	4,  // 8: rolodex.RolodexService.RemoveRecord:input_type -> rolodex.RemoveRecordRequest
-	6,  // 9: rolodex.RolodexService.ListRecords:input_type -> rolodex.ListRecordsRequest
-	8,  // 10: rolodex.RolodexService.SetForwarders:input_type -> rolodex.SetForwarderRequest
-	11, // 11: rolodex.RolodexService.SetRblConfig:input_type -> rolodex.SetRblConfigRequest
-	13, // 12: rolodex.RolodexService.GetRblConfig:input_type -> rolodex.GetRblConfigRequest
-	15, // 13: rolodex.RolodexService.FlushCache:input_type -> rolodex.FlushCacheRequest
-	3,  // 14: rolodex.RolodexService.AddRecord:output_type -> rolodex.AddRecordResponse
-	5,  // 15: rolodex.RolodexService.RemoveRecord:output_type -> rolodex.RemoveRecordResponse
-	7,  // 16: rolodex.RolodexService.ListRecords:output_type -> rolodex.ListRecordsResponse
-	9,  // 17: rolodex.RolodexService.SetForwarders:output_type -> rolodex.SetForwarderResponse
-	12, // 18: rolodex.RolodexService.SetRblConfig:output_type -> rolodex.SetRblConfigResponse
-	14, // 19: rolodex.RolodexService.GetRblConfig:output_type -> rolodex.GetRblConfigResponse
-	16, // 20: rolodex.RolodexService.FlushCache:output_type -> rolodex.FlushCacheResponse
-	14, // [14:21] is the sub-list for method output_type
-	7,  // [7:14] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	17, // 7: rolodex.CreateNetworkScopeRequest.scope:type_name -> rolodex.NetworkScope
+	17, // 8: rolodex.ListNetworkScopesResponse.scopes:type_name -> rolodex.NetworkScope
+	29, // 9: rolodex.GetNetworkAssociationsResponse.associations:type_name -> rolodex.NetworkAssociation
+	1,  // 10: rolodex.AddScopedRecordRequest.record:type_name -> rolodex.DnsRecord
+	0,  // 11: rolodex.RemoveScopedRecordRequest.record_type:type_name -> rolodex.RecordType
+	0,  // 12: rolodex.ListScopedRecordsRequest.record_type_filter:type_name -> rolodex.RecordType
+	1,  // 13: rolodex.ListScopedRecordsResponse.records:type_name -> rolodex.DnsRecord
+	2,  // 14: rolodex.RolodexService.AddRecord:input_type -> rolodex.AddRecordRequest
+	4,  // 15: rolodex.RolodexService.RemoveRecord:input_type -> rolodex.RemoveRecordRequest
+	6,  // 16: rolodex.RolodexService.ListRecords:input_type -> rolodex.ListRecordsRequest
+	8,  // 17: rolodex.RolodexService.SetForwarders:input_type -> rolodex.SetForwarderRequest
+	11, // 18: rolodex.RolodexService.SetRblConfig:input_type -> rolodex.SetRblConfigRequest
+	13, // 19: rolodex.RolodexService.GetRblConfig:input_type -> rolodex.GetRblConfigRequest
+	15, // 20: rolodex.RolodexService.FlushCache:input_type -> rolodex.FlushCacheRequest
+	18, // 21: rolodex.RolodexService.CreateNetworkScope:input_type -> rolodex.CreateNetworkScopeRequest
+	20, // 22: rolodex.RolodexService.DeleteNetworkScope:input_type -> rolodex.DeleteNetworkScopeRequest
+	22, // 23: rolodex.RolodexService.ListNetworkScopes:input_type -> rolodex.ListNetworkScopesRequest
+	24, // 24: rolodex.RolodexService.JoinNetwork:input_type -> rolodex.JoinNetworkRequest
+	26, // 25: rolodex.RolodexService.LeaveNetwork:input_type -> rolodex.LeaveNetworkRequest
+	28, // 26: rolodex.RolodexService.GetNetworkAssociations:input_type -> rolodex.GetNetworkAssociationsRequest
+	31, // 27: rolodex.RolodexService.AddScopedRecord:input_type -> rolodex.AddScopedRecordRequest
+	33, // 28: rolodex.RolodexService.RemoveScopedRecord:input_type -> rolodex.RemoveScopedRecordRequest
+	35, // 29: rolodex.RolodexService.ListScopedRecords:input_type -> rolodex.ListScopedRecordsRequest
+	37, // 30: rolodex.RolodexService.GetSearchDomains:input_type -> rolodex.GetSearchDomainsRequest
+	3,  // 31: rolodex.RolodexService.AddRecord:output_type -> rolodex.AddRecordResponse
+	5,  // 32: rolodex.RolodexService.RemoveRecord:output_type -> rolodex.RemoveRecordResponse
+	7,  // 33: rolodex.RolodexService.ListRecords:output_type -> rolodex.ListRecordsResponse
+	9,  // 34: rolodex.RolodexService.SetForwarders:output_type -> rolodex.SetForwarderResponse
+	12, // 35: rolodex.RolodexService.SetRblConfig:output_type -> rolodex.SetRblConfigResponse
+	14, // 36: rolodex.RolodexService.GetRblConfig:output_type -> rolodex.GetRblConfigResponse
+	16, // 37: rolodex.RolodexService.FlushCache:output_type -> rolodex.FlushCacheResponse
+	19, // 38: rolodex.RolodexService.CreateNetworkScope:output_type -> rolodex.CreateNetworkScopeResponse
+	21, // 39: rolodex.RolodexService.DeleteNetworkScope:output_type -> rolodex.DeleteNetworkScopeResponse
+	23, // 40: rolodex.RolodexService.ListNetworkScopes:output_type -> rolodex.ListNetworkScopesResponse
+	25, // 41: rolodex.RolodexService.JoinNetwork:output_type -> rolodex.JoinNetworkResponse
+	27, // 42: rolodex.RolodexService.LeaveNetwork:output_type -> rolodex.LeaveNetworkResponse
+	30, // 43: rolodex.RolodexService.GetNetworkAssociations:output_type -> rolodex.GetNetworkAssociationsResponse
+	32, // 44: rolodex.RolodexService.AddScopedRecord:output_type -> rolodex.AddScopedRecordResponse
+	34, // 45: rolodex.RolodexService.RemoveScopedRecord:output_type -> rolodex.RemoveScopedRecordResponse
+	36, // 46: rolodex.RolodexService.ListScopedRecords:output_type -> rolodex.ListScopedRecordsResponse
+	38, // 47: rolodex.RolodexService.GetSearchDomains:output_type -> rolodex.GetSearchDomainsResponse
+	31, // [31:48] is the sub-list for method output_type
+	14, // [14:31] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_rolodex_proto_init() }
@@ -1189,7 +2596,7 @@ func file_rolodex_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_rolodex_proto_rawDesc), len(file_rolodex_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   16,
+			NumMessages:   38,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

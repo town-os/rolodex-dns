@@ -521,6 +521,169 @@ func TestIntegrationMultipleRecordTypes(t *testing.T) {
 	}
 }
 
+func TestIntegrationNetworkScopeLifecycle(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// Create a scope
+	err := client.CreateNetworkScope(ctx, &NetworkScope{
+		Name: "office",
+	})
+	if err != nil {
+		t.Fatalf("CreateNetworkScope: %v", err)
+	}
+
+	// List scopes
+	scopes, err := client.ListNetworkScopes(ctx)
+	if err != nil {
+		t.Fatalf("ListNetworkScopes: %v", err)
+	}
+	if len(scopes) != 1 {
+		t.Fatalf("got %d scopes, want 1", len(scopes))
+	}
+	if scopes[0].Name != "office" {
+		t.Errorf("scope name = %q, want %q", scopes[0].Name, "office")
+	}
+
+	// Delete scope
+	err = client.DeleteNetworkScope(ctx, "office")
+	if err != nil {
+		t.Fatalf("DeleteNetworkScope: %v", err)
+	}
+
+	// Verify deleted
+	scopes, err = client.ListNetworkScopes(ctx)
+	if err != nil {
+		t.Fatalf("ListNetworkScopes after delete: %v", err)
+	}
+	if len(scopes) != 0 {
+		t.Errorf("got %d scopes after delete, want 0", len(scopes))
+	}
+}
+
+func TestIntegrationJoinLeaveNetwork(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// Create scope first
+	err := client.CreateNetworkScope(ctx, &NetworkScope{Name: "lab"})
+	if err != nil {
+		t.Fatalf("CreateNetworkScope: %v", err)
+	}
+
+	// Join network
+	err = client.JoinNetwork(ctx, "10.0.0.50", "lab", 600)
+	if err != nil {
+		t.Fatalf("JoinNetwork: %v", err)
+	}
+
+	// Check associations
+	assocs, err := client.GetNetworkAssociations(ctx, "lab")
+	if err != nil {
+		t.Fatalf("GetNetworkAssociations: %v", err)
+	}
+	if len(assocs) != 1 {
+		t.Fatalf("got %d associations, want 1", len(assocs))
+	}
+	if assocs[0].IpAddress != "10.0.0.50" {
+		t.Errorf("ip = %q, want %q", assocs[0].IpAddress, "10.0.0.50")
+	}
+
+	// Leave network
+	err = client.LeaveNetwork(ctx, "10.0.0.50")
+	if err != nil {
+		t.Fatalf("LeaveNetwork: %v", err)
+	}
+
+	// Verify gone
+	assocs, err = client.GetNetworkAssociations(ctx, "lab")
+	if err != nil {
+		t.Fatalf("GetNetworkAssociations after leave: %v", err)
+	}
+	if len(assocs) != 0 {
+		t.Errorf("got %d associations after leave, want 0", len(assocs))
+	}
+}
+
+func TestIntegrationScopedRecords(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// Create scope
+	err := client.CreateNetworkScope(ctx, &NetworkScope{Name: "office"})
+	if err != nil {
+		t.Fatalf("CreateNetworkScope: %v", err)
+	}
+
+	// Add scoped record
+	err = client.AddScopedRecord(ctx, "office", &DnsRecord{
+		Name:       "printer.office.home.",
+		RecordType: RecordTypeA,
+		Value:      "192.168.1.50",
+		Ttl:        300,
+	})
+	if err != nil {
+		t.Fatalf("AddScopedRecord: %v", err)
+	}
+
+	// List scoped records
+	records, err := client.ListScopedRecords(ctx, "office", nil)
+	if err != nil {
+		t.Fatalf("ListScopedRecords: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("got %d records, want 1", len(records))
+	}
+	if records[0].Value != "192.168.1.50" {
+		t.Errorf("value = %q, want %q", records[0].Value, "192.168.1.50")
+	}
+
+	// Remove scoped record
+	count, err := client.RemoveScopedRecord(ctx, "office", "printer.office.home.", nil)
+	if err != nil {
+		t.Fatalf("RemoveScopedRecord: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("removed %d, want 1", count)
+	}
+
+	// Verify removed
+	records, err = client.ListScopedRecords(ctx, "office", nil)
+	if err != nil {
+		t.Fatalf("ListScopedRecords after remove: %v", err)
+	}
+	if len(records) != 0 {
+		t.Errorf("got %d records after remove, want 0", len(records))
+	}
+}
+
+func TestIntegrationSearchDomains(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// Create scope and join
+	err := client.CreateNetworkScope(ctx, &NetworkScope{Name: "office"})
+	if err != nil {
+		t.Fatalf("CreateNetworkScope: %v", err)
+	}
+	err = client.JoinNetwork(ctx, "192.168.1.100", "office", 300)
+	if err != nil {
+		t.Fatalf("JoinNetwork: %v", err)
+	}
+
+	// Get search domains
+	domains, err := client.GetSearchDomains(ctx, "192.168.1.100")
+	if err != nil {
+		t.Fatalf("GetSearchDomains: %v", err)
+	}
+	if len(domains) != 1 {
+		t.Fatalf("got %d domains, want 1", len(domains))
+	}
+	if domains[0] != "office.home." {
+		t.Errorf("domain = %q, want %q", domains[0], "office.home.")
+	}
+}
+
 func TestIntegrationConcurrentClients(t *testing.T) {
 	_, cfg := setupTestServer(t)
 	ctx := context.Background()

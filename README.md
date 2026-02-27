@@ -14,6 +14,7 @@ Rolodex also supports Realtime Blackhole Lists (RBLs) for DNS-based spam/malware
 - **TLD/domain overlay**: Add records at any level (including TLDs) to override public DNS
 - **gRPC management**: Remote record management via gRPC with shared secret or Unix socket auth
 - **RBL support**: Realtime Blackhole List checking with in-memory caching
+- **Network scoping**: Split-horizon DNS views with per-scope records and IP-based access control
 - **SQLite persistence**: DNS records persist across restarts
 - **Performance**: Built on Rust with tokio async runtime, hickory-dns protocol handling, and DashMap concurrent caching
 
@@ -312,6 +313,173 @@ Flush the RBL result cache. Forces fresh lookups for subsequent reverse DNS quer
 rolodex-cli flush-cache
 ```
 
+##### `create-scope`
+
+Create a new network scope with a reserved `.home` domain.
+**gRPC path:** `/rolodex.RolodexService/CreateNetworkScope`
+
+```
+rolodex-cli create-scope -n <NAME> [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-n, --name <NAME>` | — | Unique name for the network scope (e.g. `"office"`, `"lab"`) |
+| `-d, --home-domain <DOMAIN>` | `"<name>.home."` | Reserved `.home` domain for this scope. If omitted, defaults to `"<name>.home."` |
+
+Examples:
+```bash
+# Create a scope with default home domain
+rolodex-cli create-scope -n office
+# Creates scope "office" with home domain "office.home."
+
+# Create a scope with custom home domain
+rolodex-cli create-scope -n lab -d lab.internal.
+```
+
+##### `delete-scope`
+
+Delete a network scope and all its records and associations.
+**gRPC path:** `/rolodex.RolodexService/DeleteNetworkScope`
+
+```
+rolodex-cli delete-scope -n <NAME>
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-n, --name <NAME>` | — | Name of the scope to delete |
+
+##### `list-scopes`
+
+List all configured network scopes.
+**gRPC path:** `/rolodex.RolodexService/ListNetworkScopes`
+
+```
+rolodex-cli list-scopes
+```
+
+##### `join-network`
+
+Associate an IP address with a network scope. The association has a TTL and must be refreshed regularly.
+**gRPC path:** `/rolodex.RolodexService/JoinNetwork`
+
+```
+rolodex-cli join-network -i <IP> -s <SCOPE> [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-i, --ip <IP>` | — | Client IP address to associate (e.g. `"192.168.1.100"`) |
+| `-s, --scope <SCOPE>` | — | Network scope name to join |
+| `--ttl <TTL>` | `300` | TTL in seconds for the association. Must be refreshed before expiry. If 0, defaults to 300 |
+
+Examples:
+```bash
+# Join with default TTL
+rolodex-cli join-network -i 192.168.1.100 -s office
+
+# Join with custom TTL
+rolodex-cli join-network -i 10.0.0.5 -s lab --ttl 600
+```
+
+##### `leave-network`
+
+Remove an IP address's association with its network scope.
+**gRPC path:** `/rolodex.RolodexService/LeaveNetwork`
+
+```
+rolodex-cli leave-network -i <IP>
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-i, --ip <IP>` | — | Client IP address to disassociate |
+
+##### `list-associations`
+
+List IP-to-scope associations, optionally filtered by scope.
+**gRPC path:** `/rolodex.RolodexService/GetNetworkAssociations`
+
+```
+rolodex-cli list-associations [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-s, --scope <SCOPE>` | — | Filter by scope name. If omitted, lists all associations |
+
+##### `add-scoped-record`
+
+Add a DNS record within a specific network scope. Scoped records are only visible to IPs associated with that scope.
+**gRPC path:** `/rolodex.RolodexService/AddScopedRecord`
+
+```
+rolodex-cli add-scoped-record -s <SCOPE> -n <NAME> -v <VALUE> [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-s, --scope <SCOPE>` | — | Network scope to add the record to |
+| `-n, --name <NAME>` | — | Fully qualified domain name |
+| `-r, --record-type <TYPE>` | `a` | DNS record type |
+| `-v, --value <VALUE>` | — | Record data |
+| `--ttl <TTL>` | `300` | Time-to-live in seconds |
+| `-p, --priority <PRIORITY>` | `0` | Priority for MX and SRV records |
+
+Examples:
+```bash
+# Add a scoped A record
+rolodex-cli add-scoped-record -s office -n printer.office.home. -v 192.168.1.50
+
+# Add a scoped CNAME
+rolodex-cli add-scoped-record -s lab -n app.lab.home. -r cname -v server.lab.home.
+```
+
+##### `remove-scoped-record`
+
+Remove DNS records from a specific network scope.
+**gRPC path:** `/rolodex.RolodexService/RemoveScopedRecord`
+
+```
+rolodex-cli remove-scoped-record -s <SCOPE> -n <NAME> [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-s, --scope <SCOPE>` | — | Network scope to remove records from |
+| `-n, --name <NAME>` | — | Fully qualified domain name |
+| `-r, --record-type <TYPE>` | — | Filter by record type |
+| `-v, --value <VALUE>` | — | Filter by exact value |
+
+##### `list-scoped-records`
+
+List DNS records within a network scope.
+**gRPC path:** `/rolodex.RolodexService/ListScopedRecords`
+
+```
+rolodex-cli list-scoped-records -s <SCOPE> [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-s, --scope <SCOPE>` | — | Network scope to query |
+| `-n, --name <NAME>` | — | Filter by domain name (supports wildcard `"*."` prefix) |
+| `-r, --record-type <TYPE>` | — | Filter by record type |
+
+##### `get-search-domains`
+
+Retrieve the search domains for a client IP address.
+**gRPC path:** `/rolodex.RolodexService/GetSearchDomains`
+
+```
+rolodex-cli get-search-domains -i <IP>
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-i, --ip <IP>` | — | Client IP address to look up |
+
 ## gRPC API
 
 The management API is defined in `proto/rolodex.proto`. All methods accept an `auth_token` field for shared-secret authentication when connecting over TCP. Unix socket connections bypass authentication.
@@ -426,6 +594,156 @@ Clears the RBL lookup cache.
 - `success` (bool): Whether the operation succeeded
 - `message` (string): Error message if `success` is false
 
+#### `CreateNetworkScope`
+
+**Path:** `/rolodex.RolodexService/CreateNetworkScope`
+
+Creates a new network scope with a reserved `.home` domain.
+
+**Parameters:**
+- `scope` (NetworkScope, required): The scope to create
+  - `name` (string): Unique name for the scope (e.g. `"office"`, `"lab"`)
+  - `home_domain` (string): Reserved `.home` domain. Default: `"<name>.home."` if empty
+- `auth_token` (string): Shared secret for authentication
+
+**Response:**
+- `success` (bool): Whether the operation succeeded
+- `message` (string): Error message if `success` is false
+
+#### `DeleteNetworkScope`
+
+**Path:** `/rolodex.RolodexService/DeleteNetworkScope`
+
+Deletes a network scope and all its records and associations.
+
+**Parameters:**
+- `name` (string, required): Name of the scope to delete
+- `auth_token` (string): Shared secret for authentication
+
+**Response:**
+- `success` (bool): Whether the operation succeeded
+- `message` (string): Error message if `success` is false
+
+#### `ListNetworkScopes`
+
+**Path:** `/rolodex.RolodexService/ListNetworkScopes`
+
+Retrieves all configured network scopes.
+
+**Parameters:**
+- `auth_token` (string): Shared secret for authentication
+
+**Response:**
+- `scopes` (repeated NetworkScope): All configured scopes
+
+#### `JoinNetwork`
+
+**Path:** `/rolodex.RolodexService/JoinNetwork`
+
+Associates a client IP address with a network scope. The association has a TTL that must be refreshed regularly to maintain DNS resolution.
+
+**Parameters:**
+- `ip_address` (string, required): Client IP to associate (e.g. `"192.168.1.100"`)
+- `scope_name` (string, required): Network scope name to join
+- `ttl_seconds` (uint64): TTL in seconds. Default: 300 if set to 0. Must be refreshed before expiry.
+- `auth_token` (string): Shared secret for authentication
+
+**Response:**
+- `success` (bool): Whether the operation succeeded
+- `message` (string): Error message if `success` is false
+
+#### `LeaveNetwork`
+
+**Path:** `/rolodex.RolodexService/LeaveNetwork`
+
+Removes an IP address's association with its network scope.
+
+**Parameters:**
+- `ip_address` (string, required): Client IP to disassociate
+- `auth_token` (string): Shared secret for authentication
+
+**Response:**
+- `success` (bool): Whether the operation succeeded
+- `message` (string): Error message if `success` is false
+
+#### `GetNetworkAssociations`
+
+**Path:** `/rolodex.RolodexService/GetNetworkAssociations`
+
+Retrieves IP-to-scope associations.
+
+**Parameters:**
+- `scope_name` (string): Filter by scope name. Empty returns all associations.
+- `auth_token` (string): Shared secret for authentication
+
+**Response:**
+- `associations` (repeated NetworkAssociation): Matching associations
+  - `ip_address` (string): The associated IP
+  - `scope_name` (string): The scope name
+  - `ttl_seconds` (uint64): TTL for the association
+
+#### `AddScopedRecord`
+
+**Path:** `/rolodex.RolodexService/AddScopedRecord`
+
+Adds a DNS record within a specific network scope. Scoped records are only visible to IPs associated with that scope.
+
+**Parameters:**
+- `scope_name` (string, required): The scope to add the record to
+- `record` (DnsRecord, required): The DNS record to add
+- `auth_token` (string): Shared secret for authentication
+
+**Response:**
+- `success` (bool): Whether the operation succeeded
+- `message` (string): Error message if `success` is false
+
+#### `RemoveScopedRecord`
+
+**Path:** `/rolodex.RolodexService/RemoveScopedRecord`
+
+Removes DNS records from a specific network scope.
+
+**Parameters:**
+- `scope_name` (string, required): The scope to remove records from
+- `name` (string, required): FQDN to remove records for
+- `record_type` (RecordType): Optional type filter
+- `value` (string): Optional exact value filter
+- `auth_token` (string): Shared secret for authentication
+
+**Response:**
+- `success` (bool): Whether the operation succeeded
+- `removed_count` (uint32): Number of records removed
+- `message` (string): Error message if `success` is false
+
+#### `ListScopedRecords`
+
+**Path:** `/rolodex.RolodexService/ListScopedRecords`
+
+Queries DNS records within a network scope.
+
+**Parameters:**
+- `scope_name` (string, required): The scope to query
+- `name_filter` (string): Filter by domain name (supports wildcard `"*."` prefix)
+- `record_type_filter` (RecordType): Filter by record type (only applied when `filter_by_type` is true)
+- `filter_by_type` (bool): Whether to apply `record_type_filter`. Default: false
+- `auth_token` (string): Shared secret for authentication
+
+**Response:**
+- `records` (repeated DnsRecord): Matching scoped records
+
+#### `GetSearchDomains`
+
+**Path:** `/rolodex.RolodexService/GetSearchDomains`
+
+Retrieves the search domains for a client IP address. Returns the `.home` domain of the scope the IP is associated with.
+
+**Parameters:**
+- `ip_address` (string, required): Client IP to look up
+- `auth_token` (string): Shared secret for authentication
+
+**Response:**
+- `search_domains` (repeated string): Search domains for the IP (typically the scope's `.home` domain)
+
 ### Record Types
 
 | Enum Value | Name | Description |
@@ -470,6 +788,38 @@ These match the common providers used by unbound and other DNS resolvers:
 - Positive results (IP is listed) are cached for the TTL returned by the RBL provider
 - Negative results (IP is not listed) are cached for 5 minutes
 - The cache can be flushed via the `FlushCache` gRPC method
+
+## Network Scoping
+
+Network scoping provides split-horizon DNS views, allowing different DNS responses based on which network scope a client IP is associated with.
+
+### Concepts
+
+- **Network Scope**: A named DNS view with its own set of DNS records and a reserved `.home` domain (e.g. `office.home.`). The `.home` domain is used as the default search domain for DHCP clients.
+- **Network Association**: A mapping from a client IP to a scope, with a TTL that must be refreshed regularly. When the TTL expires, the IP loses its scope association and DNS queries are refused.
+- **Scoped Records**: DNS records that belong to a specific scope and are only visible to IPs associated with that scope.
+
+### How It Works
+
+1. Create a network scope (e.g. `"office"` with domain `"office.home."`)
+2. Add scoped DNS records to the scope
+3. Client IPs join the network by associating with a scope (with a TTL)
+4. When a DNS query arrives:
+   - If scopes exist and the source IP is not associated with any scope: **REFUSED**
+   - If the IP is associated with a scope: check scoped records first, then fall through to global records, then forward upstream
+   - If no scopes exist at all: legacy behavior (all queries served from global records)
+5. Search domains (via `GetSearchDomains`) return the `.home` domain for DHCP integration
+
+### Resolution Order (Scoped)
+
+1. Check RBL (for reverse DNS queries, if enabled)
+2. Check scoped records for the client's scope
+3. Check scoped CNAME records
+4. Check if name is under a scoped managed zone (authoritative NXDOMAIN)
+5. Check global database records
+6. Check global CNAME records
+7. Check if name is under a global managed zone (authoritative NXDOMAIN)
+8. Forward to upstream resolvers
 
 ## Go Client
 
@@ -591,6 +941,107 @@ Clears the RBL lookup cache on the server.
 
 **Path:** `/rolodex.RolodexService/FlushCache`
 
+#### `CreateNetworkScope(ctx, scope) error`
+
+Creates a new network scope.
+
+**Path:** `/rolodex.RolodexService/CreateNetworkScope`
+
+**Parameters:**
+- `scope` (`*NetworkScope`): The scope to create. Fields:
+  - `Name` (string): Unique name for the scope
+  - `HomeDomain` (string): Reserved `.home` domain. Default: `"<name>.home."` if empty
+
+#### `DeleteNetworkScope(ctx, name) error`
+
+Deletes a network scope and all its records and associations.
+
+**Path:** `/rolodex.RolodexService/DeleteNetworkScope`
+
+**Parameters:**
+- `name` (string): Name of the scope to delete
+
+#### `ListNetworkScopes(ctx) ([]*NetworkScope, error)`
+
+Retrieves all configured network scopes.
+
+**Path:** `/rolodex.RolodexService/ListNetworkScopes`
+
+#### `JoinNetwork(ctx, ipAddress, scopeName, ttlSeconds) error`
+
+Associates a client IP with a network scope. The association must be refreshed before the TTL expires.
+
+**Path:** `/rolodex.RolodexService/JoinNetwork`
+
+**Parameters:**
+- `ipAddress` (string): Client IP to associate (e.g. `"192.168.1.100"`)
+- `scopeName` (string): Network scope name to join
+- `ttlSeconds` (uint64): TTL in seconds (0 defaults to 300)
+
+#### `LeaveNetwork(ctx, ipAddress) error`
+
+Removes an IP's association with its network scope.
+
+**Path:** `/rolodex.RolodexService/LeaveNetwork`
+
+**Parameters:**
+- `ipAddress` (string): Client IP to disassociate
+
+#### `GetNetworkAssociations(ctx, scopeName) ([]*NetworkAssociation, error)`
+
+Retrieves IP-to-scope associations.
+
+**Path:** `/rolodex.RolodexService/GetNetworkAssociations`
+
+**Parameters:**
+- `scopeName` (string): Filter by scope name. Empty returns all associations.
+
+#### `AddScopedRecord(ctx, scopeName, record) error`
+
+Adds a DNS record within a specific network scope. Only visible to IPs associated with that scope.
+
+**Path:** `/rolodex.RolodexService/AddScopedRecord`
+
+**Parameters:**
+- `scopeName` (string): The scope to add the record to
+- `record` (`*DnsRecord`): The DNS record to add
+
+#### `RemoveScopedRecord(ctx, scopeName, name, opts) (uint32, error)`
+
+Removes DNS records from a specific network scope.
+
+**Path:** `/rolodex.RolodexService/RemoveScopedRecord`
+
+**Parameters:**
+- `scopeName` (string): The scope to remove records from
+- `name` (string): FQDN to remove records for
+- `opts` (`*RemoveScopedRecordOptions`, optional): If nil, removes all records for the name
+  - `RecordType` (`*RecordType`): Filter by record type
+  - `Value` (string): Filter by exact value
+
+**Returns:** Number of records removed.
+
+#### `ListScopedRecords(ctx, scopeName, opts) ([]*DnsRecord, error)`
+
+Queries DNS records within a network scope.
+
+**Path:** `/rolodex.RolodexService/ListScopedRecords`
+
+**Parameters:**
+- `scopeName` (string): The scope to query
+- `opts` (`*ListScopedRecordsOptions`, optional): If nil, returns all records in the scope
+  - `NameFilter` (string): Filter by domain name (supports wildcard `"*."`)
+  - `RecordType` (`*RecordType`): Filter by record type
+
+#### `GetSearchDomains(ctx, ipAddress) ([]string, error)`
+
+Retrieves the search domains for a client IP. Returns the `.home` domain of the associated scope.
+
+**Path:** `/rolodex.RolodexService/GetSearchDomains`
+
+**Parameters:**
+- `ipAddress` (string): Client IP to look up
+
 #### `Close() error`
 
 Closes the underlying gRPC connection. Should be called when the client is no longer needed.
@@ -634,12 +1085,14 @@ Closes the underlying gRPC connection. Should be called when the client is no lo
         └─────────────┘
 ```
 
-Resolution order:
+Resolution order (when no network scopes are configured):
 1. Check RBL (for reverse DNS queries, if enabled)
 2. Check local database (split-horizon, always preferred)
 3. Check for CNAME records in local database
 4. If name is under a managed zone but not found, return authoritative NXDOMAIN
 5. Forward to upstream resolvers
+
+When network scopes are configured, see [Network Scoping](#network-scoping) for the extended resolution order.
 
 ## License
 

@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
+use dashmap::DashMap;
 use rusqlite::{params, Connection};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// Represents a DNS record stored in the local database.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,10 +90,56 @@ impl RecordKind {
     }
 }
 
+/// Represents a network scope that defines a DNS view.
+///
+/// Each network scope has a unique name and a reserved `.home` domain
+/// used as the default search domain for that network.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkScope {
+    /// Unique identifier for the network scope.
+    pub name: String,
+    /// The reserved `.home` domain for this network (e.g. "mynetwork.home.").
+    /// Used as the default search domain for DHCP and similar services.
+    pub home_domain: String,
+}
+
+/// Represents an association between a client IP address and a network scope.
+///
+/// Associations have a TTL and must be refreshed regularly. When an association
+/// expires, the DNS server will stop resolving queries for that IP entirely.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkAssociation {
+    /// The IP address of the client that has joined this network.
+    pub ip_address: String,
+    /// The name of the network scope this IP is associated with.
+    pub scope_name: String,
+    /// Time-to-live in seconds for this association.
+    pub ttl_seconds: u64,
+}
+
+/// An in-memory cache entry for a network association, tracking its expiration.
+#[derive(Debug, Clone)]
+struct AssociationCacheEntry {
+    scope_name: String,
+    expires_at: Instant,
+}
+
+/// An in-memory cache for scoped DNS records, keyed by (scope_name, normalized_name, record_type).
+#[derive(Debug, Clone)]
+struct ScopedRecordCacheEntry {
+    records: Vec<DnsRecord>,
+}
+
 /// Thread-safe handle to the DNS record database.
 #[derive(Clone)]
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
+    /// In-memory cache of network associations, keyed by IP address.
+    /// Used for fast lookup during DNS resolution.
+    association_cache: Arc<DashMap<String, AssociationCacheEntry>>,
+    /// In-memory cache of scoped DNS records, keyed by "scope_name:name:record_type".
+    /// Records are loaded from DB at boot and updated as they are entered.
+    scoped_record_cache: Arc<DashMap<String, ScopedRecordCacheEntry>>,
 }
 
 impl Database {
@@ -103,8 +151,12 @@ impl Database {
             .context("failed to set pragmas")?;
         let db = Self {
             conn: Arc::new(Mutex::new(conn)),
+            association_cache: Arc::new(DashMap::new()),
+            scoped_record_cache: Arc::new(DashMap::new()),
         };
         db.init_tables()?;
+        db.load_scoped_records_into_cache()?;
+        db.load_associations_into_cache()?;
         Ok(db)
     }
 
@@ -113,6 +165,8 @@ impl Database {
         let conn = Connection::open_in_memory().context("failed to open in-memory database")?;
         let db = Self {
             conn: Arc::new(Mutex::new(conn)),
+            association_cache: Arc::new(DashMap::new()),
+            scoped_record_cache: Arc::new(DashMap::new()),
         };
         db.init_tables()?;
         Ok(db)
@@ -130,9 +184,111 @@ impl Database {
                 priority INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_dns_name ON dns_records(name);
-            CREATE INDEX IF NOT EXISTS idx_dns_name_type ON dns_records(name, record_type);",
+            CREATE INDEX IF NOT EXISTS idx_dns_name_type ON dns_records(name, record_type);
+
+            CREATE TABLE IF NOT EXISTS network_scopes (
+                name TEXT PRIMARY KEY NOT NULL,
+                home_domain TEXT NOT NULL UNIQUE
+            );
+
+            CREATE TABLE IF NOT EXISTS scoped_dns_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope_name TEXT NOT NULL,
+                name TEXT NOT NULL,
+                record_type TEXT NOT NULL,
+                value TEXT NOT NULL,
+                ttl INTEGER NOT NULL DEFAULT 300,
+                priority INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (scope_name) REFERENCES network_scopes(name) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_scoped_dns_scope ON scoped_dns_records(scope_name);
+            CREATE INDEX IF NOT EXISTS idx_scoped_dns_name ON scoped_dns_records(scope_name, name);
+            CREATE INDEX IF NOT EXISTS idx_scoped_dns_name_type ON scoped_dns_records(scope_name, name, record_type);
+
+            CREATE TABLE IF NOT EXISTS network_associations (
+                ip_address TEXT PRIMARY KEY NOT NULL,
+                scope_name TEXT NOT NULL,
+                ttl_seconds INTEGER NOT NULL DEFAULT 300,
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY (scope_name) REFERENCES network_scopes(name) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_assoc_scope ON network_associations(scope_name);",
         )
         .context("failed to create tables")?;
+        Ok(())
+    }
+
+    /// Loads all scoped DNS records from the database into the in-memory cache.
+    /// Called at boot time.
+    fn load_scoped_records_into_cache(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT scope_name, name, record_type, value, ttl, priority FROM scoped_dns_records",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                DnsRecord {
+                    id: None,
+                    name: row.get(1)?,
+                    record_type: RecordKind::from_str(&row.get::<_, String>(2)?).unwrap_or(RecordKind::A),
+                    value: row.get(3)?,
+                    ttl: row.get(4)?,
+                    priority: row.get(5)?,
+                },
+            ))
+        })?;
+
+        for row in rows {
+            let (scope_name, record) = row?;
+            let cache_key = scoped_record_cache_key(&scope_name, &record.name, Some(record.record_type));
+            self.scoped_record_cache
+                .entry(cache_key)
+                .and_modify(|entry| entry.records.push(record.clone()))
+                .or_insert(ScopedRecordCacheEntry {
+                    records: vec![record],
+                });
+        }
+
+        Ok(())
+    }
+
+    /// Loads all non-expired network associations from the database into the in-memory cache.
+    /// Called at boot time.
+    fn load_associations_into_cache(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let mut stmt = conn.prepare(
+            "SELECT ip_address, scope_name, ttl_seconds, created_at FROM network_associations",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+
+        for row in rows {
+            let (ip, scope, ttl, created_at) = row?;
+            let elapsed = now - created_at;
+            if elapsed < ttl {
+                let remaining = (ttl - elapsed) as u64;
+                self.association_cache.insert(
+                    ip,
+                    AssociationCacheEntry {
+                        scope_name: scope,
+                        expires_at: Instant::now() + Duration::from_secs(remaining),
+                    },
+                );
+            }
+        }
+
         Ok(())
     }
 
@@ -296,6 +452,425 @@ impl Database {
         }
         Ok(zones.into_iter().collect())
     }
+
+    // ================================================================
+    // Network Scope Management
+    // ================================================================
+
+    /// Creates a new network scope.
+    ///
+    /// Each scope has a unique name and a reserved `.home` domain that serves
+    /// as the default search domain for DNS clients in that network.
+    /// The home domain is automatically derived as `<name>.home.` if not explicitly provided.
+    pub fn create_network_scope(&self, scope: &NetworkScope) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO network_scopes (name, home_domain) VALUES (?1, ?2)",
+            params![scope.name, normalize_name(&scope.home_domain)],
+        )
+        .context("failed to create network scope")?;
+        Ok(())
+    }
+
+    /// Deletes a network scope and all associated records and associations.
+    /// Returns true if a scope was deleted, false if it didn't exist.
+    pub fn delete_network_scope(&self, name: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        // Delete associated records first (due to foreign keys)
+        conn.execute(
+            "DELETE FROM scoped_dns_records WHERE scope_name = ?1",
+            params![name],
+        )?;
+        conn.execute(
+            "DELETE FROM network_associations WHERE scope_name = ?1",
+            params![name],
+        )?;
+        let count = conn.execute(
+            "DELETE FROM network_scopes WHERE name = ?1",
+            params![name],
+        )?;
+
+        // Clear caches for this scope
+        self.scoped_record_cache.retain(|key, _| !key.starts_with(&format!("{}:", name)));
+        self.association_cache.retain(|_, entry| entry.scope_name != name);
+
+        Ok(count > 0)
+    }
+
+    /// Lists all network scopes.
+    pub fn list_network_scopes(&self) -> Result<Vec<NetworkScope>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT name, home_domain FROM network_scopes")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(NetworkScope {
+                name: row.get(0)?,
+                home_domain: row.get(1)?,
+            })
+        })?;
+        let mut scopes = Vec::new();
+        for row in rows {
+            scopes.push(row?);
+        }
+        Ok(scopes)
+    }
+
+    /// Gets a network scope by name.
+    pub fn get_network_scope(&self, name: &str) -> Result<Option<NetworkScope>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT name, home_domain FROM network_scopes WHERE name = ?1")?;
+        let mut rows = stmt.query_map(params![name], |row| {
+            Ok(NetworkScope {
+                name: row.get(0)?,
+                home_domain: row.get(1)?,
+            })
+        })?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
+
+    // ================================================================
+    // Network Association Management
+    // ================================================================
+
+    /// Associates an IP address with a network scope ("joins the network").
+    ///
+    /// The association has a TTL which must be refreshed regularly to maintain
+    /// DNS resolution capability. If the TTL expires, the DNS server will stop
+    /// responding to queries from this IP.
+    ///
+    /// If the IP is already associated with a scope, the association is updated.
+    pub fn join_network(&self, assoc: &NetworkAssociation) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        conn.execute(
+            "INSERT OR REPLACE INTO network_associations (ip_address, scope_name, ttl_seconds, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![assoc.ip_address, assoc.scope_name, assoc.ttl_seconds as i64, now],
+        )
+        .context("failed to join network")?;
+
+        // Update in-memory cache
+        self.association_cache.insert(
+            assoc.ip_address.clone(),
+            AssociationCacheEntry {
+                scope_name: assoc.scope_name.clone(),
+                expires_at: Instant::now() + Duration::from_secs(assoc.ttl_seconds),
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Removes an IP address's association with any network scope ("leaves the network").
+    /// Returns true if an association was removed.
+    pub fn leave_network(&self, ip_address: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let count = conn.execute(
+            "DELETE FROM network_associations WHERE ip_address = ?1",
+            params![ip_address],
+        )?;
+
+        // Remove from cache
+        self.association_cache.remove(ip_address);
+
+        Ok(count > 0)
+    }
+
+    /// Lists all network associations, optionally filtered by scope name.
+    pub fn list_network_associations(&self, scope_name: Option<&str>) -> Result<Vec<NetworkAssociation>> {
+        let conn = self.conn.lock().unwrap();
+        let mut assocs = Vec::new();
+
+        if let Some(scope) = scope_name {
+            let mut stmt = conn.prepare(
+                "SELECT ip_address, scope_name, ttl_seconds FROM network_associations WHERE scope_name = ?1",
+            )?;
+            let rows = stmt.query_map(params![scope], |row| {
+                Ok(NetworkAssociation {
+                    ip_address: row.get(0)?,
+                    scope_name: row.get(1)?,
+                    ttl_seconds: row.get::<_, i64>(2)? as u64,
+                })
+            })?;
+            for row in rows {
+                assocs.push(row?);
+            }
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT ip_address, scope_name, ttl_seconds FROM network_associations",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok(NetworkAssociation {
+                    ip_address: row.get(0)?,
+                    scope_name: row.get(1)?,
+                    ttl_seconds: row.get::<_, i64>(2)? as u64,
+                })
+            })?;
+            for row in rows {
+                assocs.push(row?);
+            }
+        }
+
+        Ok(assocs)
+    }
+
+    /// Looks up the network scope for a given IP address from the in-memory cache.
+    ///
+    /// Returns None if the IP is not associated with any scope or if the
+    /// association has expired (TTL exceeded).
+    pub fn get_scope_for_ip(&self, ip_address: &str) -> Option<String> {
+        if let Some(entry) = self.association_cache.get(ip_address) {
+            if entry.expires_at > Instant::now() {
+                return Some(entry.scope_name.clone());
+            }
+            // Expired - remove from cache
+            drop(entry);
+            self.association_cache.remove(ip_address);
+        }
+        None
+    }
+
+    // ================================================================
+    // Scoped DNS Record Management
+    // ================================================================
+
+    /// Adds a DNS record scoped to a specific network scope.
+    /// The record is stored in SQL and also cached in memory.
+    pub fn add_scoped_record(&self, scope_name: &str, record: &DnsRecord) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let normalized = normalize_name(&record.name);
+        conn.execute(
+            "INSERT INTO scoped_dns_records (scope_name, name, record_type, value, ttl, priority)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                scope_name,
+                normalized,
+                record.record_type.as_str(),
+                record.value,
+                record.ttl,
+                record.priority,
+            ],
+        )
+        .context("failed to insert scoped record")?;
+        let id = conn.last_insert_rowid();
+
+        // Update in-memory cache
+        let cached_record = DnsRecord {
+            id: Some(id),
+            name: normalized.clone(),
+            record_type: record.record_type,
+            value: record.value.clone(),
+            ttl: record.ttl,
+            priority: record.priority,
+        };
+        let cache_key = scoped_record_cache_key(scope_name, &normalized, Some(record.record_type));
+        self.scoped_record_cache
+            .entry(cache_key)
+            .and_modify(|entry| entry.records.push(cached_record.clone()))
+            .or_insert(ScopedRecordCacheEntry {
+                records: vec![cached_record],
+            });
+
+        Ok(id)
+    }
+
+    /// Removes scoped DNS records matching the given criteria.
+    /// Returns the number of records removed.
+    pub fn remove_scoped_records(
+        &self,
+        scope_name: &str,
+        name: &str,
+        record_type: Option<RecordKind>,
+        value: &str,
+    ) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let normalized = normalize_name(name);
+
+        let count = if let Some(rt) = record_type {
+            if value.is_empty() {
+                conn.execute(
+                    "DELETE FROM scoped_dns_records WHERE scope_name = ?1 AND name = ?2 AND record_type = ?3",
+                    params![scope_name, normalized, rt.as_str()],
+                )?
+            } else {
+                conn.execute(
+                    "DELETE FROM scoped_dns_records WHERE scope_name = ?1 AND name = ?2 AND record_type = ?3 AND value = ?4",
+                    params![scope_name, normalized, rt.as_str(), value],
+                )?
+            }
+        } else if value.is_empty() {
+            conn.execute(
+                "DELETE FROM scoped_dns_records WHERE scope_name = ?1 AND name = ?2",
+                params![scope_name, normalized],
+            )?
+        } else {
+            conn.execute(
+                "DELETE FROM scoped_dns_records WHERE scope_name = ?1 AND name = ?2 AND value = ?3",
+                params![scope_name, normalized, value],
+            )?
+        };
+
+        // Invalidate cache entries for this scope and name
+        self.scoped_record_cache.retain(|key, _| {
+            !key.starts_with(&format!("{}:{}", scope_name, normalized))
+        });
+
+        Ok(count)
+    }
+
+    /// Looks up scoped DNS records from the in-memory cache.
+    ///
+    /// This is the primary lookup path for DNS resolution within a network scope.
+    /// Records are served from cache for performance, with the cache being
+    /// populated at boot from the database and updated on each write.
+    pub fn lookup_scoped(
+        &self,
+        scope_name: &str,
+        name: &str,
+        record_type: Option<RecordKind>,
+    ) -> Vec<DnsRecord> {
+        let normalized = normalize_name(name);
+
+        if let Some(rt) = record_type {
+            let cache_key = scoped_record_cache_key(scope_name, &normalized, Some(rt));
+            if let Some(entry) = self.scoped_record_cache.get(&cache_key) {
+                return entry.records.clone();
+            }
+        } else {
+            // Without a type filter, we need to collect all record types for this name
+            let mut records = Vec::new();
+            let prefix = format!("{}:{}:", scope_name, normalized);
+            for entry in self.scoped_record_cache.iter() {
+                if entry.key().starts_with(&prefix) {
+                    records.extend(entry.records.clone());
+                }
+            }
+            return records;
+        }
+
+        Vec::new()
+    }
+
+    /// Lists scoped DNS records from the database with optional filters.
+    pub fn list_scoped_records(
+        &self,
+        scope_name: &str,
+        name_filter: &str,
+        record_type: Option<RecordKind>,
+    ) -> Result<Vec<DnsRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut records = Vec::new();
+
+        if name_filter.is_empty() && record_type.is_none() {
+            let mut stmt = conn.prepare(
+                "SELECT id, name, record_type, value, ttl, priority FROM scoped_dns_records WHERE scope_name = ?1",
+            )?;
+            let rows = stmt.query_map(params![scope_name], row_mapper)?;
+            for row in rows {
+                records.push(row?);
+            }
+        } else if name_filter.is_empty() {
+            let rt = record_type.unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT id, name, record_type, value, ttl, priority FROM scoped_dns_records WHERE scope_name = ?1 AND record_type = ?2",
+            )?;
+            let rows = stmt.query_map(params![scope_name, rt.as_str()], row_mapper)?;
+            for row in rows {
+                records.push(row?);
+            }
+        } else if record_type.is_none() {
+            if let Some(suffix) = name_filter.strip_prefix("*.") {
+                let like = format!("%{}", normalize_name(suffix));
+                let mut stmt = conn.prepare(
+                    "SELECT id, name, record_type, value, ttl, priority FROM scoped_dns_records WHERE scope_name = ?1 AND name LIKE ?2",
+                )?;
+                let rows = stmt.query_map(params![scope_name, like], row_mapper)?;
+                for row in rows {
+                    records.push(row?);
+                }
+            } else {
+                let normalized = normalize_name(name_filter);
+                let mut stmt = conn.prepare(
+                    "SELECT id, name, record_type, value, ttl, priority FROM scoped_dns_records WHERE scope_name = ?1 AND name = ?2",
+                )?;
+                let rows = stmt.query_map(params![scope_name, normalized], row_mapper)?;
+                for row in rows {
+                    records.push(row?);
+                }
+            }
+        } else {
+            let rt = record_type.unwrap();
+            if let Some(suffix) = name_filter.strip_prefix("*.") {
+                let like = format!("%{}", normalize_name(suffix));
+                let mut stmt = conn.prepare(
+                    "SELECT id, name, record_type, value, ttl, priority FROM scoped_dns_records WHERE scope_name = ?1 AND name LIKE ?2 AND record_type = ?3",
+                )?;
+                let rows = stmt.query_map(params![scope_name, like, rt.as_str()], row_mapper)?;
+                for row in rows {
+                    records.push(row?);
+                }
+            } else {
+                let normalized = normalize_name(name_filter);
+                let mut stmt = conn.prepare(
+                    "SELECT id, name, record_type, value, ttl, priority FROM scoped_dns_records WHERE scope_name = ?1 AND name = ?2 AND record_type = ?3",
+                )?;
+                let rows = stmt.query_map(params![scope_name, normalized, rt.as_str()], row_mapper)?;
+                for row in rows {
+                    records.push(row?);
+                }
+            }
+        }
+
+        Ok(records)
+    }
+
+    /// Returns the managed zones for a specific scope (from scoped records).
+    pub fn get_scoped_managed_zones(&self, scope_name: &str) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT name FROM scoped_dns_records WHERE scope_name = ?1",
+        )?;
+        let rows = stmt.query_map(params![scope_name], |row| row.get::<_, String>(0))?;
+        let mut zones = std::collections::HashSet::new();
+        for row in rows {
+            let name = row?;
+            let parts: Vec<&str> = name.trim_end_matches('.').split('.').collect();
+            if parts.len() >= 2 {
+                let zone = format!("{}.", parts[parts.len() - 2..].join("."));
+                zones.insert(zone);
+            } else if parts.len() == 1 && !parts[0].is_empty() {
+                zones.insert(format!("{}.", parts[0]));
+            }
+        }
+        Ok(zones.into_iter().collect())
+    }
+
+    /// Returns the search domains for a given IP address.
+    ///
+    /// If the IP is associated with a network scope, returns that scope's
+    /// `.home` domain as the search domain. This is useful for DHCP servers
+    /// that need to set the search domain for clients.
+    pub fn get_search_domains(&self, ip_address: &str) -> Result<Vec<String>> {
+        let scope_name = match self.get_scope_for_ip(ip_address) {
+            Some(name) => name,
+            None => return Ok(Vec::new()),
+        };
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT home_domain FROM network_scopes WHERE name = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![scope_name], |row| row.get::<_, String>(0))?;
+        match rows.next() {
+            Some(row) => Ok(vec![row?]),
+            None => Ok(Vec::new()),
+        }
+    }
 }
 
 fn row_mapper(row: &rusqlite::Row) -> rusqlite::Result<DnsRecord> {
@@ -364,6 +939,14 @@ fn build_list_query(name_filter: &str, record_type: Option<RecordKind>) -> (Stri
     };
 
     (sql, filter_params)
+}
+
+/// Generates a cache key for scoped record lookups.
+fn scoped_record_cache_key(scope_name: &str, normalized_name: &str, record_type: Option<RecordKind>) -> String {
+    match record_type {
+        Some(rt) => format!("{}:{}:{}", scope_name, normalized_name, rt.as_str()),
+        None => format!("{}:{}:*", scope_name, normalized_name),
+    }
 }
 
 /// Normalizes a DNS name to lowercase with a trailing dot.
@@ -664,5 +1247,412 @@ mod tests {
     #[test]
     fn test_record_kind_from_proto_invalid() {
         assert_eq!(RecordKind::from_proto_i32(99), None);
+    }
+
+    // ================================================================
+    // Network Scope Tests
+    // ================================================================
+
+    #[test]
+    fn test_create_and_list_network_scopes() {
+        let db = test_db();
+        let scope = NetworkScope {
+            name: "office".to_string(),
+            home_domain: "office.home".to_string(),
+        };
+        db.create_network_scope(&scope).unwrap();
+
+        let scopes = db.list_network_scopes().unwrap();
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].name, "office");
+        assert_eq!(scopes[0].home_domain, "office.home.");
+    }
+
+    #[test]
+    fn test_get_network_scope() {
+        let db = test_db();
+        let scope = NetworkScope {
+            name: "lab".to_string(),
+            home_domain: "lab.home".to_string(),
+        };
+        db.create_network_scope(&scope).unwrap();
+
+        let found = db.get_network_scope("lab").unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "lab");
+
+        let not_found = db.get_network_scope("nonexistent").unwrap();
+        assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_delete_network_scope() {
+        let db = test_db();
+        let scope = NetworkScope {
+            name: "temp".to_string(),
+            home_domain: "temp.home".to_string(),
+        };
+        db.create_network_scope(&scope).unwrap();
+
+        // Add a scoped record
+        db.add_scoped_record("temp", &DnsRecord {
+            id: None,
+            name: "host.temp.home".to_string(),
+            record_type: RecordKind::A,
+            value: "10.0.0.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        }).unwrap();
+
+        // Add an association
+        db.join_network(&NetworkAssociation {
+            ip_address: "192.168.1.1".to_string(),
+            scope_name: "temp".to_string(),
+            ttl_seconds: 3600,
+        }).unwrap();
+
+        let deleted = db.delete_network_scope("temp").unwrap();
+        assert!(deleted);
+
+        let scopes = db.list_network_scopes().unwrap();
+        assert!(scopes.is_empty());
+
+        // Records and associations should be gone
+        let records = db.lookup_scoped("temp", "host.temp.home", Some(RecordKind::A));
+        assert!(records.is_empty());
+        assert!(db.get_scope_for_ip("192.168.1.1").is_none());
+    }
+
+    #[test]
+    fn test_delete_nonexistent_scope() {
+        let db = test_db();
+        let deleted = db.delete_network_scope("nonexistent").unwrap();
+        assert!(!deleted);
+    }
+
+    #[test]
+    fn test_duplicate_scope_name_fails() {
+        let db = test_db();
+        let scope = NetworkScope {
+            name: "dup".to_string(),
+            home_domain: "dup.home".to_string(),
+        };
+        db.create_network_scope(&scope).unwrap();
+        assert!(db.create_network_scope(&scope).is_err());
+    }
+
+    // ================================================================
+    // Network Association Tests
+    // ================================================================
+
+    #[test]
+    fn test_join_and_get_scope_for_ip() {
+        let db = test_db();
+        db.create_network_scope(&NetworkScope {
+            name: "net1".to_string(),
+            home_domain: "net1.home".to_string(),
+        }).unwrap();
+
+        db.join_network(&NetworkAssociation {
+            ip_address: "10.0.0.5".to_string(),
+            scope_name: "net1".to_string(),
+            ttl_seconds: 3600,
+        }).unwrap();
+
+        let scope = db.get_scope_for_ip("10.0.0.5");
+        assert_eq!(scope, Some("net1".to_string()));
+    }
+
+    #[test]
+    fn test_unassociated_ip_returns_none() {
+        let db = test_db();
+        assert!(db.get_scope_for_ip("10.0.0.99").is_none());
+    }
+
+    #[test]
+    fn test_leave_network() {
+        let db = test_db();
+        db.create_network_scope(&NetworkScope {
+            name: "net2".to_string(),
+            home_domain: "net2.home".to_string(),
+        }).unwrap();
+
+        db.join_network(&NetworkAssociation {
+            ip_address: "10.0.0.10".to_string(),
+            scope_name: "net2".to_string(),
+            ttl_seconds: 3600,
+        }).unwrap();
+
+        let left = db.leave_network("10.0.0.10").unwrap();
+        assert!(left);
+        assert!(db.get_scope_for_ip("10.0.0.10").is_none());
+    }
+
+    #[test]
+    fn test_leave_network_not_found() {
+        let db = test_db();
+        let left = db.leave_network("10.0.0.99").unwrap();
+        assert!(!left);
+    }
+
+    #[test]
+    fn test_list_associations() {
+        let db = test_db();
+        db.create_network_scope(&NetworkScope {
+            name: "netA".to_string(),
+            home_domain: "netA.home".to_string(),
+        }).unwrap();
+        db.create_network_scope(&NetworkScope {
+            name: "netB".to_string(),
+            home_domain: "netB.home".to_string(),
+        }).unwrap();
+
+        db.join_network(&NetworkAssociation {
+            ip_address: "10.1.0.1".to_string(),
+            scope_name: "netA".to_string(),
+            ttl_seconds: 300,
+        }).unwrap();
+        db.join_network(&NetworkAssociation {
+            ip_address: "10.2.0.1".to_string(),
+            scope_name: "netB".to_string(),
+            ttl_seconds: 300,
+        }).unwrap();
+
+        let all = db.list_network_associations(None).unwrap();
+        assert_eq!(all.len(), 2);
+
+        let net_a_only = db.list_network_associations(Some("netA")).unwrap();
+        assert_eq!(net_a_only.len(), 1);
+        assert_eq!(net_a_only[0].ip_address, "10.1.0.1");
+    }
+
+    #[test]
+    fn test_join_network_updates_existing() {
+        let db = test_db();
+        db.create_network_scope(&NetworkScope {
+            name: "update-net".to_string(),
+            home_domain: "update.home".to_string(),
+        }).unwrap();
+
+        db.join_network(&NetworkAssociation {
+            ip_address: "10.5.0.1".to_string(),
+            scope_name: "update-net".to_string(),
+            ttl_seconds: 100,
+        }).unwrap();
+
+        // Re-join with new TTL (refresh)
+        db.join_network(&NetworkAssociation {
+            ip_address: "10.5.0.1".to_string(),
+            scope_name: "update-net".to_string(),
+            ttl_seconds: 3600,
+        }).unwrap();
+
+        let assocs = db.list_network_associations(Some("update-net")).unwrap();
+        assert_eq!(assocs.len(), 1);
+        assert_eq!(assocs[0].ttl_seconds, 3600);
+    }
+
+    // ================================================================
+    // Scoped DNS Record Tests
+    // ================================================================
+
+    #[test]
+    fn test_add_and_lookup_scoped_record() {
+        let db = test_db();
+        db.create_network_scope(&NetworkScope {
+            name: "scopeA".to_string(),
+            home_domain: "scopeA.home".to_string(),
+        }).unwrap();
+
+        db.add_scoped_record("scopeA", &DnsRecord {
+            id: None,
+            name: "host1.scopeA.home".to_string(),
+            record_type: RecordKind::A,
+            value: "10.10.0.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        }).unwrap();
+
+        let records = db.lookup_scoped("scopeA", "host1.scopeA.home", Some(RecordKind::A));
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].value, "10.10.0.1");
+    }
+
+    #[test]
+    fn test_scoped_records_isolated_between_scopes() {
+        let db = test_db();
+        db.create_network_scope(&NetworkScope {
+            name: "scope1".to_string(),
+            home_domain: "scope1.home".to_string(),
+        }).unwrap();
+        db.create_network_scope(&NetworkScope {
+            name: "scope2".to_string(),
+            home_domain: "scope2.home".to_string(),
+        }).unwrap();
+
+        db.add_scoped_record("scope1", &DnsRecord {
+            id: None,
+            name: "shared.internal".to_string(),
+            record_type: RecordKind::A,
+            value: "10.0.0.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        }).unwrap();
+
+        db.add_scoped_record("scope2", &DnsRecord {
+            id: None,
+            name: "shared.internal".to_string(),
+            record_type: RecordKind::A,
+            value: "10.0.0.2".to_string(),
+            ttl: 300,
+            priority: 0,
+        }).unwrap();
+
+        let s1_records = db.lookup_scoped("scope1", "shared.internal", Some(RecordKind::A));
+        assert_eq!(s1_records.len(), 1);
+        assert_eq!(s1_records[0].value, "10.0.0.1");
+
+        let s2_records = db.lookup_scoped("scope2", "shared.internal", Some(RecordKind::A));
+        assert_eq!(s2_records.len(), 1);
+        assert_eq!(s2_records[0].value, "10.0.0.2");
+    }
+
+    #[test]
+    fn test_remove_scoped_records() {
+        let db = test_db();
+        db.create_network_scope(&NetworkScope {
+            name: "rmscope".to_string(),
+            home_domain: "rmscope.home".to_string(),
+        }).unwrap();
+
+        db.add_scoped_record("rmscope", &DnsRecord {
+            id: None,
+            name: "remove-me.rmscope.home".to_string(),
+            record_type: RecordKind::A,
+            value: "10.0.0.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        }).unwrap();
+
+        let removed = db.remove_scoped_records("rmscope", "remove-me.rmscope.home", Some(RecordKind::A), "").unwrap();
+        assert_eq!(removed, 1);
+
+        let records = db.lookup_scoped("rmscope", "remove-me.rmscope.home", Some(RecordKind::A));
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn test_list_scoped_records() {
+        let db = test_db();
+        db.create_network_scope(&NetworkScope {
+            name: "listscope".to_string(),
+            home_domain: "listscope.home".to_string(),
+        }).unwrap();
+
+        db.add_scoped_record("listscope", &DnsRecord {
+            id: None,
+            name: "a.listscope.home".to_string(),
+            record_type: RecordKind::A,
+            value: "10.0.0.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        }).unwrap();
+        db.add_scoped_record("listscope", &DnsRecord {
+            id: None,
+            name: "b.listscope.home".to_string(),
+            record_type: RecordKind::AAAA,
+            value: "::1".to_string(),
+            ttl: 300,
+            priority: 0,
+        }).unwrap();
+
+        let all = db.list_scoped_records("listscope", "", None).unwrap();
+        assert_eq!(all.len(), 2);
+
+        let a_only = db.list_scoped_records("listscope", "", Some(RecordKind::A)).unwrap();
+        assert_eq!(a_only.len(), 1);
+    }
+
+    #[test]
+    fn test_get_search_domains() {
+        let db = test_db();
+        db.create_network_scope(&NetworkScope {
+            name: "search-net".to_string(),
+            home_domain: "search.home".to_string(),
+        }).unwrap();
+
+        db.join_network(&NetworkAssociation {
+            ip_address: "192.168.0.50".to_string(),
+            scope_name: "search-net".to_string(),
+            ttl_seconds: 3600,
+        }).unwrap();
+
+        let domains = db.get_search_domains("192.168.0.50").unwrap();
+        assert_eq!(domains.len(), 1);
+        assert_eq!(domains[0], "search.home.");
+
+        // Unassociated IP should get no search domains
+        let empty = db.get_search_domains("192.168.0.99").unwrap();
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn test_lookup_scoped_without_type() {
+        let db = test_db();
+        db.create_network_scope(&NetworkScope {
+            name: "alltype".to_string(),
+            home_domain: "alltype.home".to_string(),
+        }).unwrap();
+
+        db.add_scoped_record("alltype", &DnsRecord {
+            id: None,
+            name: "multi.alltype.home".to_string(),
+            record_type: RecordKind::A,
+            value: "10.0.0.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        }).unwrap();
+        db.add_scoped_record("alltype", &DnsRecord {
+            id: None,
+            name: "multi.alltype.home".to_string(),
+            record_type: RecordKind::AAAA,
+            value: "::1".to_string(),
+            ttl: 300,
+            priority: 0,
+        }).unwrap();
+
+        let all = db.lookup_scoped("alltype", "multi.alltype.home", None);
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn test_scoped_managed_zones() {
+        let db = test_db();
+        db.create_network_scope(&NetworkScope {
+            name: "zones".to_string(),
+            home_domain: "zones.home".to_string(),
+        }).unwrap();
+
+        db.add_scoped_record("zones", &DnsRecord {
+            id: None,
+            name: "host.zones.home".to_string(),
+            record_type: RecordKind::A,
+            value: "10.0.0.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        }).unwrap();
+        db.add_scoped_record("zones", &DnsRecord {
+            id: None,
+            name: "host.other.net".to_string(),
+            record_type: RecordKind::A,
+            value: "10.0.0.2".to_string(),
+            ttl: 300,
+            priority: 0,
+        }).unwrap();
+
+        let zones = db.get_scoped_managed_zones("zones").unwrap();
+        assert_eq!(zones.len(), 2);
+        assert!(zones.contains(&"zones.home.".to_string()));
+        assert!(zones.contains(&"other.net.".to_string()));
     }
 }

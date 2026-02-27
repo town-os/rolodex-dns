@@ -20,13 +20,23 @@ import (
 type mockRolodexService struct {
 	pb.UnimplementedRolodexServiceServer
 
-	addRecordFn    func(ctx context.Context, req *pb.AddRecordRequest) (*pb.AddRecordResponse, error)
-	removeRecordFn func(ctx context.Context, req *pb.RemoveRecordRequest) (*pb.RemoveRecordResponse, error)
-	listRecordsFn  func(ctx context.Context, req *pb.ListRecordsRequest) (*pb.ListRecordsResponse, error)
-	setForwarderFn func(ctx context.Context, req *pb.SetForwarderRequest) (*pb.SetForwarderResponse, error)
-	setRblConfigFn func(ctx context.Context, req *pb.SetRblConfigRequest) (*pb.SetRblConfigResponse, error)
-	getRblConfigFn func(ctx context.Context, req *pb.GetRblConfigRequest) (*pb.GetRblConfigResponse, error)
-	flushCacheFn   func(ctx context.Context, req *pb.FlushCacheRequest) (*pb.FlushCacheResponse, error)
+	addRecordFn              func(ctx context.Context, req *pb.AddRecordRequest) (*pb.AddRecordResponse, error)
+	removeRecordFn           func(ctx context.Context, req *pb.RemoveRecordRequest) (*pb.RemoveRecordResponse, error)
+	listRecordsFn            func(ctx context.Context, req *pb.ListRecordsRequest) (*pb.ListRecordsResponse, error)
+	setForwarderFn           func(ctx context.Context, req *pb.SetForwarderRequest) (*pb.SetForwarderResponse, error)
+	setRblConfigFn           func(ctx context.Context, req *pb.SetRblConfigRequest) (*pb.SetRblConfigResponse, error)
+	getRblConfigFn           func(ctx context.Context, req *pb.GetRblConfigRequest) (*pb.GetRblConfigResponse, error)
+	flushCacheFn             func(ctx context.Context, req *pb.FlushCacheRequest) (*pb.FlushCacheResponse, error)
+	createNetworkScopeFn     func(ctx context.Context, req *pb.CreateNetworkScopeRequest) (*pb.CreateNetworkScopeResponse, error)
+	deleteNetworkScopeFn     func(ctx context.Context, req *pb.DeleteNetworkScopeRequest) (*pb.DeleteNetworkScopeResponse, error)
+	listNetworkScopesFn      func(ctx context.Context, req *pb.ListNetworkScopesRequest) (*pb.ListNetworkScopesResponse, error)
+	joinNetworkFn            func(ctx context.Context, req *pb.JoinNetworkRequest) (*pb.JoinNetworkResponse, error)
+	leaveNetworkFn           func(ctx context.Context, req *pb.LeaveNetworkRequest) (*pb.LeaveNetworkResponse, error)
+	getNetworkAssociationsFn func(ctx context.Context, req *pb.GetNetworkAssociationsRequest) (*pb.GetNetworkAssociationsResponse, error)
+	addScopedRecordFn        func(ctx context.Context, req *pb.AddScopedRecordRequest) (*pb.AddScopedRecordResponse, error)
+	removeScopedRecordFn     func(ctx context.Context, req *pb.RemoveScopedRecordRequest) (*pb.RemoveScopedRecordResponse, error)
+	listScopedRecordsFn      func(ctx context.Context, req *pb.ListScopedRecordsRequest) (*pb.ListScopedRecordsResponse, error)
+	getSearchDomainsFn       func(ctx context.Context, req *pb.GetSearchDomainsRequest) (*pb.GetSearchDomainsResponse, error)
 }
 
 func (m *mockRolodexService) AddRecord(ctx context.Context, req *pb.AddRecordRequest) (*pb.AddRecordResponse, error) {
@@ -74,6 +84,76 @@ func (m *mockRolodexService) GetRblConfig(ctx context.Context, req *pb.GetRblCon
 func (m *mockRolodexService) FlushCache(ctx context.Context, req *pb.FlushCacheRequest) (*pb.FlushCacheResponse, error) {
 	if m.flushCacheFn != nil {
 		return m.flushCacheFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) CreateNetworkScope(ctx context.Context, req *pb.CreateNetworkScopeRequest) (*pb.CreateNetworkScopeResponse, error) {
+	if m.createNetworkScopeFn != nil {
+		return m.createNetworkScopeFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) DeleteNetworkScope(ctx context.Context, req *pb.DeleteNetworkScopeRequest) (*pb.DeleteNetworkScopeResponse, error) {
+	if m.deleteNetworkScopeFn != nil {
+		return m.deleteNetworkScopeFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) ListNetworkScopes(ctx context.Context, req *pb.ListNetworkScopesRequest) (*pb.ListNetworkScopesResponse, error) {
+	if m.listNetworkScopesFn != nil {
+		return m.listNetworkScopesFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) JoinNetwork(ctx context.Context, req *pb.JoinNetworkRequest) (*pb.JoinNetworkResponse, error) {
+	if m.joinNetworkFn != nil {
+		return m.joinNetworkFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) LeaveNetwork(ctx context.Context, req *pb.LeaveNetworkRequest) (*pb.LeaveNetworkResponse, error) {
+	if m.leaveNetworkFn != nil {
+		return m.leaveNetworkFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) GetNetworkAssociations(ctx context.Context, req *pb.GetNetworkAssociationsRequest) (*pb.GetNetworkAssociationsResponse, error) {
+	if m.getNetworkAssociationsFn != nil {
+		return m.getNetworkAssociationsFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) AddScopedRecord(ctx context.Context, req *pb.AddScopedRecordRequest) (*pb.AddScopedRecordResponse, error) {
+	if m.addScopedRecordFn != nil {
+		return m.addScopedRecordFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) RemoveScopedRecord(ctx context.Context, req *pb.RemoveScopedRecordRequest) (*pb.RemoveScopedRecordResponse, error) {
+	if m.removeScopedRecordFn != nil {
+		return m.removeScopedRecordFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) ListScopedRecords(ctx context.Context, req *pb.ListScopedRecordsRequest) (*pb.ListScopedRecordsResponse, error) {
+	if m.listScopedRecordsFn != nil {
+		return m.listScopedRecordsFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) GetSearchDomains(ctx context.Context, req *pb.GetSearchDomainsRequest) (*pb.GetSearchDomainsResponse, error) {
+	if m.getSearchDomainsFn != nil {
+		return m.getSearchDomainsFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
@@ -519,6 +599,415 @@ func TestDialTCP(t *testing.T) {
 	}
 }
 
+func TestCreateNetworkScope(t *testing.T) {
+	var captured *pb.CreateNetworkScopeRequest
+	mock := &mockRolodexService{
+		createNetworkScopeFn: func(_ context.Context, req *pb.CreateNetworkScopeRequest) (*pb.CreateNetworkScopeResponse, error) {
+			captured = req
+			return &pb.CreateNetworkScopeResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tk"))
+
+	err := client.CreateNetworkScope(context.Background(), &NetworkScope{
+		Name:       "office",
+		HomeDomain: "office.home.",
+	})
+	if err != nil {
+		t.Fatalf("CreateNetworkScope returned error: %v", err)
+	}
+	if captured == nil {
+		t.Fatal("server did not receive request")
+	}
+	if captured.AuthToken != "tk" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tk")
+	}
+	if captured.Scope.Name != "office" {
+		t.Errorf("scope name = %q, want %q", captured.Scope.Name, "office")
+	}
+	if captured.Scope.HomeDomain != "office.home." {
+		t.Errorf("home domain = %q, want %q", captured.Scope.HomeDomain, "office.home.")
+	}
+}
+
+func TestCreateNetworkScopeServerFailure(t *testing.T) {
+	mock := &mockRolodexService{
+		createNetworkScopeFn: func(_ context.Context, req *pb.CreateNetworkScopeRequest) (*pb.CreateNetworkScopeResponse, error) {
+			return &pb.CreateNetworkScopeResponse{Success: false, Message: "already exists"}, nil
+		},
+	}
+	client := startMockServer(t, mock)
+
+	err := client.CreateNetworkScope(context.Background(), &NetworkScope{Name: "office"})
+	if err == nil {
+		t.Fatal("expected error from server failure")
+	}
+}
+
+func TestDeleteNetworkScope(t *testing.T) {
+	var captured *pb.DeleteNetworkScopeRequest
+	mock := &mockRolodexService{
+		deleteNetworkScopeFn: func(_ context.Context, req *pb.DeleteNetworkScopeRequest) (*pb.DeleteNetworkScopeResponse, error) {
+			captured = req
+			return &pb.DeleteNetworkScopeResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tk"))
+
+	err := client.DeleteNetworkScope(context.Background(), "office")
+	if err != nil {
+		t.Fatalf("DeleteNetworkScope returned error: %v", err)
+	}
+	if captured.Name != "office" {
+		t.Errorf("name = %q, want %q", captured.Name, "office")
+	}
+	if captured.AuthToken != "tk" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tk")
+	}
+}
+
+func TestListNetworkScopes(t *testing.T) {
+	mock := &mockRolodexService{
+		listNetworkScopesFn: func(_ context.Context, req *pb.ListNetworkScopesRequest) (*pb.ListNetworkScopesResponse, error) {
+			return &pb.ListNetworkScopesResponse{
+				Scopes: []*pb.NetworkScope{
+					{Name: "office", HomeDomain: "office.home."},
+					{Name: "lab", HomeDomain: "lab.home."},
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock)
+
+	scopes, err := client.ListNetworkScopes(context.Background())
+	if err != nil {
+		t.Fatalf("ListNetworkScopes returned error: %v", err)
+	}
+	if len(scopes) != 2 {
+		t.Fatalf("got %d scopes, want 2", len(scopes))
+	}
+	if scopes[0].Name != "office" {
+		t.Errorf("scope[0].Name = %q, want %q", scopes[0].Name, "office")
+	}
+	if scopes[1].Name != "lab" {
+		t.Errorf("scope[1].Name = %q, want %q", scopes[1].Name, "lab")
+	}
+}
+
+func TestJoinNetwork(t *testing.T) {
+	var captured *pb.JoinNetworkRequest
+	mock := &mockRolodexService{
+		joinNetworkFn: func(_ context.Context, req *pb.JoinNetworkRequest) (*pb.JoinNetworkResponse, error) {
+			captured = req
+			return &pb.JoinNetworkResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tk"))
+
+	err := client.JoinNetwork(context.Background(), "192.168.1.100", "office", 600)
+	if err != nil {
+		t.Fatalf("JoinNetwork returned error: %v", err)
+	}
+	if captured.IpAddress != "192.168.1.100" {
+		t.Errorf("ip = %q, want %q", captured.IpAddress, "192.168.1.100")
+	}
+	if captured.ScopeName != "office" {
+		t.Errorf("scope = %q, want %q", captured.ScopeName, "office")
+	}
+	if captured.TtlSeconds != 600 {
+		t.Errorf("ttl = %d, want %d", captured.TtlSeconds, 600)
+	}
+	if captured.AuthToken != "tk" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tk")
+	}
+}
+
+func TestJoinNetworkServerFailure(t *testing.T) {
+	mock := &mockRolodexService{
+		joinNetworkFn: func(_ context.Context, req *pb.JoinNetworkRequest) (*pb.JoinNetworkResponse, error) {
+			return &pb.JoinNetworkResponse{Success: false, Message: "scope not found"}, nil
+		},
+	}
+	client := startMockServer(t, mock)
+
+	err := client.JoinNetwork(context.Background(), "192.168.1.100", "nonexistent", 300)
+	if err == nil {
+		t.Fatal("expected error from server failure")
+	}
+}
+
+func TestLeaveNetwork(t *testing.T) {
+	var captured *pb.LeaveNetworkRequest
+	mock := &mockRolodexService{
+		leaveNetworkFn: func(_ context.Context, req *pb.LeaveNetworkRequest) (*pb.LeaveNetworkResponse, error) {
+			captured = req
+			return &pb.LeaveNetworkResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tk"))
+
+	err := client.LeaveNetwork(context.Background(), "192.168.1.100")
+	if err != nil {
+		t.Fatalf("LeaveNetwork returned error: %v", err)
+	}
+	if captured.IpAddress != "192.168.1.100" {
+		t.Errorf("ip = %q, want %q", captured.IpAddress, "192.168.1.100")
+	}
+	if captured.AuthToken != "tk" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tk")
+	}
+}
+
+func TestGetNetworkAssociations(t *testing.T) {
+	mock := &mockRolodexService{
+		getNetworkAssociationsFn: func(_ context.Context, req *pb.GetNetworkAssociationsRequest) (*pb.GetNetworkAssociationsResponse, error) {
+			return &pb.GetNetworkAssociationsResponse{
+				Associations: []*pb.NetworkAssociation{
+					{IpAddress: "192.168.1.100", ScopeName: "office", TtlSeconds: 300},
+					{IpAddress: "10.0.0.5", ScopeName: "lab", TtlSeconds: 600},
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock)
+
+	assocs, err := client.GetNetworkAssociations(context.Background(), "")
+	if err != nil {
+		t.Fatalf("GetNetworkAssociations returned error: %v", err)
+	}
+	if len(assocs) != 2 {
+		t.Fatalf("got %d associations, want 2", len(assocs))
+	}
+	if assocs[0].IpAddress != "192.168.1.100" {
+		t.Errorf("assoc[0].IpAddress = %q, want %q", assocs[0].IpAddress, "192.168.1.100")
+	}
+	if assocs[0].ScopeName != "office" {
+		t.Errorf("assoc[0].ScopeName = %q, want %q", assocs[0].ScopeName, "office")
+	}
+}
+
+func TestGetNetworkAssociationsFiltered(t *testing.T) {
+	var captured *pb.GetNetworkAssociationsRequest
+	mock := &mockRolodexService{
+		getNetworkAssociationsFn: func(_ context.Context, req *pb.GetNetworkAssociationsRequest) (*pb.GetNetworkAssociationsResponse, error) {
+			captured = req
+			return &pb.GetNetworkAssociationsResponse{}, nil
+		},
+	}
+	client := startMockServer(t, mock)
+
+	_, err := client.GetNetworkAssociations(context.Background(), "office")
+	if err != nil {
+		t.Fatalf("GetNetworkAssociations returned error: %v", err)
+	}
+	if captured.ScopeName != "office" {
+		t.Errorf("scope name = %q, want %q", captured.ScopeName, "office")
+	}
+}
+
+func TestAddScopedRecord(t *testing.T) {
+	var captured *pb.AddScopedRecordRequest
+	mock := &mockRolodexService{
+		addScopedRecordFn: func(_ context.Context, req *pb.AddScopedRecordRequest) (*pb.AddScopedRecordResponse, error) {
+			captured = req
+			return &pb.AddScopedRecordResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tk"))
+
+	err := client.AddScopedRecord(context.Background(), "office", &DnsRecord{
+		Name:       "host1.office.home.",
+		RecordType: RecordTypeA,
+		Value:      "192.168.1.10",
+		Ttl:        600,
+	})
+	if err != nil {
+		t.Fatalf("AddScopedRecord returned error: %v", err)
+	}
+	if captured.ScopeName != "office" {
+		t.Errorf("scope name = %q, want %q", captured.ScopeName, "office")
+	}
+	if captured.Record.Name != "host1.office.home." {
+		t.Errorf("record name = %q, want %q", captured.Record.Name, "host1.office.home.")
+	}
+	if captured.Record.Value != "192.168.1.10" {
+		t.Errorf("record value = %q, want %q", captured.Record.Value, "192.168.1.10")
+	}
+	if captured.AuthToken != "tk" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tk")
+	}
+}
+
+func TestAddScopedRecordServerFailure(t *testing.T) {
+	mock := &mockRolodexService{
+		addScopedRecordFn: func(_ context.Context, req *pb.AddScopedRecordRequest) (*pb.AddScopedRecordResponse, error) {
+			return &pb.AddScopedRecordResponse{Success: false, Message: "scope not found"}, nil
+		},
+	}
+	client := startMockServer(t, mock)
+
+	err := client.AddScopedRecord(context.Background(), "nonexistent", &DnsRecord{
+		Name: "x.", RecordType: RecordTypeA, Value: "1.2.3.4",
+	})
+	if err == nil {
+		t.Fatal("expected error from server failure")
+	}
+}
+
+func TestRemoveScopedRecord(t *testing.T) {
+	var captured *pb.RemoveScopedRecordRequest
+	mock := &mockRolodexService{
+		removeScopedRecordFn: func(_ context.Context, req *pb.RemoveScopedRecordRequest) (*pb.RemoveScopedRecordResponse, error) {
+			captured = req
+			return &pb.RemoveScopedRecordResponse{Success: true, RemovedCount: 1}, nil
+		},
+	}
+	client := startMockServer(t, mock)
+
+	count, err := client.RemoveScopedRecord(context.Background(), "office", "host1.office.home.", nil)
+	if err != nil {
+		t.Fatalf("RemoveScopedRecord returned error: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("removed count = %d, want 1", count)
+	}
+	if captured.ScopeName != "office" {
+		t.Errorf("scope name = %q, want %q", captured.ScopeName, "office")
+	}
+	if captured.Name != "host1.office.home." {
+		t.Errorf("name = %q, want %q", captured.Name, "host1.office.home.")
+	}
+}
+
+func TestRemoveScopedRecordWithOptions(t *testing.T) {
+	var captured *pb.RemoveScopedRecordRequest
+	mock := &mockRolodexService{
+		removeScopedRecordFn: func(_ context.Context, req *pb.RemoveScopedRecordRequest) (*pb.RemoveScopedRecordResponse, error) {
+			captured = req
+			return &pb.RemoveScopedRecordResponse{Success: true, RemovedCount: 1}, nil
+		},
+	}
+	client := startMockServer(t, mock)
+
+	rt := RecordTypeA
+	count, err := client.RemoveScopedRecord(context.Background(), "office", "host1.office.home.", &RemoveScopedRecordOptions{
+		RecordType: &rt,
+		Value:      "192.168.1.10",
+	})
+	if err != nil {
+		t.Fatalf("RemoveScopedRecord returned error: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("removed count = %d, want 1", count)
+	}
+	if captured.RecordType != pb.RecordType_A {
+		t.Errorf("record type = %v, want A", captured.RecordType)
+	}
+	if captured.Value != "192.168.1.10" {
+		t.Errorf("value = %q, want %q", captured.Value, "192.168.1.10")
+	}
+}
+
+func TestListScopedRecords(t *testing.T) {
+	mock := &mockRolodexService{
+		listScopedRecordsFn: func(_ context.Context, req *pb.ListScopedRecordsRequest) (*pb.ListScopedRecordsResponse, error) {
+			return &pb.ListScopedRecordsResponse{
+				Records: []*pb.DnsRecord{
+					{Name: "host1.office.home.", RecordType: pb.RecordType_A, Value: "192.168.1.10", Ttl: 300},
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock)
+
+	records, err := client.ListScopedRecords(context.Background(), "office", nil)
+	if err != nil {
+		t.Fatalf("ListScopedRecords returned error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("got %d records, want 1", len(records))
+	}
+	if records[0].Name != "host1.office.home." {
+		t.Errorf("record name = %q, want %q", records[0].Name, "host1.office.home.")
+	}
+}
+
+func TestListScopedRecordsWithFilters(t *testing.T) {
+	var captured *pb.ListScopedRecordsRequest
+	mock := &mockRolodexService{
+		listScopedRecordsFn: func(_ context.Context, req *pb.ListScopedRecordsRequest) (*pb.ListScopedRecordsResponse, error) {
+			captured = req
+			return &pb.ListScopedRecordsResponse{}, nil
+		},
+	}
+	client := startMockServer(t, mock)
+
+	rt := RecordTypeAAAA
+	_, err := client.ListScopedRecords(context.Background(), "office", &ListScopedRecordsOptions{
+		NameFilter: "*.office.home.",
+		RecordType: &rt,
+	})
+	if err != nil {
+		t.Fatalf("ListScopedRecords returned error: %v", err)
+	}
+	if captured.ScopeName != "office" {
+		t.Errorf("scope name = %q, want %q", captured.ScopeName, "office")
+	}
+	if captured.NameFilter != "*.office.home." {
+		t.Errorf("name filter = %q, want %q", captured.NameFilter, "*.office.home.")
+	}
+	if !captured.FilterByType {
+		t.Error("filter_by_type should be true")
+	}
+	if captured.RecordTypeFilter != pb.RecordType_AAAA {
+		t.Errorf("record type filter = %v, want AAAA", captured.RecordTypeFilter)
+	}
+}
+
+func TestGetSearchDomains(t *testing.T) {
+	mock := &mockRolodexService{
+		getSearchDomainsFn: func(_ context.Context, req *pb.GetSearchDomainsRequest) (*pb.GetSearchDomainsResponse, error) {
+			return &pb.GetSearchDomainsResponse{
+				SearchDomains: []string{"office.home."},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock)
+
+	domains, err := client.GetSearchDomains(context.Background(), "192.168.1.100")
+	if err != nil {
+		t.Fatalf("GetSearchDomains returned error: %v", err)
+	}
+	if len(domains) != 1 {
+		t.Fatalf("got %d domains, want 1", len(domains))
+	}
+	if domains[0] != "office.home." {
+		t.Errorf("domain = %q, want %q", domains[0], "office.home.")
+	}
+}
+
+func TestGetSearchDomainsAuthToken(t *testing.T) {
+	var captured *pb.GetSearchDomainsRequest
+	mock := &mockRolodexService{
+		getSearchDomainsFn: func(_ context.Context, req *pb.GetSearchDomainsRequest) (*pb.GetSearchDomainsResponse, error) {
+			captured = req
+			return &pb.GetSearchDomainsResponse{}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("secret"))
+
+	_, err := client.GetSearchDomains(context.Background(), "10.0.0.1")
+	if err != nil {
+		t.Fatalf("GetSearchDomains returned error: %v", err)
+	}
+	if captured.AuthToken != "secret" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "secret")
+	}
+	if captured.IpAddress != "10.0.0.1" {
+		t.Errorf("ip = %q, want %q", captured.IpAddress, "10.0.0.1")
+	}
+}
+
 func TestAuthTokenSentWithAllRPCs(t *testing.T) {
 	// Verify the auth token is propagated for each RPC method
 	tokens := make(map[string]string)
@@ -551,6 +1040,46 @@ func TestAuthTokenSentWithAllRPCs(t *testing.T) {
 			tokens["flush"] = req.AuthToken
 			return &pb.FlushCacheResponse{Success: true}, nil
 		},
+		createNetworkScopeFn: func(_ context.Context, req *pb.CreateNetworkScopeRequest) (*pb.CreateNetworkScopeResponse, error) {
+			tokens["createScope"] = req.AuthToken
+			return &pb.CreateNetworkScopeResponse{Success: true}, nil
+		},
+		deleteNetworkScopeFn: func(_ context.Context, req *pb.DeleteNetworkScopeRequest) (*pb.DeleteNetworkScopeResponse, error) {
+			tokens["deleteScope"] = req.AuthToken
+			return &pb.DeleteNetworkScopeResponse{Success: true}, nil
+		},
+		listNetworkScopesFn: func(_ context.Context, req *pb.ListNetworkScopesRequest) (*pb.ListNetworkScopesResponse, error) {
+			tokens["listScopes"] = req.AuthToken
+			return &pb.ListNetworkScopesResponse{}, nil
+		},
+		joinNetworkFn: func(_ context.Context, req *pb.JoinNetworkRequest) (*pb.JoinNetworkResponse, error) {
+			tokens["join"] = req.AuthToken
+			return &pb.JoinNetworkResponse{Success: true}, nil
+		},
+		leaveNetworkFn: func(_ context.Context, req *pb.LeaveNetworkRequest) (*pb.LeaveNetworkResponse, error) {
+			tokens["leave"] = req.AuthToken
+			return &pb.LeaveNetworkResponse{Success: true}, nil
+		},
+		getNetworkAssociationsFn: func(_ context.Context, req *pb.GetNetworkAssociationsRequest) (*pb.GetNetworkAssociationsResponse, error) {
+			tokens["assocs"] = req.AuthToken
+			return &pb.GetNetworkAssociationsResponse{}, nil
+		},
+		addScopedRecordFn: func(_ context.Context, req *pb.AddScopedRecordRequest) (*pb.AddScopedRecordResponse, error) {
+			tokens["addScoped"] = req.AuthToken
+			return &pb.AddScopedRecordResponse{Success: true}, nil
+		},
+		removeScopedRecordFn: func(_ context.Context, req *pb.RemoveScopedRecordRequest) (*pb.RemoveScopedRecordResponse, error) {
+			tokens["removeScoped"] = req.AuthToken
+			return &pb.RemoveScopedRecordResponse{Success: true}, nil
+		},
+		listScopedRecordsFn: func(_ context.Context, req *pb.ListScopedRecordsRequest) (*pb.ListScopedRecordsResponse, error) {
+			tokens["listScoped"] = req.AuthToken
+			return &pb.ListScopedRecordsResponse{}, nil
+		},
+		getSearchDomainsFn: func(_ context.Context, req *pb.GetSearchDomainsRequest) (*pb.GetSearchDomainsResponse, error) {
+			tokens["searchDomains"] = req.AuthToken
+			return &pb.GetSearchDomainsResponse{}, nil
+		},
 	}
 	client := startMockServer(t, mock, WithAuthToken("shared"))
 	ctx := context.Background()
@@ -576,14 +1105,44 @@ func TestAuthTokenSentWithAllRPCs(t *testing.T) {
 	if err := client.FlushCache(ctx); err != nil {
 		t.Fatalf("FlushCache: %v", err)
 	}
+	if err := client.CreateNetworkScope(ctx, &NetworkScope{Name: "test"}); err != nil {
+		t.Fatalf("CreateNetworkScope: %v", err)
+	}
+	if err := client.DeleteNetworkScope(ctx, "test"); err != nil {
+		t.Fatalf("DeleteNetworkScope: %v", err)
+	}
+	if _, err := client.ListNetworkScopes(ctx); err != nil {
+		t.Fatalf("ListNetworkScopes: %v", err)
+	}
+	if err := client.JoinNetwork(ctx, "1.2.3.4", "test", 300); err != nil {
+		t.Fatalf("JoinNetwork: %v", err)
+	}
+	if err := client.LeaveNetwork(ctx, "1.2.3.4"); err != nil {
+		t.Fatalf("LeaveNetwork: %v", err)
+	}
+	if _, err := client.GetNetworkAssociations(ctx, ""); err != nil {
+		t.Fatalf("GetNetworkAssociations: %v", err)
+	}
+	if err := client.AddScopedRecord(ctx, "test", &DnsRecord{Name: "x.", RecordType: RecordTypeA, Value: "1.2.3.4"}); err != nil {
+		t.Fatalf("AddScopedRecord: %v", err)
+	}
+	if _, err := client.RemoveScopedRecord(ctx, "test", "x.", nil); err != nil {
+		t.Fatalf("RemoveScopedRecord: %v", err)
+	}
+	if _, err := client.ListScopedRecords(ctx, "test", nil); err != nil {
+		t.Fatalf("ListScopedRecords: %v", err)
+	}
+	if _, err := client.GetSearchDomains(ctx, "1.2.3.4"); err != nil {
+		t.Fatalf("GetSearchDomains: %v", err)
+	}
 
 	for method, tok := range tokens {
 		if tok != "shared" {
 			t.Errorf("%s: auth token = %q, want %q", method, tok, "shared")
 		}
 	}
-	if len(tokens) != 7 {
-		t.Errorf("expected 7 RPCs, got %d", len(tokens))
+	if len(tokens) != 17 {
+		t.Errorf("expected 17 RPCs, got %d", len(tokens))
 	}
 }
 

@@ -346,3 +346,252 @@ func (c *Client) FlushCache(ctx context.Context) error {
 	}
 	return nil
 }
+
+// NetworkScope represents a DNS view that groups records and IP associations.
+type NetworkScope = pb.NetworkScope
+
+// NetworkAssociation represents a client IP's membership in a network scope.
+type NetworkAssociation = pb.NetworkAssociation
+
+// CreateNetworkScope creates a new network scope on the Rolodex server.
+//
+// Each scope has a unique name and a reserved .home domain that serves
+// as the default search domain for DNS clients in that network.
+//
+// Parameters:
+//   - scope: the network scope to create. If HomeDomain is empty, it defaults
+//     to "<name>.home" (e.g. "office" becomes "office.home").
+//
+// Remote API path: /rolodex.RolodexService/CreateNetworkScope
+func (c *Client) CreateNetworkScope(ctx context.Context, scope *NetworkScope) error {
+	resp, err := c.rpc.CreateNetworkScope(ctx, &pb.CreateNetworkScopeRequest{
+		Scope:     scope,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex: create network scope: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex: create network scope: %s", resp.Message)
+	}
+	return nil
+}
+
+// DeleteNetworkScope removes a network scope and all its records and associations.
+//
+// Parameters:
+//   - name: the unique name of the scope to delete
+//
+// Remote API path: /rolodex.RolodexService/DeleteNetworkScope
+func (c *Client) DeleteNetworkScope(ctx context.Context, name string) error {
+	resp, err := c.rpc.DeleteNetworkScope(ctx, &pb.DeleteNetworkScopeRequest{
+		Name:      name,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex: delete network scope: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex: delete network scope: %s", resp.Message)
+	}
+	return nil
+}
+
+// ListNetworkScopes retrieves all configured network scopes.
+//
+// Remote API path: /rolodex.RolodexService/ListNetworkScopes
+func (c *Client) ListNetworkScopes(ctx context.Context) ([]*NetworkScope, error) {
+	resp, err := c.rpc.ListNetworkScopes(ctx, &pb.ListNetworkScopesRequest{
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex: list network scopes: %w", err)
+	}
+	return resp.Scopes, nil
+}
+
+// JoinNetwork associates a client IP address with a network scope.
+//
+// The association has a TTL that must be refreshed regularly to maintain
+// DNS resolution capability. If the TTL expires, the DNS server stops
+// resolving queries from this IP.
+//
+// Parameters:
+//   - ipAddress: the client IP to associate (e.g. "192.168.1.100")
+//   - scopeName: the network scope name to join
+//   - ttlSeconds: TTL in seconds for this association (0 defaults to 300)
+//
+// Remote API path: /rolodex.RolodexService/JoinNetwork
+func (c *Client) JoinNetwork(ctx context.Context, ipAddress, scopeName string, ttlSeconds uint64) error {
+	resp, err := c.rpc.JoinNetwork(ctx, &pb.JoinNetworkRequest{
+		IpAddress:  ipAddress,
+		ScopeName:  scopeName,
+		TtlSeconds: ttlSeconds,
+		AuthToken:  c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex: join network: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex: join network: %s", resp.Message)
+	}
+	return nil
+}
+
+// LeaveNetwork removes an IP address's association with its network scope.
+//
+// Parameters:
+//   - ipAddress: the client IP to disassociate
+//
+// Remote API path: /rolodex.RolodexService/LeaveNetwork
+func (c *Client) LeaveNetwork(ctx context.Context, ipAddress string) error {
+	resp, err := c.rpc.LeaveNetwork(ctx, &pb.LeaveNetworkRequest{
+		IpAddress: ipAddress,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex: leave network: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex: leave network: %s", resp.Message)
+	}
+	return nil
+}
+
+// GetNetworkAssociations retrieves IP-to-scope associations.
+//
+// Parameters:
+//   - scopeName: if non-empty, only return associations for this scope.
+//     If empty, returns all associations.
+//
+// Remote API path: /rolodex.RolodexService/GetNetworkAssociations
+func (c *Client) GetNetworkAssociations(ctx context.Context, scopeName string) ([]*NetworkAssociation, error) {
+	resp, err := c.rpc.GetNetworkAssociations(ctx, &pb.GetNetworkAssociationsRequest{
+		ScopeName: scopeName,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex: get network associations: %w", err)
+	}
+	return resp.Associations, nil
+}
+
+// AddScopedRecord adds a DNS record within a specific network scope.
+// Scoped records are only visible to IPs associated with that scope.
+//
+// Parameters:
+//   - scopeName: the network scope to add the record to
+//   - record: the DNS record to add
+//
+// Remote API path: /rolodex.RolodexService/AddScopedRecord
+func (c *Client) AddScopedRecord(ctx context.Context, scopeName string, record *DnsRecord) error {
+	resp, err := c.rpc.AddScopedRecord(ctx, &pb.AddScopedRecordRequest{
+		ScopeName: scopeName,
+		Record:    record,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex: add scoped record: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex: add scoped record: %s", resp.Message)
+	}
+	return nil
+}
+
+// RemoveScopedRecordOptions configures which scoped records to remove.
+type RemoveScopedRecordOptions struct {
+	// RecordType filters removal to records of this type only.
+	// If nil, all record types for the given name are removed.
+	RecordType *RecordType
+	// Value filters removal to the record with this exact value.
+	// If empty, all matching records are removed.
+	Value string
+}
+
+// RemoveScopedRecord removes DNS records from a specific network scope.
+//
+// Parameters:
+//   - scopeName: the network scope to remove records from
+//   - name: the FQDN to remove records for
+//   - opts: optional filters. If nil, all records for the name are removed.
+//
+// Returns the number of records removed and any error.
+//
+// Remote API path: /rolodex.RolodexService/RemoveScopedRecord
+func (c *Client) RemoveScopedRecord(ctx context.Context, scopeName, name string, opts *RemoveScopedRecordOptions) (uint32, error) {
+	req := &pb.RemoveScopedRecordRequest{
+		ScopeName: scopeName,
+		Name:      name,
+		AuthToken: c.authToken,
+	}
+	if opts != nil {
+		if opts.RecordType != nil {
+			req.RecordType = *opts.RecordType
+		}
+		req.Value = opts.Value
+	}
+
+	resp, err := c.rpc.RemoveScopedRecord(ctx, req)
+	if err != nil {
+		return 0, fmt.Errorf("rolodex: remove scoped record: %w", err)
+	}
+	if !resp.Success {
+		return 0, fmt.Errorf("rolodex: remove scoped record: %s", resp.Message)
+	}
+	return resp.RemovedCount, nil
+}
+
+// ListScopedRecordsOptions configures filtering for scoped record queries.
+type ListScopedRecordsOptions struct {
+	// NameFilter filters by domain name. Supports wildcard prefix "*.".
+	NameFilter string
+	// RecordType filters to records of this type only.
+	RecordType *RecordType
+}
+
+// ListScopedRecords queries DNS records within a network scope.
+//
+// Parameters:
+//   - scopeName: the network scope to query
+//   - opts: optional filters. If nil, all records in the scope are returned.
+//
+// Remote API path: /rolodex.RolodexService/ListScopedRecords
+func (c *Client) ListScopedRecords(ctx context.Context, scopeName string, opts *ListScopedRecordsOptions) ([]*DnsRecord, error) {
+	req := &pb.ListScopedRecordsRequest{
+		ScopeName: scopeName,
+		AuthToken: c.authToken,
+	}
+	if opts != nil {
+		req.NameFilter = opts.NameFilter
+		if opts.RecordType != nil {
+			req.RecordTypeFilter = *opts.RecordType
+			req.FilterByType = true
+		}
+	}
+
+	resp, err := c.rpc.ListScopedRecords(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("rolodex: list scoped records: %w", err)
+	}
+	return resp.Records, nil
+}
+
+// GetSearchDomains retrieves the search domains for a client IP address.
+// Returns the .home domain of the scope the IP is associated with, which
+// can be used as the default search domain for DHCP clients.
+//
+// Parameters:
+//   - ipAddress: the client IP to look up search domains for
+//
+// Remote API path: /rolodex.RolodexService/GetSearchDomains
+func (c *Client) GetSearchDomains(ctx context.Context, ipAddress string) ([]string, error) {
+	resp, err := c.rpc.GetSearchDomains(ctx, &pb.GetSearchDomainsRequest{
+		IpAddress: ipAddress,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex: get search domains: %w", err)
+	}
+	return resp.SearchDomains, nil
+}

@@ -1,4 +1,4 @@
-use crate::db::{Database, DnsRecord, RecordKind};
+use crate::db::{Database, DnsRecord, NetworkAssociation, NetworkScope, RecordKind};
 use crate::dns_server::DnsServer;
 use crate::rbl::{RblChecker, RblProvider};
 use std::net::SocketAddr;
@@ -12,10 +12,16 @@ pub mod proto {
 
 use proto::rolodex_service_server::RolodexService;
 use proto::{
-    AddRecordRequest, AddRecordResponse, FlushCacheRequest, FlushCacheResponse,
-    GetRblConfigRequest, GetRblConfigResponse, ListRecordsRequest, ListRecordsResponse,
-    RemoveRecordRequest, RemoveRecordResponse, SetForwarderRequest, SetForwarderResponse,
-    SetRblConfigRequest, SetRblConfigResponse,
+    AddRecordRequest, AddRecordResponse, AddScopedRecordRequest, AddScopedRecordResponse,
+    CreateNetworkScopeRequest, CreateNetworkScopeResponse, DeleteNetworkScopeRequest,
+    DeleteNetworkScopeResponse, FlushCacheRequest, FlushCacheResponse, GetNetworkAssociationsRequest,
+    GetNetworkAssociationsResponse, GetRblConfigRequest, GetRblConfigResponse,
+    GetSearchDomainsRequest, GetSearchDomainsResponse, JoinNetworkRequest, JoinNetworkResponse,
+    LeaveNetworkRequest, LeaveNetworkResponse, ListNetworkScopesRequest, ListNetworkScopesResponse,
+    ListRecordsRequest, ListRecordsResponse, ListScopedRecordsRequest, ListScopedRecordsResponse,
+    RemoveRecordRequest, RemoveRecordResponse, RemoveScopedRecordRequest,
+    RemoveScopedRecordResponse, SetForwarderRequest, SetForwarderResponse, SetRblConfigRequest,
+    SetRblConfigResponse,
 };
 
 /// The gRPC service implementation for managing rolodex.
@@ -248,6 +254,329 @@ impl RolodexService for RolodexGrpcService {
             success: true,
             message: String::new(),
         }))
+    }
+
+    async fn create_network_scope(
+        &self,
+        request: Request<CreateNetworkScopeRequest>,
+    ) -> Result<Response<CreateNetworkScopeResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        let scope = req
+            .scope
+            .ok_or_else(|| Status::invalid_argument("scope is required"))?;
+
+        if scope.name.is_empty() {
+            return Err(Status::invalid_argument("scope name is required"));
+        }
+
+        let home_domain = if scope.home_domain.is_empty() {
+            format!("{}.home", scope.name)
+        } else {
+            scope.home_domain.clone()
+        };
+
+        let db_scope = NetworkScope {
+            name: scope.name.clone(),
+            home_domain,
+        };
+
+        match self.db.create_network_scope(&db_scope) {
+            Ok(_) => {
+                info!("Created network scope: {}", scope.name);
+                Ok(Response::new(CreateNetworkScopeResponse {
+                    success: true,
+                    message: String::new(),
+                }))
+            }
+            Err(e) => Ok(Response::new(CreateNetworkScopeResponse {
+                success: false,
+                message: format!("failed to create scope: {}", e),
+            })),
+        }
+    }
+
+    async fn delete_network_scope(
+        &self,
+        request: Request<DeleteNetworkScopeRequest>,
+    ) -> Result<Response<DeleteNetworkScopeResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        if req.name.is_empty() {
+            return Err(Status::invalid_argument("scope name is required"));
+        }
+
+        match self.db.delete_network_scope(&req.name) {
+            Ok(true) => {
+                info!("Deleted network scope: {}", req.name);
+                Ok(Response::new(DeleteNetworkScopeResponse {
+                    success: true,
+                    message: String::new(),
+                }))
+            }
+            Ok(false) => Ok(Response::new(DeleteNetworkScopeResponse {
+                success: false,
+                message: format!("scope '{}' not found", req.name),
+            })),
+            Err(e) => Ok(Response::new(DeleteNetworkScopeResponse {
+                success: false,
+                message: format!("failed to delete scope: {}", e),
+            })),
+        }
+    }
+
+    async fn list_network_scopes(
+        &self,
+        request: Request<ListNetworkScopesRequest>,
+    ) -> Result<Response<ListNetworkScopesResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        match self.db.list_network_scopes() {
+            Ok(scopes) => {
+                let proto_scopes = scopes
+                    .iter()
+                    .map(|s| proto::NetworkScope {
+                        name: s.name.clone(),
+                        home_domain: s.home_domain.clone(),
+                    })
+                    .collect();
+                Ok(Response::new(ListNetworkScopesResponse {
+                    scopes: proto_scopes,
+                }))
+            }
+            Err(e) => Err(Status::internal(format!("failed to list scopes: {}", e))),
+        }
+    }
+
+    async fn join_network(
+        &self,
+        request: Request<JoinNetworkRequest>,
+    ) -> Result<Response<JoinNetworkResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        if req.ip_address.is_empty() {
+            return Err(Status::invalid_argument("ip_address is required"));
+        }
+        if req.scope_name.is_empty() {
+            return Err(Status::invalid_argument("scope_name is required"));
+        }
+
+        let ttl = if req.ttl_seconds == 0 { 300 } else { req.ttl_seconds };
+
+        let assoc = NetworkAssociation {
+            ip_address: req.ip_address.clone(),
+            scope_name: req.scope_name.clone(),
+            ttl_seconds: ttl,
+        };
+
+        match self.db.join_network(&assoc) {
+            Ok(_) => {
+                info!("IP {} joined network scope {} (TTL: {}s)", req.ip_address, req.scope_name, ttl);
+                Ok(Response::new(JoinNetworkResponse {
+                    success: true,
+                    message: String::new(),
+                }))
+            }
+            Err(e) => Ok(Response::new(JoinNetworkResponse {
+                success: false,
+                message: format!("failed to join network: {}", e),
+            })),
+        }
+    }
+
+    async fn leave_network(
+        &self,
+        request: Request<LeaveNetworkRequest>,
+    ) -> Result<Response<LeaveNetworkResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        if req.ip_address.is_empty() {
+            return Err(Status::invalid_argument("ip_address is required"));
+        }
+
+        match self.db.leave_network(&req.ip_address) {
+            Ok(true) => {
+                info!("IP {} left network", req.ip_address);
+                Ok(Response::new(LeaveNetworkResponse {
+                    success: true,
+                    message: String::new(),
+                }))
+            }
+            Ok(false) => Ok(Response::new(LeaveNetworkResponse {
+                success: false,
+                message: format!("no association found for {}", req.ip_address),
+            })),
+            Err(e) => Ok(Response::new(LeaveNetworkResponse {
+                success: false,
+                message: format!("failed to leave network: {}", e),
+            })),
+        }
+    }
+
+    async fn get_network_associations(
+        &self,
+        request: Request<GetNetworkAssociationsRequest>,
+    ) -> Result<Response<GetNetworkAssociationsResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        let scope_filter = if req.scope_name.is_empty() {
+            None
+        } else {
+            Some(req.scope_name.as_str())
+        };
+
+        match self.db.list_network_associations(scope_filter) {
+            Ok(assocs) => {
+                let proto_assocs = assocs
+                    .iter()
+                    .map(|a| proto::NetworkAssociation {
+                        ip_address: a.ip_address.clone(),
+                        scope_name: a.scope_name.clone(),
+                        ttl_seconds: a.ttl_seconds,
+                    })
+                    .collect();
+                Ok(Response::new(GetNetworkAssociationsResponse {
+                    associations: proto_assocs,
+                }))
+            }
+            Err(e) => Err(Status::internal(format!("failed to list associations: {}", e))),
+        }
+    }
+
+    async fn add_scoped_record(
+        &self,
+        request: Request<AddScopedRecordRequest>,
+    ) -> Result<Response<AddScopedRecordResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        if req.scope_name.is_empty() {
+            return Err(Status::invalid_argument("scope_name is required"));
+        }
+
+        let record = req
+            .record
+            .ok_or_else(|| Status::invalid_argument("record is required"))?;
+
+        let record_type = RecordKind::from_proto_i32(record.record_type)
+            .ok_or_else(|| Status::invalid_argument("invalid record type"))?;
+
+        let ttl = if record.ttl == 0 { 300 } else { record.ttl };
+
+        let db_record = DnsRecord {
+            id: None,
+            name: record.name.clone(),
+            record_type,
+            value: record.value.clone(),
+            ttl,
+            priority: record.priority,
+        };
+
+        match self.db.add_scoped_record(&req.scope_name, &db_record) {
+            Ok(_) => {
+                info!("Added scoped record in {}: {} {:?} {}", req.scope_name, record.name, record_type, record.value);
+                Ok(Response::new(AddScopedRecordResponse {
+                    success: true,
+                    message: String::new(),
+                }))
+            }
+            Err(e) => Ok(Response::new(AddScopedRecordResponse {
+                success: false,
+                message: format!("failed to add scoped record: {}", e),
+            })),
+        }
+    }
+
+    async fn remove_scoped_record(
+        &self,
+        request: Request<RemoveScopedRecordRequest>,
+    ) -> Result<Response<RemoveScopedRecordResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        if req.scope_name.is_empty() {
+            return Err(Status::invalid_argument("scope_name is required"));
+        }
+
+        let record_type = RecordKind::from_proto_i32(req.record_type);
+
+        match self.db.remove_scoped_records(&req.scope_name, &req.name, record_type, &req.value) {
+            Ok(count) => {
+                info!("Removed {} scoped records from {} for {}", count, req.scope_name, req.name);
+                Ok(Response::new(RemoveScopedRecordResponse {
+                    success: true,
+                    removed_count: count as u32,
+                    message: String::new(),
+                }))
+            }
+            Err(e) => Ok(Response::new(RemoveScopedRecordResponse {
+                success: false,
+                removed_count: 0,
+                message: format!("failed to remove scoped records: {}", e),
+            })),
+        }
+    }
+
+    async fn list_scoped_records(
+        &self,
+        request: Request<ListScopedRecordsRequest>,
+    ) -> Result<Response<ListScopedRecordsResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        if req.scope_name.is_empty() {
+            return Err(Status::invalid_argument("scope_name is required"));
+        }
+
+        let record_type = if req.filter_by_type {
+            RecordKind::from_proto_i32(req.record_type_filter)
+        } else {
+            None
+        };
+
+        match self.db.list_scoped_records(&req.scope_name, &req.name_filter, record_type) {
+            Ok(records) => {
+                let proto_records = records
+                    .iter()
+                    .map(|r| proto::DnsRecord {
+                        name: r.name.clone(),
+                        record_type: r.record_type.to_proto_i32(),
+                        value: r.value.clone(),
+                        ttl: r.ttl,
+                        priority: r.priority,
+                    })
+                    .collect();
+                Ok(Response::new(ListScopedRecordsResponse {
+                    records: proto_records,
+                }))
+            }
+            Err(e) => Err(Status::internal(format!("failed to list scoped records: {}", e))),
+        }
+    }
+
+    async fn get_search_domains(
+        &self,
+        request: Request<GetSearchDomainsRequest>,
+    ) -> Result<Response<GetSearchDomainsResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        if req.ip_address.is_empty() {
+            return Err(Status::invalid_argument("ip_address is required"));
+        }
+
+        match self.db.get_search_domains(&req.ip_address) {
+            Ok(domains) => Ok(Response::new(GetSearchDomainsResponse {
+                search_domains: domains,
+            })),
+            Err(e) => Err(Status::internal(format!("failed to get search domains: {}", e))),
+        }
     }
 }
 
@@ -524,5 +853,299 @@ mod tests {
         let response = service.list_records(list_req).await.unwrap();
         let records = response.into_inner().records;
         assert_eq!(records[0].ttl, 300);
+    }
+
+    // ================================================================
+    // Network Scope gRPC Tests
+    // ================================================================
+
+    #[tokio::test]
+    async fn test_create_and_list_network_scopes() {
+        let service = make_test_service();
+
+        let req = Request::new(CreateNetworkScopeRequest {
+            scope: Some(proto::NetworkScope {
+                name: "office".to_string(),
+                home_domain: "office.home".to_string(),
+            }),
+            auth_token: "secret123".to_string(),
+        });
+        let resp = service.create_network_scope(req).await.unwrap();
+        assert!(resp.into_inner().success);
+
+        let list_req = Request::new(ListNetworkScopesRequest {
+            auth_token: "secret123".to_string(),
+        });
+        let resp = service.list_network_scopes(list_req).await.unwrap();
+        let scopes = resp.into_inner().scopes;
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].name, "office");
+    }
+
+    #[tokio::test]
+    async fn test_create_scope_default_home_domain() {
+        let service = make_test_service();
+
+        let req = Request::new(CreateNetworkScopeRequest {
+            scope: Some(proto::NetworkScope {
+                name: "lab".to_string(),
+                home_domain: String::new(), // Should default to lab.home
+            }),
+            auth_token: "secret123".to_string(),
+        });
+        let resp = service.create_network_scope(req).await.unwrap();
+        assert!(resp.into_inner().success);
+
+        let list_req = Request::new(ListNetworkScopesRequest {
+            auth_token: "secret123".to_string(),
+        });
+        let resp = service.list_network_scopes(list_req).await.unwrap();
+        let scopes = resp.into_inner().scopes;
+        assert_eq!(scopes[0].home_domain, "lab.home.");
+    }
+
+    #[tokio::test]
+    async fn test_delete_network_scope() {
+        let service = make_test_service();
+
+        // Create scope
+        let req = Request::new(CreateNetworkScopeRequest {
+            scope: Some(proto::NetworkScope {
+                name: "temp".to_string(),
+                home_domain: "temp.home".to_string(),
+            }),
+            auth_token: "secret123".to_string(),
+        });
+        service.create_network_scope(req).await.unwrap();
+
+        // Delete it
+        let del_req = Request::new(DeleteNetworkScopeRequest {
+            name: "temp".to_string(),
+            auth_token: "secret123".to_string(),
+        });
+        let resp = service.delete_network_scope(del_req).await.unwrap();
+        assert!(resp.into_inner().success);
+
+        // Verify it's gone
+        let list_req = Request::new(ListNetworkScopesRequest {
+            auth_token: "secret123".to_string(),
+        });
+        let resp = service.list_network_scopes(list_req).await.unwrap();
+        assert!(resp.into_inner().scopes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_join_and_leave_network() {
+        let service = make_test_service();
+
+        // Create scope
+        let req = Request::new(CreateNetworkScopeRequest {
+            scope: Some(proto::NetworkScope {
+                name: "mynet".to_string(),
+                home_domain: "mynet.home".to_string(),
+            }),
+            auth_token: "secret123".to_string(),
+        });
+        service.create_network_scope(req).await.unwrap();
+
+        // Join
+        let join_req = Request::new(JoinNetworkRequest {
+            ip_address: "192.168.1.100".to_string(),
+            scope_name: "mynet".to_string(),
+            ttl_seconds: 3600,
+            auth_token: "secret123".to_string(),
+        });
+        let resp = service.join_network(join_req).await.unwrap();
+        assert!(resp.into_inner().success);
+
+        // Check associations
+        let assoc_req = Request::new(GetNetworkAssociationsRequest {
+            scope_name: "mynet".to_string(),
+            auth_token: "secret123".to_string(),
+        });
+        let resp = service.get_network_associations(assoc_req).await.unwrap();
+        let assocs = resp.into_inner().associations;
+        assert_eq!(assocs.len(), 1);
+        assert_eq!(assocs[0].ip_address, "192.168.1.100");
+
+        // Leave
+        let leave_req = Request::new(LeaveNetworkRequest {
+            ip_address: "192.168.1.100".to_string(),
+            auth_token: "secret123".to_string(),
+        });
+        let resp = service.leave_network(leave_req).await.unwrap();
+        assert!(resp.into_inner().success);
+
+        // Verify gone
+        let assoc_req = Request::new(GetNetworkAssociationsRequest {
+            scope_name: "mynet".to_string(),
+            auth_token: "secret123".to_string(),
+        });
+        let resp = service.get_network_associations(assoc_req).await.unwrap();
+        assert!(resp.into_inner().associations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_add_and_list_scoped_records() {
+        let service = make_test_service();
+
+        // Create scope
+        let req = Request::new(CreateNetworkScopeRequest {
+            scope: Some(proto::NetworkScope {
+                name: "recscope".to_string(),
+                home_domain: "recscope.home".to_string(),
+            }),
+            auth_token: "secret123".to_string(),
+        });
+        service.create_network_scope(req).await.unwrap();
+
+        // Add scoped record
+        let add_req = Request::new(AddScopedRecordRequest {
+            scope_name: "recscope".to_string(),
+            record: Some(proto::DnsRecord {
+                name: "host.recscope.home".to_string(),
+                record_type: 0,
+                value: "10.0.0.1".to_string(),
+                ttl: 300,
+                priority: 0,
+            }),
+            auth_token: "secret123".to_string(),
+        });
+        let resp = service.add_scoped_record(add_req).await.unwrap();
+        assert!(resp.into_inner().success);
+
+        // List scoped records
+        let list_req = Request::new(ListScopedRecordsRequest {
+            scope_name: "recscope".to_string(),
+            name_filter: String::new(),
+            record_type_filter: 0,
+            filter_by_type: false,
+            auth_token: "secret123".to_string(),
+        });
+        let resp = service.list_scoped_records(list_req).await.unwrap();
+        let records = resp.into_inner().records;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].value, "10.0.0.1");
+    }
+
+    #[tokio::test]
+    async fn test_remove_scoped_records() {
+        let service = make_test_service();
+
+        // Create scope + record
+        let req = Request::new(CreateNetworkScopeRequest {
+            scope: Some(proto::NetworkScope {
+                name: "rmscope".to_string(),
+                home_domain: "rmscope.home".to_string(),
+            }),
+            auth_token: "secret123".to_string(),
+        });
+        service.create_network_scope(req).await.unwrap();
+
+        let add_req = Request::new(AddScopedRecordRequest {
+            scope_name: "rmscope".to_string(),
+            record: Some(proto::DnsRecord {
+                name: "delete-me.rmscope.home".to_string(),
+                record_type: 0,
+                value: "10.0.0.1".to_string(),
+                ttl: 300,
+                priority: 0,
+            }),
+            auth_token: "secret123".to_string(),
+        });
+        service.add_scoped_record(add_req).await.unwrap();
+
+        // Remove
+        let rm_req = Request::new(RemoveScopedRecordRequest {
+            scope_name: "rmscope".to_string(),
+            name: "delete-me.rmscope.home".to_string(),
+            record_type: 0,
+            value: String::new(),
+            auth_token: "secret123".to_string(),
+        });
+        let resp = service.remove_scoped_record(rm_req).await.unwrap();
+        let inner = resp.into_inner();
+        assert!(inner.success);
+        assert_eq!(inner.removed_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_search_domains() {
+        let service = make_test_service();
+
+        // Create scope
+        let req = Request::new(CreateNetworkScopeRequest {
+            scope: Some(proto::NetworkScope {
+                name: "searchnet".to_string(),
+                home_domain: "searchnet.home".to_string(),
+            }),
+            auth_token: "secret123".to_string(),
+        });
+        service.create_network_scope(req).await.unwrap();
+
+        // Join network
+        let join_req = Request::new(JoinNetworkRequest {
+            ip_address: "10.0.0.50".to_string(),
+            scope_name: "searchnet".to_string(),
+            ttl_seconds: 3600,
+            auth_token: "secret123".to_string(),
+        });
+        service.join_network(join_req).await.unwrap();
+
+        // Get search domains
+        let sd_req = Request::new(GetSearchDomainsRequest {
+            ip_address: "10.0.0.50".to_string(),
+            auth_token: "secret123".to_string(),
+        });
+        let resp = service.get_search_domains(sd_req).await.unwrap();
+        let domains = resp.into_inner().search_domains;
+        assert_eq!(domains.len(), 1);
+        assert_eq!(domains[0], "searchnet.home.");
+    }
+
+    #[tokio::test]
+    async fn test_join_network_default_ttl() {
+        let service = make_test_service();
+
+        let req = Request::new(CreateNetworkScopeRequest {
+            scope: Some(proto::NetworkScope {
+                name: "ttlnet".to_string(),
+                home_domain: "ttlnet.home".to_string(),
+            }),
+            auth_token: "secret123".to_string(),
+        });
+        service.create_network_scope(req).await.unwrap();
+
+        let join_req = Request::new(JoinNetworkRequest {
+            ip_address: "10.0.0.1".to_string(),
+            scope_name: "ttlnet".to_string(),
+            ttl_seconds: 0, // Should default to 300
+            auth_token: "secret123".to_string(),
+        });
+        let resp = service.join_network(join_req).await.unwrap();
+        assert!(resp.into_inner().success);
+
+        let assoc_req = Request::new(GetNetworkAssociationsRequest {
+            scope_name: "ttlnet".to_string(),
+            auth_token: "secret123".to_string(),
+        });
+        let resp = service.get_network_associations(assoc_req).await.unwrap();
+        let assocs = resp.into_inner().associations;
+        assert_eq!(assocs[0].ttl_seconds, 300);
+    }
+
+    #[tokio::test]
+    async fn test_network_scope_auth_required() {
+        let service = make_test_service();
+
+        let req = Request::new(CreateNetworkScopeRequest {
+            scope: Some(proto::NetworkScope {
+                name: "auth-test".to_string(),
+                home_domain: "auth.home".to_string(),
+            }),
+            auth_token: "wrong".to_string(),
+        });
+        let result = service.create_network_scope(req).await;
+        assert!(result.is_err());
     }
 }
