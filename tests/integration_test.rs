@@ -689,6 +689,22 @@ fn test_config_roundtrip() {
 }
 
 // ========================================================
+// Integration: Dev config file is valid YAML
+// ========================================================
+
+#[test]
+fn test_dev_config_parses() {
+    let content = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/dev.yml")).unwrap();
+    let config: rolodex::config::Config = serde_yaml_ng::from_str(&content).unwrap();
+    assert_eq!(config.dns.udp_bind, "127.0.0.1:5300");
+    assert_eq!(config.dns.tcp_bind, "127.0.0.1:5300");
+    assert_eq!(config.database_path, "/tmp/rolodex-dev.db");
+    assert!(config.grpc.tcp_bind.is_empty());
+    assert_eq!(config.grpc.unix_socket, "/tmp/rolodex.sock");
+    assert!(!config.rbl.enabled);
+}
+
+// ========================================================
 // Helper functions
 // ========================================================
 
