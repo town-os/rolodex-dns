@@ -97,12 +97,205 @@ enabled = true
 
 ## Usage
 
+### Server
+
 ```
 rolodex [OPTIONS]
 
 Options:
   -c, --config <CONFIG>  Path to configuration file [default: rolodex.toml]
   -h, --help             Print help
+```
+
+### CLI Client
+
+`rolodex-cli` is a command-line client for managing a running Rolodex server via its gRPC management interface. It supports both TCP and Unix socket transports.
+
+```
+rolodex-cli [OPTIONS] <COMMAND>
+```
+
+#### Global Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-a, --address <ADDRESS>` | `127.0.0.1:50051` | gRPC server address for TCP connections (host:port). Ignored when `--unix-socket` is set. |
+| `-u, --unix-socket <PATH>` | — | Path to Unix domain socket. Overrides `--address`. Unix socket connections bypass authentication. |
+| `-t, --auth-token <TOKEN>` | `""` | Authentication token for TCP connections. Required when the server has a shared secret configured. Ignored for Unix socket connections. |
+| `-h, --help` | — | Print help |
+| `-V, --version` | — | Print version |
+
+#### Commands
+
+##### `add-record`
+
+Add a DNS record to the local database.
+**gRPC path:** `/rolodex.RolodexService/AddRecord`
+
+```
+rolodex-cli add-record -n <NAME> -v <VALUE> [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-n, --name <NAME>` | — | Fully qualified domain name (e.g. `"example.com."` — trailing dot recommended) |
+| `-r, --record-type <TYPE>` | `a` | DNS record type: `a`, `aaaa`, `cname`, `mx`, `txt`, `ns`, `soa`, `srv`, `ptr` |
+| `-v, --value <VALUE>` | — | Record data. Format depends on record type (see Record Types section) |
+| `--ttl <TTL>` | `300` | Time-to-live in seconds. If set to 0, the server defaults to 300 |
+| `-p, --priority <PRIORITY>` | `0` | Priority for MX and SRV records. Lower values = higher priority. Ignored for other types |
+
+Examples:
+```bash
+# Add an A record via TCP
+rolodex-cli -a 127.0.0.1:50051 -t my-secret add-record \
+  -n example.com. -r a -v 10.0.0.1 --ttl 600
+
+# Add an MX record via Unix socket
+rolodex-cli -u /var/run/rolodex.sock add-record \
+  -n example.com. -r mx -v mail.example.com. -p 10
+
+# Add a CNAME record
+rolodex-cli add-record -n www.example.com. -r cname -v example.com.
+
+# Add an SRV record
+rolodex-cli add-record -n _sip._tcp.example.com. -r srv \
+  -v "5 5060 sip.example.com." -p 10
+```
+
+##### `remove-record`
+
+Remove DNS record(s) from the local database. Removes by name, with optional type and value filters.
+**gRPC path:** `/rolodex.RolodexService/RemoveRecord`
+
+```
+rolodex-cli remove-record -n <NAME> [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-n, --name <NAME>` | — | Fully qualified domain name of records to remove |
+| `-r, --record-type <TYPE>` | — | If specified, only remove records of this type. If omitted, removes all types for the name |
+| `-v, --value <VALUE>` | — | If specified, only remove the record with this exact value |
+
+Examples:
+```bash
+# Remove all records for a name
+rolodex-cli remove-record -n old.example.com.
+
+# Remove only A records for a name
+rolodex-cli remove-record -n example.com. -r a
+
+# Remove a specific record by value
+rolodex-cli remove-record -n example.com. -r a -v 10.0.0.1
+```
+
+##### `list-records`
+
+List DNS records from the local database with optional filters.
+**gRPC path:** `/rolodex.RolodexService/ListRecords`
+
+```
+rolodex-cli list-records [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-n, --name <NAME>` | — | Filter by domain name. Supports wildcard prefix `"*."` to match all subdomains (e.g. `"*.example.com."`) |
+| `-r, --record-type <TYPE>` | — | Filter by record type. If omitted, returns all record types |
+
+Examples:
+```bash
+# List all records
+rolodex-cli list-records
+
+# List records for a specific name
+rolodex-cli list-records -n example.com.
+
+# List all subdomains
+rolodex-cli list-records -n "*.example.com."
+
+# List only AAAA records
+rolodex-cli list-records -r aaaa
+```
+
+##### `set-forwarders`
+
+Set upstream DNS forwarders at runtime. Replaces the entire forwarder list.
+**gRPC path:** `/rolodex.RolodexService/SetForwarders`
+
+```
+rolodex-cli set-forwarders -f <ADDR>...
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-f, --forwarders <ADDR>...` | — | Upstream DNS server addresses in `"host:port"` format. Multiple addresses separated by spaces |
+
+Examples:
+```bash
+# Set Google and Cloudflare DNS
+rolodex-cli set-forwarders -f 8.8.8.8:53 1.1.1.1:53
+
+# Set a single forwarder
+rolodex-cli set-forwarders -f 9.9.9.9:53
+```
+
+##### `set-rbl-config`
+
+Configure RBL (Realtime Blackhole List) settings at runtime. Replaces the entire RBL configuration.
+**gRPC path:** `/rolodex.RolodexService/SetRblConfig`
+
+```
+rolodex-cli set-rbl-config [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-e, --enabled` | `false` | Enable RBL checking globally. If flag is absent, RBL is disabled |
+| `-p, --providers <SPEC>...` | — | RBL provider specifications in `"zone:enabled"` format (e.g. `"zen.spamhaus.org:true"`) |
+
+Examples:
+```bash
+# Enable RBL with Spamhaus
+rolodex-cli set-rbl-config -e -p "zen.spamhaus.org:true"
+
+# Enable RBL with multiple providers (some disabled)
+rolodex-cli set-rbl-config -e \
+  -p "zen.spamhaus.org:true" \
+  -p "bl.spamcop.net:false" \
+  -p "dnsbl.sorbs.net:true"
+
+# Disable RBL entirely
+rolodex-cli set-rbl-config
+```
+
+##### `get-rbl-config`
+
+Retrieve the current RBL configuration.
+**gRPC path:** `/rolodex.RolodexService/GetRblConfig`
+
+```
+rolodex-cli get-rbl-config
+```
+
+Example output:
+```
+RBL enabled: true
+
+Providers:
+ZONE                                     ENABLED
+--------------------------------------------------
+zen.spamhaus.org                         true
+bl.spamcop.net                           false
+```
+
+##### `flush-cache`
+
+Flush the RBL result cache. Forces fresh lookups for subsequent reverse DNS queries.
+**gRPC path:** `/rolodex.RolodexService/FlushCache`
+
+```
+rolodex-cli flush-cache
 ```
 
 ## gRPC API

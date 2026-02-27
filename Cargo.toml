@@ -43,13 +43,25 @@ rand = "0.9"
 sha2 = "0.10"
 hex = "0.4"
 bytes = "1"
+hyper-util = "0.1"
+tower = "0.5"
 
 [build-dependencies]
 tonic-build = "0.14"
 tonic-prost-build = "0.14"
 prost-build = "0.14"
 
+[[bin]]
+name = "rolodex"
+path = "src/main.rs"
+
+[[bin]]
+name = "rolodex-cli"
+path = "src/bin/rolodex-cli.rs"
+
 [dev-dependencies]
 tempfile = "3"
 tokio-test = "0.4"
 mockall = "0.13"
+assert_cmd = "2"
+predicates = "3"
