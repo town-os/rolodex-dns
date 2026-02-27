@@ -295,3 +295,7 @@ Resolution order:
 3. Check for CNAME records in local database
 4. If name is under a managed zone but not found, return authoritative NXDOMAIN
 5. Forward to upstream resolvers
+
+## License
+
+This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0). See the [LICENSE](LICENSE) file for the full license text.
