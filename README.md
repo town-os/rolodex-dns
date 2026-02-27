@@ -264,6 +264,144 @@ These match the common providers used by unbound and other DNS resolvers:
 - Negative results (IP is not listed) are cached for 5 minutes
 - The cache can be flushed via the `FlushCache` gRPC method
 
+## Go Client
+
+A Go client library is included at `go/` for programmatic access to the Rolodex gRPC API. It can be imported as a Go module dependency.
+
+### Installation
+
+```
+go get github.com/erikh/rolodex/go
+```
+
+### Connecting
+
+The client supports two transports:
+
+**TCP** (with shared-secret authentication):
+
+```go
+client, err := rolodex.Dial(ctx, "localhost:50051",
+    rolodex.WithAuthToken("my-secret"),
+)
+defer client.Close()
+```
+
+**Unix socket** (authentication bypassed server-side):
+
+```go
+client, err := rolodex.Dial(ctx, "/var/run/rolodex.sock",
+    rolodex.WithUnixSocket(),
+)
+defer client.Close()
+```
+
+### Client Options
+
+| Option | Description |
+|--------|-------------|
+| `WithAuthToken(token)` | Sets the shared secret sent with every RPC for TCP authentication. Ignored by the server on Unix socket connections. Default: empty (succeeds if server has no secret configured) |
+| `WithUnixSocket()` | Marks the address as a Unix domain socket path instead of a TCP address. Server bypasses authentication for Unix socket connections |
+| `WithGRPCDialOption(opt)` | Appends a low-level `grpc.DialOption` (e.g. for TLS, interceptors) |
+
+### Client Methods
+
+All methods accept a `context.Context` for cancellation and deadlines.
+
+#### `AddRecord(ctx, record) error`
+
+Adds a DNS record to the server's local database.
+
+**Path:** `/rolodex.RolodexService/AddRecord`
+
+**Parameters:**
+- `record` (`*DnsRecord`): The record to add. Fields:
+  - `Name` (string): Fully qualified domain name (e.g. `"example.com."`)
+  - `RecordType` (`RecordType`): One of `RecordTypeA` (0, default), `RecordTypeAAAA` (1), `RecordTypeCNAME` (2), `RecordTypeMX` (3), `RecordTypeTXT` (4), `RecordTypeNS` (5), `RecordTypeSOA` (6), `RecordTypeSRV` (7), `RecordTypePTR` (8)
+  - `Value` (string): Record data (e.g. IP address, hostname)
+  - `Ttl` (uint32): Time-to-live in seconds. Default: 300 if set to 0
+  - `Priority` (uint32): Priority for MX/SRV records (ignored for other types). Default: 0
+
+#### `RemoveRecord(ctx, name, opts) (uint32, error)`
+
+Removes DNS records from the server's local database.
+
+**Path:** `/rolodex.RolodexService/RemoveRecord`
+
+**Parameters:**
+- `name` (string): Fully qualified domain name to remove records for
+- `opts` (`*RemoveRecordOptions`, optional): If nil, removes all records for the name
+  - `RecordType` (`*RecordType`): If set, only remove records of this type
+  - `Value` (string): If non-empty, only remove the record with this exact value
+
+**Returns:** Number of records removed.
+
+#### `ListRecords(ctx, opts) ([]*DnsRecord, error)`
+
+Queries the server's local DNS database.
+
+**Path:** `/rolodex.RolodexService/ListRecords`
+
+**Parameters:**
+- `opts` (`*ListRecordsOptions`, optional): If nil, returns all records
+  - `NameFilter` (string): Filter by domain name. Supports wildcard prefix `"*."` (e.g. `"*.example.com."`)
+  - `RecordType` (`*RecordType`): If set, only return records of this type
+
+#### `SetForwarders(ctx, forwarders) error`
+
+Configures upstream DNS forwarders. Replaces the entire forwarder list.
+
+**Path:** `/rolodex.RolodexService/SetForwarders`
+
+**Parameters:**
+- `forwarders` (`[]string`): Upstream DNS server addresses in `"host:port"` format (e.g. `"8.8.8.8:53"`)
+
+#### `SetRblConfig(ctx, enabled, providers) error`
+
+Configures Realtime Blackhole List settings. Replaces the entire RBL configuration.
+
+**Path:** `/rolodex.RolodexService/SetRblConfig`
+
+**Parameters:**
+- `enabled` (bool): Whether RBL checking is globally enabled. Default: false
+- `providers` (`[]*RblConfig`): List of RBL providers
+  - `Zone` (string): The DNSBL zone to query (e.g. `"zen.spamhaus.org"`)
+  - `Enabled` (bool): Whether this provider is enabled. Default: true when added
+
+#### `GetRblConfig(ctx) (*RblStatus, error)`
+
+Retrieves the current RBL configuration.
+
+**Path:** `/rolodex.RolodexService/GetRblConfig`
+
+**Returns:** `*RblStatus` with fields:
+- `Enabled` (bool): Whether RBL checking is globally enabled
+- `Providers` (`[]*RblConfig`): Configured RBL providers
+
+#### `FlushCache(ctx) error`
+
+Clears the RBL lookup cache on the server.
+
+**Path:** `/rolodex.RolodexService/FlushCache`
+
+#### `Close() error`
+
+Closes the underlying gRPC connection. Should be called when the client is no longer needed.
+
+### Record Types
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `RecordTypeA` | 0 | IPv4 address (default) |
+| `RecordTypeAAAA` | 1 | IPv6 address |
+| `RecordTypeCNAME` | 2 | Canonical name alias |
+| `RecordTypeMX` | 3 | Mail exchange (uses Priority) |
+| `RecordTypeTXT` | 4 | Text record |
+| `RecordTypeNS` | 5 | Name server |
+| `RecordTypeSOA` | 6 | Start of authority |
+| `RecordTypeSRV` | 7 | Service locator (uses Priority) |
+| `RecordTypePTR` | 8 | Pointer for reverse DNS |
+
 ## Architecture
 
 ```
