@@ -40,7 +40,7 @@ make dev
 This will:
 1. Build the project (`cargo build`)
 2. Install the `rolodex` binary to your Cargo bin directory (`cargo install --path .`)
-3. Start the server using `dev.toml` with the following settings:
+3. Start the server using `dev.yml` with the following settings:
    - DNS listeners on `127.0.0.1:5300` (UDP and TCP)
    - gRPC Unix socket at `/tmp/rolodex.sock` (no TCP gRPC listener)
    - SQLite database at `/tmp/rolodex-dev.db`
@@ -52,53 +52,46 @@ After `make dev` is running, you can manage the server using the installed `rolo
 
 ## Configuration
 
-Rolodex reads configuration from a TOML file (default: `rolodex.toml`).
+Rolodex reads configuration from a YAML file (default: `rolodex.yml`).
 
-```toml
+```yaml
 # Database file path
-database_path = "rolodex.db"
+database_path: rolodex.db
 
 # Upstream DNS forwarders (address:port format)
-forwarders = ["8.8.8.8:53", "8.8.4.4:53"]
+forwarders:
+  - "8.8.8.8:53"
+  - "8.8.4.4:53"
 
-[dns]
-# UDP listener bind address
-udp_bind = "0.0.0.0:53"
-# TCP listener bind address
-tcp_bind = "0.0.0.0:53"
+dns:
+  # UDP listener bind address
+  udp_bind: "0.0.0.0:53"
+  # TCP listener bind address
+  tcp_bind: "0.0.0.0:53"
 
-[grpc]
-# TCP gRPC listener (empty string to disable)
-tcp_bind = "127.0.0.1:50051"
-# Unix socket path (empty string to disable)
-unix_socket = "/var/run/rolodex.sock"
-# Shared secret for TCP gRPC authentication (not required for Unix socket)
-shared_secret = "your-secret-here"
+grpc:
+  # TCP gRPC listener (empty string to disable)
+  tcp_bind: "127.0.0.1:50051"
+  # Unix socket path (empty string to disable)
+  unix_socket: /var/run/rolodex.sock
+  # Shared secret for TCP gRPC authentication (not required for Unix socket)
+  shared_secret: your-secret-here
 
-[rbl]
-# Enable/disable RBL checking globally (default: false)
-enabled = false
-
-# RBL providers
-[[rbl.providers]]
-zone = "zen.spamhaus.org"
-enabled = true
-
-[[rbl.providers]]
-zone = "bl.spamcop.net"
-enabled = true
-
-[[rbl.providers]]
-zone = "b.barracudacentral.org"
-enabled = true
-
-[[rbl.providers]]
-zone = "dnsbl.sorbs.net"
-enabled = true
-
-[[rbl.providers]]
-zone = "dbl.spamhaus.org"
-enabled = true
+rbl:
+  # Enable/disable RBL checking globally (default: false)
+  enabled: false
+  # RBL providers
+  providers:
+    - zone: zen.spamhaus.org
+      enabled: true
+    - zone: bl.spamcop.net
+      enabled: true
+    - zone: b.barracudacentral.org
+      enabled: true
+    - zone: dnsbl.sorbs.net
+      enabled: true
+    - zone: dbl.spamhaus.org
+      enabled: true
 ```
 
 ### Configuration Options
@@ -124,7 +117,7 @@ enabled = true
 rolodex [OPTIONS]
 
 Options:
-  -c, --config <CONFIG>  Path to configuration file [default: rolodex.toml]
+  -c, --config <CONFIG>  Path to configuration file [default: rolodex.yml]
   -h, --help             Print help
 ```
 

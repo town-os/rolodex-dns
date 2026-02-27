@@ -136,8 +136,8 @@ mod tests {
     #[test]
     fn test_config_serialization() {
         let config = Config::default();
-        let serialized = toml::to_string(&config).unwrap();
-        let deserialized: Config = toml::from_str(&serialized).unwrap();
+        let serialized = serde_yaml_ng::to_string(&config).unwrap();
+        let deserialized: Config = serde_yaml_ng::from_str(&serialized).unwrap();
         assert_eq!(deserialized.dns.udp_bind, config.dns.udp_bind);
         assert_eq!(deserialized.forwarders.len(), config.forwarders.len());
     }

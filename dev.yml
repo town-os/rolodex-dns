@@ -1,0 +1,17 @@
+database_path: /tmp/rolodex-dev.db
+forwarders:
+  - "8.8.8.8:53"
+  - "8.8.4.4:53"
+
+dns:
+  udp_bind: "127.0.0.1:5300"
+  tcp_bind: "127.0.0.1:5300"
+
+grpc:
+  tcp_bind: ""
+  unix_socket: /tmp/rolodex.sock
+  shared_secret: ""
+
+rbl:
+  enabled: false
+  providers: []

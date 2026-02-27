@@ -18,7 +18,7 @@ use tracing::{error, info};
 #[command(about = "A split-horizon DNS server and forwarding resolver")]
 struct Cli {
     /// Path to configuration file
-    #[arg(short, long, default_value = "rolodex.toml")]
+    #[arg(short, long, default_value = "rolodex.yml")]
     config: String,
 }
 
@@ -36,7 +36,7 @@ async fn main() -> Result<()> {
     let config = if std::path::Path::new(&cli.config).exists() {
         let content =
             std::fs::read_to_string(&cli.config).context("failed to read config file")?;
-        toml::from_str(&content).context("failed to parse config file")?
+        serde_yaml_ng::from_str(&content).context("failed to parse config file")?
     } else {
         info!("No config file found, using defaults");
         Config::default()

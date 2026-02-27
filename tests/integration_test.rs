@@ -674,8 +674,8 @@ async fn test_unix_socket_bypasses_auth() {
 #[test]
 fn test_config_roundtrip() {
     let config = rolodex::config::Config::default();
-    let toml_str = toml::to_string(&config).unwrap();
-    let deserialized: rolodex::config::Config = toml::from_str(&toml_str).unwrap();
+    let yaml_str = serde_yaml_ng::to_string(&config).unwrap();
+    let deserialized: rolodex::config::Config = serde_yaml_ng::from_str(&yaml_str).unwrap();
 
     assert_eq!(config.dns.udp_bind, deserialized.dns.udp_bind);
     assert_eq!(config.dns.tcp_bind, deserialized.dns.tcp_bind);

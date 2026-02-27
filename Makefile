@@ -18,4 +18,4 @@ go-integration-test: build
 dev: build
 	cargo install --path .
 	@echo "Starting rolodex dev server on 127.0.0.1:5300 with socket at /tmp/rolodex.sock"
-	$(CURDIR)/target/debug/rolodex -c $(CURDIR)/dev.toml
+	$(CURDIR)/target/debug/rolodex -c $(CURDIR)/dev.yml

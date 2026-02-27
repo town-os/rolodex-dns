@@ -48,25 +48,24 @@ type serverConfig struct {
 func startServer(t *testing.T, cfg serverConfig) {
 	t.Helper()
 
-	configContent := fmt.Sprintf(`
-database_path = %q
-forwarders = []
+	configContent := fmt.Sprintf(`database_path: %q
+forwarders: []
 
-[dns]
-udp_bind = %q
-tcp_bind = %q
+dns:
+  udp_bind: %q
+  tcp_bind: %q
 
-[grpc]
-tcp_bind = %q
-unix_socket = %q
-shared_secret = %q
+grpc:
+  tcp_bind: %q
+  unix_socket: %q
+  shared_secret: %q
 
-[rbl]
-enabled = false
-providers = []
+rbl:
+  enabled: false
+  providers: []
 `, cfg.dbPath, cfg.dnsUDPAddr, cfg.dnsTCPAddr, cfg.grpcTCPAddr, cfg.unixSocket, cfg.sharedSecret)
 
-	configPath := filepath.Join(cfg.dir, "rolodex.toml")
+	configPath := filepath.Join(cfg.dir, "rolodex.yml")
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
