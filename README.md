@@ -29,6 +29,27 @@ make build
 make test
 ```
 
+## Development
+
+Start a local dev server for testing and development:
+
+```
+make dev
+```
+
+This will:
+1. Build the project (`cargo build`)
+2. Install the `rolodex` binary to your Cargo bin directory (`cargo install --path .`)
+3. Start the server using `dev.toml` with the following settings:
+   - DNS listeners on `127.0.0.1:5300` (UDP and TCP)
+   - gRPC Unix socket at `/tmp/rolodex.sock` (no TCP gRPC listener)
+   - SQLite database at `/tmp/rolodex-dev.db`
+   - No authentication required
+   - RBL checking disabled
+   - Default upstream forwarders (`8.8.8.8:53`, `8.8.4.4:53`)
+
+After `make dev` is running, you can manage the server using the installed `rolodex` binary or the Go client library connected to `/tmp/rolodex.sock`. Press Ctrl+C to stop the server.
+
 ## Configuration
 
 Rolodex reads configuration from a TOML file (default: `rolodex.toml`).
