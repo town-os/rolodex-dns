@@ -636,6 +636,21 @@ impl Database {
         None
     }
 
+    /// Forcibly expires a cached network association for testing.
+    /// Sets the entry's expiration to the past so the next lookup returns None.
+    #[cfg(test)]
+    pub fn expire_association(&self, ip_address: &str) {
+        if self.association_cache.contains_key(ip_address) {
+            self.association_cache.insert(
+                ip_address.to_string(),
+                AssociationCacheEntry {
+                    scope_name: String::new(),
+                    expires_at: Instant::now() - Duration::from_secs(1),
+                },
+            );
+        }
+    }
+
     // ================================================================
     // Scoped DNS Record Management
     // ================================================================
@@ -1623,6 +1638,90 @@ mod tests {
 
         let all = db.lookup_scoped("alltype", "multi.alltype.home", None);
         assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn test_association_ttl_expiration() {
+        let db = test_db();
+        db.create_network_scope(&NetworkScope {
+            name: "expire-net".to_string(),
+            home_domain: "expire.home".to_string(),
+        }).unwrap();
+
+        // Join with a very short TTL
+        db.join_network(&NetworkAssociation {
+            ip_address: "10.99.0.1".to_string(),
+            scope_name: "expire-net".to_string(),
+            ttl_seconds: 3600,
+        }).unwrap();
+
+        // Should be associated initially
+        assert_eq!(db.get_scope_for_ip("10.99.0.1"), Some("expire-net".to_string()));
+
+        // Manually expire the cache entry by setting expires_at to the past
+        db.association_cache.insert(
+            "10.99.0.1".to_string(),
+            AssociationCacheEntry {
+                scope_name: "expire-net".to_string(),
+                expires_at: Instant::now() - Duration::from_secs(1),
+            },
+        );
+
+        // Should return None for expired association
+        assert!(db.get_scope_for_ip("10.99.0.1").is_none());
+
+        // The expired entry should have been removed from the cache
+        assert!(!db.association_cache.contains_key("10.99.0.1"));
+    }
+
+    #[test]
+    fn test_database_persistence_with_scoped_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("scoped-test.db");
+
+        // Create and populate database with scoped data
+        {
+            let db = Database::open(&db_path).unwrap();
+
+            db.create_network_scope(&NetworkScope {
+                name: "persist-scope".to_string(),
+                home_domain: "persist.home".to_string(),
+            }).unwrap();
+
+            db.add_scoped_record("persist-scope", &DnsRecord {
+                id: None,
+                name: "host1.persist.home".to_string(),
+                record_type: RecordKind::A,
+                value: "10.0.0.1".to_string(),
+                ttl: 300,
+                priority: 0,
+            }).unwrap();
+
+            db.join_network(&NetworkAssociation {
+                ip_address: "192.168.5.1".to_string(),
+                scope_name: "persist-scope".to_string(),
+                ttl_seconds: 86400,
+            }).unwrap();
+        }
+
+        // Reopen and verify caches are populated from database
+        {
+            let db = Database::open(&db_path).unwrap();
+
+            // Scoped records should be loaded into cache
+            let records = db.lookup_scoped("persist-scope", "host1.persist.home", Some(RecordKind::A));
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].value, "10.0.0.1");
+
+            // Association should be loaded into cache
+            let scope = db.get_scope_for_ip("192.168.5.1");
+            assert_eq!(scope, Some("persist-scope".to_string()));
+
+            // Scope itself should still exist
+            let scopes = db.list_network_scopes().unwrap();
+            assert_eq!(scopes.len(), 1);
+            assert_eq!(scopes[0].name, "persist-scope");
+        }
     }
 
     #[test]

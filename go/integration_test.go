@@ -732,3 +732,201 @@ func TestIntegrationConcurrentClients(t *testing.T) {
 		t.Errorf("got %d records, want %d", len(records), numClients)
 	}
 }
+
+func TestIntegrationNetworkScopeCustomDomain(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// Create scope with custom home domain
+	err := client.CreateNetworkScope(ctx, &NetworkScope{
+		Name:       "custom",
+		HomeDomain: "custom.internal.",
+	})
+	if err != nil {
+		t.Fatalf("CreateNetworkScope: %v", err)
+	}
+
+	scopes, err := client.ListNetworkScopes(ctx)
+	if err != nil {
+		t.Fatalf("ListNetworkScopes: %v", err)
+	}
+	if len(scopes) != 1 {
+		t.Fatalf("got %d scopes, want 1", len(scopes))
+	}
+	if scopes[0].HomeDomain != "custom.internal." {
+		t.Errorf("home_domain = %q, want %q", scopes[0].HomeDomain, "custom.internal.")
+	}
+
+	// Join and verify search domains use the custom domain
+	err = client.JoinNetwork(ctx, "10.0.0.1", "custom", 300)
+	if err != nil {
+		t.Fatalf("JoinNetwork: %v", err)
+	}
+	domains, err := client.GetSearchDomains(ctx, "10.0.0.1")
+	if err != nil {
+		t.Fatalf("GetSearchDomains: %v", err)
+	}
+	if len(domains) != 1 {
+		t.Fatalf("got %d domains, want 1", len(domains))
+	}
+	if domains[0] != "custom.internal." {
+		t.Errorf("search domain = %q, want %q", domains[0], "custom.internal.")
+	}
+}
+
+func TestIntegrationScopedRecordFiltering(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// Create scope and add multiple records
+	err := client.CreateNetworkScope(ctx, &NetworkScope{Name: "filter"})
+	if err != nil {
+		t.Fatalf("CreateNetworkScope: %v", err)
+	}
+
+	records := []struct {
+		name       string
+		recordType RecordType
+		value      string
+	}{
+		{"a.filter.home.", RecordTypeA, "10.0.0.1"},
+		{"b.filter.home.", RecordTypeA, "10.0.0.2"},
+		{"a.filter.home.", RecordTypeAAAA, "fd00::1"},
+		{"c.other.zone.", RecordTypeA, "10.0.0.3"},
+	}
+
+	for _, r := range records {
+		err = client.AddScopedRecord(ctx, "filter", &DnsRecord{
+			Name:       r.name,
+			RecordType: r.recordType,
+			Value:      r.value,
+			Ttl:        300,
+		})
+		if err != nil {
+			t.Fatalf("AddScopedRecord %s: %v", r.name, err)
+		}
+	}
+
+	// List all
+	all, err := client.ListScopedRecords(ctx, "filter", nil)
+	if err != nil {
+		t.Fatalf("ListScopedRecords all: %v", err)
+	}
+	if len(all) != 4 {
+		t.Fatalf("got %d records, want 4", len(all))
+	}
+
+	// Filter by name wildcard
+	filtered, err := client.ListScopedRecords(ctx, "filter", &ListScopedRecordsOptions{
+		NameFilter: "*.filter.home.",
+	})
+	if err != nil {
+		t.Fatalf("ListScopedRecords wildcard: %v", err)
+	}
+	if len(filtered) != 3 {
+		t.Fatalf("got %d records matching *.filter.home., want 3", len(filtered))
+	}
+
+	// Filter by type
+	rt := RecordTypeAAAA
+	filtered, err = client.ListScopedRecords(ctx, "filter", &ListScopedRecordsOptions{
+		RecordType: &rt,
+	})
+	if err != nil {
+		t.Fatalf("ListScopedRecords AAAA: %v", err)
+	}
+	if len(filtered) != 1 {
+		t.Fatalf("got %d AAAA records, want 1", len(filtered))
+	}
+
+	// Remove with type filter
+	rtA := RecordTypeA
+	count, err := client.RemoveScopedRecord(ctx, "filter", "a.filter.home.", &RemoveScopedRecordOptions{
+		RecordType: &rtA,
+	})
+	if err != nil {
+		t.Fatalf("RemoveScopedRecord: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("removed %d, want 1", count)
+	}
+
+	// Should have 3 remaining
+	remaining, err := client.ListScopedRecords(ctx, "filter", nil)
+	if err != nil {
+		t.Fatalf("ListScopedRecords after remove: %v", err)
+	}
+	if len(remaining) != 3 {
+		t.Errorf("got %d records after remove, want 3", len(remaining))
+	}
+}
+
+func TestIntegrationSearchDomainsUnassociatedIP(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// Create a scope (but don't associate any IP)
+	err := client.CreateNetworkScope(ctx, &NetworkScope{Name: "empty"})
+	if err != nil {
+		t.Fatalf("CreateNetworkScope: %v", err)
+	}
+
+	// Unassociated IP should get no search domains
+	domains, err := client.GetSearchDomains(ctx, "192.168.99.99")
+	if err != nil {
+		t.Fatalf("GetSearchDomains: %v", err)
+	}
+	if len(domains) != 0 {
+		t.Errorf("got %d domains for unassociated IP, want 0", len(domains))
+	}
+}
+
+func TestIntegrationDeleteScopeCascade(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// Create scope, add records and associations
+	err := client.CreateNetworkScope(ctx, &NetworkScope{Name: "cascade"})
+	if err != nil {
+		t.Fatalf("CreateNetworkScope: %v", err)
+	}
+
+	err = client.AddScopedRecord(ctx, "cascade", &DnsRecord{
+		Name:       "host.cascade.home.",
+		RecordType: RecordTypeA,
+		Value:      "10.0.0.1",
+		Ttl:        300,
+	})
+	if err != nil {
+		t.Fatalf("AddScopedRecord: %v", err)
+	}
+
+	err = client.JoinNetwork(ctx, "192.168.1.1", "cascade", 300)
+	if err != nil {
+		t.Fatalf("JoinNetwork: %v", err)
+	}
+
+	// Delete scope
+	err = client.DeleteNetworkScope(ctx, "cascade")
+	if err != nil {
+		t.Fatalf("DeleteNetworkScope: %v", err)
+	}
+
+	// Verify scoped records are gone
+	records, err := client.ListScopedRecords(ctx, "cascade", nil)
+	if err != nil {
+		t.Fatalf("ListScopedRecords: %v", err)
+	}
+	if len(records) != 0 {
+		t.Errorf("got %d records after cascade delete, want 0", len(records))
+	}
+
+	// Verify associations are gone
+	assocs, err := client.GetNetworkAssociations(ctx, "cascade")
+	if err != nil {
+		t.Fatalf("GetNetworkAssociations: %v", err)
+	}
+	if len(assocs) != 0 {
+		t.Errorf("got %d associations after cascade delete, want 0", len(assocs))
+	}
+}

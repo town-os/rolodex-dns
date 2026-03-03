@@ -1146,6 +1146,112 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_scoped_managed_zone_nxdomain() {
+        let db = Database::open_memory().unwrap();
+
+        db.create_network_scope(&NetworkScope {
+            name: "zonescope".to_string(),
+            home_domain: "zonescope.home".to_string(),
+        }).unwrap();
+
+        // Add a record at the zone level to make it authoritative
+        db.add_scoped_record("zonescope", &DnsRecord {
+            id: None,
+            name: "zonescope.home.".to_string(),
+            record_type: RecordKind::A,
+            value: "10.0.0.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        }).unwrap();
+
+        // Also add a record under the zone
+        db.add_scoped_record("zonescope", &DnsRecord {
+            id: None,
+            name: "existing.zonescope.home.".to_string(),
+            record_type: RecordKind::A,
+            value: "10.0.0.2".to_string(),
+            ttl: 300,
+            priority: 0,
+        }).unwrap();
+
+        db.join_network(&NetworkAssociation {
+            ip_address: "192.168.1.1".to_string(),
+            scope_name: "zonescope".to_string(),
+            ttl_seconds: 3600,
+        }).unwrap();
+
+        let server = make_test_server(db);
+
+        // Query for a known name should succeed
+        let query = build_query("existing.zonescope.home.", RecordType::A);
+        let resp_bytes = server.handle_query_from(
+            &query,
+            "192.168.1.1".parse().unwrap(),
+        ).await.unwrap();
+        let resp = Message::from_bytes(&resp_bytes).unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+
+        // Query for a non-existent name under the scoped managed zone
+        let query = build_query("nonexistent.zonescope.home.", RecordType::A);
+        let resp_bytes = server.handle_query_from(
+            &query,
+            "192.168.1.1".parse().unwrap(),
+        ).await.unwrap();
+        let resp = Message::from_bytes(&resp_bytes).unwrap();
+
+        // Should get authoritative NXDOMAIN since the zone exists but name doesn't
+        assert_eq!(resp.response_code(), ResponseCode::NXDomain);
+    }
+
+    #[tokio::test]
+    async fn test_expired_association_refused() {
+        let db = Database::open_memory().unwrap();
+
+        db.create_network_scope(&NetworkScope {
+            name: "expirenet".to_string(),
+            home_domain: "expirenet.home".to_string(),
+        }).unwrap();
+
+        db.add_scoped_record("expirenet", &DnsRecord {
+            id: None,
+            name: "host.expirenet.home.".to_string(),
+            record_type: RecordKind::A,
+            value: "10.0.0.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        }).unwrap();
+
+        db.join_network(&NetworkAssociation {
+            ip_address: "192.168.1.1".to_string(),
+            scope_name: "expirenet".to_string(),
+            ttl_seconds: 3600,
+        }).unwrap();
+
+        let server = make_test_server(db.clone());
+
+        // Should resolve while association is active
+        let query = build_query("host.expirenet.home.", RecordType::A);
+        let resp_bytes = server.handle_query_from(
+            &query,
+            "192.168.1.1".parse().unwrap(),
+        ).await.unwrap();
+        let resp = Message::from_bytes(&resp_bytes).unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert_eq!(resp.answers().len(), 1);
+
+        // Expire the association cache entry
+        db.expire_association("192.168.1.1");
+
+        // Should get REFUSED after association expires
+        let resp_bytes = server.handle_query_from(
+            &query,
+            "192.168.1.1".parse().unwrap(),
+        ).await.unwrap();
+        let resp = Message::from_bytes(&resp_bytes).unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::Refused);
+    }
+
+    #[tokio::test]
     async fn test_scoped_query_falls_through_to_global() {
         let db = Database::open_memory().unwrap();
 

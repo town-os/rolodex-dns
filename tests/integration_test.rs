@@ -1,4 +1,4 @@
-use rolodex::db::{Database, DnsRecord, NetworkAssociation, NetworkScope, RecordKind};
+use rolodex::db::{Database, DnsRecord, RecordKind};
 use rolodex::dns_server::DnsServer;
 use rolodex::grpc_service::proto::rolodex_service_server::RolodexService;
 use rolodex::grpc_service::proto::{
@@ -1202,4 +1202,115 @@ async fn test_delete_scope_cascade() {
     });
     let resp = service.get_network_associations(assoc_req).await.unwrap();
     assert!(resp.into_inner().associations.is_empty());
+}
+
+// ========================================================
+// Integration: RBL with network scoping
+// ========================================================
+
+#[tokio::test]
+async fn test_rbl_with_scoping() {
+    let db = Database::open_memory().unwrap();
+    let rbl = Arc::new(RblChecker::with_resolver(
+        true,
+        vec![RblProvider {
+            zone: "test.rbl".to_string(),
+            enabled: true,
+        }],
+        Arc::new(AlwaysListedResolver),
+    ));
+    let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
+
+    // Create scope and associate IP
+    db.create_network_scope(&rolodex::db::NetworkScope {
+        name: "rblscoped".to_string(),
+        home_domain: "rblscoped.home".to_string(),
+    }).unwrap();
+
+    db.join_network(&rolodex::db::NetworkAssociation {
+        ip_address: "192.168.1.1".to_string(),
+        scope_name: "rblscoped".to_string(),
+        ttl_seconds: 3600,
+    }).unwrap();
+
+    // Reverse DNS query from scoped IP should be blocked by RBL
+    let query = build_dns_query("4.3.2.1.in-addr.arpa.", hickory_proto::rr::RecordType::PTR);
+    let resp_bytes = dns_server
+        .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+        .await
+        .unwrap();
+    let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
+    assert_eq!(resp.response_code(), hickory_proto::op::ResponseCode::NXDomain);
+}
+
+// ========================================================
+// Integration: Scoped managed zone returns NXDOMAIN
+// ========================================================
+
+#[tokio::test]
+async fn test_scoped_managed_zone_nxdomain_integration() {
+    let (_db, dns_server, _rbl, service) = make_test_stack();
+
+    // Create scope and add records to establish the managed zone
+    let req = Request::new(CreateNetworkScopeRequest {
+        scope: Some(rolodex::grpc_service::proto::NetworkScope {
+            name: "zonenet".to_string(),
+            home_domain: "zonenet.home".to_string(),
+        }),
+        auth_token: "test-secret".to_string(),
+    });
+    service.create_network_scope(req).await.unwrap();
+
+    // Add a record at the zone level to make it authoritative
+    let zone_req = Request::new(AddScopedRecordRequest {
+        scope_name: "zonenet".to_string(),
+        record: Some(rolodex::grpc_service::proto::DnsRecord {
+            name: "zonenet.home.".to_string(),
+            record_type: 0,
+            value: "10.0.0.99".to_string(),
+            ttl: 300,
+            priority: 0,
+        }),
+        auth_token: "test-secret".to_string(),
+    });
+    service.add_scoped_record(zone_req).await.unwrap();
+
+    let add_req = Request::new(AddScopedRecordRequest {
+        scope_name: "zonenet".to_string(),
+        record: Some(rolodex::grpc_service::proto::DnsRecord {
+            name: "known.zonenet.home.".to_string(),
+            record_type: 0,
+            value: "10.0.0.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        }),
+        auth_token: "test-secret".to_string(),
+    });
+    service.add_scoped_record(add_req).await.unwrap();
+
+    let join_req = Request::new(JoinNetworkRequest {
+        ip_address: "192.168.1.1".to_string(),
+        scope_name: "zonenet".to_string(),
+        ttl_seconds: 3600,
+        auth_token: "test-secret".to_string(),
+    });
+    service.join_network(join_req).await.unwrap();
+
+    // Query known name should succeed
+    let query = build_dns_query("known.zonenet.home.", hickory_proto::rr::RecordType::A);
+    let resp_bytes = dns_server
+        .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+        .await
+        .unwrap();
+    let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
+    assert_eq!(resp.response_code(), hickory_proto::op::ResponseCode::NoError);
+
+    // Query unknown name under same zone should get NXDOMAIN
+    let query = build_dns_query("unknown.zonenet.home.", hickory_proto::rr::RecordType::A);
+    let resp_bytes = dns_server
+        .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+        .await
+        .unwrap();
+    let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
+    assert_eq!(resp.response_code(), hickory_proto::op::ResponseCode::NXDomain);
 }
