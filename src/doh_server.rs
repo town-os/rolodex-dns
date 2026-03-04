@@ -10,12 +10,12 @@ use axum::{
     extract::{Query, State},
     http::{header, StatusCode},
     response::IntoResponse,
-    routing::{get, post},
+    routing::get,
     Router,
 };
 use base64::Engine;
 use std::sync::Arc;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 /// Shared state for the DoH server.
 #[derive(Clone)]

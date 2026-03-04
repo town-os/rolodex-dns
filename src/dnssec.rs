@@ -7,7 +7,7 @@
 /// 4. RSA/SHA-256 (RFC 5702, algo 8)
 ///
 /// Note: Ed448 is not supported by the `ring` crate.
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ring::signature::{self, KeyPair as _};
 use sha2::{Digest, Sha256};
 

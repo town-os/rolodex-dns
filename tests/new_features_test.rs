@@ -1745,7 +1745,7 @@ async fn test_grpc_acme_challenge_dns() {
 fn test_qname_randomization_changes_case() {
     use rolodex::dns_server::randomize_qname_case;
     let query = build_dns_query("example.com.", RecordType::A);
-    if let Some((modified, _original)) = randomize_qname_case(&query) {
+    if let Some((modified, _original, _randomized)) = randomize_qname_case(&query) {
         // The modified query should differ in case from original
         assert_ne!(modified, query, "Randomization should change the query");
     }
@@ -1756,7 +1756,7 @@ fn test_qname_randomization_changes_case() {
 fn test_qname_randomization_preserves_non_alpha() {
     // Verify the basic DNS query structure is preserved
     let query = build_dns_query("123.example.com.", RecordType::A);
-    if let Some((modified, _original)) = rolodex::dns_server::randomize_qname_case(&query) {
+    if let Some((modified, _original, _randomized)) = rolodex::dns_server::randomize_qname_case(&query) {
         let msg = Message::from_bytes(&modified).unwrap();
         let qname = msg.queries()[0].name().to_string().to_lowercase();
         assert_eq!(qname, "123.example.com.");

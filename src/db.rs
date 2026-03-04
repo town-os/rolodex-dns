@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use rusqlite::{params, Connection};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -227,6 +228,14 @@ pub struct Database {
     /// In-memory cache of scoped DNS records, keyed by "scope_name:name:record_type".
     /// Records are loaded from DB at boot and updated as they are entered.
     scoped_record_cache: Arc<DashMap<String, ScopedRecordCacheEntry>>,
+    /// Count of network scopes — avoids SQL query on every DNS query.
+    scope_count: Arc<AtomicUsize>,
+    /// In-memory cache of local RBL entries for fast lookup.
+    local_rbl_cache: Arc<DashSet<String>>,
+    /// In-memory cache of authoritative zones.
+    authoritative_zones_cache: Arc<DashSet<String>>,
+    /// In-memory cache of managed zones (derived from dns_records names).
+    managed_zones_cache: Arc<DashSet<String>>,
 }
 
 impl Database {
@@ -240,10 +249,15 @@ impl Database {
             conn: Arc::new(Mutex::new(conn)),
             association_cache: Arc::new(DashMap::new()),
             scoped_record_cache: Arc::new(DashMap::new()),
+            scope_count: Arc::new(AtomicUsize::new(0)),
+            local_rbl_cache: Arc::new(DashSet::new()),
+            authoritative_zones_cache: Arc::new(DashSet::new()),
+            managed_zones_cache: Arc::new(DashSet::new()),
         };
         db.init_tables()?;
         db.load_scoped_records_into_cache()?;
         db.load_associations_into_cache()?;
+        db.load_caches_at_boot()?;
         Ok(db)
     }
 
@@ -254,6 +268,10 @@ impl Database {
             conn: Arc::new(Mutex::new(conn)),
             association_cache: Arc::new(DashMap::new()),
             scoped_record_cache: Arc::new(DashMap::new()),
+            scope_count: Arc::new(AtomicUsize::new(0)),
+            local_rbl_cache: Arc::new(DashSet::new()),
+            authoritative_zones_cache: Arc::new(DashSet::new()),
+            managed_zones_cache: Arc::new(DashSet::new()),
         };
         db.init_tables()?;
         Ok(db)
@@ -378,7 +396,7 @@ impl Database {
     /// Called at boot time.
     fn load_scoped_records_into_cache(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT scope_name, name, record_type, value, ttl, priority FROM scoped_dns_records",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -418,7 +436,7 @@ impl Database {
             .unwrap()
             .as_secs() as i64;
 
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT ip_address, scope_name, ttl_seconds, created_at FROM network_associations",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -448,6 +466,47 @@ impl Database {
         Ok(())
     }
 
+    /// Loads scope_count, local_rbl_cache, authoritative_zones_cache, and
+    /// managed_zones_cache from the database at boot time.
+    fn load_caches_at_boot(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+
+        // Scope count
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM network_scopes", [], |row| row.get(0))?;
+        self.scope_count.store(count as usize, Ordering::Relaxed);
+
+        // Local RBL entries
+        let mut stmt = conn.prepare_cached("SELECT name FROM local_rbl_entries")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        for row in rows {
+            self.local_rbl_cache.insert(row?);
+        }
+
+        // Authoritative zones
+        let mut stmt = conn.prepare_cached("SELECT zone FROM authoritative_zones")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        for row in rows {
+            self.authoritative_zones_cache.insert(row?);
+        }
+
+        // Managed zones (derived from dns_records names)
+        let mut stmt = conn.prepare_cached("SELECT DISTINCT name FROM dns_records")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        for row in rows {
+            let name = row?;
+            if let Some(zone) = extract_zone_from_name(&name) {
+                self.managed_zones_cache.insert(zone);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Returns whether any network scopes are defined.
+    pub fn has_scopes(&self) -> bool {
+        self.scope_count.load(Ordering::Relaxed) > 0
+    }
+
     /// Adds a DNS record to the database. Returns the row ID.
     pub fn add_record(&self, record: &DnsRecord) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
@@ -462,7 +521,13 @@ impl Database {
             ],
         )
         .context("failed to insert record")?;
-        Ok(conn.last_insert_rowid())
+        let id = conn.last_insert_rowid();
+        // Update managed zones cache
+        let normalized = normalize_name(&record.name);
+        if let Some(zone) = extract_zone_from_name(&normalized) {
+            self.managed_zones_cache.insert(zone);
+        }
+        Ok(id)
     }
 
     /// Removes records matching the given criteria.
@@ -540,7 +605,7 @@ impl Database {
         let mut records = Vec::new();
 
         if let Some(rt) = record_type {
-            let mut stmt = conn.prepare(
+            let mut stmt = conn.prepare_cached(
                 "SELECT id, name, record_type, value, ttl, priority FROM dns_records WHERE name = ?1 AND record_type = ?2",
             )?;
             let rows = stmt.query_map(params![normalized, rt.as_str()], |row| {
@@ -557,7 +622,7 @@ impl Database {
                 records.push(row?);
             }
         } else {
-            let mut stmt = conn.prepare(
+            let mut stmt = conn.prepare_cached(
                 "SELECT id, name, record_type, value, ttl, priority FROM dns_records WHERE name = ?1",
             )?;
             let rows = stmt.query_map(params![normalized], |row| {
@@ -589,7 +654,7 @@ impl Database {
         let mut records = Vec::new();
 
         let (sql, filter_params) = build_list_query(name_filter, record_type);
-        let mut stmt = conn.prepare(&sql)?;
+        let mut stmt = conn.prepare_cached(&sql)?;
 
         let rows = match filter_params {
             FilterParams::None => stmt.query_map([], row_mapper)?,
@@ -612,7 +677,7 @@ impl Database {
     /// Returns all unique TLDs/domains in the database.
     pub fn get_managed_zones(&self) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT DISTINCT name FROM dns_records",
         )?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
@@ -652,6 +717,7 @@ impl Database {
             params![scope.name, normalize_name(&scope.home_domain)],
         )
         .context("failed to create network scope")?;
+        self.scope_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -677,13 +743,16 @@ impl Database {
         self.scoped_record_cache.retain(|key, _| !key.starts_with(&format!("{}:", name)));
         self.association_cache.retain(|_, entry| entry.scope_name != name);
 
+        if count > 0 {
+            self.scope_count.fetch_sub(1, Ordering::Relaxed);
+        }
         Ok(count > 0)
     }
 
     /// Lists all network scopes.
     pub fn list_network_scopes(&self) -> Result<Vec<NetworkScope>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT name, home_domain FROM network_scopes")?;
+        let mut stmt = conn.prepare_cached("SELECT name, home_domain FROM network_scopes")?;
         let rows = stmt.query_map([], |row| {
             Ok(NetworkScope {
                 name: row.get(0)?,
@@ -700,7 +769,7 @@ impl Database {
     /// Gets a network scope by name.
     pub fn get_network_scope(&self, name: &str) -> Result<Option<NetworkScope>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT name, home_domain FROM network_scopes WHERE name = ?1")?;
+        let mut stmt = conn.prepare_cached("SELECT name, home_domain FROM network_scopes WHERE name = ?1")?;
         let mut rows = stmt.query_map(params![name], |row| {
             Ok(NetworkScope {
                 name: row.get(0)?,
@@ -771,7 +840,7 @@ impl Database {
         let mut assocs = Vec::new();
 
         if let Some(scope) = scope_name {
-            let mut stmt = conn.prepare(
+            let mut stmt = conn.prepare_cached(
                 "SELECT ip_address, scope_name, ttl_seconds FROM network_associations WHERE scope_name = ?1",
             )?;
             let rows = stmt.query_map(params![scope], |row| {
@@ -785,7 +854,7 @@ impl Database {
                 assocs.push(row?);
             }
         } else {
-            let mut stmt = conn.prepare(
+            let mut stmt = conn.prepare_cached(
                 "SELECT ip_address, scope_name, ttl_seconds FROM network_associations",
             )?;
             let rows = stmt.query_map([], |row| {
@@ -993,7 +1062,7 @@ impl Database {
         let mut records = Vec::new();
 
         if name_filter.is_empty() && record_type.is_none() {
-            let mut stmt = conn.prepare(
+            let mut stmt = conn.prepare_cached(
                 "SELECT id, name, record_type, value, ttl, priority FROM scoped_dns_records WHERE scope_name = ?1",
             )?;
             let rows = stmt.query_map(params![scope_name], row_mapper)?;
@@ -1002,7 +1071,7 @@ impl Database {
             }
         } else if name_filter.is_empty() {
             let rt = record_type.unwrap();
-            let mut stmt = conn.prepare(
+            let mut stmt = conn.prepare_cached(
                 "SELECT id, name, record_type, value, ttl, priority FROM scoped_dns_records WHERE scope_name = ?1 AND record_type = ?2",
             )?;
             let rows = stmt.query_map(params![scope_name, rt.as_str()], row_mapper)?;
@@ -1012,7 +1081,7 @@ impl Database {
         } else if record_type.is_none() {
             if let Some(suffix) = name_filter.strip_prefix("*.") {
                 let like = format!("%{}", normalize_name(suffix));
-                let mut stmt = conn.prepare(
+                let mut stmt = conn.prepare_cached(
                     "SELECT id, name, record_type, value, ttl, priority FROM scoped_dns_records WHERE scope_name = ?1 AND name LIKE ?2",
                 )?;
                 let rows = stmt.query_map(params![scope_name, like], row_mapper)?;
@@ -1021,7 +1090,7 @@ impl Database {
                 }
             } else {
                 let normalized = normalize_name(name_filter);
-                let mut stmt = conn.prepare(
+                let mut stmt = conn.prepare_cached(
                     "SELECT id, name, record_type, value, ttl, priority FROM scoped_dns_records WHERE scope_name = ?1 AND name = ?2",
                 )?;
                 let rows = stmt.query_map(params![scope_name, normalized], row_mapper)?;
@@ -1033,7 +1102,7 @@ impl Database {
             let rt = record_type.unwrap();
             if let Some(suffix) = name_filter.strip_prefix("*.") {
                 let like = format!("%{}", normalize_name(suffix));
-                let mut stmt = conn.prepare(
+                let mut stmt = conn.prepare_cached(
                     "SELECT id, name, record_type, value, ttl, priority FROM scoped_dns_records WHERE scope_name = ?1 AND name LIKE ?2 AND record_type = ?3",
                 )?;
                 let rows = stmt.query_map(params![scope_name, like, rt.as_str()], row_mapper)?;
@@ -1042,7 +1111,7 @@ impl Database {
                 }
             } else {
                 let normalized = normalize_name(name_filter);
-                let mut stmt = conn.prepare(
+                let mut stmt = conn.prepare_cached(
                     "SELECT id, name, record_type, value, ttl, priority FROM scoped_dns_records WHERE scope_name = ?1 AND name = ?2 AND record_type = ?3",
                 )?;
                 let rows = stmt.query_map(params![scope_name, normalized, rt.as_str()], row_mapper)?;
@@ -1058,7 +1127,7 @@ impl Database {
     /// Returns the managed zones for a specific scope (from scoped records).
     pub fn get_scoped_managed_zones(&self, scope_name: &str) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT DISTINCT name FROM scoped_dns_records WHERE scope_name = ?1",
         )?;
         let rows = stmt.query_map(params![scope_name], |row| row.get::<_, String>(0))?;
@@ -1087,7 +1156,7 @@ impl Database {
             None => return Ok(Vec::new()),
         };
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT home_domain FROM network_scopes WHERE name = ?1",
         )?;
         let mut rows = stmt.query_map(params![scope_name], |row| row.get::<_, String>(0))?;
@@ -1109,6 +1178,7 @@ impl Database {
             params![normalized],
         )
         .context("failed to add authoritative zone")?;
+        self.authoritative_zones_cache.insert(normalized);
         Ok(())
     }
 
@@ -1121,12 +1191,15 @@ impl Database {
                 params![normalized],
             )
             .context("failed to remove authoritative zone")?;
+        if count > 0 {
+            self.authoritative_zones_cache.remove(&normalized);
+        }
         Ok(count > 0)
     }
 
     pub fn list_authoritative_zones(&self) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT zone FROM authoritative_zones")?;
+        let mut stmt = conn.prepare_cached("SELECT zone FROM authoritative_zones")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut zones = Vec::new();
         for row in rows {
@@ -1135,22 +1208,28 @@ impl Database {
         Ok(zones)
     }
 
+    /// Returns authoritative zones from the in-memory cache (no SQL).
+    pub fn list_authoritative_zones_cached(&self) -> Vec<String> {
+        self.authoritative_zones_cache.iter().map(|r| r.key().clone()).collect()
+    }
+
+    /// Returns managed zones from the in-memory cache (no SQL).
+    pub fn get_managed_zones_cached(&self) -> Vec<String> {
+        self.managed_zones_cache.iter().map(|r| r.key().clone()).collect()
+    }
+
     pub fn is_authoritative_zone(&self, name: &str) -> bool {
         let normalized = normalize_name(name);
-        // Check explicit authoritative zones
-        if let Ok(zones) = self.list_authoritative_zones() {
-            for zone in &zones {
-                if normalized.ends_with(zone.as_str()) || normalized == *zone {
-                    return true;
-                }
+        // Check explicit authoritative zones (from cache)
+        for zone in self.authoritative_zones_cache.iter() {
+            if normalized.ends_with(zone.key().as_str()) || normalized == *zone.key() {
+                return true;
             }
         }
-        // Also check if there are local records for this zone (implicit authoritative)
-        if let Ok(managed) = self.get_managed_zones() {
-            for zone in &managed {
-                if normalized.ends_with(zone.as_str()) || normalized == *zone {
-                    return true;
-                }
+        // Also check managed zones (from cache)
+        for zone in self.managed_zones_cache.iter() {
+            if normalized.ends_with(zone.key().as_str()) || normalized == *zone.key() {
+                return true;
             }
         }
         false
@@ -1167,6 +1246,7 @@ impl Database {
             params![name, reason],
         )
         .context("failed to add local RBL entry")?;
+        self.local_rbl_cache.insert(name.to_string());
         Ok(())
     }
 
@@ -1178,12 +1258,15 @@ impl Database {
                 params![name],
             )
             .context("failed to remove local RBL entry")?;
+        if count > 0 {
+            self.local_rbl_cache.remove(name);
+        }
         Ok(count > 0)
     }
 
     pub fn list_local_rbl_entries(&self) -> Result<Vec<(String, String)>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT name, reason FROM local_rbl_entries")?;
+        let mut stmt = conn.prepare_cached("SELECT name, reason FROM local_rbl_entries")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -1195,13 +1278,7 @@ impl Database {
     }
 
     pub fn lookup_local_rbl(&self, name: &str) -> bool {
-        let conn = self.conn.lock().unwrap();
-        conn.query_row(
-            "SELECT 1 FROM local_rbl_entries WHERE name = ?1",
-            params![name],
-            |_| Ok(()),
-        )
-        .is_ok()
+        self.local_rbl_cache.contains(name)
     }
 
     // ================================================================
@@ -1221,7 +1298,7 @@ impl Database {
     pub fn get_latency_stats(&self) -> Result<Vec<(String, f64, u64)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt =
-            conn.prepare("SELECT server, avg_latency_ms, query_count FROM query_latency_stats")?;
+            conn.prepare_cached("SELECT server, avg_latency_ms, query_count FROM query_latency_stats")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -1275,7 +1352,7 @@ impl Database {
         let mut records = Vec::new();
 
         if let Some(rt) = record_type {
-            let mut stmt = conn.prepare(
+            let mut stmt = conn.prepare_cached(
                 "SELECT name, record_type, value, ttl, cached_at FROM dns_cache WHERE name = ?1 AND record_type = ?2",
             )?;
             let rows = stmt.query_map(params![name, rt], |row| {
@@ -1305,7 +1382,7 @@ impl Database {
                 }
             }
         } else {
-            let mut stmt = conn.prepare(
+            let mut stmt = conn.prepare_cached(
                 "SELECT name, record_type, value, ttl, cached_at FROM dns_cache WHERE name = ?1",
             )?;
             let rows = stmt.query_map(params![name], |row| {
@@ -1399,7 +1476,7 @@ impl Database {
     pub fn list_dnssec_keys(&self, zone: &str) -> Result<Vec<DnssecKeyRow>> {
         let conn = self.conn.lock().unwrap();
         let normalized = normalize_name(zone);
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT id, zone, scope_name, algorithm, key_type, private_key, public_key, key_tag, created_at, active
              FROM dnssec_keys WHERE zone = ?1",
         )?;
@@ -1438,7 +1515,7 @@ impl Database {
     pub fn get_active_keys(&self, zone: &str, key_type: &str) -> Result<Vec<DnssecKeyRow>> {
         let conn = self.conn.lock().unwrap();
         let normalized = normalize_name(zone);
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT id, zone, scope_name, algorithm, key_type, private_key, public_key, key_tag, created_at, active
              FROM dnssec_keys WHERE zone = ?1 AND key_type = ?2 AND active = 1",
         )?;
@@ -1485,7 +1562,7 @@ impl Database {
     /// Gets a DANE root CA by name.
     pub fn get_dane_root_ca(&self, name: &str) -> Result<Option<(i64, String, String, String)>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT id, name, cert_pem, key_pem FROM dane_root_cas WHERE name = ?1",
         )?;
         let mut rows = stmt.query_map(params![name], |row| {
@@ -1532,7 +1609,7 @@ impl Database {
     /// Gets the latest ACME certificate for a domain.
     pub fn get_acme_certificate(&self, domain: &str) -> Result<Option<AcmeCertRow>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT id, domain, cert_pem, key_pem, chain_pem, issued_at, expires_at
              FROM acme_certificates WHERE domain = ?1 ORDER BY issued_at DESC LIMIT 1",
         )?;
@@ -1647,6 +1724,20 @@ pub fn make_wildcard_name(normalized: &str) -> Option<String> {
     let trimmed = normalized.trim_end_matches('.');
     if let Some(dot_pos) = trimmed.find('.') {
         Some(format!("*.{}.", &trimmed[dot_pos + 1..]))
+    } else {
+        None
+    }
+}
+
+/// Extracts the zone (last two labels + trailing dot) from a DNS name.
+/// E.g. "sub.example.com." -> Some("example.com.")
+///      "tld." -> Some("tld.")
+fn extract_zone_from_name(name: &str) -> Option<String> {
+    let parts: Vec<&str> = name.trim_end_matches('.').split('.').collect();
+    if parts.len() >= 2 {
+        Some(format!("{}.", parts[parts.len() - 2..].join(".")))
+    } else if parts.len() == 1 && !parts[0].is_empty() {
+        Some(format!("{}.", parts[0]))
     } else {
         None
     }

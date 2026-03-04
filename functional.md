@@ -154,7 +154,7 @@ Generated Go protobuf and gRPC bindings are in `go/rolodexpb/`, produced from `p
 
 ## Configuration
 
-Configuration is loaded from a TOML file (default path `rolodex.toml`, overridable via `-c`/`--config` CLI flag). If the file does not exist, sensible defaults are used.
+Configuration is loaded from a YAML file (default path `rolodex.yml`, overridable via `-c`/`--config` CLI flag). If the file does not exist, sensible defaults are used.
 
 ### Configuration Fields
 
@@ -176,18 +176,20 @@ The project uses a top-level Makefile with the following targets:
 
 | Target | Description |
 |---|---|
-| `build` | Compile the Rust project (`cargo build`). Produces the `rolodex` server and `rolodex-cli` client binaries. |
+| `build` | Compile the Rust project in debug mode (`cargo build`). Produces the `rolodex` server and `rolodex-cli` client binaries. |
 | `test` | Run all tests: Go integration tests, Go unit tests, and Rust tests (`cargo test`). |
 | `clean` | Clean build artifacts (`cargo clean`). |
 | `go-test` | Run Go unit tests (depends on `go-integration-test`). |
 | `go-integration-test` | Build the Rust binaries, then run Go integration tests with the `integration` build tag, passing the compiled server binary path via `ROLODEX_BINARY`. |
-| `dev` | Build and install the Rust binaries, then start a development server using `dev.toml`. |
+| `install` | Install the Rust binaries to the Cargo bin directory (`cargo install --path .`). |
+| `dev` | Build the Rust project in debug mode, then start a development server using `dev.yml`. |
+| `dev-release` | Build the Rust project in release mode, then start a development server using `dev.yml`. |
 
 The Makefile is designed to be extended for non-cargo scenarios. Protocol buffer bindings are generated at build time via `build.rs` using `tonic-prost-build`.
 
 ### Development Server
 
-The `make dev` target starts a local development instance configured via `dev.toml`:
+The `make dev` target starts a local development instance configured via `dev.yml`:
 
 - DNS listeners on `127.0.0.1:5300` (UDP and TCP) — a non-privileged port that does not require root.
 - gRPC management via Unix socket at `/tmp/rolodex.sock` only (TCP gRPC disabled).
@@ -196,7 +198,7 @@ The `make dev` target starts a local development instance configured via `dev.to
 - RBL disabled.
 - Google DNS forwarders (`8.8.8.8:53`, `8.8.4.4:53`).
 
-The target first compiles and installs the latest cargo binaries (`cargo install --path .`) so that `rolodex` and `rolodex-cli` are available on `$PATH` for use against the dev server.
+The `make dev-release` target does the same but builds with `--release` for optimized performance.
 
 ## Testing
 
@@ -225,7 +227,8 @@ The `make test` target runs the full test suite: Go integration tests, Go unit t
 - **tonic** / **prost** — gRPC framework and protocol buffer serialization
 - **rusqlite** (bundled) — SQLite database with WAL mode
 - **tokio** — Async runtime
-- **dashmap** — Lock-free concurrent hash map for RBL caching
+- **dashmap** — Lock-free concurrent hash map/set for caching
+- **arc-swap** — Lock-free atomic swapping of `Arc` pointers for RBL providers and TTL drift config
 - **clap** — CLI argument parsing (server and client)
 - **tracing** — Structured logging (configurable via `RUST_LOG` environment variable)
 - **hyper-util** / **tower** — HTTP/2 transport for Unix socket gRPC connections in the CLI client
@@ -237,4 +240,10 @@ The `make test` target runs the full test suite: Go integration tests, Go unit t
 
 ## Concurrency Model
 
-The server runs on the tokio async runtime. DNS UDP queries are handled sequentially on a single task. DNS TCP connections spawn a new task per connection. gRPC servers (TCP and Unix socket) run as separate tasks. Upstream forwarder configuration is protected by `RwLock` for concurrent read access. RBL state (enabled flag, provider list) uses `RwLock`; the RBL cache uses a lock-free `DashMap`. The SQLite database is protected by a `Mutex`.
+The server runs on the tokio multi-threaded async runtime. DNS UDP queries are handled sequentially on a single task. DNS TCP connections spawn a new task per connection. gRPC servers (TCP and Unix socket) run as separate tasks. Upstream forwarder configuration is protected by `RwLock` for concurrent read access. RBL state uses lock-free primitives: the enabled flag is an `AtomicBool` and the provider list uses `ArcSwap` for zero-contention reads. The RBL cache and DNS response cache use lock-free `DashMap`. The SQLite database is protected by a `Mutex` with `prepare_cached` for statement reuse.
+
+At boot, in-memory caches are populated from the database: scope count (`AtomicUsize`), local RBL entries (`DashSet`), authoritative zones (`DashSet`), and managed zones (`DashSet`). These caches avoid SQL queries on the hot path and are updated incrementally as records are added or removed via gRPC.
+
+Upstream DNS forwarding uses a pool of UDP sockets, allowing concurrent forwarding without contention on a single socket.
+
+The in-memory DNS cache is automatically flushed when records are mutated via gRPC (add, remove, or scoped variants) to ensure consistency between the database and cached responses. Local database records are cached with a `local` flag that prevents TTL decay and SQLite persistence, since they are authoritative.

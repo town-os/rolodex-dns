@@ -3,7 +3,7 @@
 /// Since Rolodex IS the DNS server, it can serve `_acme-challenge` TXT records
 /// natively for DNS-01 challenge validation. This enables automated certificate
 /// issuance without external DNS providers.
-use anyhow::{Context, Result};
+use anyhow::Result;
 use crate::db::Database;
 
 /// ACME certificate status.

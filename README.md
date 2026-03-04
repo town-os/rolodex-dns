@@ -28,7 +28,8 @@ Rolodex also supports Realtime Blackhole Lists (RBLs) for DNS-based spam/malware
 - **Network scoping**: Split-horizon DNS views with per-scope records and IP-based access control
 - **HTTP proxy support**: Forward DNS queries through HTTP CONNECT proxy or DoH proxy
 - **SQLite persistence**: DNS records persist across restarts
-- **Performance**: Built on Rust with tokio async runtime, hickory-dns protocol handling, and DashMap concurrent caching
+- **TLS hot-reload**: Certificates can be reloaded at runtime (e.g. after ACME renewal) without restarting the server
+- **Performance**: Multi-threaded tokio runtime, lock-free RBL state (`AtomicBool` + `ArcSwap`), in-memory boot caches for scopes/zones/RBL entries, UDP socket pool for upstream forwarding, and DashMap/DashSet concurrent caching throughout
 
 ## Building
 
@@ -51,9 +52,8 @@ make dev
 ```
 
 This will:
-1. Build the project (`cargo build`)
-2. Install the `rolodex` binary to your Cargo bin directory (`cargo install --path .`)
-3. Start the server using `dev.yml` with the following settings:
+1. Build the project in debug mode (`cargo build`)
+2. Start the server using `dev.yml` with the following settings:
    - DNS listeners on `127.0.0.1:5300` (UDP and TCP)
    - gRPC Unix socket at `/tmp/rolodex.sock` (no TCP gRPC listener)
    - SQLite database at `/tmp/rolodex-dev.db`
@@ -61,7 +61,17 @@ This will:
    - RBL checking disabled
    - Default upstream forwarders (`8.8.8.8:53`, `8.8.4.4:53`)
 
-After `make dev` is running, you can manage the server using the installed `rolodex` binary or the Go client library connected to `/tmp/rolodex.sock`. Press Ctrl+C to stop the server.
+For a release-optimized dev server:
+```
+make dev-release
+```
+
+To install the binaries to your Cargo bin directory:
+```
+make install
+```
+
+After the dev server is running, you can manage it using the `rolodex-cli` binary or the Go client library connected to `/tmp/rolodex.sock`. Press Ctrl+C to stop the server.
 
 ## Configuration
 
@@ -964,7 +974,12 @@ The following methods are also available. See `proto/rolodex.proto` for full req
 
 Rolodex caches DNS responses locally so that repeated queries for the same name are answered without contacting any upstream forwarder. This prevents DNS query leakage -- once a record has been cached, no external observer can see that the query was made again.
 
-The cache is populated on first lookup and entries are evicted based on their TTL (adjusted by TTL drift settings if configured). Cache statistics are available via `GetCacheStats` and the cache can be flushed via `FlushDnsCache`.
+The cache distinguishes between two kinds of entries:
+
+- **Local records** (from the SQLite database): Cached in-memory with stable TTLs (no decay). These entries are not persisted to the cache backing store since they already live in the database. The in-memory DNS cache is automatically invalidated whenever records are added, removed, or modified via gRPC, so changes take effect immediately.
+- **Forwarded responses** (from upstream resolvers): Cached with decaying TTLs and persisted to an SQLite-backed cache table. On restart, persisted entries are reloaded so the cache is warm immediately.
+
+Cache statistics are available via `GetCacheStats` and the cache can be flushed via `FlushDnsCache`.
 
 For maximum privacy, set `forwarders: []` to run Rolodex as a purely authoritative server with no upstream forwarding at all. All answers will come from the local database.
 

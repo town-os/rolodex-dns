@@ -1,3 +1,4 @@
+use arc_swap::ArcSwap;
 use crate::db::{Database, RecordKind};
 use crate::dns_cache::DnsCache;
 use crate::rbl::RblChecker;
@@ -8,10 +9,12 @@ use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordType};
 use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use rand::Rng;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::net::{TcpListener, UdpSocket};
-use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
+
+const FORWARD_POOL_SIZE: usize = 8;
 
 /// Maximum UDP DNS message size.
 const MAX_UDP_SIZE: usize = 4096;
@@ -28,7 +31,7 @@ const MAX_TCP_SIZE: usize = 65535;
 pub struct DnsServer {
     db: Database,
     rbl: Arc<RblChecker>,
-    forwarders: Arc<RwLock<Vec<SocketAddr>>>,
+    forwarders: Arc<ArcSwap<Vec<SocketAddr>>>,
     /// Optional DNS response cache for privacy-first resolution.
     dns_cache: Option<Arc<DnsCache>>,
     /// Optional DNS64 prefix for synthesizing AAAA records from A records.
@@ -36,19 +39,28 @@ pub struct DnsServer {
     /// Whether to randomize QNAME case in forwarded queries (0x20 encoding).
     qname_randomization: bool,
     /// TTL drift configuration for adjusting cached record TTLs.
-    ttl_drift_config: Arc<RwLock<crate::ttl_drift::TtlDriftConfig>>,
+    ttl_drift_config: Arc<ArcSwap<crate::ttl_drift::TtlDriftConfig>>,
+    /// Pool of pre-bound UDP sockets for forwarding queries.
+    forward_sockets: Vec<Arc<tokio::sync::Mutex<Option<UdpSocket>>>>,
+    /// Round-robin index for the forward socket pool.
+    forward_socket_idx: AtomicUsize,
 }
 
 impl DnsServer {
     pub fn new(db: Database, rbl: Arc<RblChecker>, forwarders: Vec<SocketAddr>) -> Self {
+        let forward_sockets = (0..FORWARD_POOL_SIZE)
+            .map(|_| Arc::new(tokio::sync::Mutex::new(None)))
+            .collect();
         Self {
             db,
             rbl,
-            forwarders: Arc::new(RwLock::new(forwarders)),
+            forwarders: Arc::new(ArcSwap::from_pointee(forwarders)),
             dns_cache: None,
             dns64_prefix: None,
             qname_randomization: true,
-            ttl_drift_config: Arc::new(RwLock::new(crate::ttl_drift::TtlDriftConfig::default())),
+            ttl_drift_config: Arc::new(ArcSwap::from_pointee(crate::ttl_drift::TtlDriftConfig::default())),
+            forward_sockets,
+            forward_socket_idx: AtomicUsize::new(0),
         }
     }
 
@@ -61,25 +73,30 @@ impl DnsServer {
         dns64_prefix: Option<Ipv6Addr>,
         qname_randomization: bool,
     ) -> Self {
+        let forward_sockets = (0..FORWARD_POOL_SIZE)
+            .map(|_| Arc::new(tokio::sync::Mutex::new(None)))
+            .collect();
         Self {
             db,
             rbl,
-            forwarders: Arc::new(RwLock::new(forwarders)),
+            forwarders: Arc::new(ArcSwap::from_pointee(forwarders)),
             dns_cache,
             dns64_prefix,
             qname_randomization,
-            ttl_drift_config: Arc::new(RwLock::new(crate::ttl_drift::TtlDriftConfig::default())),
+            ttl_drift_config: Arc::new(ArcSwap::from_pointee(crate::ttl_drift::TtlDriftConfig::default())),
+            forward_sockets,
+            forward_socket_idx: AtomicUsize::new(0),
         }
     }
 
     /// Sets the TTL drift configuration.
     pub async fn set_ttl_drift_config(&self, config: crate::ttl_drift::TtlDriftConfig) {
-        *self.ttl_drift_config.write().await = config;
+        self.ttl_drift_config.store(Arc::new(config));
     }
 
     /// Gets the current TTL drift configuration.
     pub async fn get_ttl_drift_config(&self) -> crate::ttl_drift::TtlDriftConfig {
-        self.ttl_drift_config.read().await.clone()
+        self.ttl_drift_config.load().as_ref().clone()
     }
 
     /// Returns a reference to the database.
@@ -87,21 +104,29 @@ impl DnsServer {
         &self.db
     }
 
+    /// Flushes the in-memory DNS cache (and its persistent backing store).
+    pub fn flush_cache(&self) {
+        if let Some(ref cache) = self.dns_cache {
+            cache.flush();
+        }
+    }
+
     /// Updates the upstream forwarder list.
     pub async fn set_forwarders(&self, forwarders: Vec<SocketAddr>) {
-        *self.forwarders.write().await = forwarders;
+        self.forwarders.store(Arc::new(forwarders));
     }
 
     /// Returns the current forwarder list.
     pub async fn get_forwarders(&self) -> Vec<SocketAddr> {
-        self.forwarders.read().await.clone()
+        self.forwarders.load().as_ref().clone()
     }
 
     /// Starts the UDP DNS listener.
+    /// Processes queries concurrently by spawning a task per received query.
     pub async fn serve_udp(self: Arc<Self>, bind_addr: &str) -> Result<()> {
-        let socket = UdpSocket::bind(bind_addr)
+        let socket = Arc::new(UdpSocket::bind(bind_addr)
             .await
-            .with_context(|| format!("failed to bind UDP socket to {}", bind_addr))?;
+            .with_context(|| format!("failed to bind UDP socket to {}", bind_addr))?);
         info!("DNS UDP server listening on {}", bind_addr);
 
         let mut buf = vec![0u8; MAX_UDP_SIZE];
@@ -115,20 +140,20 @@ impl DnsServer {
             };
 
             let data = buf[..len].to_vec();
-            let socket_ref = &socket;
             let server = Arc::clone(&self);
-
-            let response = server.handle_query_from(&data, src.ip()).await;
-            match response {
-                Ok(resp) => {
-                    if let Err(e) = socket_ref.send_to(&resp, src).await {
-                        error!("UDP send error to {}: {}", src, e);
+            let socket = Arc::clone(&socket);
+            tokio::spawn(async move {
+                match server.handle_query_from(&data, src.ip()).await {
+                    Ok(resp) => {
+                        if let Err(e) = socket.send_to(&resp, src).await {
+                            error!("UDP send error to {}: {}", src, e);
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to handle DNS query from {}: {}", src, e);
                     }
                 }
-                Err(e) => {
-                    warn!("Failed to handle DNS query from {}: {}", src, e);
-                }
-            }
+            });
         }
     }
 
@@ -249,9 +274,9 @@ impl DnsServer {
 
         // Determine network scope for this query
         let scope_name = if let Some(ip) = source_ip {
-            let has_scopes = !self.db.list_network_scopes().unwrap_or_default().is_empty();
-            if has_scopes {
-                let scope = self.db.get_scope_for_ip(&ip.to_string());
+            let ip_str = ip.to_string();
+            if self.db.has_scopes() {
+                let scope = self.db.get_scope_for_ip(&ip_str);
                 if scope.is_none() {
                     // IP is not associated with any scope - refuse resolution
                     debug!("Refusing DNS query from unassociated IP {}", ip);
@@ -283,9 +308,23 @@ impl DnsServer {
             // Try scoped records first
             let record_kind = map_query_type_to_kind(qtype);
             if let Some(kind) = record_kind {
+                // Check cache before hitting the database
+                let scoped_cache_name = format!("@{}/{}", scope, qname);
+                if let Some(ref cache) = self.dns_cache {
+                    let cached = cache.lookup(&scoped_cache_name, Some(kind));
+                    if !cached.is_empty() {
+                        debug!("Cache hit (scoped) for {} {:?} in scope {}: {} records", qname, qtype, scope, cached.len());
+                        let dns_records = cached.iter().filter_map(|r| db_record_to_dns_record(r)).collect();
+                        return Ok(build_response_edns(&message, ResponseCode::NoError, dns_records, true, edns_ctx.as_ref()));
+                    }
+                }
+
                 let records = self.db.lookup_scoped(scope, &qname, Some(kind));
                 if !records.is_empty() {
                     debug!("Scoped hit for {} {:?} in scope {}: {} records", qname, qtype, scope, records.len());
+                    if let Some(ref cache) = self.dns_cache {
+                        cache.insert_local(&scoped_cache_name, Some(kind), records.clone());
+                    }
                     let dns_records = records.iter().filter_map(|r| db_record_to_dns_record(r)).collect();
                     return Ok(build_response_edns(&message, ResponseCode::NoError, dns_records, true, edns_ctx.as_ref()));
                 }
@@ -358,6 +397,25 @@ impl DnsServer {
         // Try local database first (split-horizon: local records take priority)
         let record_kind = map_query_type_to_kind(qtype);
         if let Some(kind) = record_kind {
+            // Check cache before hitting the database
+            if let Some(ref cache) = self.dns_cache {
+                let cached = cache.lookup(&qname, Some(kind));
+                if !cached.is_empty() {
+                    debug!("Cache hit (local) for {} {:?}: {} records", qname, qtype, cached.len());
+                    let dns_records = cached
+                        .iter()
+                        .filter_map(|r| db_record_to_dns_record(r))
+                        .collect();
+                    return Ok(build_response_edns(
+                        &message,
+                        ResponseCode::NoError,
+                        dns_records,
+                        is_authoritative,
+                        edns_ctx.as_ref(),
+                    ));
+                }
+            }
+
             let local_records = self.db.lookup(&qname, Some(kind));
             if let Ok(records) = local_records {
                 if !records.is_empty() {
@@ -367,6 +425,9 @@ impl DnsServer {
                         qtype,
                         records.len()
                     );
+                    if let Some(ref cache) = self.dns_cache {
+                        cache.insert_local(&qname, Some(kind), records.clone());
+                    }
                     let dns_records = records
                         .iter()
                         .filter_map(|r| db_record_to_dns_record(r))
@@ -438,10 +499,11 @@ impl DnsServer {
         // Check if this name falls under a managed zone
         // If the zone exists in our DB but the specific name doesn't,
         // still return NXDOMAIN from local (split-horizon behavior)
-        if let Ok(zones) = self.db.get_managed_zones() {
+        {
+            let zones = self.db.get_managed_zones_cached();
             let normalized_qname = crate::db::normalize_name(&qname);
             for zone in &zones {
-                if normalized_qname.ends_with(zone) || normalized_qname == *zone {
+                if normalized_qname.ends_with(zone.as_str()) || normalized_qname == *zone {
                     // Name is under a managed zone but not found - check if the zone
                     // itself has records. If so, this is authoritative NXDOMAIN.
                     let zone_records = self.db.lookup(zone, None);
@@ -465,7 +527,8 @@ impl DnsServer {
         }
 
         // Check explicit authoritative zones too
-        if let Ok(auth_zones) = self.db.list_authoritative_zones() {
+        {
+            let auth_zones = self.db.list_authoritative_zones_cached();
             let normalized_qname = crate::db::normalize_name(&qname);
             for zone in &auth_zones {
                 if normalized_qname.ends_with(zone.as_str()) || normalized_qname == *zone {
@@ -655,7 +718,7 @@ impl DnsServer {
 
     /// Forwards a DNS query to the configured upstream resolvers.
     async fn forward_query(&self, query_data: &[u8]) -> Result<Vec<u8>> {
-        let forwarders = self.forwarders.read().await;
+        let forwarders = self.forwarders.load();
         if forwarders.is_empty() {
             return Ok(make_error_response(query_data, ResponseCode::ServFail));
         }
@@ -701,12 +764,19 @@ impl DnsServer {
     }
 
     async fn forward_udp(&self, query_data: &[u8], target: &SocketAddr) -> Result<Vec<u8>> {
-        let socket = UdpSocket::bind("0.0.0.0:0").await?;
+        // Acquire a socket from the pool (round-robin)
+        let idx = self.forward_socket_idx.fetch_add(1, Ordering::Relaxed) % FORWARD_POOL_SIZE;
+        let mut socket_guard = self.forward_sockets[idx].lock().await;
+        // Lazily bind the socket on first use
+        if socket_guard.is_none() {
+            *socket_guard = Some(UdpSocket::bind("0.0.0.0:0").await?);
+        }
+        let socket = socket_guard.as_ref().unwrap();
 
         // Apply QNAME case randomization (0x20 encoding) if enabled
-        let (send_data, randomized_qname) = if self.qname_randomization {
+        let (send_data, randomized_name) = if self.qname_randomization {
             match randomize_qname_case(query_data) {
-                Some((modified, original_qname)) => (modified, Some(original_qname)),
+                Some((modified, original_qname, rand_name)) => (modified, Some((original_qname, rand_name))),
                 None => (query_data.to_vec(), None),
             }
         } else {
@@ -723,22 +793,19 @@ impl DnsServer {
             .context("forwarder timeout")?
             .context("forwarder recv error")?;
         buf.truncate(len);
+        // Release the socket back to the pool
+        drop(socket_guard);
 
         // Verify QNAME case in response matches what we sent (0x20 check)
-        if let Some(ref sent_qname) = randomized_qname {
+        if let Some((ref original_qname, ref sent_randomized)) = randomized_name {
             if let Ok(response_msg) = hickory_proto::op::Message::from_bytes(&buf) {
                 if let Some(resp_q) = response_msg.queries().first() {
                     let resp_qname = resp_q.name().to_string();
-                    if let Ok(sent_msg) = hickory_proto::op::Message::from_bytes(&send_data) {
-                        if let Some(sent_q) = sent_msg.queries().first() {
-                            let sent_qname_str = sent_q.name().to_string();
-                            if resp_qname != sent_qname_str {
-                                warn!(
-                                    "QNAME case mismatch from {}: sent '{}', got '{}' (original: '{}')",
-                                    target, sent_qname_str, resp_qname, sent_qname
-                                );
-                            }
-                        }
+                    if resp_qname != *sent_randomized {
+                        warn!(
+                            "QNAME case mismatch from {}: sent '{}', got '{}' (original: '{}')",
+                            target, sent_randomized, resp_qname, original_qname
+                        );
                     }
                 }
             }
@@ -941,7 +1008,7 @@ fn db_record_to_dns_record(db_rec: &crate::db::DnsRecord) -> Option<Record> {
 }
 
 /// Builds a DNS response message (without EDNS).
-#[allow(dead_code)]
+#[cfg(test)]
 fn build_response(
     query: &hickory_proto::op::Message,
     rcode: ResponseCode,
@@ -1059,8 +1126,8 @@ fn synthesize_dns64_address(prefix: &Ipv6Addr, ipv4: &Ipv4Addr) -> Ipv6Addr {
 }
 
 /// Randomizes the case of the QNAME in a DNS query for 0x20 encoding.
-/// Returns the modified query bytes and the original QNAME string, or None if parsing fails.
-pub fn randomize_qname_case(query_data: &[u8]) -> Option<(Vec<u8>, String)> {
+/// Returns (modified_bytes, original_qname, randomized_qname), or None if parsing fails.
+pub fn randomize_qname_case(query_data: &[u8]) -> Option<(Vec<u8>, String, String)> {
     let message = hickory_proto::op::Message::from_bytes(query_data).ok()?;
     let question = message.queries().first()?;
     let original_qname = question.name().to_string();
@@ -1103,7 +1170,7 @@ pub fn randomize_qname_case(query_data: &[u8]) -> Option<(Vec<u8>, String)> {
             new_msg.add_query(new_q);
         }
         let bytes = new_msg.to_bytes().ok()?;
-        Some((bytes, original_qname))
+        Some((bytes, original_qname, randomized_name))
     } else {
         None
     }

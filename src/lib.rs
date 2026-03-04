@@ -1,3 +1,5 @@
+#![deny(dead_code)]
+
 pub mod acme;
 pub mod config;
 pub mod dane;

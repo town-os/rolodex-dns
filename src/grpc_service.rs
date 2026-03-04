@@ -88,6 +88,7 @@ impl RolodexService for RolodexGrpcService {
 
         match self.db.add_record(&db_record) {
             Ok(_) => {
+                self.dns_server.flush_cache();
                 info!("Added record: {} {:?} {}", record.name, record_type, record.value);
                 Ok(Response::new(AddRecordResponse {
                     success: true,
@@ -112,6 +113,7 @@ impl RolodexService for RolodexGrpcService {
 
         match self.db.remove_records(&req.name, record_type, &req.value) {
             Ok(count) => {
+                self.dns_server.flush_cache();
                 info!("Removed {} records for {}", count, req.name);
                 Ok(Response::new(RemoveRecordResponse {
                     success: true,
@@ -471,6 +473,7 @@ impl RolodexService for RolodexGrpcService {
 
         match self.db.add_scoped_record(&req.scope_name, &db_record) {
             Ok(_) => {
+                self.dns_server.flush_cache();
                 info!("Added scoped record in {}: {} {:?} {}", req.scope_name, record.name, record_type, record.value);
                 Ok(Response::new(AddScopedRecordResponse {
                     success: true,
@@ -499,6 +502,7 @@ impl RolodexService for RolodexGrpcService {
 
         match self.db.remove_scoped_records(&req.scope_name, &req.name, record_type, &req.value) {
             Ok(count) => {
+                self.dns_server.flush_cache();
                 info!("Removed {} scoped records from {} for {}", count, req.scope_name, req.name);
                 Ok(Response::new(RemoveScopedRecordResponse {
                     success: true,
@@ -669,6 +673,7 @@ impl RolodexService for RolodexGrpcService {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
 
+        self.dns_server.flush_cache();
         match self.db.cache_flush() {
             Ok(_) => {
                 info!("Flushed DNS cache");

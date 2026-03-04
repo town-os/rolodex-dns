@@ -26,9 +26,14 @@ impl Default for TlsConfig {
 }
 
 /// Manages TLS certificates with hot-reload support.
+///
+/// Holds the TLS configuration and ALPN protocols so certificates can be
+/// reloaded at runtime (e.g. after ACME renewal). Callers obtain the current
+/// config via `server_config()`, or subscribe to changes via `watch()`.
 pub struct TlsManager {
     config: TlsConfig,
-    server_config: Arc<watch::Sender<Arc<rustls::ServerConfig>>>,
+    alpn_protocols: Vec<Vec<u8>>,
+    sender: Arc<watch::Sender<Arc<rustls::ServerConfig>>>,
     receiver: watch::Receiver<Arc<rustls::ServerConfig>>,
 }
 
@@ -39,7 +44,8 @@ impl TlsManager {
         let (tx, rx) = watch::channel(Arc::new(server_config));
         Ok(Self {
             config,
-            server_config: Arc::new(tx),
+            alpn_protocols,
+            sender: Arc::new(tx),
             receiver: rx,
         })
     }
@@ -52,6 +58,16 @@ impl TlsManager {
     /// Returns a watch receiver for config changes (hot-reload).
     pub fn watch(&self) -> watch::Receiver<Arc<rustls::ServerConfig>> {
         self.receiver.clone()
+    }
+
+    /// Reloads the TLS certificate from the current configuration.
+    ///
+    /// Rebuilds the `rustls::ServerConfig` and pushes it to all watchers.
+    pub fn reload(&self) -> Result<()> {
+        let new_config = Self::build_server_config(&self.config, &self.alpn_protocols)?;
+        self.sender
+            .send(Arc::new(new_config))
+            .map_err(|_| anyhow::anyhow!("all TLS config receivers have been dropped"))
     }
 
     fn build_server_config(

@@ -1,3 +1,4 @@
+use assert_cmd::cargo;
 use assert_cmd::Command;
 use predicates::prelude::*;
 use rolodex::db::Database;
@@ -95,14 +96,14 @@ impl TestServer {
     }
 
     fn cli_tcp(&self) -> Command {
-        let mut cmd = Command::cargo_bin("rolodex-cli").unwrap();
+        let mut cmd = Command::new(cargo::cargo_bin!("rolodex-cli"));
         cmd.args(["-a", &self.tcp_addr, "-t", "test-secret"]);
         cmd.timeout(std::time::Duration::from_secs(10));
         cmd
     }
 
     fn cli_unix(&self) -> Command {
-        let mut cmd = Command::cargo_bin("rolodex-cli").unwrap();
+        let mut cmd = Command::new(cargo::cargo_bin!("rolodex-cli"));
         cmd.args(["-u", &self.unix_path]);
         cmd.timeout(std::time::Duration::from_secs(10));
         cmd
@@ -441,7 +442,7 @@ async fn test_cli_auth_failure_tcp() {
     let server = TestServer::start("test-secret").await;
 
     run_cmd({
-        let mut cmd = Command::cargo_bin("rolodex-cli").unwrap();
+        let mut cmd = Command::new(cargo::cargo_bin!("rolodex-cli"));
         cmd.args(["-a", &server.tcp_addr, "-t", "wrong-secret"]);
         cmd.args(["list-records"]);
         cmd.timeout(std::time::Duration::from_secs(10));
@@ -519,7 +520,7 @@ async fn test_cli_unix_bypasses_auth() {
 
     // Unix socket should work without any auth token
     run_cmd({
-        let mut cmd = Command::cargo_bin("rolodex-cli").unwrap();
+        let mut cmd = Command::new(cargo::cargo_bin!("rolodex-cli"));
         cmd.args(["-u", &server.unix_path]);
         cmd.args(["list-records"]);
         cmd.timeout(std::time::Duration::from_secs(10));
@@ -776,8 +777,7 @@ async fn test_cli_add_ptr_record() {
 
 #[test]
 fn test_cli_help_output() {
-    Command::cargo_bin("rolodex-cli")
-        .unwrap()
+    Command::new(cargo::cargo_bin!("rolodex-cli"))
         .arg("--help")
         .assert()
         .success()
@@ -793,8 +793,7 @@ fn test_cli_help_output() {
 
 #[test]
 fn test_cli_add_record_help() {
-    Command::cargo_bin("rolodex-cli")
-        .unwrap()
+    Command::new(cargo::cargo_bin!("rolodex-cli"))
         .args(["add-record", "--help"])
         .assert()
         .success()
@@ -808,8 +807,7 @@ fn test_cli_add_record_help() {
 
 #[test]
 fn test_cli_remove_record_help() {
-    Command::cargo_bin("rolodex-cli")
-        .unwrap()
+    Command::new(cargo::cargo_bin!("rolodex-cli"))
         .args(["remove-record", "--help"])
         .assert()
         .success()
@@ -819,8 +817,7 @@ fn test_cli_remove_record_help() {
 
 #[test]
 fn test_cli_list_records_help() {
-    Command::cargo_bin("rolodex-cli")
-        .unwrap()
+    Command::new(cargo::cargo_bin!("rolodex-cli"))
         .args(["list-records", "--help"])
         .assert()
         .success()
@@ -840,7 +837,7 @@ async fn test_cli_empty_auth_server() {
 
     // Should work with any token
     run_cmd({
-        let mut cmd = Command::cargo_bin("rolodex-cli").unwrap();
+        let mut cmd = Command::new(cargo::cargo_bin!("rolodex-cli"));
         cmd.args(["-a", &server.tcp_addr, "-t", "anything"]);
         cmd.args(["list-records"]);
         cmd.timeout(std::time::Duration::from_secs(10));

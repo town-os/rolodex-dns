@@ -17,7 +17,9 @@ use std::time::Instant;
 struct CachedEntry {
     records: Vec<DnsRecord>,
     expires_at: Instant,
-    original_ttl: u32,
+    /// When true, records come from the local DB — TTL is returned as-is (no decay)
+    /// and entries are not persisted to the SQLite cache table.
+    local: bool,
 }
 
 /// In-memory DNS cache backed by SQLite for persistence across restarts.
@@ -50,12 +52,17 @@ impl DnsCache {
     pub fn lookup(&self, name: &str, record_type: Option<RecordKind>) -> Vec<DnsRecord> {
         let key = cache_key(name, record_type);
         if let Some(entry) = self.memory.get(&key) {
-            if entry.expires_at > Instant::now() {
+            let now = Instant::now();
+            if entry.expires_at > now {
                 self.hits.fetch_add(1, Ordering::Relaxed);
-                // Adjust TTL based on remaining time
+                if entry.local {
+                    // Local records: return original TTL (no decay)
+                    return entry.records.clone();
+                }
+                // Upstream records: adjust TTL based on remaining cache time
                 let remaining_secs = entry
                     .expires_at
-                    .duration_since(Instant::now())
+                    .duration_since(now)
                     .as_secs() as u32;
                 return entry
                     .records
@@ -89,7 +96,7 @@ impl DnsCache {
             CachedEntry {
                 records: records.clone(),
                 expires_at,
-                original_ttl: ttl,
+                local: false,
             },
         );
 
@@ -109,6 +116,30 @@ impl DnsCache {
                 );
             }
         });
+    }
+
+    /// Inserts local (authoritative) records into the in-memory cache.
+    ///
+    /// Unlike `insert()`, this does NOT write to the persistent SQLite cache
+    /// (local records already live in the main DB) and uses a long cache
+    /// lifetime (1 day). The record's TTL is preserved as-is for clients;
+    /// eviction happens via `flush()`, not TTL expiration.
+    pub fn insert_local(&self, name: &str, record_type: Option<RecordKind>, records: Vec<DnsRecord>) {
+        if records.is_empty() {
+            return;
+        }
+
+        let key = cache_key(name, record_type);
+        let expires_at = Instant::now() + std::time::Duration::from_secs(86400);
+
+        self.memory.insert(
+            key,
+            CachedEntry {
+                records,
+                expires_at,
+                local: true,
+            },
+        );
     }
 
     /// Flushes all cached entries.
@@ -143,7 +174,7 @@ impl DnsCache {
                         records: vec![rec.clone()],
                         expires_at: Instant::now()
                             + std::time::Duration::from_secs(rec.ttl as u64),
-                        original_ttl: rec.ttl,
+                        local: false,
                     });
             }
         }

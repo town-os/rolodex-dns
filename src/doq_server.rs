@@ -6,7 +6,7 @@
 use crate::dns_server::DnsServer;
 use anyhow::{Context, Result};
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
 /// Serves DNS-over-QUIC on the specified bind address.
 pub async fn serve_doq(

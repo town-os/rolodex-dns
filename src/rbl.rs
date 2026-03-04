@@ -1,8 +1,9 @@
+use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
 /// A cached RBL lookup result.
@@ -83,9 +84,9 @@ impl RblResolver for HickoryRblResolver {
 /// Results are cached in memory for the TTL duration returned by the RBL.
 pub struct RblChecker {
     /// Whether RBL checking is globally enabled.
-    enabled: Arc<RwLock<bool>>,
+    enabled: AtomicBool,
     /// Configured RBL providers.
-    providers: Arc<RwLock<Vec<RblProvider>>>,
+    providers: ArcSwap<Vec<RblProvider>>,
     /// Cache of RBL lookup results keyed by "<ip>/<zone>".
     cache: Arc<DashMap<String, CacheEntry>>,
     /// DNS resolver for RBL lookups.
@@ -105,8 +106,8 @@ impl RblChecker {
         resolver: Arc<dyn RblResolver>,
     ) -> Self {
         Self {
-            enabled: Arc::new(RwLock::new(enabled)),
-            providers: Arc::new(RwLock::new(providers)),
+            enabled: AtomicBool::new(enabled),
+            providers: ArcSwap::from_pointee(providers),
             cache: Arc::new(DashMap::new()),
             resolver,
         }
@@ -115,12 +116,12 @@ impl RblChecker {
     /// Checks if an IP address is listed in any enabled RBL.
     /// Returns true if the IP is blacklisted and should be blocked (NXDOMAIN).
     pub async fn is_listed(&self, ip: &IpAddr) -> bool {
-        if !*self.enabled.read().await {
+        if !self.enabled.load(Ordering::Relaxed) {
             return false;
         }
 
-        let providers = self.providers.read().await.clone();
-        for provider in &providers {
+        let providers = self.providers.load();
+        for provider in providers.iter() {
             if !provider.enabled {
                 continue;
             }
@@ -177,15 +178,15 @@ impl RblChecker {
 
     /// Updates the RBL configuration.
     pub async fn set_config(&self, enabled: bool, providers: Vec<RblProvider>) {
-        *self.enabled.write().await = enabled;
-        *self.providers.write().await = providers;
+        self.enabled.store(enabled, Ordering::Relaxed);
+        self.providers.store(Arc::new(providers));
     }
 
     /// Returns the current RBL configuration.
     pub async fn get_config(&self) -> (bool, Vec<RblProvider>) {
-        let enabled = *self.enabled.read().await;
-        let providers = self.providers.read().await.clone();
-        (enabled, providers)
+        let enabled = self.enabled.load(Ordering::Relaxed);
+        let providers = self.providers.load();
+        (enabled, providers.as_ref().clone())
     }
 
     /// Flushes the RBL cache.
@@ -195,7 +196,7 @@ impl RblChecker {
 
     /// Returns whether RBL checking is enabled.
     pub async fn is_enabled(&self) -> bool {
-        *self.enabled.read().await
+        self.enabled.load(Ordering::Relaxed)
     }
 }
 
@@ -216,18 +217,20 @@ pub fn build_rbl_query(ip: &IpAddr, zone: &str) -> String {
             )
         }
         IpAddr::V6(ipv6) => {
-            let segments = ipv6.octets();
-            let nibbles: Vec<String> = segments
-                .iter()
-                .rev()
-                .flat_map(|byte| {
-                    vec![
-                        format!("{:x}", byte & 0x0f),
-                        format!("{:x}", (byte >> 4) & 0x0f),
-                    ]
-                })
-                .collect();
-            format!("{}.{}", nibbles.join("."), zone)
+            let octets = ipv6.octets();
+            // 32 nibbles * 2 chars each (nibble + dot) + zone length
+            let mut result = String::with_capacity(64 + zone.len());
+            for &byte in octets.iter().rev() {
+                let lo = byte & 0x0f;
+                let hi = (byte >> 4) & 0x0f;
+                result.push(char::from(b"0123456789abcdef"[lo as usize]));
+                result.push('.');
+                result.push(char::from(b"0123456789abcdef"[hi as usize]));
+                result.push('.');
+            }
+            // String already ends with '.', just append the zone
+            result.push_str(zone);
+            result
         }
     }
 }

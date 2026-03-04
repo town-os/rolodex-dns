@@ -5,7 +5,6 @@
 /// - **DoH proxy**: Forward DoH requests through an HTTP proxy
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
-use tracing::{debug, warn};
 
 /// Proxy configuration.
 #[derive(Debug, Clone)]
