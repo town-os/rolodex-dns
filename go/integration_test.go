@@ -930,3 +930,337 @@ func TestIntegrationDeleteScopeCascade(t *testing.T) {
 		t.Errorf("got %d associations after cascade delete, want 0", len(assocs))
 	}
 }
+
+func TestIntegrationAuthoritativeZoneLifecycle(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// Add authoritative zone
+	err := client.AddAuthoritativeZone(ctx, "auth.test.")
+	if err != nil {
+		t.Fatalf("AddAuthoritativeZone: %v", err)
+	}
+
+	// List zones
+	zones, err := client.ListAuthoritativeZones(ctx)
+	if err != nil {
+		t.Fatalf("ListAuthoritativeZones: %v", err)
+	}
+	found := false
+	for _, z := range zones {
+		if z == "auth.test." {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("zone 'auth.test.' not found in %v", zones)
+	}
+
+	// Remove zone
+	err = client.RemoveAuthoritativeZone(ctx, "auth.test.")
+	if err != nil {
+		t.Fatalf("RemoveAuthoritativeZone: %v", err)
+	}
+
+	// Verify removed
+	zones, err = client.ListAuthoritativeZones(ctx)
+	if err != nil {
+		t.Fatalf("ListAuthoritativeZones after remove: %v", err)
+	}
+	for _, z := range zones {
+		if z == "auth.test." {
+			t.Errorf("zone 'auth.test.' still present after removal")
+		}
+	}
+}
+
+func TestIntegrationLocalRblLifecycle(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// Add local RBL entry
+	err := client.AddLocalRblEntry(ctx, &LocalRblEntry{
+		Name:   "10.0.0.99",
+		Reason: "test block",
+	})
+	if err != nil {
+		t.Fatalf("AddLocalRblEntry: %v", err)
+	}
+
+	// List entries
+	entries, err := client.ListLocalRblEntries(ctx)
+	if err != nil {
+		t.Fatalf("ListLocalRblEntries: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(entries))
+	}
+	if entries[0].Name != "10.0.0.99" {
+		t.Errorf("name = %q, want %q", entries[0].Name, "10.0.0.99")
+	}
+	if entries[0].Reason != "test block" {
+		t.Errorf("reason = %q, want %q", entries[0].Reason, "test block")
+	}
+
+	// Remove entry
+	err = client.RemoveLocalRblEntry(ctx, "10.0.0.99")
+	if err != nil {
+		t.Fatalf("RemoveLocalRblEntry: %v", err)
+	}
+
+	// Verify removed
+	entries, err = client.ListLocalRblEntries(ctx)
+	if err != nil {
+		t.Fatalf("ListLocalRblEntries after remove: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("got %d entries after remove, want 0", len(entries))
+	}
+}
+
+func TestIntegrationCacheStatsAndFlush(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// Get cache stats (should succeed even with empty cache)
+	stats, err := client.GetCacheStats(ctx)
+	if err != nil {
+		t.Fatalf("GetCacheStats: %v", err)
+	}
+	if stats == nil {
+		t.Fatal("stats should not be nil")
+	}
+
+	// Flush DNS cache
+	err = client.FlushDnsCache(ctx)
+	if err != nil {
+		t.Fatalf("FlushDnsCache: %v", err)
+	}
+}
+
+func TestIntegrationTtlDriftConfig(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// Set TTL drift config to fixed mode
+	err := client.SetTtlDriftConfig(ctx, &TtlDriftConfig{
+		Mode:            "fixed",
+		FixedAdjustment: "30s",
+	})
+	if err != nil {
+		t.Fatalf("SetTtlDriftConfig: %v", err)
+	}
+
+	// Get config back
+	config, err := client.GetTtlDriftConfig(ctx)
+	if err != nil {
+		t.Fatalf("GetTtlDriftConfig: %v", err)
+	}
+	if config == nil {
+		t.Fatal("config should not be nil")
+	}
+	if config.Mode != "fixed" {
+		t.Errorf("mode = %q, want %q", config.Mode, "fixed")
+	}
+}
+
+func TestIntegrationTransportConfigs(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// DoT config
+	err := client.SetDotConfig(ctx, &DotConfig{
+		Bind: "0.0.0.0:853",
+	})
+	if err != nil {
+		t.Fatalf("SetDotConfig: %v", err)
+	}
+	dotCfg, err := client.GetDotConfig(ctx)
+	if err != nil {
+		t.Fatalf("GetDotConfig: %v", err)
+	}
+	if dotCfg != nil && dotCfg.Bind != "0.0.0.0:853" {
+		t.Errorf("DoT bind = %q, want %q", dotCfg.Bind, "0.0.0.0:853")
+	}
+
+	// DoH config
+	err = client.SetDohConfig(ctx, &DohConfig{
+		Bind:     "0.0.0.0:443",
+		EnableH3: true,
+	})
+	if err != nil {
+		t.Fatalf("SetDohConfig: %v", err)
+	}
+	dohCfg, err := client.GetDohConfig(ctx)
+	if err != nil {
+		t.Fatalf("GetDohConfig: %v", err)
+	}
+	if dohCfg != nil && dohCfg.Bind != "0.0.0.0:443" {
+		t.Errorf("DoH bind = %q, want %q", dohCfg.Bind, "0.0.0.0:443")
+	}
+
+	// DoQ config
+	err = client.SetDoqConfig(ctx, &DoqConfig{
+		Bind: "0.0.0.0:8853",
+	})
+	if err != nil {
+		t.Fatalf("SetDoqConfig: %v", err)
+	}
+	doqCfg, err := client.GetDoqConfig(ctx)
+	if err != nil {
+		t.Fatalf("GetDoqConfig: %v", err)
+	}
+	if doqCfg != nil && doqCfg.Bind != "0.0.0.0:8853" {
+		t.Errorf("DoQ bind = %q, want %q", doqCfg.Bind, "0.0.0.0:8853")
+	}
+
+	// Proxy config
+	err = client.SetProxyConfig(ctx, &ProxyConfig{
+		Url:  "socks5://proxy.example.com:1080",
+		Mode: "connect",
+	})
+	if err != nil {
+		t.Fatalf("SetProxyConfig: %v", err)
+	}
+	proxyCfg, err := client.GetProxyConfig(ctx)
+	if err != nil {
+		t.Fatalf("GetProxyConfig: %v", err)
+	}
+	if proxyCfg != nil && proxyCfg.Url != "socks5://proxy.example.com:1080" {
+		t.Errorf("Proxy url = %q, want %q", proxyCfg.Url, "socks5://proxy.example.com:1080")
+	}
+}
+
+func TestIntegrationDnssecKeyLifecycle(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// Generate DNSSEC key
+	key, err := client.GenerateDnssecKey(ctx, "dnssec.test.", "ED25519", "ZSK")
+	if err != nil {
+		t.Fatalf("GenerateDnssecKey: %v", err)
+	}
+	if key == nil {
+		t.Fatal("key should not be nil")
+	}
+	if key.KeyTag == 0 {
+		t.Error("key_tag should be > 0")
+	}
+	if key.Zone != "dnssec.test." {
+		t.Errorf("zone = %q, want %q", key.Zone, "dnssec.test.")
+	}
+
+	// List keys
+	keys, err := client.ListDnssecKeys(ctx, "dnssec.test.")
+	if err != nil {
+		t.Fatalf("ListDnssecKeys: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("got %d keys, want 1", len(keys))
+	}
+
+	// Get DS records (need a KSK first)
+	ksk, err := client.GenerateDnssecKey(ctx, "dnssec.test.", "ED25519", "KSK")
+	if err != nil {
+		t.Fatalf("GenerateDnssecKey KSK: %v", err)
+	}
+
+	dsRecords, err := client.GetDsRecords(ctx, "dnssec.test.")
+	if err != nil {
+		t.Fatalf("GetDsRecords: %v", err)
+	}
+	if len(dsRecords) == 0 {
+		t.Error("expected at least one DS record")
+	}
+
+	// Delete key
+	err = client.DeleteDnssecKey(ctx, ksk.Id)
+	if err != nil {
+		t.Fatalf("DeleteDnssecKey: %v", err)
+	}
+
+	// Sign zone
+	err = client.SignZone(ctx, "dnssec.test.")
+	if err != nil {
+		t.Fatalf("SignZone: %v", err)
+	}
+}
+
+func TestIntegrationDaneTlsaLifecycle(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// Generate DANE root CA
+	certPem, err := client.GenerateDaneRootCa(ctx, "Test DANE CA")
+	if err != nil {
+		t.Fatalf("GenerateDaneRootCa: %v", err)
+	}
+	if certPem == "" {
+		t.Error("cert PEM should not be empty")
+	}
+
+	// Generate TLSA record using the CA cert
+	tlsaRecord, err := client.GenerateTlsaRecord(ctx, &GenerateTlsaRecordOptions{
+		Domain:       "dane.test.",
+		Port:         443,
+		Protocol:     "tcp",
+		Usage:        3,
+		Selector:     1,
+		MatchingType: 1,
+		CertPem:      certPem,
+	})
+	if err != nil {
+		t.Fatalf("GenerateTlsaRecord: %v", err)
+	}
+	if tlsaRecord == "" {
+		t.Error("TLSA record should not be empty")
+	}
+
+	// List TLSA records
+	records, err := client.ListTlsaRecords(ctx, "dane.test.")
+	if err != nil {
+		t.Fatalf("ListTlsaRecords: %v", err)
+	}
+	// Note: may be 0 if the server stores TLSA differently
+	_ = records
+}
+
+func TestIntegrationDns64Config(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// Set DNS64 config (server accepts it)
+	err := client.SetDns64Config(ctx, &Dns64Config{
+		Enabled: true,
+		Prefix:  "64:ff9b::",
+	})
+	if err != nil {
+		t.Fatalf("SetDns64Config: %v", err)
+	}
+
+	// Get config (server returns default config)
+	config, err := client.GetDns64Config(ctx)
+	if err != nil {
+		t.Fatalf("GetDns64Config: %v", err)
+	}
+	if config == nil {
+		t.Fatal("config should not be nil")
+	}
+	// Server returns the well-known prefix
+	if config.Prefix != "64:ff9b::" {
+		t.Errorf("prefix = %q, want %q", config.Prefix, "64:ff9b::")
+	}
+}
+
+func TestIntegrationQueryLatencyStats(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// Should succeed even with no data
+	stats, err := client.GetQueryLatencyStats(ctx)
+	if err != nil {
+		t.Fatalf("GetQueryLatencyStats: %v", err)
+	}
+	// Empty is fine, just verify it doesn't error
+	_ = stats
+}

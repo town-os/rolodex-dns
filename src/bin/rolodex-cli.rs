@@ -1,13 +1,8 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use rolodex::grpc_service::proto::rolodex_service_client::RolodexServiceClient;
-use rolodex::grpc_service::proto::{
-    AddRecordRequest, AddScopedRecordRequest, CreateNetworkScopeRequest, DeleteNetworkScopeRequest,
-    DnsRecord, FlushCacheRequest, GetNetworkAssociationsRequest, GetRblConfigRequest,
-    GetSearchDomainsRequest, JoinNetworkRequest, LeaveNetworkRequest, ListNetworkScopesRequest,
-    ListRecordsRequest, ListScopedRecordsRequest, RblConfig, RemoveRecordRequest,
-    RemoveScopedRecordRequest, SetForwarderRequest, SetRblConfigRequest,
-};
+#[allow(unused_imports)]
+use rolodex::grpc_service::proto::*;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
 
@@ -76,6 +71,30 @@ enum RecordTypeArg {
     Srv,
     /// Pointer for reverse DNS. Value: target FQDN
     Ptr,
+    /// URI record (RFC 7553). Value: "priority weight target_uri"
+    Uri,
+    /// SSHFP record (RFC 4255). Value: "algorithm fp_type hex_fingerprint"
+    Sshfp,
+    /// DNAME delegation (RFC 6672). Value: target FQDN
+    Dname,
+    /// ANAME alias. Value: target FQDN (resolved at query time for A/AAAA)
+    Aname,
+    /// ZONEMD digest (RFC 9156). Value: "serial scheme hash_algorithm hex_digest"
+    Zonemd,
+    /// TLSA certificate (RFC 6698). Value: "usage selector matching_type hex_data"
+    Tlsa,
+    /// DNSKEY public key (DNSSEC)
+    Dnskey,
+    /// DS delegation signer (DNSSEC)
+    Ds,
+    /// RRSIG signature (DNSSEC)
+    Rrsig,
+    /// NSEC next secure (DNSSEC)
+    Nsec,
+    /// NSEC3 next secure v3 (DNSSEC)
+    Nsec3,
+    /// NSEC3PARAM parameters (DNSSEC)
+    Nsec3param,
 }
 
 impl RecordTypeArg {
@@ -90,6 +109,18 @@ impl RecordTypeArg {
             RecordTypeArg::Soa => 6,
             RecordTypeArg::Srv => 7,
             RecordTypeArg::Ptr => 8,
+            RecordTypeArg::Uri => 9,
+            RecordTypeArg::Sshfp => 10,
+            RecordTypeArg::Dname => 11,
+            RecordTypeArg::Aname => 12,
+            RecordTypeArg::Zonemd => 13,
+            RecordTypeArg::Tlsa => 14,
+            RecordTypeArg::Dnskey => 15,
+            RecordTypeArg::Ds => 16,
+            RecordTypeArg::Rrsig => 17,
+            RecordTypeArg::Nsec => 18,
+            RecordTypeArg::Nsec3 => 19,
+            RecordTypeArg::Nsec3param => 20,
         }
     }
 
@@ -104,6 +135,18 @@ impl RecordTypeArg {
             6 => "SOA",
             7 => "SRV",
             8 => "PTR",
+            9 => "URI",
+            10 => "SSHFP",
+            11 => "DNAME",
+            12 => "ANAME",
+            13 => "ZONEMD",
+            14 => "TLSA",
+            15 => "DNSKEY",
+            16 => "DS",
+            17 => "RRSIG",
+            18 => "NSEC",
+            19 => "NSEC3",
+            20 => "NSEC3PARAM",
             _ => "UNKNOWN",
         }
     }
@@ -376,6 +419,189 @@ enum Commands {
         /// The IP address to look up search domains for
         #[arg(short, long)]
         ip: String,
+    },
+
+    /// Add an authoritative zone declaration.
+    /// gRPC path: /rolodex.RolodexService/AddAuthoritativeZone
+    #[command(name = "add-auth-zone")]
+    AddAuthZone {
+        /// The zone name (e.g. "example.com.")
+        #[arg(short, long)]
+        zone: String,
+    },
+
+    /// Remove an authoritative zone declaration.
+    /// gRPC path: /rolodex.RolodexService/RemoveAuthoritativeZone
+    #[command(name = "remove-auth-zone")]
+    RemoveAuthZone {
+        /// The zone name to remove
+        #[arg(short, long)]
+        zone: String,
+    },
+
+    /// List all authoritative zone declarations.
+    /// gRPC path: /rolodex.RolodexService/ListAuthoritativeZones
+    #[command(name = "list-auth-zones")]
+    ListAuthZones,
+
+    /// Flush the DNS response cache.
+    /// gRPC path: /rolodex.RolodexService/FlushDnsCache
+    #[command(name = "flush-dns-cache")]
+    FlushDnsCache,
+
+    /// Get DNS cache statistics.
+    /// gRPC path: /rolodex.RolodexService/GetCacheStats
+    #[command(name = "cache-stats")]
+    CacheStats,
+
+    /// Add a local RBL entry.
+    /// gRPC path: /rolodex.RolodexService/AddLocalRblEntry
+    #[command(name = "add-local-rbl")]
+    AddLocalRbl {
+        /// The name or IP to block
+        #[arg(short, long)]
+        name: String,
+
+        /// Reason for blocking
+        #[arg(short, long, default_value = "")]
+        reason: String,
+    },
+
+    /// Remove a local RBL entry.
+    /// gRPC path: /rolodex.RolodexService/RemoveLocalRblEntry
+    #[command(name = "remove-local-rbl")]
+    RemoveLocalRbl {
+        /// The name to unblock
+        #[arg(short, long)]
+        name: String,
+    },
+
+    /// List all local RBL entries.
+    /// gRPC path: /rolodex.RolodexService/ListLocalRblEntries
+    #[command(name = "list-local-rbl")]
+    ListLocalRbl,
+
+    /// Set TTL drift configuration.
+    /// gRPC path: /rolodex.RolodexService/SetTtlDriftConfig
+    #[command(name = "set-ttl-drift")]
+    SetTtlDrift {
+        /// Drift mode: "disabled", "fixed", or "logarithmic"
+        #[arg(short, long)]
+        mode: String,
+        /// Fixed adjustment (e.g. "+5m", "-30s"). Only used in "fixed" mode.
+        #[arg(short, long, default_value = "0s")]
+        adjustment: String,
+        /// Logarithmic multiplier. Only used in "logarithmic" mode.
+        #[arg(short, long, default_value_t = 0.1)]
+        log_multiplier: f64,
+    },
+
+    /// Get current TTL drift configuration.
+    /// gRPC path: /rolodex.RolodexService/GetTtlDriftConfig
+    #[command(name = "get-ttl-drift")]
+    GetTtlDrift,
+
+    /// Get query latency statistics for upstream servers.
+    /// gRPC path: /rolodex.RolodexService/GetQueryLatencyStats
+    #[command(name = "latency-stats")]
+    LatencyStats,
+
+    /// Set DNS64 configuration.
+    /// gRPC path: /rolodex.RolodexService/SetDns64Config
+    #[command(name = "set-dns64")]
+    SetDns64 {
+        /// Enable or disable DNS64 synthesis.
+        #[arg(short, long)]
+        enabled: bool,
+        /// IPv6 prefix for AAAA synthesis (e.g. "64:ff9b::").
+        #[arg(short, long, default_value = "64:ff9b::")]
+        prefix: String,
+    },
+
+    /// Get current DNS64 configuration.
+    /// gRPC path: /rolodex.RolodexService/GetDns64Config
+    #[command(name = "get-dns64")]
+    GetDns64,
+
+    /// Generate a DNSSEC key pair for a zone.
+    /// gRPC path: /rolodex.RolodexService/GenerateDnssecKey
+    #[command(name = "generate-dnssec-key")]
+    GenerateDnssecKey {
+        /// The DNS zone to generate a key for (e.g. "example.com.")
+        #[arg(short, long)]
+        zone: String,
+        /// Algorithm: "ed25519", "ecdsa-p256", "ecdsa-p384", "rsa-sha256"
+        #[arg(short, long, default_value = "ed25519")]
+        algorithm: String,
+        /// Key type: "ZSK" or "KSK"
+        #[arg(short, long, default_value = "ZSK")]
+        key_type: String,
+    },
+
+    /// List DNSSEC keys for a zone.
+    /// gRPC path: /rolodex.RolodexService/ListDnssecKeys
+    #[command(name = "list-dnssec-keys")]
+    ListDnssecKeys {
+        /// The DNS zone to list keys for
+        #[arg(short, long)]
+        zone: String,
+    },
+
+    /// Sign a zone with DNSSEC.
+    /// gRPC path: /rolodex.RolodexService/SignZone
+    #[command(name = "sign-zone")]
+    SignZone {
+        /// The DNS zone to sign
+        #[arg(short, long)]
+        zone: String,
+    },
+
+    /// Generate a DANE TLSA record from a certificate.
+    /// gRPC path: /rolodex.RolodexService/GenerateTlsaRecord
+    #[command(name = "generate-tlsa")]
+    GenerateTlsa {
+        /// Domain name for the TLSA record
+        #[arg(short, long)]
+        domain: String,
+        /// Port number
+        #[arg(short, long)]
+        port: u32,
+        /// Protocol (e.g. "tcp")
+        #[arg(long, default_value = "tcp")]
+        protocol: String,
+        /// Path to certificate PEM file
+        #[arg(short, long)]
+        cert_path: String,
+        /// TLSA usage: 0-3 (default: 3 for domain-issued)
+        #[arg(long, default_value_t = 3)]
+        usage: u32,
+        /// TLSA selector: 0 (full cert) or 1 (SPKI)
+        #[arg(long, default_value_t = 0)]
+        selector: u32,
+        /// TLSA matching type: 0 (exact), 1 (SHA-256), 2 (SHA-512)
+        #[arg(long, default_value_t = 1)]
+        matching_type: u32,
+    },
+
+    /// Request an ACME certificate via DNS-01 challenge.
+    /// gRPC path: /rolodex.RolodexService/RequestAcmeCert
+    #[command(name = "request-acme-cert")]
+    RequestAcmeCert {
+        /// Domain to request a certificate for
+        #[arg(short, long)]
+        domain: String,
+        /// ACME provider URL (e.g. Let's Encrypt)
+        #[arg(short, long, default_value = "https://acme-v02.api.letsencrypt.org/directory")]
+        provider_url: String,
+    },
+
+    /// Get ACME certificate status for a domain.
+    /// gRPC path: /rolodex.RolodexService/GetAcmeStatus
+    #[command(name = "acme-status")]
+    AcmeStatus {
+        /// Domain to check status for
+        #[arg(short, long)]
+        domain: String,
     },
 }
 
@@ -820,6 +1046,354 @@ async fn main() -> Result<()> {
                 for d in &domains {
                     println!("  {}", d);
                 }
+            }
+        }
+
+        Commands::AddAuthZone { zone } => {
+            let response = client
+                .add_authoritative_zone(AddAuthoritativeZoneRequest {
+                    zone: zone.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("add-auth-zone RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("Added authoritative zone: {}", zone);
+            } else {
+                anyhow::bail!("Failed to add authoritative zone: {}", resp.message);
+            }
+        }
+
+        Commands::RemoveAuthZone { zone } => {
+            let response = client
+                .remove_authoritative_zone(RemoveAuthoritativeZoneRequest {
+                    zone: zone.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("remove-auth-zone RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("Removed authoritative zone: {}", zone);
+            } else {
+                anyhow::bail!("Failed to remove authoritative zone: {}", resp.message);
+            }
+        }
+
+        Commands::ListAuthZones => {
+            let response = client
+                .list_authoritative_zones(ListAuthoritativeZonesRequest {
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("list-auth-zones RPC failed")?;
+            let zones = response.into_inner().zones;
+            if zones.is_empty() {
+                println!("No authoritative zones configured.");
+            } else {
+                println!("Authoritative zones:");
+                for z in &zones {
+                    println!("  {}", z);
+                }
+                println!("\n{} zone(s) found.", zones.len());
+            }
+        }
+
+        Commands::FlushDnsCache => {
+            let response = client
+                .flush_dns_cache(FlushDnsCacheRequest {
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("flush-dns-cache RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("DNS cache flushed successfully.");
+            } else {
+                anyhow::bail!("Failed to flush DNS cache: {}", resp.message);
+            }
+        }
+
+        Commands::CacheStats => {
+            let response = client
+                .get_cache_stats(GetCacheStatsRequest {
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("cache-stats RPC failed")?;
+            let stats = response.into_inner();
+            println!("DNS Cache Statistics:");
+            println!("  Total entries: {}", stats.total_entries);
+            println!("  Hit count:     {}", stats.hit_count);
+            println!("  Miss count:    {}", stats.miss_count);
+        }
+
+        Commands::AddLocalRbl { name, reason } => {
+            let response = client
+                .add_local_rbl_entry(AddLocalRblEntryRequest {
+                    entry: Some(LocalRblEntry {
+                        name: name.clone(),
+                        reason: reason.clone(),
+                    }),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("add-local-rbl RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("Added local RBL entry: {}", name);
+            } else {
+                anyhow::bail!("Failed to add local RBL entry: {}", resp.message);
+            }
+        }
+
+        Commands::RemoveLocalRbl { name } => {
+            let response = client
+                .remove_local_rbl_entry(RemoveLocalRblEntryRequest {
+                    name: name.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("remove-local-rbl RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("Removed local RBL entry: {}", name);
+            } else {
+                anyhow::bail!("Failed to remove local RBL entry: {}", resp.message);
+            }
+        }
+
+        Commands::ListLocalRbl => {
+            let response = client
+                .list_local_rbl_entries(ListLocalRblEntriesRequest {
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("list-local-rbl RPC failed")?;
+            let entries = response.into_inner().entries;
+            if entries.is_empty() {
+                println!("No local RBL entries configured.");
+            } else {
+                println!("{:<40} {}", "NAME", "REASON");
+                println!("{}", "-".repeat(60));
+                for e in &entries {
+                    println!("{:<40} {}", e.name, e.reason);
+                }
+                println!("\n{} entry(ies) found.", entries.len());
+            }
+        }
+
+        Commands::SetTtlDrift { mode, adjustment, log_multiplier } => {
+            let response = client
+                .set_ttl_drift_config(SetTtlDriftConfigRequest {
+                    config: Some(TtlDriftConfig {
+                        mode: mode.clone(),
+                        fixed_adjustment: adjustment.clone(),
+                        log_multiplier,
+                    }),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("set-ttl-drift RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("TTL drift config updated: mode={}", mode);
+            } else {
+                anyhow::bail!("Failed to set TTL drift config: {}", resp.message);
+            }
+        }
+
+        Commands::GetTtlDrift => {
+            let response = client
+                .get_ttl_drift_config(GetTtlDriftConfigRequest {
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("get-ttl-drift RPC failed")?;
+            let resp = response.into_inner();
+            if let Some(config) = resp.config {
+                println!("TTL Drift Configuration:");
+                println!("  Mode:             {}", config.mode);
+                println!("  Fixed adjustment: {}", config.fixed_adjustment);
+                println!("  Log multiplier:   {}", config.log_multiplier);
+            } else {
+                println!("TTL drift not configured.");
+            }
+        }
+
+        Commands::LatencyStats => {
+            let response = client
+                .get_query_latency_stats(GetQueryLatencyStatsRequest {
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("latency-stats RPC failed")?;
+            let stats = response.into_inner().stats;
+            if stats.is_empty() {
+                println!("No latency statistics available.");
+            } else {
+                println!("{:<30} {:<15} {}", "SERVER", "AVG LATENCY MS", "QUERY COUNT");
+                println!("{}", "-".repeat(60));
+                for s in &stats {
+                    println!("{:<30} {:<15.2} {}", s.server, s.avg_latency_ms, s.query_count);
+                }
+            }
+        }
+
+        Commands::SetDns64 { enabled, prefix } => {
+            let response = client
+                .set_dns64_config(SetDns64ConfigRequest {
+                    config: Some(Dns64Config {
+                        enabled,
+                        prefix: prefix.clone(),
+                    }),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("set-dns64 RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("DNS64 config updated: enabled={}, prefix={}", enabled, prefix);
+            } else {
+                anyhow::bail!("Failed to set DNS64 config: {}", resp.message);
+            }
+        }
+
+        Commands::GetDns64 => {
+            let response = client
+                .get_dns64_config(GetDns64ConfigRequest {
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("get-dns64 RPC failed")?;
+            let resp = response.into_inner();
+            if let Some(config) = resp.config {
+                println!("DNS64 Configuration:");
+                println!("  Enabled: {}", config.enabled);
+                println!("  Prefix:  {}", config.prefix);
+            } else {
+                println!("DNS64 not configured.");
+            }
+        }
+
+        Commands::GenerateDnssecKey { zone, algorithm, key_type } => {
+            let response = client
+                .generate_dnssec_key(GenerateDnssecKeyRequest {
+                    zone: zone.clone(),
+                    algorithm: algorithm.clone(),
+                    key_type: key_type.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("generate-dnssec-key RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                if let Some(key) = resp.key {
+                    println!("Generated DNSSEC key for {}:", zone);
+                    println!("  Algorithm: {}", key.algorithm);
+                    println!("  Key type:  {}", key.key_type);
+                    println!("  Key tag:   {}", key.key_tag);
+                    println!("  ID:        {}", key.id);
+                }
+            } else {
+                anyhow::bail!("Failed to generate DNSSEC key: {}", resp.message);
+            }
+        }
+
+        Commands::ListDnssecKeys { zone } => {
+            let response = client
+                .list_dnssec_keys(ListDnssecKeysRequest {
+                    zone: zone.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("list-dnssec-keys RPC failed")?;
+            let keys = response.into_inner().keys;
+            if keys.is_empty() {
+                println!("No DNSSEC keys found for {}.", zone);
+            } else {
+                println!("{:<10} {:<15} {:<6} {:<10}", "ID", "ALGORITHM", "TYPE", "KEY TAG");
+                println!("{}", "-".repeat(50));
+                for k in &keys {
+                    println!("{:<10} {:<15} {:<6} {:<10}", k.id, k.algorithm, k.key_type, k.key_tag);
+                }
+                println!("\n{} key(s) found.", keys.len());
+            }
+        }
+
+        Commands::SignZone { zone } => {
+            let response = client
+                .sign_zone(SignZoneRequest {
+                    zone: zone.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("sign-zone RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("Zone {} signed successfully.", zone);
+            } else {
+                anyhow::bail!("Failed to sign zone: {}", resp.message);
+            }
+        }
+
+        Commands::GenerateTlsa { domain, port, protocol, cert_path, usage, selector, matching_type } => {
+            let cert_pem = std::fs::read_to_string(&cert_path)
+                .context(format!("failed to read certificate file: {}", cert_path))?;
+            let response = client
+                .generate_tlsa_record(GenerateTlsaRecordRequest {
+                    domain: domain.clone(),
+                    port,
+                    protocol: protocol.clone(),
+                    cert_pem,
+                    usage,
+                    selector,
+                    matching_type,
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("generate-tlsa RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("TLSA record generated:");
+                println!("  {}", resp.tlsa_record);
+            } else {
+                anyhow::bail!("Failed to generate TLSA record: {}", resp.message);
+            }
+        }
+
+        Commands::RequestAcmeCert { domain, provider_url } => {
+            let response = client
+                .request_acme_cert(RequestAcmeCertRequest {
+                    domain: domain.clone(),
+                    provider_url: provider_url.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("request-acme-cert RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("ACME certificate requested for {}.", domain);
+            } else {
+                anyhow::bail!("Failed to request ACME certificate: {}", resp.message);
+            }
+        }
+
+        Commands::AcmeStatus { domain } => {
+            let response = client
+                .get_acme_status(GetAcmeStatusRequest {
+                    domain: domain.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("acme-status RPC failed")?;
+            let resp = response.into_inner();
+            println!("ACME Status for {}:", domain);
+            println!("  Status:  {}", resp.status);
+            println!("  Domain:  {}", resp.domain);
+            if resp.expires_at > 0 {
+                println!("  Expires: {}", resp.expires_at);
             }
         }
     }

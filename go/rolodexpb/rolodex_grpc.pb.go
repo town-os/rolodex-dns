@@ -19,23 +19,54 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	RolodexService_AddRecord_FullMethodName              = "/rolodex.RolodexService/AddRecord"
-	RolodexService_RemoveRecord_FullMethodName           = "/rolodex.RolodexService/RemoveRecord"
-	RolodexService_ListRecords_FullMethodName            = "/rolodex.RolodexService/ListRecords"
-	RolodexService_SetForwarders_FullMethodName          = "/rolodex.RolodexService/SetForwarders"
-	RolodexService_SetRblConfig_FullMethodName           = "/rolodex.RolodexService/SetRblConfig"
-	RolodexService_GetRblConfig_FullMethodName           = "/rolodex.RolodexService/GetRblConfig"
-	RolodexService_FlushCache_FullMethodName             = "/rolodex.RolodexService/FlushCache"
-	RolodexService_CreateNetworkScope_FullMethodName     = "/rolodex.RolodexService/CreateNetworkScope"
-	RolodexService_DeleteNetworkScope_FullMethodName     = "/rolodex.RolodexService/DeleteNetworkScope"
-	RolodexService_ListNetworkScopes_FullMethodName      = "/rolodex.RolodexService/ListNetworkScopes"
-	RolodexService_JoinNetwork_FullMethodName            = "/rolodex.RolodexService/JoinNetwork"
-	RolodexService_LeaveNetwork_FullMethodName           = "/rolodex.RolodexService/LeaveNetwork"
-	RolodexService_GetNetworkAssociations_FullMethodName = "/rolodex.RolodexService/GetNetworkAssociations"
-	RolodexService_AddScopedRecord_FullMethodName        = "/rolodex.RolodexService/AddScopedRecord"
-	RolodexService_RemoveScopedRecord_FullMethodName     = "/rolodex.RolodexService/RemoveScopedRecord"
-	RolodexService_ListScopedRecords_FullMethodName      = "/rolodex.RolodexService/ListScopedRecords"
-	RolodexService_GetSearchDomains_FullMethodName       = "/rolodex.RolodexService/GetSearchDomains"
+	RolodexService_AddRecord_FullMethodName               = "/rolodex.RolodexService/AddRecord"
+	RolodexService_RemoveRecord_FullMethodName            = "/rolodex.RolodexService/RemoveRecord"
+	RolodexService_ListRecords_FullMethodName             = "/rolodex.RolodexService/ListRecords"
+	RolodexService_SetForwarders_FullMethodName           = "/rolodex.RolodexService/SetForwarders"
+	RolodexService_SetRblConfig_FullMethodName            = "/rolodex.RolodexService/SetRblConfig"
+	RolodexService_GetRblConfig_FullMethodName            = "/rolodex.RolodexService/GetRblConfig"
+	RolodexService_FlushCache_FullMethodName              = "/rolodex.RolodexService/FlushCache"
+	RolodexService_CreateNetworkScope_FullMethodName      = "/rolodex.RolodexService/CreateNetworkScope"
+	RolodexService_DeleteNetworkScope_FullMethodName      = "/rolodex.RolodexService/DeleteNetworkScope"
+	RolodexService_ListNetworkScopes_FullMethodName       = "/rolodex.RolodexService/ListNetworkScopes"
+	RolodexService_JoinNetwork_FullMethodName             = "/rolodex.RolodexService/JoinNetwork"
+	RolodexService_LeaveNetwork_FullMethodName            = "/rolodex.RolodexService/LeaveNetwork"
+	RolodexService_GetNetworkAssociations_FullMethodName  = "/rolodex.RolodexService/GetNetworkAssociations"
+	RolodexService_AddScopedRecord_FullMethodName         = "/rolodex.RolodexService/AddScopedRecord"
+	RolodexService_RemoveScopedRecord_FullMethodName      = "/rolodex.RolodexService/RemoveScopedRecord"
+	RolodexService_ListScopedRecords_FullMethodName       = "/rolodex.RolodexService/ListScopedRecords"
+	RolodexService_GetSearchDomains_FullMethodName        = "/rolodex.RolodexService/GetSearchDomains"
+	RolodexService_AddAuthoritativeZone_FullMethodName    = "/rolodex.RolodexService/AddAuthoritativeZone"
+	RolodexService_RemoveAuthoritativeZone_FullMethodName = "/rolodex.RolodexService/RemoveAuthoritativeZone"
+	RolodexService_ListAuthoritativeZones_FullMethodName  = "/rolodex.RolodexService/ListAuthoritativeZones"
+	RolodexService_GetCacheStats_FullMethodName           = "/rolodex.RolodexService/GetCacheStats"
+	RolodexService_FlushDnsCache_FullMethodName           = "/rolodex.RolodexService/FlushDnsCache"
+	RolodexService_SetTtlDriftConfig_FullMethodName       = "/rolodex.RolodexService/SetTtlDriftConfig"
+	RolodexService_GetTtlDriftConfig_FullMethodName       = "/rolodex.RolodexService/GetTtlDriftConfig"
+	RolodexService_GetQueryLatencyStats_FullMethodName    = "/rolodex.RolodexService/GetQueryLatencyStats"
+	RolodexService_AddLocalRblEntry_FullMethodName        = "/rolodex.RolodexService/AddLocalRblEntry"
+	RolodexService_RemoveLocalRblEntry_FullMethodName     = "/rolodex.RolodexService/RemoveLocalRblEntry"
+	RolodexService_ListLocalRblEntries_FullMethodName     = "/rolodex.RolodexService/ListLocalRblEntries"
+	RolodexService_SetDotConfig_FullMethodName            = "/rolodex.RolodexService/SetDotConfig"
+	RolodexService_GetDotConfig_FullMethodName            = "/rolodex.RolodexService/GetDotConfig"
+	RolodexService_SetDohConfig_FullMethodName            = "/rolodex.RolodexService/SetDohConfig"
+	RolodexService_GetDohConfig_FullMethodName            = "/rolodex.RolodexService/GetDohConfig"
+	RolodexService_SetDoqConfig_FullMethodName            = "/rolodex.RolodexService/SetDoqConfig"
+	RolodexService_GetDoqConfig_FullMethodName            = "/rolodex.RolodexService/GetDoqConfig"
+	RolodexService_SetProxyConfig_FullMethodName          = "/rolodex.RolodexService/SetProxyConfig"
+	RolodexService_GetProxyConfig_FullMethodName          = "/rolodex.RolodexService/GetProxyConfig"
+	RolodexService_GenerateDnssecKey_FullMethodName       = "/rolodex.RolodexService/GenerateDnssecKey"
+	RolodexService_ListDnssecKeys_FullMethodName          = "/rolodex.RolodexService/ListDnssecKeys"
+	RolodexService_DeleteDnssecKey_FullMethodName         = "/rolodex.RolodexService/DeleteDnssecKey"
+	RolodexService_GetDsRecords_FullMethodName            = "/rolodex.RolodexService/GetDsRecords"
+	RolodexService_SignZone_FullMethodName                = "/rolodex.RolodexService/SignZone"
+	RolodexService_GenerateTlsaRecord_FullMethodName      = "/rolodex.RolodexService/GenerateTlsaRecord"
+	RolodexService_ListTlsaRecords_FullMethodName         = "/rolodex.RolodexService/ListTlsaRecords"
+	RolodexService_GenerateDaneRootCa_FullMethodName      = "/rolodex.RolodexService/GenerateDaneRootCa"
+	RolodexService_RequestAcmeCert_FullMethodName         = "/rolodex.RolodexService/RequestAcmeCert"
+	RolodexService_GetAcmeStatus_FullMethodName           = "/rolodex.RolodexService/GetAcmeStatus"
+	RolodexService_SetDns64Config_FullMethodName          = "/rolodex.RolodexService/SetDns64Config"
+	RolodexService_GetDns64Config_FullMethodName          = "/rolodex.RolodexService/GetDns64Config"
 )
 
 // RolodexServiceClient is the client API for RolodexService service.
@@ -99,6 +130,99 @@ type RolodexServiceClient interface {
 	// GetSearchDomains retrieves the search domains for a client IP address.
 	// Path: /rolodex.RolodexService/GetSearchDomains
 	GetSearchDomains(ctx context.Context, in *GetSearchDomainsRequest, opts ...grpc.CallOption) (*GetSearchDomainsResponse, error)
+	// AddAuthoritativeZone declares a zone as authoritative.
+	// Path: /rolodex.RolodexService/AddAuthoritativeZone
+	AddAuthoritativeZone(ctx context.Context, in *AddAuthoritativeZoneRequest, opts ...grpc.CallOption) (*AddAuthoritativeZoneResponse, error)
+	// RemoveAuthoritativeZone removes a zone from the authoritative list.
+	// Path: /rolodex.RolodexService/RemoveAuthoritativeZone
+	RemoveAuthoritativeZone(ctx context.Context, in *RemoveAuthoritativeZoneRequest, opts ...grpc.CallOption) (*RemoveAuthoritativeZoneResponse, error)
+	// ListAuthoritativeZones retrieves all authoritative zones.
+	// Path: /rolodex.RolodexService/ListAuthoritativeZones
+	ListAuthoritativeZones(ctx context.Context, in *ListAuthoritativeZonesRequest, opts ...grpc.CallOption) (*ListAuthoritativeZonesResponse, error)
+	// GetCacheStats retrieves DNS cache statistics.
+	// Path: /rolodex.RolodexService/GetCacheStats
+	GetCacheStats(ctx context.Context, in *GetCacheStatsRequest, opts ...grpc.CallOption) (*GetCacheStatsResponse, error)
+	// FlushDnsCache clears the DNS response cache.
+	// Path: /rolodex.RolodexService/FlushDnsCache
+	FlushDnsCache(ctx context.Context, in *FlushDnsCacheRequest, opts ...grpc.CallOption) (*FlushDnsCacheResponse, error)
+	// SetTtlDriftConfig sets the TTL drift configuration.
+	// Path: /rolodex.RolodexService/SetTtlDriftConfig
+	SetTtlDriftConfig(ctx context.Context, in *SetTtlDriftConfigRequest, opts ...grpc.CallOption) (*SetTtlDriftConfigResponse, error)
+	// GetTtlDriftConfig retrieves the TTL drift configuration.
+	// Path: /rolodex.RolodexService/GetTtlDriftConfig
+	GetTtlDriftConfig(ctx context.Context, in *GetTtlDriftConfigRequest, opts ...grpc.CallOption) (*GetTtlDriftConfigResponse, error)
+	// GetQueryLatencyStats retrieves upstream query latency statistics.
+	// Path: /rolodex.RolodexService/GetQueryLatencyStats
+	GetQueryLatencyStats(ctx context.Context, in *GetQueryLatencyStatsRequest, opts ...grpc.CallOption) (*GetQueryLatencyStatsResponse, error)
+	// AddLocalRblEntry adds a local RBL entry.
+	// Path: /rolodex.RolodexService/AddLocalRblEntry
+	AddLocalRblEntry(ctx context.Context, in *AddLocalRblEntryRequest, opts ...grpc.CallOption) (*AddLocalRblEntryResponse, error)
+	// RemoveLocalRblEntry removes a local RBL entry.
+	// Path: /rolodex.RolodexService/RemoveLocalRblEntry
+	RemoveLocalRblEntry(ctx context.Context, in *RemoveLocalRblEntryRequest, opts ...grpc.CallOption) (*RemoveLocalRblEntryResponse, error)
+	// ListLocalRblEntries retrieves all local RBL entries.
+	// Path: /rolodex.RolodexService/ListLocalRblEntries
+	ListLocalRblEntries(ctx context.Context, in *ListLocalRblEntriesRequest, opts ...grpc.CallOption) (*ListLocalRblEntriesResponse, error)
+	// SetDotConfig sets the DNS-over-TLS configuration.
+	// Path: /rolodex.RolodexService/SetDotConfig
+	SetDotConfig(ctx context.Context, in *SetDotConfigRequest, opts ...grpc.CallOption) (*SetDotConfigResponse, error)
+	// GetDotConfig retrieves the DNS-over-TLS configuration.
+	// Path: /rolodex.RolodexService/GetDotConfig
+	GetDotConfig(ctx context.Context, in *GetDotConfigRequest, opts ...grpc.CallOption) (*GetDotConfigResponse, error)
+	// SetDohConfig sets the DNS-over-HTTPS configuration.
+	// Path: /rolodex.RolodexService/SetDohConfig
+	SetDohConfig(ctx context.Context, in *SetDohConfigRequest, opts ...grpc.CallOption) (*SetDohConfigResponse, error)
+	// GetDohConfig retrieves the DNS-over-HTTPS configuration.
+	// Path: /rolodex.RolodexService/GetDohConfig
+	GetDohConfig(ctx context.Context, in *GetDohConfigRequest, opts ...grpc.CallOption) (*GetDohConfigResponse, error)
+	// SetDoqConfig sets the DNS-over-QUIC configuration.
+	// Path: /rolodex.RolodexService/SetDoqConfig
+	SetDoqConfig(ctx context.Context, in *SetDoqConfigRequest, opts ...grpc.CallOption) (*SetDoqConfigResponse, error)
+	// GetDoqConfig retrieves the DNS-over-QUIC configuration.
+	// Path: /rolodex.RolodexService/GetDoqConfig
+	GetDoqConfig(ctx context.Context, in *GetDoqConfigRequest, opts ...grpc.CallOption) (*GetDoqConfigResponse, error)
+	// SetProxyConfig sets the HTTP proxy configuration.
+	// Path: /rolodex.RolodexService/SetProxyConfig
+	SetProxyConfig(ctx context.Context, in *SetProxyConfigRequest, opts ...grpc.CallOption) (*SetProxyConfigResponse, error)
+	// GetProxyConfig retrieves the HTTP proxy configuration.
+	// Path: /rolodex.RolodexService/GetProxyConfig
+	GetProxyConfig(ctx context.Context, in *GetProxyConfigRequest, opts ...grpc.CallOption) (*GetProxyConfigResponse, error)
+	// GenerateDnssecKey generates a new DNSSEC key pair for a zone.
+	// Path: /rolodex.RolodexService/GenerateDnssecKey
+	GenerateDnssecKey(ctx context.Context, in *GenerateDnssecKeyRequest, opts ...grpc.CallOption) (*GenerateDnssecKeyResponse, error)
+	// ListDnssecKeys retrieves DNSSEC keys for a zone.
+	// Path: /rolodex.RolodexService/ListDnssecKeys
+	ListDnssecKeys(ctx context.Context, in *ListDnssecKeysRequest, opts ...grpc.CallOption) (*ListDnssecKeysResponse, error)
+	// DeleteDnssecKey deletes a DNSSEC key.
+	// Path: /rolodex.RolodexService/DeleteDnssecKey
+	DeleteDnssecKey(ctx context.Context, in *DeleteDnssecKeyRequest, opts ...grpc.CallOption) (*DeleteDnssecKeyResponse, error)
+	// GetDsRecords retrieves DS records for a zone.
+	// Path: /rolodex.RolodexService/GetDsRecords
+	GetDsRecords(ctx context.Context, in *GetDsRecordsRequest, opts ...grpc.CallOption) (*GetDsRecordsResponse, error)
+	// SignZone signs a zone with its DNSSEC keys.
+	// Path: /rolodex.RolodexService/SignZone
+	SignZone(ctx context.Context, in *SignZoneRequest, opts ...grpc.CallOption) (*SignZoneResponse, error)
+	// GenerateTlsaRecord generates a TLSA record from a certificate.
+	// Path: /rolodex.RolodexService/GenerateTlsaRecord
+	GenerateTlsaRecord(ctx context.Context, in *GenerateTlsaRecordRequest, opts ...grpc.CallOption) (*GenerateTlsaRecordResponse, error)
+	// ListTlsaRecords retrieves TLSA records for a domain.
+	// Path: /rolodex.RolodexService/ListTlsaRecords
+	ListTlsaRecords(ctx context.Context, in *ListTlsaRecordsRequest, opts ...grpc.CallOption) (*ListTlsaRecordsResponse, error)
+	// GenerateDaneRootCa generates a DANE root CA certificate.
+	// Path: /rolodex.RolodexService/GenerateDaneRootCa
+	GenerateDaneRootCa(ctx context.Context, in *GenerateDaneRootCaRequest, opts ...grpc.CallOption) (*GenerateDaneRootCaResponse, error)
+	// RequestAcmeCert requests a certificate via ACME DNS-01.
+	// Path: /rolodex.RolodexService/RequestAcmeCert
+	RequestAcmeCert(ctx context.Context, in *RequestAcmeCertRequest, opts ...grpc.CallOption) (*RequestAcmeCertResponse, error)
+	// GetAcmeStatus retrieves ACME certificate status.
+	// Path: /rolodex.RolodexService/GetAcmeStatus
+	GetAcmeStatus(ctx context.Context, in *GetAcmeStatusRequest, opts ...grpc.CallOption) (*GetAcmeStatusResponse, error)
+	// SetDns64Config sets the DNS64 configuration.
+	// Path: /rolodex.RolodexService/SetDns64Config
+	SetDns64Config(ctx context.Context, in *SetDns64ConfigRequest, opts ...grpc.CallOption) (*SetDns64ConfigResponse, error)
+	// GetDns64Config retrieves the DNS64 configuration.
+	// Path: /rolodex.RolodexService/GetDns64Config
+	GetDns64Config(ctx context.Context, in *GetDns64ConfigRequest, opts ...grpc.CallOption) (*GetDns64ConfigResponse, error)
 }
 
 type rolodexServiceClient struct {
@@ -279,6 +403,316 @@ func (c *rolodexServiceClient) GetSearchDomains(ctx context.Context, in *GetSear
 	return out, nil
 }
 
+func (c *rolodexServiceClient) AddAuthoritativeZone(ctx context.Context, in *AddAuthoritativeZoneRequest, opts ...grpc.CallOption) (*AddAuthoritativeZoneResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AddAuthoritativeZoneResponse)
+	err := c.cc.Invoke(ctx, RolodexService_AddAuthoritativeZone_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) RemoveAuthoritativeZone(ctx context.Context, in *RemoveAuthoritativeZoneRequest, opts ...grpc.CallOption) (*RemoveAuthoritativeZoneResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveAuthoritativeZoneResponse)
+	err := c.cc.Invoke(ctx, RolodexService_RemoveAuthoritativeZone_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) ListAuthoritativeZones(ctx context.Context, in *ListAuthoritativeZonesRequest, opts ...grpc.CallOption) (*ListAuthoritativeZonesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListAuthoritativeZonesResponse)
+	err := c.cc.Invoke(ctx, RolodexService_ListAuthoritativeZones_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) GetCacheStats(ctx context.Context, in *GetCacheStatsRequest, opts ...grpc.CallOption) (*GetCacheStatsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCacheStatsResponse)
+	err := c.cc.Invoke(ctx, RolodexService_GetCacheStats_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) FlushDnsCache(ctx context.Context, in *FlushDnsCacheRequest, opts ...grpc.CallOption) (*FlushDnsCacheResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FlushDnsCacheResponse)
+	err := c.cc.Invoke(ctx, RolodexService_FlushDnsCache_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) SetTtlDriftConfig(ctx context.Context, in *SetTtlDriftConfigRequest, opts ...grpc.CallOption) (*SetTtlDriftConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetTtlDriftConfigResponse)
+	err := c.cc.Invoke(ctx, RolodexService_SetTtlDriftConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) GetTtlDriftConfig(ctx context.Context, in *GetTtlDriftConfigRequest, opts ...grpc.CallOption) (*GetTtlDriftConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetTtlDriftConfigResponse)
+	err := c.cc.Invoke(ctx, RolodexService_GetTtlDriftConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) GetQueryLatencyStats(ctx context.Context, in *GetQueryLatencyStatsRequest, opts ...grpc.CallOption) (*GetQueryLatencyStatsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetQueryLatencyStatsResponse)
+	err := c.cc.Invoke(ctx, RolodexService_GetQueryLatencyStats_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) AddLocalRblEntry(ctx context.Context, in *AddLocalRblEntryRequest, opts ...grpc.CallOption) (*AddLocalRblEntryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AddLocalRblEntryResponse)
+	err := c.cc.Invoke(ctx, RolodexService_AddLocalRblEntry_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) RemoveLocalRblEntry(ctx context.Context, in *RemoveLocalRblEntryRequest, opts ...grpc.CallOption) (*RemoveLocalRblEntryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveLocalRblEntryResponse)
+	err := c.cc.Invoke(ctx, RolodexService_RemoveLocalRblEntry_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) ListLocalRblEntries(ctx context.Context, in *ListLocalRblEntriesRequest, opts ...grpc.CallOption) (*ListLocalRblEntriesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListLocalRblEntriesResponse)
+	err := c.cc.Invoke(ctx, RolodexService_ListLocalRblEntries_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) SetDotConfig(ctx context.Context, in *SetDotConfigRequest, opts ...grpc.CallOption) (*SetDotConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetDotConfigResponse)
+	err := c.cc.Invoke(ctx, RolodexService_SetDotConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) GetDotConfig(ctx context.Context, in *GetDotConfigRequest, opts ...grpc.CallOption) (*GetDotConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetDotConfigResponse)
+	err := c.cc.Invoke(ctx, RolodexService_GetDotConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) SetDohConfig(ctx context.Context, in *SetDohConfigRequest, opts ...grpc.CallOption) (*SetDohConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetDohConfigResponse)
+	err := c.cc.Invoke(ctx, RolodexService_SetDohConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) GetDohConfig(ctx context.Context, in *GetDohConfigRequest, opts ...grpc.CallOption) (*GetDohConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetDohConfigResponse)
+	err := c.cc.Invoke(ctx, RolodexService_GetDohConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) SetDoqConfig(ctx context.Context, in *SetDoqConfigRequest, opts ...grpc.CallOption) (*SetDoqConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetDoqConfigResponse)
+	err := c.cc.Invoke(ctx, RolodexService_SetDoqConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) GetDoqConfig(ctx context.Context, in *GetDoqConfigRequest, opts ...grpc.CallOption) (*GetDoqConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetDoqConfigResponse)
+	err := c.cc.Invoke(ctx, RolodexService_GetDoqConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) SetProxyConfig(ctx context.Context, in *SetProxyConfigRequest, opts ...grpc.CallOption) (*SetProxyConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetProxyConfigResponse)
+	err := c.cc.Invoke(ctx, RolodexService_SetProxyConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) GetProxyConfig(ctx context.Context, in *GetProxyConfigRequest, opts ...grpc.CallOption) (*GetProxyConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetProxyConfigResponse)
+	err := c.cc.Invoke(ctx, RolodexService_GetProxyConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) GenerateDnssecKey(ctx context.Context, in *GenerateDnssecKeyRequest, opts ...grpc.CallOption) (*GenerateDnssecKeyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GenerateDnssecKeyResponse)
+	err := c.cc.Invoke(ctx, RolodexService_GenerateDnssecKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) ListDnssecKeys(ctx context.Context, in *ListDnssecKeysRequest, opts ...grpc.CallOption) (*ListDnssecKeysResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListDnssecKeysResponse)
+	err := c.cc.Invoke(ctx, RolodexService_ListDnssecKeys_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) DeleteDnssecKey(ctx context.Context, in *DeleteDnssecKeyRequest, opts ...grpc.CallOption) (*DeleteDnssecKeyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteDnssecKeyResponse)
+	err := c.cc.Invoke(ctx, RolodexService_DeleteDnssecKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) GetDsRecords(ctx context.Context, in *GetDsRecordsRequest, opts ...grpc.CallOption) (*GetDsRecordsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetDsRecordsResponse)
+	err := c.cc.Invoke(ctx, RolodexService_GetDsRecords_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) SignZone(ctx context.Context, in *SignZoneRequest, opts ...grpc.CallOption) (*SignZoneResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SignZoneResponse)
+	err := c.cc.Invoke(ctx, RolodexService_SignZone_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) GenerateTlsaRecord(ctx context.Context, in *GenerateTlsaRecordRequest, opts ...grpc.CallOption) (*GenerateTlsaRecordResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GenerateTlsaRecordResponse)
+	err := c.cc.Invoke(ctx, RolodexService_GenerateTlsaRecord_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) ListTlsaRecords(ctx context.Context, in *ListTlsaRecordsRequest, opts ...grpc.CallOption) (*ListTlsaRecordsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListTlsaRecordsResponse)
+	err := c.cc.Invoke(ctx, RolodexService_ListTlsaRecords_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) GenerateDaneRootCa(ctx context.Context, in *GenerateDaneRootCaRequest, opts ...grpc.CallOption) (*GenerateDaneRootCaResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GenerateDaneRootCaResponse)
+	err := c.cc.Invoke(ctx, RolodexService_GenerateDaneRootCa_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) RequestAcmeCert(ctx context.Context, in *RequestAcmeCertRequest, opts ...grpc.CallOption) (*RequestAcmeCertResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RequestAcmeCertResponse)
+	err := c.cc.Invoke(ctx, RolodexService_RequestAcmeCert_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) GetAcmeStatus(ctx context.Context, in *GetAcmeStatusRequest, opts ...grpc.CallOption) (*GetAcmeStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetAcmeStatusResponse)
+	err := c.cc.Invoke(ctx, RolodexService_GetAcmeStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) SetDns64Config(ctx context.Context, in *SetDns64ConfigRequest, opts ...grpc.CallOption) (*SetDns64ConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetDns64ConfigResponse)
+	err := c.cc.Invoke(ctx, RolodexService_SetDns64Config_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexServiceClient) GetDns64Config(ctx context.Context, in *GetDns64ConfigRequest, opts ...grpc.CallOption) (*GetDns64ConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetDns64ConfigResponse)
+	err := c.cc.Invoke(ctx, RolodexService_GetDns64Config_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // RolodexServiceServer is the server API for RolodexService service.
 // All implementations must embed UnimplementedRolodexServiceServer
 // for forward compatibility.
@@ -340,6 +774,99 @@ type RolodexServiceServer interface {
 	// GetSearchDomains retrieves the search domains for a client IP address.
 	// Path: /rolodex.RolodexService/GetSearchDomains
 	GetSearchDomains(context.Context, *GetSearchDomainsRequest) (*GetSearchDomainsResponse, error)
+	// AddAuthoritativeZone declares a zone as authoritative.
+	// Path: /rolodex.RolodexService/AddAuthoritativeZone
+	AddAuthoritativeZone(context.Context, *AddAuthoritativeZoneRequest) (*AddAuthoritativeZoneResponse, error)
+	// RemoveAuthoritativeZone removes a zone from the authoritative list.
+	// Path: /rolodex.RolodexService/RemoveAuthoritativeZone
+	RemoveAuthoritativeZone(context.Context, *RemoveAuthoritativeZoneRequest) (*RemoveAuthoritativeZoneResponse, error)
+	// ListAuthoritativeZones retrieves all authoritative zones.
+	// Path: /rolodex.RolodexService/ListAuthoritativeZones
+	ListAuthoritativeZones(context.Context, *ListAuthoritativeZonesRequest) (*ListAuthoritativeZonesResponse, error)
+	// GetCacheStats retrieves DNS cache statistics.
+	// Path: /rolodex.RolodexService/GetCacheStats
+	GetCacheStats(context.Context, *GetCacheStatsRequest) (*GetCacheStatsResponse, error)
+	// FlushDnsCache clears the DNS response cache.
+	// Path: /rolodex.RolodexService/FlushDnsCache
+	FlushDnsCache(context.Context, *FlushDnsCacheRequest) (*FlushDnsCacheResponse, error)
+	// SetTtlDriftConfig sets the TTL drift configuration.
+	// Path: /rolodex.RolodexService/SetTtlDriftConfig
+	SetTtlDriftConfig(context.Context, *SetTtlDriftConfigRequest) (*SetTtlDriftConfigResponse, error)
+	// GetTtlDriftConfig retrieves the TTL drift configuration.
+	// Path: /rolodex.RolodexService/GetTtlDriftConfig
+	GetTtlDriftConfig(context.Context, *GetTtlDriftConfigRequest) (*GetTtlDriftConfigResponse, error)
+	// GetQueryLatencyStats retrieves upstream query latency statistics.
+	// Path: /rolodex.RolodexService/GetQueryLatencyStats
+	GetQueryLatencyStats(context.Context, *GetQueryLatencyStatsRequest) (*GetQueryLatencyStatsResponse, error)
+	// AddLocalRblEntry adds a local RBL entry.
+	// Path: /rolodex.RolodexService/AddLocalRblEntry
+	AddLocalRblEntry(context.Context, *AddLocalRblEntryRequest) (*AddLocalRblEntryResponse, error)
+	// RemoveLocalRblEntry removes a local RBL entry.
+	// Path: /rolodex.RolodexService/RemoveLocalRblEntry
+	RemoveLocalRblEntry(context.Context, *RemoveLocalRblEntryRequest) (*RemoveLocalRblEntryResponse, error)
+	// ListLocalRblEntries retrieves all local RBL entries.
+	// Path: /rolodex.RolodexService/ListLocalRblEntries
+	ListLocalRblEntries(context.Context, *ListLocalRblEntriesRequest) (*ListLocalRblEntriesResponse, error)
+	// SetDotConfig sets the DNS-over-TLS configuration.
+	// Path: /rolodex.RolodexService/SetDotConfig
+	SetDotConfig(context.Context, *SetDotConfigRequest) (*SetDotConfigResponse, error)
+	// GetDotConfig retrieves the DNS-over-TLS configuration.
+	// Path: /rolodex.RolodexService/GetDotConfig
+	GetDotConfig(context.Context, *GetDotConfigRequest) (*GetDotConfigResponse, error)
+	// SetDohConfig sets the DNS-over-HTTPS configuration.
+	// Path: /rolodex.RolodexService/SetDohConfig
+	SetDohConfig(context.Context, *SetDohConfigRequest) (*SetDohConfigResponse, error)
+	// GetDohConfig retrieves the DNS-over-HTTPS configuration.
+	// Path: /rolodex.RolodexService/GetDohConfig
+	GetDohConfig(context.Context, *GetDohConfigRequest) (*GetDohConfigResponse, error)
+	// SetDoqConfig sets the DNS-over-QUIC configuration.
+	// Path: /rolodex.RolodexService/SetDoqConfig
+	SetDoqConfig(context.Context, *SetDoqConfigRequest) (*SetDoqConfigResponse, error)
+	// GetDoqConfig retrieves the DNS-over-QUIC configuration.
+	// Path: /rolodex.RolodexService/GetDoqConfig
+	GetDoqConfig(context.Context, *GetDoqConfigRequest) (*GetDoqConfigResponse, error)
+	// SetProxyConfig sets the HTTP proxy configuration.
+	// Path: /rolodex.RolodexService/SetProxyConfig
+	SetProxyConfig(context.Context, *SetProxyConfigRequest) (*SetProxyConfigResponse, error)
+	// GetProxyConfig retrieves the HTTP proxy configuration.
+	// Path: /rolodex.RolodexService/GetProxyConfig
+	GetProxyConfig(context.Context, *GetProxyConfigRequest) (*GetProxyConfigResponse, error)
+	// GenerateDnssecKey generates a new DNSSEC key pair for a zone.
+	// Path: /rolodex.RolodexService/GenerateDnssecKey
+	GenerateDnssecKey(context.Context, *GenerateDnssecKeyRequest) (*GenerateDnssecKeyResponse, error)
+	// ListDnssecKeys retrieves DNSSEC keys for a zone.
+	// Path: /rolodex.RolodexService/ListDnssecKeys
+	ListDnssecKeys(context.Context, *ListDnssecKeysRequest) (*ListDnssecKeysResponse, error)
+	// DeleteDnssecKey deletes a DNSSEC key.
+	// Path: /rolodex.RolodexService/DeleteDnssecKey
+	DeleteDnssecKey(context.Context, *DeleteDnssecKeyRequest) (*DeleteDnssecKeyResponse, error)
+	// GetDsRecords retrieves DS records for a zone.
+	// Path: /rolodex.RolodexService/GetDsRecords
+	GetDsRecords(context.Context, *GetDsRecordsRequest) (*GetDsRecordsResponse, error)
+	// SignZone signs a zone with its DNSSEC keys.
+	// Path: /rolodex.RolodexService/SignZone
+	SignZone(context.Context, *SignZoneRequest) (*SignZoneResponse, error)
+	// GenerateTlsaRecord generates a TLSA record from a certificate.
+	// Path: /rolodex.RolodexService/GenerateTlsaRecord
+	GenerateTlsaRecord(context.Context, *GenerateTlsaRecordRequest) (*GenerateTlsaRecordResponse, error)
+	// ListTlsaRecords retrieves TLSA records for a domain.
+	// Path: /rolodex.RolodexService/ListTlsaRecords
+	ListTlsaRecords(context.Context, *ListTlsaRecordsRequest) (*ListTlsaRecordsResponse, error)
+	// GenerateDaneRootCa generates a DANE root CA certificate.
+	// Path: /rolodex.RolodexService/GenerateDaneRootCa
+	GenerateDaneRootCa(context.Context, *GenerateDaneRootCaRequest) (*GenerateDaneRootCaResponse, error)
+	// RequestAcmeCert requests a certificate via ACME DNS-01.
+	// Path: /rolodex.RolodexService/RequestAcmeCert
+	RequestAcmeCert(context.Context, *RequestAcmeCertRequest) (*RequestAcmeCertResponse, error)
+	// GetAcmeStatus retrieves ACME certificate status.
+	// Path: /rolodex.RolodexService/GetAcmeStatus
+	GetAcmeStatus(context.Context, *GetAcmeStatusRequest) (*GetAcmeStatusResponse, error)
+	// SetDns64Config sets the DNS64 configuration.
+	// Path: /rolodex.RolodexService/SetDns64Config
+	SetDns64Config(context.Context, *SetDns64ConfigRequest) (*SetDns64ConfigResponse, error)
+	// GetDns64Config retrieves the DNS64 configuration.
+	// Path: /rolodex.RolodexService/GetDns64Config
+	GetDns64Config(context.Context, *GetDns64ConfigRequest) (*GetDns64ConfigResponse, error)
 	mustEmbedUnimplementedRolodexServiceServer()
 }
 
@@ -400,6 +927,99 @@ func (UnimplementedRolodexServiceServer) ListScopedRecords(context.Context, *Lis
 }
 func (UnimplementedRolodexServiceServer) GetSearchDomains(context.Context, *GetSearchDomainsRequest) (*GetSearchDomainsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetSearchDomains not implemented")
+}
+func (UnimplementedRolodexServiceServer) AddAuthoritativeZone(context.Context, *AddAuthoritativeZoneRequest) (*AddAuthoritativeZoneResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AddAuthoritativeZone not implemented")
+}
+func (UnimplementedRolodexServiceServer) RemoveAuthoritativeZone(context.Context, *RemoveAuthoritativeZoneRequest) (*RemoveAuthoritativeZoneResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveAuthoritativeZone not implemented")
+}
+func (UnimplementedRolodexServiceServer) ListAuthoritativeZones(context.Context, *ListAuthoritativeZonesRequest) (*ListAuthoritativeZonesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListAuthoritativeZones not implemented")
+}
+func (UnimplementedRolodexServiceServer) GetCacheStats(context.Context, *GetCacheStatsRequest) (*GetCacheStatsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCacheStats not implemented")
+}
+func (UnimplementedRolodexServiceServer) FlushDnsCache(context.Context, *FlushDnsCacheRequest) (*FlushDnsCacheResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method FlushDnsCache not implemented")
+}
+func (UnimplementedRolodexServiceServer) SetTtlDriftConfig(context.Context, *SetTtlDriftConfigRequest) (*SetTtlDriftConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetTtlDriftConfig not implemented")
+}
+func (UnimplementedRolodexServiceServer) GetTtlDriftConfig(context.Context, *GetTtlDriftConfigRequest) (*GetTtlDriftConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetTtlDriftConfig not implemented")
+}
+func (UnimplementedRolodexServiceServer) GetQueryLatencyStats(context.Context, *GetQueryLatencyStatsRequest) (*GetQueryLatencyStatsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetQueryLatencyStats not implemented")
+}
+func (UnimplementedRolodexServiceServer) AddLocalRblEntry(context.Context, *AddLocalRblEntryRequest) (*AddLocalRblEntryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AddLocalRblEntry not implemented")
+}
+func (UnimplementedRolodexServiceServer) RemoveLocalRblEntry(context.Context, *RemoveLocalRblEntryRequest) (*RemoveLocalRblEntryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveLocalRblEntry not implemented")
+}
+func (UnimplementedRolodexServiceServer) ListLocalRblEntries(context.Context, *ListLocalRblEntriesRequest) (*ListLocalRblEntriesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListLocalRblEntries not implemented")
+}
+func (UnimplementedRolodexServiceServer) SetDotConfig(context.Context, *SetDotConfigRequest) (*SetDotConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetDotConfig not implemented")
+}
+func (UnimplementedRolodexServiceServer) GetDotConfig(context.Context, *GetDotConfigRequest) (*GetDotConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetDotConfig not implemented")
+}
+func (UnimplementedRolodexServiceServer) SetDohConfig(context.Context, *SetDohConfigRequest) (*SetDohConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetDohConfig not implemented")
+}
+func (UnimplementedRolodexServiceServer) GetDohConfig(context.Context, *GetDohConfigRequest) (*GetDohConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetDohConfig not implemented")
+}
+func (UnimplementedRolodexServiceServer) SetDoqConfig(context.Context, *SetDoqConfigRequest) (*SetDoqConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetDoqConfig not implemented")
+}
+func (UnimplementedRolodexServiceServer) GetDoqConfig(context.Context, *GetDoqConfigRequest) (*GetDoqConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetDoqConfig not implemented")
+}
+func (UnimplementedRolodexServiceServer) SetProxyConfig(context.Context, *SetProxyConfigRequest) (*SetProxyConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetProxyConfig not implemented")
+}
+func (UnimplementedRolodexServiceServer) GetProxyConfig(context.Context, *GetProxyConfigRequest) (*GetProxyConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetProxyConfig not implemented")
+}
+func (UnimplementedRolodexServiceServer) GenerateDnssecKey(context.Context, *GenerateDnssecKeyRequest) (*GenerateDnssecKeyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GenerateDnssecKey not implemented")
+}
+func (UnimplementedRolodexServiceServer) ListDnssecKeys(context.Context, *ListDnssecKeysRequest) (*ListDnssecKeysResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListDnssecKeys not implemented")
+}
+func (UnimplementedRolodexServiceServer) DeleteDnssecKey(context.Context, *DeleteDnssecKeyRequest) (*DeleteDnssecKeyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteDnssecKey not implemented")
+}
+func (UnimplementedRolodexServiceServer) GetDsRecords(context.Context, *GetDsRecordsRequest) (*GetDsRecordsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetDsRecords not implemented")
+}
+func (UnimplementedRolodexServiceServer) SignZone(context.Context, *SignZoneRequest) (*SignZoneResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SignZone not implemented")
+}
+func (UnimplementedRolodexServiceServer) GenerateTlsaRecord(context.Context, *GenerateTlsaRecordRequest) (*GenerateTlsaRecordResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GenerateTlsaRecord not implemented")
+}
+func (UnimplementedRolodexServiceServer) ListTlsaRecords(context.Context, *ListTlsaRecordsRequest) (*ListTlsaRecordsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListTlsaRecords not implemented")
+}
+func (UnimplementedRolodexServiceServer) GenerateDaneRootCa(context.Context, *GenerateDaneRootCaRequest) (*GenerateDaneRootCaResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GenerateDaneRootCa not implemented")
+}
+func (UnimplementedRolodexServiceServer) RequestAcmeCert(context.Context, *RequestAcmeCertRequest) (*RequestAcmeCertResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RequestAcmeCert not implemented")
+}
+func (UnimplementedRolodexServiceServer) GetAcmeStatus(context.Context, *GetAcmeStatusRequest) (*GetAcmeStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetAcmeStatus not implemented")
+}
+func (UnimplementedRolodexServiceServer) SetDns64Config(context.Context, *SetDns64ConfigRequest) (*SetDns64ConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetDns64Config not implemented")
+}
+func (UnimplementedRolodexServiceServer) GetDns64Config(context.Context, *GetDns64ConfigRequest) (*GetDns64ConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetDns64Config not implemented")
 }
 func (UnimplementedRolodexServiceServer) mustEmbedUnimplementedRolodexServiceServer() {}
 func (UnimplementedRolodexServiceServer) testEmbeddedByValue()                        {}
@@ -728,6 +1348,564 @@ func _RolodexService_GetSearchDomains_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RolodexService_AddAuthoritativeZone_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddAuthoritativeZoneRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).AddAuthoritativeZone(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_AddAuthoritativeZone_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).AddAuthoritativeZone(ctx, req.(*AddAuthoritativeZoneRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_RemoveAuthoritativeZone_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveAuthoritativeZoneRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).RemoveAuthoritativeZone(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_RemoveAuthoritativeZone_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).RemoveAuthoritativeZone(ctx, req.(*RemoveAuthoritativeZoneRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_ListAuthoritativeZones_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAuthoritativeZonesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).ListAuthoritativeZones(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_ListAuthoritativeZones_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).ListAuthoritativeZones(ctx, req.(*ListAuthoritativeZonesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_GetCacheStats_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCacheStatsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).GetCacheStats(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_GetCacheStats_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).GetCacheStats(ctx, req.(*GetCacheStatsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_FlushDnsCache_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FlushDnsCacheRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).FlushDnsCache(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_FlushDnsCache_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).FlushDnsCache(ctx, req.(*FlushDnsCacheRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_SetTtlDriftConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetTtlDriftConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).SetTtlDriftConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_SetTtlDriftConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).SetTtlDriftConfig(ctx, req.(*SetTtlDriftConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_GetTtlDriftConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetTtlDriftConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).GetTtlDriftConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_GetTtlDriftConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).GetTtlDriftConfig(ctx, req.(*GetTtlDriftConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_GetQueryLatencyStats_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetQueryLatencyStatsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).GetQueryLatencyStats(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_GetQueryLatencyStats_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).GetQueryLatencyStats(ctx, req.(*GetQueryLatencyStatsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_AddLocalRblEntry_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddLocalRblEntryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).AddLocalRblEntry(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_AddLocalRblEntry_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).AddLocalRblEntry(ctx, req.(*AddLocalRblEntryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_RemoveLocalRblEntry_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveLocalRblEntryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).RemoveLocalRblEntry(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_RemoveLocalRblEntry_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).RemoveLocalRblEntry(ctx, req.(*RemoveLocalRblEntryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_ListLocalRblEntries_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListLocalRblEntriesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).ListLocalRblEntries(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_ListLocalRblEntries_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).ListLocalRblEntries(ctx, req.(*ListLocalRblEntriesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_SetDotConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetDotConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).SetDotConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_SetDotConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).SetDotConfig(ctx, req.(*SetDotConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_GetDotConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetDotConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).GetDotConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_GetDotConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).GetDotConfig(ctx, req.(*GetDotConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_SetDohConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetDohConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).SetDohConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_SetDohConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).SetDohConfig(ctx, req.(*SetDohConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_GetDohConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetDohConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).GetDohConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_GetDohConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).GetDohConfig(ctx, req.(*GetDohConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_SetDoqConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetDoqConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).SetDoqConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_SetDoqConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).SetDoqConfig(ctx, req.(*SetDoqConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_GetDoqConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetDoqConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).GetDoqConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_GetDoqConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).GetDoqConfig(ctx, req.(*GetDoqConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_SetProxyConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetProxyConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).SetProxyConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_SetProxyConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).SetProxyConfig(ctx, req.(*SetProxyConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_GetProxyConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetProxyConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).GetProxyConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_GetProxyConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).GetProxyConfig(ctx, req.(*GetProxyConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_GenerateDnssecKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GenerateDnssecKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).GenerateDnssecKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_GenerateDnssecKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).GenerateDnssecKey(ctx, req.(*GenerateDnssecKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_ListDnssecKeys_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListDnssecKeysRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).ListDnssecKeys(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_ListDnssecKeys_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).ListDnssecKeys(ctx, req.(*ListDnssecKeysRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_DeleteDnssecKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteDnssecKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).DeleteDnssecKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_DeleteDnssecKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).DeleteDnssecKey(ctx, req.(*DeleteDnssecKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_GetDsRecords_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetDsRecordsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).GetDsRecords(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_GetDsRecords_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).GetDsRecords(ctx, req.(*GetDsRecordsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_SignZone_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SignZoneRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).SignZone(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_SignZone_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).SignZone(ctx, req.(*SignZoneRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_GenerateTlsaRecord_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GenerateTlsaRecordRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).GenerateTlsaRecord(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_GenerateTlsaRecord_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).GenerateTlsaRecord(ctx, req.(*GenerateTlsaRecordRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_ListTlsaRecords_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListTlsaRecordsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).ListTlsaRecords(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_ListTlsaRecords_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).ListTlsaRecords(ctx, req.(*ListTlsaRecordsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_GenerateDaneRootCa_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GenerateDaneRootCaRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).GenerateDaneRootCa(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_GenerateDaneRootCa_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).GenerateDaneRootCa(ctx, req.(*GenerateDaneRootCaRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_RequestAcmeCert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequestAcmeCertRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).RequestAcmeCert(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_RequestAcmeCert_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).RequestAcmeCert(ctx, req.(*RequestAcmeCertRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_GetAcmeStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetAcmeStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).GetAcmeStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_GetAcmeStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).GetAcmeStatus(ctx, req.(*GetAcmeStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_SetDns64Config_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetDns64ConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).SetDns64Config(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_SetDns64Config_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).SetDns64Config(ctx, req.(*SetDns64ConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexService_GetDns64Config_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetDns64ConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexServiceServer).GetDns64Config(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexService_GetDns64Config_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexServiceServer).GetDns64Config(ctx, req.(*GetDns64ConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // RolodexService_ServiceDesc is the grpc.ServiceDesc for RolodexService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -802,6 +1980,130 @@ var RolodexService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetSearchDomains",
 			Handler:    _RolodexService_GetSearchDomains_Handler,
+		},
+		{
+			MethodName: "AddAuthoritativeZone",
+			Handler:    _RolodexService_AddAuthoritativeZone_Handler,
+		},
+		{
+			MethodName: "RemoveAuthoritativeZone",
+			Handler:    _RolodexService_RemoveAuthoritativeZone_Handler,
+		},
+		{
+			MethodName: "ListAuthoritativeZones",
+			Handler:    _RolodexService_ListAuthoritativeZones_Handler,
+		},
+		{
+			MethodName: "GetCacheStats",
+			Handler:    _RolodexService_GetCacheStats_Handler,
+		},
+		{
+			MethodName: "FlushDnsCache",
+			Handler:    _RolodexService_FlushDnsCache_Handler,
+		},
+		{
+			MethodName: "SetTtlDriftConfig",
+			Handler:    _RolodexService_SetTtlDriftConfig_Handler,
+		},
+		{
+			MethodName: "GetTtlDriftConfig",
+			Handler:    _RolodexService_GetTtlDriftConfig_Handler,
+		},
+		{
+			MethodName: "GetQueryLatencyStats",
+			Handler:    _RolodexService_GetQueryLatencyStats_Handler,
+		},
+		{
+			MethodName: "AddLocalRblEntry",
+			Handler:    _RolodexService_AddLocalRblEntry_Handler,
+		},
+		{
+			MethodName: "RemoveLocalRblEntry",
+			Handler:    _RolodexService_RemoveLocalRblEntry_Handler,
+		},
+		{
+			MethodName: "ListLocalRblEntries",
+			Handler:    _RolodexService_ListLocalRblEntries_Handler,
+		},
+		{
+			MethodName: "SetDotConfig",
+			Handler:    _RolodexService_SetDotConfig_Handler,
+		},
+		{
+			MethodName: "GetDotConfig",
+			Handler:    _RolodexService_GetDotConfig_Handler,
+		},
+		{
+			MethodName: "SetDohConfig",
+			Handler:    _RolodexService_SetDohConfig_Handler,
+		},
+		{
+			MethodName: "GetDohConfig",
+			Handler:    _RolodexService_GetDohConfig_Handler,
+		},
+		{
+			MethodName: "SetDoqConfig",
+			Handler:    _RolodexService_SetDoqConfig_Handler,
+		},
+		{
+			MethodName: "GetDoqConfig",
+			Handler:    _RolodexService_GetDoqConfig_Handler,
+		},
+		{
+			MethodName: "SetProxyConfig",
+			Handler:    _RolodexService_SetProxyConfig_Handler,
+		},
+		{
+			MethodName: "GetProxyConfig",
+			Handler:    _RolodexService_GetProxyConfig_Handler,
+		},
+		{
+			MethodName: "GenerateDnssecKey",
+			Handler:    _RolodexService_GenerateDnssecKey_Handler,
+		},
+		{
+			MethodName: "ListDnssecKeys",
+			Handler:    _RolodexService_ListDnssecKeys_Handler,
+		},
+		{
+			MethodName: "DeleteDnssecKey",
+			Handler:    _RolodexService_DeleteDnssecKey_Handler,
+		},
+		{
+			MethodName: "GetDsRecords",
+			Handler:    _RolodexService_GetDsRecords_Handler,
+		},
+		{
+			MethodName: "SignZone",
+			Handler:    _RolodexService_SignZone_Handler,
+		},
+		{
+			MethodName: "GenerateTlsaRecord",
+			Handler:    _RolodexService_GenerateTlsaRecord_Handler,
+		},
+		{
+			MethodName: "ListTlsaRecords",
+			Handler:    _RolodexService_ListTlsaRecords_Handler,
+		},
+		{
+			MethodName: "GenerateDaneRootCa",
+			Handler:    _RolodexService_GenerateDaneRootCa_Handler,
+		},
+		{
+			MethodName: "RequestAcmeCert",
+			Handler:    _RolodexService_RequestAcmeCert_Handler,
+		},
+		{
+			MethodName: "GetAcmeStatus",
+			Handler:    _RolodexService_GetAcmeStatus_Handler,
+		},
+		{
+			MethodName: "SetDns64Config",
+			Handler:    _RolodexService_SetDns64Config_Handler,
+		},
+		{
+			MethodName: "GetDns64Config",
+			Handler:    _RolodexService_GetDns64Config_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

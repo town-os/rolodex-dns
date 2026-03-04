@@ -56,6 +56,30 @@ const (
 	RecordTypeSRV RecordType = pb.RecordType_SRV
 	// RecordTypePTR represents a pointer record for reverse DNS.
 	RecordTypePTR RecordType = pb.RecordType_PTR
+	// RecordTypeURI represents a URI resource record.
+	RecordTypeURI RecordType = pb.RecordType_URI
+	// RecordTypeSSHFP represents an SSH fingerprint record.
+	RecordTypeSSHFP RecordType = pb.RecordType_SSHFP
+	// RecordTypeDNAME represents a delegation name record.
+	RecordTypeDNAME RecordType = pb.RecordType_DNAME
+	// RecordTypeANAME represents an alias name record (auto-resolved CNAME at zone apex).
+	RecordTypeANAME RecordType = pb.RecordType_ANAME
+	// RecordTypeZONEMD represents a zone message digest record.
+	RecordTypeZONEMD RecordType = pb.RecordType_ZONEMD
+	// RecordTypeTLSA represents a TLSA certificate association record.
+	RecordTypeTLSA RecordType = pb.RecordType_TLSA
+	// RecordTypeDNSKEY represents a DNSSEC public key record.
+	RecordTypeDNSKEY RecordType = pb.RecordType_DNSKEY
+	// RecordTypeDS represents a DNSSEC delegation signer record.
+	RecordTypeDS RecordType = pb.RecordType_DS
+	// RecordTypeRRSIG represents a DNSSEC resource record signature.
+	RecordTypeRRSIG RecordType = pb.RecordType_RRSIG
+	// RecordTypeNSEC represents a DNSSEC next secure record.
+	RecordTypeNSEC RecordType = pb.RecordType_NSEC
+	// RecordTypeNSEC3 represents a DNSSEC next secure record version 3.
+	RecordTypeNSEC3 RecordType = pb.RecordType_NSEC3
+	// RecordTypeNSEC3PARAM represents a DNSSEC NSEC3 parameters record.
+	RecordTypeNSEC3PARAM RecordType = pb.RecordType_NSEC3PARAM
 )
 
 // DnsRecord represents a DNS record managed by the Rolodex server.
@@ -63,6 +87,54 @@ type DnsRecord = pb.DnsRecord
 
 // RblConfig represents a single RBL (Realtime Blackhole List) provider configuration.
 type RblConfig = pb.RblConfig
+
+// CacheStats represents DNS cache statistics.
+type CacheStats = pb.GetCacheStatsResponse
+
+// TtlDriftConfig represents the TTL drift configuration.
+type TtlDriftConfig = pb.TtlDriftConfig
+
+// QueryLatencyStats represents per-server query latency statistics.
+type QueryLatencyStats = pb.QueryLatencyStat
+
+// LocalRblEntry represents a local RBL blocklist entry.
+type LocalRblEntry = pb.LocalRblEntry
+
+// DotConfig represents DNS-over-TLS configuration.
+type DotConfig = pb.DotConfig
+
+// DohConfig represents DNS-over-HTTPS configuration.
+type DohConfig = pb.DohConfig
+
+// DoqConfig represents DNS-over-QUIC configuration.
+type DoqConfig = pb.DoqConfig
+
+// TlsConfig represents TLS certificate configuration used by transport protocols.
+type TlsConfig = pb.TlsConfig
+
+// ProxyConfig represents DNS proxy transport configuration.
+type ProxyConfig = pb.ProxyConfig
+
+// DnssecKey represents a DNSSEC signing key.
+type DnssecKey = pb.DnssecKey
+
+// DsRecord is a string representation of a DS record for parent-zone delegation.
+// Use [Client.GetDsRecords] to retrieve DS records for a zone.
+type DsRecord = string
+
+// TlsaRecord is a string representation of a TLSA record.
+// Use [Client.GenerateTlsaRecord] to generate one.
+type TlsaRecord = string
+
+// DaneRootCa is a PEM-encoded root CA certificate generated for DANE.
+// Use [Client.GenerateDaneRootCa] to generate one.
+type DaneRootCa = string
+
+// AcmeStatus represents the status of an ACME certificate.
+type AcmeStatus = pb.GetAcmeStatusResponse
+
+// Dns64Config represents DNS64 synthesis configuration.
+type Dns64Config = pb.Dns64Config
 
 // Option configures a [Client] during [Dial].
 type Option func(*clientConfig)
@@ -594,4 +666,579 @@ func (c *Client) GetSearchDomains(ctx context.Context, ipAddress string) ([]stri
 		return nil, fmt.Errorf("rolodex: get search domains: %w", err)
 	}
 	return resp.SearchDomains, nil
+}
+
+// AddAuthoritativeZone registers a zone as authoritative on the Rolodex server.
+// Queries for names within authoritative zones will not be forwarded upstream.
+//
+// Parameters:
+//   - zone: the zone name (e.g. "example.com.")
+//
+// Remote API path: /rolodex.RolodexService/AddAuthoritativeZone
+func (c *Client) AddAuthoritativeZone(ctx context.Context, zone string) error {
+	resp, err := c.rpc.AddAuthoritativeZone(ctx, &pb.AddAuthoritativeZoneRequest{
+		Zone:      zone,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex: add authoritative zone: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex: add authoritative zone: %s", resp.Message)
+	}
+	return nil
+}
+
+// RemoveAuthoritativeZone removes a zone from the authoritative zone list.
+//
+// Parameters:
+//   - zone: the zone name to remove (e.g. "example.com.")
+//
+// Remote API path: /rolodex.RolodexService/RemoveAuthoritativeZone
+func (c *Client) RemoveAuthoritativeZone(ctx context.Context, zone string) error {
+	resp, err := c.rpc.RemoveAuthoritativeZone(ctx, &pb.RemoveAuthoritativeZoneRequest{
+		Zone:      zone,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex: remove authoritative zone: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex: remove authoritative zone: %s", resp.Message)
+	}
+	return nil
+}
+
+// ListAuthoritativeZones retrieves all authoritative zone names.
+//
+// Remote API path: /rolodex.RolodexService/ListAuthoritativeZones
+func (c *Client) ListAuthoritativeZones(ctx context.Context) ([]string, error) {
+	resp, err := c.rpc.ListAuthoritativeZones(ctx, &pb.ListAuthoritativeZonesRequest{
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex: list authoritative zones: %w", err)
+	}
+	return resp.Zones, nil
+}
+
+// GetCacheStats retrieves DNS cache statistics from the Rolodex server.
+//
+// Remote API path: /rolodex.RolodexService/GetCacheStats
+func (c *Client) GetCacheStats(ctx context.Context) (*CacheStats, error) {
+	resp, err := c.rpc.GetCacheStats(ctx, &pb.GetCacheStatsRequest{
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex: get cache stats: %w", err)
+	}
+	return resp, nil
+}
+
+// FlushDnsCache clears the DNS record cache on the Rolodex server.
+//
+// Remote API path: /rolodex.RolodexService/FlushDnsCache
+func (c *Client) FlushDnsCache(ctx context.Context) error {
+	resp, err := c.rpc.FlushDnsCache(ctx, &pb.FlushDnsCacheRequest{
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex: flush dns cache: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex: flush dns cache: %s", resp.Message)
+	}
+	return nil
+}
+
+// SetTtlDriftConfig configures TTL drift adjustment on the Rolodex server.
+// TTL drift modifies cached record TTLs to reduce thundering-herd cache
+// expiration storms.
+//
+// Parameters:
+//   - config: the TTL drift configuration (mode, fixed_adjustment, log_multiplier)
+//
+// Remote API path: /rolodex.RolodexService/SetTtlDriftConfig
+func (c *Client) SetTtlDriftConfig(ctx context.Context, config *TtlDriftConfig) error {
+	resp, err := c.rpc.SetTtlDriftConfig(ctx, &pb.SetTtlDriftConfigRequest{
+		Config:    config,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex: set ttl drift config: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex: set ttl drift config: %s", resp.Message)
+	}
+	return nil
+}
+
+// GetTtlDriftConfig retrieves the current TTL drift configuration.
+//
+// Remote API path: /rolodex.RolodexService/GetTtlDriftConfig
+func (c *Client) GetTtlDriftConfig(ctx context.Context) (*TtlDriftConfig, error) {
+	resp, err := c.rpc.GetTtlDriftConfig(ctx, &pb.GetTtlDriftConfigRequest{
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex: get ttl drift config: %w", err)
+	}
+	return resp.Config, nil
+}
+
+// GetQueryLatencyStats retrieves per-server query latency statistics.
+//
+// Remote API path: /rolodex.RolodexService/GetQueryLatencyStats
+func (c *Client) GetQueryLatencyStats(ctx context.Context) ([]*QueryLatencyStats, error) {
+	resp, err := c.rpc.GetQueryLatencyStats(ctx, &pb.GetQueryLatencyStatsRequest{
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex: get query latency stats: %w", err)
+	}
+	return resp.Stats, nil
+}
+
+// AddLocalRblEntry adds an entry to the local RBL blocklist.
+//
+// Parameters:
+//   - entry: the local RBL entry to add (name and reason)
+//
+// Remote API path: /rolodex.RolodexService/AddLocalRblEntry
+func (c *Client) AddLocalRblEntry(ctx context.Context, entry *LocalRblEntry) error {
+	resp, err := c.rpc.AddLocalRblEntry(ctx, &pb.AddLocalRblEntryRequest{
+		Entry:     entry,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex: add local rbl entry: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex: add local rbl entry: %s", resp.Message)
+	}
+	return nil
+}
+
+// RemoveLocalRblEntry removes an entry from the local RBL blocklist.
+//
+// Parameters:
+//   - name: the name or IP to unblock
+//
+// Remote API path: /rolodex.RolodexService/RemoveLocalRblEntry
+func (c *Client) RemoveLocalRblEntry(ctx context.Context, name string) error {
+	resp, err := c.rpc.RemoveLocalRblEntry(ctx, &pb.RemoveLocalRblEntryRequest{
+		Name:      name,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex: remove local rbl entry: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex: remove local rbl entry: %s", resp.Message)
+	}
+	return nil
+}
+
+// ListLocalRblEntries retrieves all entries in the local RBL blocklist.
+//
+// Remote API path: /rolodex.RolodexService/ListLocalRblEntries
+func (c *Client) ListLocalRblEntries(ctx context.Context) ([]*LocalRblEntry, error) {
+	resp, err := c.rpc.ListLocalRblEntries(ctx, &pb.ListLocalRblEntriesRequest{
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex: list local rbl entries: %w", err)
+	}
+	return resp.Entries, nil
+}
+
+// SetDotConfig configures DNS-over-TLS settings on the Rolodex server.
+//
+// Parameters:
+//   - config: the DoT configuration (bind address and TLS settings)
+//
+// Remote API path: /rolodex.RolodexService/SetDotConfig
+func (c *Client) SetDotConfig(ctx context.Context, config *DotConfig) error {
+	resp, err := c.rpc.SetDotConfig(ctx, &pb.SetDotConfigRequest{
+		Config:    config,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex: set dot config: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex: set dot config: %s", resp.Message)
+	}
+	return nil
+}
+
+// GetDotConfig retrieves the current DNS-over-TLS configuration.
+//
+// Remote API path: /rolodex.RolodexService/GetDotConfig
+func (c *Client) GetDotConfig(ctx context.Context) (*DotConfig, error) {
+	resp, err := c.rpc.GetDotConfig(ctx, &pb.GetDotConfigRequest{
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex: get dot config: %w", err)
+	}
+	return resp.Config, nil
+}
+
+// SetDohConfig configures DNS-over-HTTPS settings on the Rolodex server.
+//
+// Parameters:
+//   - config: the DoH configuration (bind address, TLS settings, HTTP/3 support)
+//
+// Remote API path: /rolodex.RolodexService/SetDohConfig
+func (c *Client) SetDohConfig(ctx context.Context, config *DohConfig) error {
+	resp, err := c.rpc.SetDohConfig(ctx, &pb.SetDohConfigRequest{
+		Config:    config,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex: set doh config: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex: set doh config: %s", resp.Message)
+	}
+	return nil
+}
+
+// GetDohConfig retrieves the current DNS-over-HTTPS configuration.
+//
+// Remote API path: /rolodex.RolodexService/GetDohConfig
+func (c *Client) GetDohConfig(ctx context.Context) (*DohConfig, error) {
+	resp, err := c.rpc.GetDohConfig(ctx, &pb.GetDohConfigRequest{
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex: get doh config: %w", err)
+	}
+	return resp.Config, nil
+}
+
+// SetDoqConfig configures DNS-over-QUIC settings on the Rolodex server.
+//
+// Parameters:
+//   - config: the DoQ configuration (bind address and TLS settings)
+//
+// Remote API path: /rolodex.RolodexService/SetDoqConfig
+func (c *Client) SetDoqConfig(ctx context.Context, config *DoqConfig) error {
+	resp, err := c.rpc.SetDoqConfig(ctx, &pb.SetDoqConfigRequest{
+		Config:    config,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex: set doq config: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex: set doq config: %s", resp.Message)
+	}
+	return nil
+}
+
+// GetDoqConfig retrieves the current DNS-over-QUIC configuration.
+//
+// Remote API path: /rolodex.RolodexService/GetDoqConfig
+func (c *Client) GetDoqConfig(ctx context.Context) (*DoqConfig, error) {
+	resp, err := c.rpc.GetDoqConfig(ctx, &pb.GetDoqConfigRequest{
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex: get doq config: %w", err)
+	}
+	return resp.Config, nil
+}
+
+// SetProxyConfig configures DNS proxy transport settings on the Rolodex server.
+//
+// Parameters:
+//   - config: the proxy configuration (URL, authentication, mode)
+//
+// Remote API path: /rolodex.RolodexService/SetProxyConfig
+func (c *Client) SetProxyConfig(ctx context.Context, config *ProxyConfig) error {
+	resp, err := c.rpc.SetProxyConfig(ctx, &pb.SetProxyConfigRequest{
+		Config:    config,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex: set proxy config: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex: set proxy config: %s", resp.Message)
+	}
+	return nil
+}
+
+// GetProxyConfig retrieves the current DNS proxy transport configuration.
+//
+// Remote API path: /rolodex.RolodexService/GetProxyConfig
+func (c *Client) GetProxyConfig(ctx context.Context) (*ProxyConfig, error) {
+	resp, err := c.rpc.GetProxyConfig(ctx, &pb.GetProxyConfigRequest{
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex: get proxy config: %w", err)
+	}
+	return resp.Config, nil
+}
+
+// GenerateDnssecKey generates a new DNSSEC signing key for a zone.
+//
+// Parameters:
+//   - zone: the zone to generate the key for (e.g. "example.com.")
+//   - algorithm: the DNSSEC algorithm (e.g. "ECDSAP256SHA256")
+//   - keyType: the key type ("KSK" or "ZSK")
+//
+// Returns the generated key and any error.
+//
+// Remote API path: /rolodex.RolodexService/GenerateDnssecKey
+func (c *Client) GenerateDnssecKey(ctx context.Context, zone, algorithm, keyType string) (*DnssecKey, error) {
+	resp, err := c.rpc.GenerateDnssecKey(ctx, &pb.GenerateDnssecKeyRequest{
+		Zone:      zone,
+		Algorithm: algorithm,
+		KeyType:   keyType,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex: generate dnssec key: %w", err)
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("rolodex: generate dnssec key: %s", resp.Message)
+	}
+	return resp.Key, nil
+}
+
+// ListDnssecKeys retrieves all DNSSEC keys for a zone.
+//
+// Parameters:
+//   - zone: the zone to list keys for (e.g. "example.com.")
+//
+// Remote API path: /rolodex.RolodexService/ListDnssecKeys
+func (c *Client) ListDnssecKeys(ctx context.Context, zone string) ([]*DnssecKey, error) {
+	resp, err := c.rpc.ListDnssecKeys(ctx, &pb.ListDnssecKeysRequest{
+		Zone:      zone,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex: list dnssec keys: %w", err)
+	}
+	return resp.Keys, nil
+}
+
+// DeleteDnssecKey removes a DNSSEC key by its ID.
+//
+// Parameters:
+//   - keyID: the numeric ID of the key to delete
+//
+// Remote API path: /rolodex.RolodexService/DeleteDnssecKey
+func (c *Client) DeleteDnssecKey(ctx context.Context, keyID int64) error {
+	resp, err := c.rpc.DeleteDnssecKey(ctx, &pb.DeleteDnssecKeyRequest{
+		KeyId:     keyID,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex: delete dnssec key: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex: delete dnssec key: %s", resp.Message)
+	}
+	return nil
+}
+
+// GetDsRecords retrieves the DS (Delegation Signer) records for a zone.
+// These records are submitted to the parent zone registrar for DNSSEC chain of trust.
+//
+// Parameters:
+//   - zone: the zone to get DS records for (e.g. "example.com.")
+//
+// Remote API path: /rolodex.RolodexService/GetDsRecords
+func (c *Client) GetDsRecords(ctx context.Context, zone string) ([]string, error) {
+	resp, err := c.rpc.GetDsRecords(ctx, &pb.GetDsRecordsRequest{
+		Zone:      zone,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex: get ds records: %w", err)
+	}
+	return resp.DsRecords, nil
+}
+
+// SignZone signs (or re-signs) all records in a zone with its DNSSEC keys.
+//
+// Parameters:
+//   - zone: the zone to sign (e.g. "example.com.")
+//
+// Remote API path: /rolodex.RolodexService/SignZone
+func (c *Client) SignZone(ctx context.Context, zone string) error {
+	resp, err := c.rpc.SignZone(ctx, &pb.SignZoneRequest{
+		Zone:      zone,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex: sign zone: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex: sign zone: %s", resp.Message)
+	}
+	return nil
+}
+
+// GenerateTlsaRecordOptions configures TLSA record generation parameters.
+type GenerateTlsaRecordOptions struct {
+	// Domain is the FQDN for the TLSA record.
+	Domain string
+	// Port is the TCP/UDP port number.
+	Port uint32
+	// Protocol is the transport protocol (e.g. "tcp").
+	Protocol string
+	// Usage is the TLSA certificate usage field (0-3).
+	Usage uint32
+	// Selector is the TLSA selector field (0-1).
+	Selector uint32
+	// MatchingType is the TLSA matching type field (0-2).
+	MatchingType uint32
+	// CertPem is the PEM-encoded certificate to generate the TLSA record from.
+	CertPem string
+}
+
+// GenerateTlsaRecord generates a TLSA record for DANE certificate association.
+//
+// Parameters:
+//   - opts: the TLSA record generation parameters
+//
+// Returns the generated TLSA record string and any error.
+//
+// Remote API path: /rolodex.RolodexService/GenerateTlsaRecord
+func (c *Client) GenerateTlsaRecord(ctx context.Context, opts *GenerateTlsaRecordOptions) (string, error) {
+	resp, err := c.rpc.GenerateTlsaRecord(ctx, &pb.GenerateTlsaRecordRequest{
+		Domain:       opts.Domain,
+		Port:         opts.Port,
+		Protocol:     opts.Protocol,
+		Usage:        opts.Usage,
+		Selector:     opts.Selector,
+		MatchingType: opts.MatchingType,
+		CertPem:      opts.CertPem,
+		AuthToken:    c.authToken,
+	})
+	if err != nil {
+		return "", fmt.Errorf("rolodex: generate tlsa record: %w", err)
+	}
+	if !resp.Success {
+		return "", fmt.Errorf("rolodex: generate tlsa record: %s", resp.Message)
+	}
+	return resp.TlsaRecord, nil
+}
+
+// ListTlsaRecords retrieves all TLSA DNS records for a domain.
+//
+// Parameters:
+//   - domain: the domain to list TLSA records for
+//
+// Remote API path: /rolodex.RolodexService/ListTlsaRecords
+func (c *Client) ListTlsaRecords(ctx context.Context, domain string) ([]*DnsRecord, error) {
+	resp, err := c.rpc.ListTlsaRecords(ctx, &pb.ListTlsaRecordsRequest{
+		Domain:    domain,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex: list tlsa records: %w", err)
+	}
+	return resp.Records, nil
+}
+
+// GenerateDaneRootCa generates a root CA certificate for DANE usage.
+//
+// Parameters:
+//   - name: the common name for the root CA certificate
+//
+// Returns the PEM-encoded root CA certificate and any error.
+//
+// Remote API path: /rolodex.RolodexService/GenerateDaneRootCa
+func (c *Client) GenerateDaneRootCa(ctx context.Context, name string) (string, error) {
+	resp, err := c.rpc.GenerateDaneRootCa(ctx, &pb.GenerateDaneRootCaRequest{
+		Name:      name,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return "", fmt.Errorf("rolodex: generate dane root ca: %w", err)
+	}
+	if !resp.Success {
+		return "", fmt.Errorf("rolodex: generate dane root ca: %s", resp.Message)
+	}
+	return resp.CertPem, nil
+}
+
+// RequestAcmeCert requests an ACME certificate for a domain using DNS-01 validation.
+//
+// Parameters:
+//   - domain: the domain to request a certificate for
+//   - providerURL: the ACME provider URL (e.g. Let's Encrypt directory URL)
+//
+// Remote API path: /rolodex.RolodexService/RequestAcmeCert
+func (c *Client) RequestAcmeCert(ctx context.Context, domain, providerURL string) error {
+	resp, err := c.rpc.RequestAcmeCert(ctx, &pb.RequestAcmeCertRequest{
+		Domain:      domain,
+		ProviderUrl: providerURL,
+		AuthToken:   c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex: request acme cert: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex: request acme cert: %s", resp.Message)
+	}
+	return nil
+}
+
+// GetAcmeStatus retrieves the ACME certificate status for a domain.
+//
+// Parameters:
+//   - domain: the domain to check ACME status for
+//
+// Remote API path: /rolodex.RolodexService/GetAcmeStatus
+func (c *Client) GetAcmeStatus(ctx context.Context, domain string) (*AcmeStatus, error) {
+	resp, err := c.rpc.GetAcmeStatus(ctx, &pb.GetAcmeStatusRequest{
+		Domain:    domain,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex: get acme status: %w", err)
+	}
+	return resp, nil
+}
+
+// SetDns64Config configures DNS64 synthesis on the Rolodex server.
+// DNS64 synthesizes AAAA records from A records for IPv6-only clients.
+//
+// Parameters:
+//   - config: the DNS64 configuration (enabled flag and IPv6 prefix)
+//
+// Remote API path: /rolodex.RolodexService/SetDns64Config
+func (c *Client) SetDns64Config(ctx context.Context, config *Dns64Config) error {
+	resp, err := c.rpc.SetDns64Config(ctx, &pb.SetDns64ConfigRequest{
+		Config:    config,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex: set dns64 config: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex: set dns64 config: %s", resp.Message)
+	}
+	return nil
+}
+
+// GetDns64Config retrieves the current DNS64 configuration.
+//
+// Remote API path: /rolodex.RolodexService/GetDns64Config
+func (c *Client) GetDns64Config(ctx context.Context) (*Dns64Config, error) {
+	resp, err := c.rpc.GetDns64Config(ctx, &pb.GetDns64ConfigRequest{
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex: get dns64 config: %w", err)
+	}
+	return resp.Config, nil
 }

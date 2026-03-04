@@ -2,11 +2,12 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use rolodex::config::Config;
 use rolodex::db::Database;
+use rolodex::dns_cache::DnsCache;
 use rolodex::dns_server::DnsServer;
 use rolodex::grpc_service::proto::rolodex_service_server::RolodexServiceServer;
 use rolodex::grpc_service::RolodexGrpcService;
 use rolodex::rbl::{RblChecker, RblProvider};
-use std::net::SocketAddr;
+use std::net::{Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::net::UnixListener;
 use tonic::transport::Server;
@@ -60,7 +61,35 @@ async fn main() -> Result<()> {
         .iter()
         .filter_map(|f| f.parse().ok())
         .collect();
-    let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), forwarders));
+
+    // Initialize DNS cache (load_from_disk happens automatically in new())
+    let dns_cache = Arc::new(DnsCache::new(db.clone()));
+    info!("DNS cache loaded ({} entries)", dns_cache.stats().total_entries);
+
+    // Parse DNS64 prefix if enabled
+    let dns64_prefix = if config.dns64.enabled {
+        match config.dns64.prefix.parse::<Ipv6Addr>() {
+            Ok(prefix) => {
+                info!("DNS64 enabled with prefix {}", prefix);
+                Some(prefix)
+            }
+            Err(e) => {
+                error!("Invalid DNS64 prefix '{}': {}", config.dns64.prefix, e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let dns_server = Arc::new(DnsServer::new_with_options(
+        db.clone(),
+        rbl.clone(),
+        forwarders,
+        Some(dns_cache),
+        dns64_prefix,
+        config.security.qname_case_randomization,
+    ));
 
     // Spawn DNS UDP server
     let udp_server = Arc::clone(&dns_server);
@@ -79,6 +108,78 @@ async fn main() -> Result<()> {
             error!("DNS TCP server error: {}", e);
         }
     });
+
+    // Spawn DNS-over-TLS (DoT) server if configured
+    if let Some(ref dot_config) = config.dot {
+        let tls_cfg = rolodex::tls::TlsConfig {
+            cert_path: dot_config.tls.cert_path.clone(),
+            key_path: dot_config.tls.key_path.clone(),
+            auto_self_signed: dot_config.tls.auto_self_signed,
+        };
+        match rolodex::tls::TlsManager::new(tls_cfg, vec![]) {
+            Ok(tls_mgr) => {
+                let dot_bind = dot_config.bind.clone();
+                let dot_dns = Arc::clone(&dns_server);
+                let acceptor = tokio_rustls::TlsAcceptor::from(tls_mgr.server_config());
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        rolodex::dot_server::serve_dot(&dot_bind, dot_dns, acceptor).await
+                    {
+                        error!("DoT server error: {}", e);
+                    }
+                });
+            }
+            Err(e) => error!("Failed to initialize DoT TLS: {}", e),
+        }
+    }
+
+    // Spawn DNS-over-HTTPS (DoH) server if configured
+    if let Some(ref doh_config) = config.doh {
+        let tls_cfg = rolodex::tls::TlsConfig {
+            cert_path: doh_config.tls.cert_path.clone(),
+            key_path: doh_config.tls.key_path.clone(),
+            auto_self_signed: doh_config.tls.auto_self_signed,
+        };
+        match rolodex::tls::TlsManager::new(tls_cfg, vec![b"h2".to_vec(), b"http/1.1".to_vec()]) {
+            Ok(tls_mgr) => {
+                let doh_bind = doh_config.bind.clone();
+                let doh_dns = Arc::clone(&dns_server);
+                let server_config = tls_mgr.server_config();
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        rolodex::doh_server::serve_doh(&doh_bind, doh_dns, server_config).await
+                    {
+                        error!("DoH server error: {}", e);
+                    }
+                });
+            }
+            Err(e) => error!("Failed to initialize DoH TLS: {}", e),
+        }
+    }
+
+    // Spawn DNS-over-QUIC (DoQ) server if configured
+    if let Some(ref doq_config) = config.doq {
+        let tls_cfg = rolodex::tls::TlsConfig {
+            cert_path: doq_config.tls.cert_path.clone(),
+            key_path: doq_config.tls.key_path.clone(),
+            auto_self_signed: doq_config.tls.auto_self_signed,
+        };
+        match rolodex::tls::TlsManager::new(tls_cfg, vec![b"doq".to_vec()]) {
+            Ok(tls_mgr) => {
+                let doq_bind = doq_config.bind.clone();
+                let doq_dns = Arc::clone(&dns_server);
+                let server_config = tls_mgr.server_config();
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        rolodex::doq_server::serve_doq(&doq_bind, doq_dns, server_config).await
+                    {
+                        error!("DoQ server error: {}", e);
+                    }
+                });
+            }
+            Err(e) => error!("Failed to initialize DoQ TLS: {}", e),
+        }
+    }
 
     // Spawn gRPC TCP server
     if !config.grpc.tcp_bind.is_empty() {

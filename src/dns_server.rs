@@ -1,10 +1,12 @@
 use crate::db::{Database, RecordKind};
+use crate::dns_cache::DnsCache;
 use crate::rbl::RblChecker;
 use anyhow::{Context, Result};
 use hickory_proto::op::{MessageType, OpCode, ResponseCode};
 use hickory_proto::rr::rdata;
 use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordType};
 use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
+use rand::Rng;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::net::{TcpListener, UdpSocket};
@@ -27,6 +29,14 @@ pub struct DnsServer {
     db: Database,
     rbl: Arc<RblChecker>,
     forwarders: Arc<RwLock<Vec<SocketAddr>>>,
+    /// Optional DNS response cache for privacy-first resolution.
+    dns_cache: Option<Arc<DnsCache>>,
+    /// Optional DNS64 prefix for synthesizing AAAA records from A records.
+    dns64_prefix: Option<Ipv6Addr>,
+    /// Whether to randomize QNAME case in forwarded queries (0x20 encoding).
+    qname_randomization: bool,
+    /// TTL drift configuration for adjusting cached record TTLs.
+    ttl_drift_config: Arc<RwLock<crate::ttl_drift::TtlDriftConfig>>,
 }
 
 impl DnsServer {
@@ -35,7 +45,41 @@ impl DnsServer {
             db,
             rbl,
             forwarders: Arc::new(RwLock::new(forwarders)),
+            dns_cache: None,
+            dns64_prefix: None,
+            qname_randomization: true,
+            ttl_drift_config: Arc::new(RwLock::new(crate::ttl_drift::TtlDriftConfig::default())),
         }
+    }
+
+    /// Creates a DnsServer with all optional features configurable.
+    pub fn new_with_options(
+        db: Database,
+        rbl: Arc<RblChecker>,
+        forwarders: Vec<SocketAddr>,
+        dns_cache: Option<Arc<DnsCache>>,
+        dns64_prefix: Option<Ipv6Addr>,
+        qname_randomization: bool,
+    ) -> Self {
+        Self {
+            db,
+            rbl,
+            forwarders: Arc::new(RwLock::new(forwarders)),
+            dns_cache,
+            dns64_prefix,
+            qname_randomization,
+            ttl_drift_config: Arc::new(RwLock::new(crate::ttl_drift::TtlDriftConfig::default())),
+        }
+    }
+
+    /// Sets the TTL drift configuration.
+    pub async fn set_ttl_drift_config(&self, config: crate::ttl_drift::TtlDriftConfig) {
+        *self.ttl_drift_config.write().await = config;
+    }
+
+    /// Gets the current TTL drift configuration.
+    pub async fn get_ttl_drift_config(&self) -> crate::ttl_drift::TtlDriftConfig {
+        self.ttl_drift_config.read().await.clone()
     }
 
     /// Returns a reference to the database.
@@ -173,6 +217,23 @@ impl DnsServer {
             }
         };
 
+        // Extract EDNS context from the query
+        let edns_ctx = crate::edns::EdnsContext::from_message(&message);
+
+        // If EDNS version > 0, return BADVERS (RFC 6891 section 6.1.3)
+        if let Some(ref ctx) = edns_ctx {
+            if ctx.is_unsupported_version() {
+                debug!("Rejecting EDNS version {} query", ctx.version);
+                return Ok(build_response_edns(
+                    &message,
+                    ResponseCode::from(0, 16), // BADVERS
+                    vec![],
+                    false,
+                    edns_ctx.as_ref(),
+                ));
+            }
+        }
+
         if message.message_type() != MessageType::Query {
             return Ok(make_error_response(query_data, ResponseCode::NotImp));
         }
@@ -194,7 +255,7 @@ impl DnsServer {
                 if scope.is_none() {
                     // IP is not associated with any scope - refuse resolution
                     debug!("Refusing DNS query from unassociated IP {}", ip);
-                    return Ok(build_response(&message, ResponseCode::Refused, vec![]));
+                    return Ok(build_response_edns(&message, ResponseCode::Refused, vec![], false, edns_ctx.as_ref()));
                 }
                 scope
             } else {
@@ -213,9 +274,9 @@ impl DnsServer {
         // If we have a network scope, check scoped RBL first
         if let Some(ref scope) = scope_name {
             if let Some(ip) = extract_ip_from_name(&qname) {
-                if self.rbl.is_listed(&ip).await {
+                if self.rbl.is_listed(&ip).await || self.db.lookup_local_rbl(&ip.to_string()) {
                     debug!("RBL block in scope {}: {} is blacklisted", scope, qname);
-                    return Ok(build_response(&message, ResponseCode::NXDomain, vec![]));
+                    return Ok(build_response_edns(&message, ResponseCode::NXDomain, vec![], true, edns_ctx.as_ref()));
                 }
             }
 
@@ -226,7 +287,27 @@ impl DnsServer {
                 if !records.is_empty() {
                     debug!("Scoped hit for {} {:?} in scope {}: {} records", qname, qtype, scope, records.len());
                     let dns_records = records.iter().filter_map(|r| db_record_to_dns_record(r)).collect();
-                    return Ok(build_response(&message, ResponseCode::NoError, dns_records));
+                    return Ok(build_response_edns(&message, ResponseCode::NoError, dns_records, true, edns_ctx.as_ref()));
+                }
+
+                // ANAME resolution: if querying A/AAAA and there's an ANAME, resolve it
+                if kind == RecordKind::A || kind == RecordKind::AAAA {
+                    let aname_records = self.db.lookup_scoped(scope, &qname, Some(RecordKind::ANAME));
+                    if !aname_records.is_empty() {
+                        let target = &aname_records[0].value;
+                        let target_records = self.db.lookup_scoped(scope, target, Some(kind));
+                        if !target_records.is_empty() {
+                            let dns_records: Vec<Record> = target_records
+                                .iter()
+                                .filter_map(|r| {
+                                    let mut rec = db_record_to_dns_record(r)?;
+                                    rec.set_name(Name::from_ascii(&qname).ok()?);
+                                    Some(rec)
+                                })
+                                .collect();
+                            return Ok(build_response_edns(&message, ResponseCode::NoError, dns_records, true, edns_ctx.as_ref()));
+                        }
+                    }
                 }
             }
 
@@ -235,8 +316,13 @@ impl DnsServer {
                 let cname_records = self.db.lookup_scoped(scope, &qname, Some(RecordKind::CNAME));
                 if !cname_records.is_empty() {
                     let dns_records = cname_records.iter().filter_map(|r| db_record_to_dns_record(r)).collect();
-                    return Ok(build_response(&message, ResponseCode::NoError, dns_records));
+                    return Ok(build_response_edns(&message, ResponseCode::NoError, dns_records, true, edns_ctx.as_ref()));
                 }
+            }
+
+            // Check DNAME in scoped records (walk up labels)
+            if let Some(dname_result) = self.check_dname_scoped(scope, &qname, qtype, &message) {
+                return Ok(dname_result);
             }
 
             // Check if name falls under a scoped managed zone
@@ -247,7 +333,7 @@ impl DnsServer {
                         let zone_records = self.db.lookup_scoped(scope, zone, None);
                         if !zone_records.is_empty() {
                             debug!("Scoped authoritative NXDOMAIN for {} (scope {} zone {} exists)", qname, scope, zone);
-                            return Ok(build_response(&message, ResponseCode::NXDomain, vec![]));
+                            return Ok(build_response_edns(&message, ResponseCode::NXDomain, vec![], true, edns_ctx.as_ref()));
                         }
                     }
                 }
@@ -259,12 +345,15 @@ impl DnsServer {
         // Check RBL for reverse DNS queries (global, non-scoped)
         if scope_name.is_none() {
             if let Some(ip) = extract_ip_from_name(&qname) {
-                if self.rbl.is_listed(&ip).await {
+                if self.rbl.is_listed(&ip).await || self.db.lookup_local_rbl(&ip.to_string()) {
                     debug!("RBL block: {} is blacklisted", qname);
-                    return Ok(build_response(&message, ResponseCode::NXDomain, vec![]));
+                    return Ok(build_response_edns(&message, ResponseCode::NXDomain, vec![], false, edns_ctx.as_ref()));
                 }
             }
         }
+
+        // Determine if this query is for an authoritative zone
+        let is_authoritative = self.db.is_authoritative_zone(&qname);
 
         // Try local database first (split-horizon: local records take priority)
         let record_kind = map_query_type_to_kind(qtype);
@@ -282,11 +371,41 @@ impl DnsServer {
                         .iter()
                         .filter_map(|r| db_record_to_dns_record(r))
                         .collect();
-                    return Ok(build_response(
+                    return Ok(build_response_edns(
                         &message,
                         ResponseCode::NoError,
                         dns_records,
+                        is_authoritative,
+                        edns_ctx.as_ref(),
                     ));
+                }
+            }
+
+            // ANAME resolution: if querying A/AAAA and there's an ANAME, resolve it
+            if kind == RecordKind::A || kind == RecordKind::AAAA {
+                if let Ok(aname_records) = self.db.lookup(&qname, Some(RecordKind::ANAME)) {
+                    if !aname_records.is_empty() {
+                        let target = &aname_records[0].value;
+                        if let Ok(target_records) = self.db.lookup(target, Some(kind)) {
+                            if !target_records.is_empty() {
+                                let dns_records: Vec<Record> = target_records
+                                    .iter()
+                                    .filter_map(|r| {
+                                        let mut rec = db_record_to_dns_record(r)?;
+                                        rec.set_name(Name::from_ascii(&qname).ok()?);
+                                        Some(rec)
+                                    })
+                                    .collect();
+                                return Ok(build_response_edns(
+                                    &message,
+                                    ResponseCode::NoError,
+                                    dns_records,
+                                    is_authoritative,
+                                    edns_ctx.as_ref(),
+                                ));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -300,13 +419,20 @@ impl DnsServer {
                         .iter()
                         .filter_map(|r| db_record_to_dns_record(r))
                         .collect();
-                    return Ok(build_response(
+                    return Ok(build_response_edns(
                         &message,
                         ResponseCode::NoError,
                         dns_records,
+                        is_authoritative,
+                        edns_ctx.as_ref(),
                     ));
                 }
             }
+        }
+
+        // Check DNAME (walk up labels checking for DNAME records, synthesize CNAME)
+        if let Some(dname_result) = self.check_dname_global(&qname, qtype, &message) {
+            return Ok(dname_result);
         }
 
         // Check if this name falls under a managed zone
@@ -325,10 +451,12 @@ impl DnsServer {
                                 "Authoritative NXDOMAIN for {} (zone {} exists)",
                                 qname, zone
                             );
-                            return Ok(build_response(
+                            return Ok(build_response_edns(
                                 &message,
                                 ResponseCode::NXDomain,
                                 vec![],
+                                true,
+                                edns_ctx.as_ref(),
                             ));
                         }
                     }
@@ -336,8 +464,193 @@ impl DnsServer {
             }
         }
 
+        // Check explicit authoritative zones too
+        if let Ok(auth_zones) = self.db.list_authoritative_zones() {
+            let normalized_qname = crate::db::normalize_name(&qname);
+            for zone in &auth_zones {
+                if normalized_qname.ends_with(zone.as_str()) || normalized_qname == *zone {
+                    debug!(
+                        "Authoritative NXDOMAIN for {} (authoritative zone {})",
+                        qname, zone
+                    );
+                    return Ok(build_response_edns(
+                        &message,
+                        ResponseCode::NXDomain,
+                        vec![],
+                        true,
+                        edns_ctx.as_ref(),
+                    ));
+                }
+            }
+        }
+
+        // Check DNS cache before forwarding upstream
+        if let Some(ref cache) = self.dns_cache {
+            let cached = cache.lookup(&qname, record_kind);
+            if !cached.is_empty() {
+                debug!("Cache hit for {} {:?}: {} records", qname, qtype, cached.len());
+                let dns_records = cached
+                    .iter()
+                    .filter_map(|r| db_record_to_dns_record(r))
+                    .collect();
+                return Ok(build_response_edns(
+                    &message,
+                    ResponseCode::NoError,
+                    dns_records,
+                    false,
+                    edns_ctx.as_ref(),
+                ));
+            }
+        }
+
         // Forward to upstream resolvers
-        self.forward_query(query_data).await
+        let forward_result = self.forward_query(query_data).await;
+
+        // DNS64 synthesis: if AAAA query returned no answers and dns64_prefix is set,
+        // re-query for A and synthesize AAAA records by embedding IPv4 in the prefix
+        if let Ok(ref response_bytes) = forward_result {
+            if qtype == RecordType::AAAA {
+                if let Some(prefix) = self.dns64_prefix {
+                    if let Ok(fwd_msg) = hickory_proto::op::Message::from_bytes(response_bytes) {
+                        let has_aaaa = fwd_msg.answers().iter().any(|a| a.record_type() == RecordType::AAAA);
+                        if !has_aaaa {
+                            // Build an A query for the same name
+                            let a_query = build_query_for_type(&qname, RecordType::A, message.id());
+                            if let Ok(a_response_bytes) = self.forward_query(&a_query).await {
+                                if let Ok(a_msg) = hickory_proto::op::Message::from_bytes(&a_response_bytes) {
+                                    let synthesized: Vec<Record> = a_msg
+                                        .answers()
+                                        .iter()
+                                        .filter_map(|a_rec| {
+                                            if let RData::A(rdata::A(ipv4)) = a_rec.data() {
+                                                let synth_ipv6 = synthesize_dns64_address(&prefix, ipv4);
+                                                let name = a_rec.name().clone();
+                                                let mut rec = Record::from_rdata(
+                                                    name,
+                                                    a_rec.ttl(),
+                                                    RData::AAAA(rdata::AAAA(synth_ipv6)),
+                                                );
+                                                rec.set_dns_class(DNSClass::IN);
+                                                Some(rec)
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .collect();
+                                    if !synthesized.is_empty() {
+                                        debug!(
+                                            "DNS64 synthesized {} AAAA records for {}",
+                                            synthesized.len(),
+                                            qname
+                                        );
+                                        return Ok(build_response_edns(
+                                            &message,
+                                            ResponseCode::NoError,
+                                            synthesized,
+                                            false,
+                                            edns_ctx.as_ref(),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        forward_result
+    }
+
+    /// Checks for DNAME records in global database by walking up labels.
+    /// RFC 6672: synthesize a CNAME from the DNAME.
+    fn check_dname_global(
+        &self,
+        qname: &str,
+        _qtype: RecordType,
+        message: &hickory_proto::op::Message,
+    ) -> Option<Vec<u8>> {
+        let normalized = crate::db::normalize_name(qname);
+        let parts: Vec<&str> = normalized.trim_end_matches('.').split('.').collect();
+        // Walk up from qname, checking each parent for DNAME
+        for i in 1..parts.len() {
+            let parent = format!("{}.", parts[i..].join("."));
+            if let Ok(dname_records) = self.db.lookup(&parent, Some(RecordKind::DNAME)) {
+                if !dname_records.is_empty() {
+                    let dname_target = &dname_records[0].value;
+                    // Synthesize CNAME: replace parent suffix with dname target
+                    let prefix = parts[..i].join(".");
+                    let synth_target = format!("{}.{}", prefix, dname_target.trim_end_matches('.'));
+                    let synth_cname = crate::db::DnsRecord {
+                        id: None,
+                        name: normalized.clone(),
+                        record_type: RecordKind::CNAME,
+                        value: crate::db::normalize_name(&synth_target),
+                        ttl: dname_records[0].ttl,
+                        priority: 0,
+                    };
+                    let mut dns_records = Vec::new();
+                    // Add the DNAME record
+                    if let Some(dr) = db_record_to_dns_record(&dname_records[0]) {
+                        dns_records.push(dr);
+                    }
+                    // Add the synthesized CNAME
+                    if let Some(cr) = db_record_to_dns_record(&synth_cname) {
+                        dns_records.push(cr);
+                    }
+                    return Some(build_response_ex(
+                        message,
+                        ResponseCode::NoError,
+                        dns_records,
+                        true,
+                    ));
+                }
+            }
+        }
+        None
+    }
+
+    /// Checks for DNAME records in scoped database by walking up labels.
+    fn check_dname_scoped(
+        &self,
+        scope: &str,
+        qname: &str,
+        _qtype: RecordType,
+        message: &hickory_proto::op::Message,
+    ) -> Option<Vec<u8>> {
+        let normalized = crate::db::normalize_name(qname);
+        let parts: Vec<&str> = normalized.trim_end_matches('.').split('.').collect();
+        for i in 1..parts.len() {
+            let parent = format!("{}.", parts[i..].join("."));
+            let dname_records = self.db.lookup_scoped(scope, &parent, Some(RecordKind::DNAME));
+            if !dname_records.is_empty() {
+                let dname_target = &dname_records[0].value;
+                let prefix = parts[..i].join(".");
+                let synth_target = format!("{}.{}", prefix, dname_target.trim_end_matches('.'));
+                let synth_cname = crate::db::DnsRecord {
+                    id: None,
+                    name: normalized.clone(),
+                    record_type: RecordKind::CNAME,
+                    value: crate::db::normalize_name(&synth_target),
+                    ttl: dname_records[0].ttl,
+                    priority: 0,
+                };
+                let mut dns_records = Vec::new();
+                if let Some(dr) = db_record_to_dns_record(&dname_records[0]) {
+                    dns_records.push(dr);
+                }
+                if let Some(cr) = db_record_to_dns_record(&synth_cname) {
+                    dns_records.push(cr);
+                }
+                return Some(build_response_ex(
+                    message,
+                    ResponseCode::NoError,
+                    dns_records,
+                    true,
+                ));
+            }
+        }
+        None
     }
 
     /// Forwards a DNS query to the configured upstream resolvers.
@@ -350,7 +663,33 @@ impl DnsServer {
         // Try each forwarder in order
         for forwarder in forwarders.iter() {
             match self.forward_udp(query_data, forwarder).await {
-                Ok(response) => return Ok(response),
+                Ok(response) => {
+                    // Parse upstream response and insert into cache asynchronously
+                    if let Some(ref cache) = self.dns_cache {
+                        if let Ok(upstream_msg) = hickory_proto::op::Message::from_bytes(&response) {
+                            if upstream_msg.response_code() == ResponseCode::NoError
+                                && !upstream_msg.answers().is_empty()
+                            {
+                                let answers = upstream_msg.answers();
+                                // Use the first answer's name and type as cache key
+                                if let Some(first) = answers.first() {
+                                    let name = first.name().to_string();
+                                    let rtype = first.record_type();
+                                    let kind = map_query_type_to_kind(rtype);
+                                    let ttl = answers.iter().map(|a| a.ttl()).min().unwrap_or(300);
+                                    let cache_records: Vec<crate::db::DnsRecord> = answers
+                                        .iter()
+                                        .filter_map(|a| dns_record_to_db_record(a))
+                                        .collect();
+                                    if !cache_records.is_empty() {
+                                        cache.insert(&name, kind, cache_records, ttl);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return Ok(response);
+                }
                 Err(e) => {
                     warn!("Forward to {} failed: {}", forwarder, e);
                     continue;
@@ -363,7 +702,18 @@ impl DnsServer {
 
     async fn forward_udp(&self, query_data: &[u8], target: &SocketAddr) -> Result<Vec<u8>> {
         let socket = UdpSocket::bind("0.0.0.0:0").await?;
-        socket.send_to(query_data, target).await?;
+
+        // Apply QNAME case randomization (0x20 encoding) if enabled
+        let (send_data, randomized_qname) = if self.qname_randomization {
+            match randomize_qname_case(query_data) {
+                Some((modified, original_qname)) => (modified, Some(original_qname)),
+                None => (query_data.to_vec(), None),
+            }
+        } else {
+            (query_data.to_vec(), None)
+        };
+
+        socket.send_to(&send_data, target).await?;
 
         let mut buf = vec![0u8; MAX_UDP_SIZE];
         let timeout =
@@ -373,6 +723,27 @@ impl DnsServer {
             .context("forwarder timeout")?
             .context("forwarder recv error")?;
         buf.truncate(len);
+
+        // Verify QNAME case in response matches what we sent (0x20 check)
+        if let Some(ref sent_qname) = randomized_qname {
+            if let Ok(response_msg) = hickory_proto::op::Message::from_bytes(&buf) {
+                if let Some(resp_q) = response_msg.queries().first() {
+                    let resp_qname = resp_q.name().to_string();
+                    if let Ok(sent_msg) = hickory_proto::op::Message::from_bytes(&send_data) {
+                        if let Some(sent_q) = sent_msg.queries().first() {
+                            let sent_qname_str = sent_q.name().to_string();
+                            if resp_qname != sent_qname_str {
+                                warn!(
+                                    "QNAME case mismatch from {}: sent '{}', got '{}' (original: '{}')",
+                                    target, sent_qname_str, resp_qname, sent_qname
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(buf)
     }
 }
@@ -424,7 +795,25 @@ fn map_query_type_to_kind(rt: RecordType) -> Option<RecordKind> {
         RecordType::SOA => Some(RecordKind::SOA),
         RecordType::SRV => Some(RecordKind::SRV),
         RecordType::PTR => Some(RecordKind::PTR),
-        _ => None,
+        RecordType::TLSA => Some(RecordKind::TLSA),
+        RecordType::SSHFP => Some(RecordKind::SSHFP),
+        RecordType::DNSKEY => Some(RecordKind::DNSKEY),
+        RecordType::RRSIG => Some(RecordKind::RRSIG),
+        RecordType::NSEC => Some(RecordKind::NSEC),
+        RecordType::NSEC3 => Some(RecordKind::NSEC3),
+        RecordType::NSEC3PARAM => Some(RecordKind::NSEC3PARAM),
+        _ => {
+            // Handle types that hickory may not have direct variants for
+            let code: u16 = rt.into();
+            match code {
+                256 => Some(RecordKind::URI),     // URI (RFC 7553)
+                39 => Some(RecordKind::DNAME),    // DNAME (RFC 6672)
+                43 => Some(RecordKind::DS),       // DS
+                63 => Some(RecordKind::ZONEMD),   // ZONEMD (RFC 9156)
+                65305 => Some(RecordKind::ANAME), // ANAME (draft)
+                _ => None,
+            }
+        }
     }
 }
 
@@ -492,6 +881,58 @@ fn db_record_to_dns_record(db_rec: &crate::db::DnsRecord) -> Option<Record> {
             let target = Name::from_ascii(&db_rec.value).ok()?;
             RData::PTR(rdata::PTR(target))
         }
+        RecordKind::DNAME => {
+            // DNAME is type 39 but hickory doesn't have a native DNAME variant.
+            // We use ANAME's structure since it's also a name-pointing record.
+            let target = Name::from_ascii(&db_rec.value).ok()?;
+            // Build as CNAME format but the record type in the wire format
+            // will be set based on what the caller specifies. For DNAME synthesis
+            // purposes, we primarily use this for internal lookup.
+            RData::CNAME(rdata::CNAME(target))
+        }
+        RecordKind::SSHFP => {
+            // SSHFP: "algorithm fp_type hex_fingerprint"
+            let parts: Vec<&str> = db_rec.value.split_whitespace().collect();
+            if parts.len() >= 3 {
+                let algorithm: rdata::sshfp::Algorithm = parts[0].parse::<u8>().ok()?.into();
+                let fp_type: rdata::sshfp::FingerprintType = parts[1].parse::<u8>().ok()?.into();
+                let fingerprint = hex::decode(parts[2]).ok()?;
+                RData::SSHFP(rdata::SSHFP::new(algorithm, fp_type, fingerprint))
+            } else {
+                return None;
+            }
+        }
+        RecordKind::URI | RecordKind::ZONEMD | RecordKind::ANAME => {
+            // These types are stored as TXT-like opaque data in DNS wire format.
+            // We encode them as a TXT record containing the raw value.
+            // The actual wire encoding differs, but for now we serve them as
+            // unknown/opaque RData via the record value string.
+            RData::TXT(rdata::TXT::new(vec![db_rec.value.clone()]))
+        }
+        RecordKind::TLSA => {
+            // TLSA: "usage selector matching_type hex_data"
+            let parts: Vec<&str> = db_rec.value.split_whitespace().collect();
+            if parts.len() >= 4 {
+                let usage: u8 = parts[0].parse().ok()?;
+                let selector: u8 = parts[1].parse().ok()?;
+                let matching_type: u8 = parts[2].parse().ok()?;
+                let cert_data = hex::decode(parts[3]).ok()?;
+                RData::TLSA(rdata::TLSA::new(
+                    hickory_proto::rr::rdata::tlsa::CertUsage::from(usage),
+                    hickory_proto::rr::rdata::tlsa::Selector::from(selector),
+                    hickory_proto::rr::rdata::tlsa::Matching::from(matching_type),
+                    cert_data,
+                ))
+            } else {
+                return None;
+            }
+        }
+        RecordKind::DNSKEY | RecordKind::DS | RecordKind::RRSIG | RecordKind::NSEC
+        | RecordKind::NSEC3 | RecordKind::NSEC3PARAM => {
+            // DNSSEC records: stored as opaque TXT for now, proper wire format
+            // will be handled by the DNSSEC module when signing
+            RData::TXT(rdata::TXT::new(vec![db_rec.value.clone()]))
+        }
     };
 
     let mut record = Record::from_rdata(name, db_rec.ttl, rdata);
@@ -499,11 +940,22 @@ fn db_record_to_dns_record(db_rec: &crate::db::DnsRecord) -> Option<Record> {
     Some(record)
 }
 
-/// Builds a DNS response message.
+/// Builds a DNS response message (without EDNS).
+#[allow(dead_code)]
 fn build_response(
     query: &hickory_proto::op::Message,
     rcode: ResponseCode,
     answers: Vec<Record>,
+) -> Vec<u8> {
+    build_response_ex(query, rcode, answers, false)
+}
+
+/// Builds a DNS response message with optional authoritative flag.
+fn build_response_ex(
+    query: &hickory_proto::op::Message,
+    rcode: ResponseCode,
+    answers: Vec<Record>,
+    authoritative: bool,
 ) -> Vec<u8> {
     let mut response = hickory_proto::op::Message::new();
     response.set_id(query.id());
@@ -512,6 +964,7 @@ fn build_response(
     response.set_response_code(rcode);
     response.set_recursion_desired(query.recursion_desired());
     response.set_recursion_available(true);
+    response.set_authoritative(authoritative);
 
     // Copy the question section
     for q in query.queries() {
@@ -537,6 +990,151 @@ fn make_error_response(query_data: &[u8], rcode: ResponseCode) -> Vec<u8> {
     } else {
         Vec::new()
     }
+}
+
+/// Builds a DNS response with EDNS OPT record if EDNS was present in the query.
+fn build_response_edns(
+    query: &hickory_proto::op::Message,
+    rcode: ResponseCode,
+    answers: Vec<Record>,
+    authoritative: bool,
+    edns_ctx: Option<&crate::edns::EdnsContext>,
+) -> Vec<u8> {
+    let mut response = hickory_proto::op::Message::new();
+    response.set_id(query.id());
+    response.set_message_type(MessageType::Response);
+    response.set_op_code(OpCode::Query);
+    response.set_response_code(rcode);
+    response.set_recursion_desired(query.recursion_desired());
+    response.set_recursion_available(true);
+    response.set_authoritative(authoritative);
+
+    // Copy the question section
+    for q in query.queries() {
+        response.add_query(q.clone());
+    }
+
+    for answer in answers {
+        response.add_answer(answer);
+    }
+
+    // If the query included EDNS, add OPT record to the response
+    if let Some(ctx) = edns_ctx {
+        crate::edns::add_edns_to_response(&mut response, ctx.max_payload, ctx.dnssec_ok);
+    }
+
+    response.to_bytes().unwrap_or_default()
+}
+
+/// Builds a DNS query message for a specific record type (used for DNS64 A re-query).
+fn build_query_for_type(name: &str, qtype: RecordType, id: u16) -> Vec<u8> {
+    let mut msg = hickory_proto::op::Message::new();
+    msg.set_id(id);
+    msg.set_message_type(MessageType::Query);
+    msg.set_op_code(OpCode::Query);
+    msg.set_recursion_desired(true);
+
+    let mut query = hickory_proto::op::Query::new();
+    if let Ok(n) = Name::from_ascii(name) {
+        query.set_name(n);
+    }
+    query.set_query_type(qtype);
+    query.set_query_class(DNSClass::IN);
+    msg.add_query(query);
+
+    msg.to_bytes().unwrap_or_default()
+}
+
+/// Synthesizes a DNS64 IPv6 address by embedding an IPv4 address in the prefix.
+/// Uses the well-known prefix format (RFC 6052): prefix::/96 with IPv4 in last 32 bits.
+fn synthesize_dns64_address(prefix: &Ipv6Addr, ipv4: &Ipv4Addr) -> Ipv6Addr {
+    let mut octets = prefix.octets();
+    let v4_octets = ipv4.octets();
+    // Embed IPv4 in the last 4 bytes (bits 96-127) of the IPv6 address
+    octets[12] = v4_octets[0];
+    octets[13] = v4_octets[1];
+    octets[14] = v4_octets[2];
+    octets[15] = v4_octets[3];
+    Ipv6Addr::from(octets)
+}
+
+/// Randomizes the case of the QNAME in a DNS query for 0x20 encoding.
+/// Returns the modified query bytes and the original QNAME string, or None if parsing fails.
+pub fn randomize_qname_case(query_data: &[u8]) -> Option<(Vec<u8>, String)> {
+    let message = hickory_proto::op::Message::from_bytes(query_data).ok()?;
+    let question = message.queries().first()?;
+    let original_qname = question.name().to_string();
+
+    // Rebuild the message with randomized case
+    let modified = message.clone();
+    let mut rng = rand::rng();
+
+    let randomized_name = original_qname
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphabetic() {
+                if rng.random_bool(0.5) {
+                    c.to_ascii_uppercase()
+                } else {
+                    c.to_ascii_lowercase()
+                }
+            } else {
+                c
+            }
+        })
+        .collect::<String>();
+
+    if let Ok(name) = Name::from_ascii(&randomized_name) {
+        // Replace the query with randomized case
+        let queries: Vec<_> = modified.queries().to_vec();
+        // Clear and re-add queries with randomized name
+        let mut new_msg = hickory_proto::op::Message::new();
+        new_msg.set_id(modified.id());
+        new_msg.set_message_type(modified.message_type());
+        new_msg.set_op_code(modified.op_code());
+        new_msg.set_recursion_desired(modified.recursion_desired());
+        // Copy EDNS if present
+        if let Some(edns) = modified.extensions().as_ref() {
+            new_msg.set_edns(edns.clone());
+        }
+        for q in &queries {
+            let mut new_q = q.clone();
+            new_q.set_name(name.clone());
+            new_msg.add_query(new_q);
+        }
+        let bytes = new_msg.to_bytes().ok()?;
+        Some((bytes, original_qname))
+    } else {
+        None
+    }
+}
+
+/// Converts a hickory DNS Record to a database DnsRecord (for cache insertion).
+fn dns_record_to_db_record(record: &Record) -> Option<crate::db::DnsRecord> {
+    let name = record.name().to_string();
+    let ttl = record.ttl();
+    let (record_type, value, priority) = match record.data() {
+        RData::A(rdata::A(ip)) => (RecordKind::A, ip.to_string(), 0u32),
+        RData::AAAA(rdata::AAAA(ip)) => (RecordKind::AAAA, ip.to_string(), 0u32),
+        RData::CNAME(rdata::CNAME(target)) => (RecordKind::CNAME, target.to_string(), 0u32),
+        RData::MX(mx) => (RecordKind::MX, mx.exchange().to_string(), mx.preference() as u32),
+        RData::TXT(txt) => {
+            let value = txt.iter().map(|s| String::from_utf8_lossy(s).to_string()).collect::<Vec<_>>().join("");
+            (RecordKind::TXT, value, 0u32)
+        }
+        RData::NS(rdata::NS(target)) => (RecordKind::NS, target.to_string(), 0u32),
+        RData::PTR(rdata::PTR(target)) => (RecordKind::PTR, target.to_string(), 0u32),
+        _ => return None,
+    };
+
+    Some(crate::db::DnsRecord {
+        id: None,
+        name,
+        record_type,
+        value,
+        ttl,
+        priority,
+    })
 }
 
 #[cfg(test)]

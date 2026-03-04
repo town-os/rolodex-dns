@@ -34,6 +34,9 @@ serde_yaml_ng = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Duration parsing
+fancy-duration = "0.9"
+
 # Utilities
 dashmap = "6"
 clap = { version = "4", features = ["derive"] }
@@ -45,6 +48,23 @@ hex = "0.4"
 bytes = "1"
 hyper-util = "0.1"
 tower = "0.5"
+
+# TLS
+rustls = "0.23"
+tokio-rustls = "0.26"
+rustls-pemfile = "2"
+rcgen = "0.13"
+
+# DoH
+axum = { version = "0.8", features = ["http2"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+base64 = "0.22"
+
+# DoQ
+quinn = "0.11"
+
+# DNSSEC
+ring = "0.17"
 
 [build-dependencies]
 tonic-build = "0.14"

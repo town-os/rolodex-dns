@@ -28,6 +28,18 @@ pub enum RecordKind {
     SOA,
     SRV,
     PTR,
+    URI,
+    SSHFP,
+    DNAME,
+    ANAME,
+    ZONEMD,
+    TLSA,
+    DNSKEY,
+    DS,
+    RRSIG,
+    NSEC,
+    NSEC3,
+    NSEC3PARAM,
 }
 
 impl RecordKind {
@@ -42,6 +54,18 @@ impl RecordKind {
             RecordKind::SOA => "SOA",
             RecordKind::SRV => "SRV",
             RecordKind::PTR => "PTR",
+            RecordKind::URI => "URI",
+            RecordKind::SSHFP => "SSHFP",
+            RecordKind::DNAME => "DNAME",
+            RecordKind::ANAME => "ANAME",
+            RecordKind::ZONEMD => "ZONEMD",
+            RecordKind::TLSA => "TLSA",
+            RecordKind::DNSKEY => "DNSKEY",
+            RecordKind::DS => "DS",
+            RecordKind::RRSIG => "RRSIG",
+            RecordKind::NSEC => "NSEC",
+            RecordKind::NSEC3 => "NSEC3",
+            RecordKind::NSEC3PARAM => "NSEC3PARAM",
         }
     }
 
@@ -56,6 +80,18 @@ impl RecordKind {
             "SOA" => Some(RecordKind::SOA),
             "SRV" => Some(RecordKind::SRV),
             "PTR" => Some(RecordKind::PTR),
+            "URI" => Some(RecordKind::URI),
+            "SSHFP" => Some(RecordKind::SSHFP),
+            "DNAME" => Some(RecordKind::DNAME),
+            "ANAME" => Some(RecordKind::ANAME),
+            "ZONEMD" => Some(RecordKind::ZONEMD),
+            "TLSA" => Some(RecordKind::TLSA),
+            "DNSKEY" => Some(RecordKind::DNSKEY),
+            "DS" => Some(RecordKind::DS),
+            "RRSIG" => Some(RecordKind::RRSIG),
+            "NSEC" => Some(RecordKind::NSEC),
+            "NSEC3" => Some(RecordKind::NSEC3),
+            "NSEC3PARAM" => Some(RecordKind::NSEC3PARAM),
             _ => None,
         }
     }
@@ -71,6 +107,18 @@ impl RecordKind {
             RecordKind::SOA => 6,
             RecordKind::SRV => 7,
             RecordKind::PTR => 8,
+            RecordKind::URI => 9,
+            RecordKind::SSHFP => 10,
+            RecordKind::DNAME => 11,
+            RecordKind::ANAME => 12,
+            RecordKind::ZONEMD => 13,
+            RecordKind::TLSA => 14,
+            RecordKind::DNSKEY => 15,
+            RecordKind::DS => 16,
+            RecordKind::RRSIG => 17,
+            RecordKind::NSEC => 18,
+            RecordKind::NSEC3 => 19,
+            RecordKind::NSEC3PARAM => 20,
         }
     }
 
@@ -85,6 +133,18 @@ impl RecordKind {
             6 => Some(RecordKind::SOA),
             7 => Some(RecordKind::SRV),
             8 => Some(RecordKind::PTR),
+            9 => Some(RecordKind::URI),
+            10 => Some(RecordKind::SSHFP),
+            11 => Some(RecordKind::DNAME),
+            12 => Some(RecordKind::ANAME),
+            13 => Some(RecordKind::ZONEMD),
+            14 => Some(RecordKind::TLSA),
+            15 => Some(RecordKind::DNSKEY),
+            16 => Some(RecordKind::DS),
+            17 => Some(RecordKind::RRSIG),
+            18 => Some(RecordKind::NSEC),
+            19 => Some(RecordKind::NSEC3),
+            20 => Some(RecordKind::NSEC3PARAM),
             _ => None,
         }
     }
@@ -115,6 +175,33 @@ pub struct NetworkAssociation {
     pub scope_name: String,
     /// Time-to-live in seconds for this association.
     pub ttl_seconds: u64,
+}
+
+/// Represents a DNSSEC key stored in the database.
+#[derive(Debug, Clone)]
+pub struct DnssecKeyRow {
+    pub id: i64,
+    pub zone: String,
+    pub scope_name: String,
+    pub algorithm: String,
+    pub key_type: String,
+    pub private_key: Vec<u8>,
+    pub public_key: Vec<u8>,
+    pub key_tag: u16,
+    pub created_at: i64,
+    pub active: bool,
+}
+
+/// Represents an ACME certificate stored in the database.
+#[derive(Debug, Clone)]
+pub struct AcmeCertRow {
+    pub id: i64,
+    pub domain: String,
+    pub cert_pem: String,
+    pub key_pem: String,
+    pub chain_pem: String,
+    pub issued_at: i64,
+    pub expires_at: i64,
 }
 
 /// An in-memory cache entry for a network association, tracking its expiration.
@@ -212,7 +299,76 @@ impl Database {
                 created_at INTEGER NOT NULL,
                 FOREIGN KEY (scope_name) REFERENCES network_scopes(name) ON DELETE CASCADE
             );
-            CREATE INDEX IF NOT EXISTS idx_assoc_scope ON network_associations(scope_name);",
+            CREATE INDEX IF NOT EXISTS idx_assoc_scope ON network_associations(scope_name);
+
+            CREATE TABLE IF NOT EXISTS authoritative_zones (
+                zone TEXT PRIMARY KEY NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS dns_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                record_type TEXT NOT NULL,
+                value TEXT NOT NULL,
+                ttl INTEGER NOT NULL,
+                original_ttl INTEGER NOT NULL,
+                cached_at INTEGER NOT NULL,
+                source TEXT NOT NULL DEFAULT 'upstream'
+            );
+            CREATE INDEX IF NOT EXISTS idx_cache_name ON dns_cache(name);
+            CREATE INDEX IF NOT EXISTS idx_cache_name_type ON dns_cache(name, record_type);
+            CREATE INDEX IF NOT EXISTS idx_cache_expiry ON dns_cache(cached_at, ttl);
+
+            CREATE TABLE IF NOT EXISTS local_rbl_entries (
+                name TEXT PRIMARY KEY NOT NULL,
+                reason TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS query_latency_stats (
+                server TEXT PRIMARY KEY NOT NULL,
+                avg_latency_ms REAL NOT NULL DEFAULT 0.0,
+                query_count INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS dnssec_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                zone TEXT NOT NULL,
+                scope_name TEXT,
+                algorithm TEXT NOT NULL,
+                key_type TEXT NOT NULL,
+                private_key BLOB NOT NULL,
+                public_key BLOB NOT NULL,
+                key_tag INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER,
+                active BOOLEAN NOT NULL DEFAULT 1
+            );
+
+            CREATE TABLE IF NOT EXISTS acme_accounts (
+                id INTEGER PRIMARY KEY,
+                provider_url TEXT NOT NULL,
+                account_key BLOB NOT NULL,
+                account_url TEXT,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS acme_certificates (
+                id INTEGER PRIMARY KEY,
+                domain TEXT NOT NULL,
+                cert_pem TEXT NOT NULL,
+                key_pem TEXT NOT NULL,
+                chain_pem TEXT,
+                issued_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS dane_root_cas (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                cert_pem TEXT NOT NULL,
+                key_pem TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );",
         )
         .context("failed to create tables")?;
         Ok(())
@@ -354,6 +510,33 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let normalized = normalize_name(name);
 
+        let records = Self::lookup_exact(&conn, &normalized, record_type)?;
+
+        // RFC 4592: If exact match fails, try wildcard (replace first label with *)
+        if records.is_empty() {
+            if let Some(wildcard_name) = make_wildcard_name(&normalized) {
+                let wildcard_records = Self::lookup_exact(&conn, &wildcard_name, record_type)?;
+                if !wildcard_records.is_empty() {
+                    // Return wildcard results with the original qname substituted
+                    return Ok(wildcard_records
+                        .into_iter()
+                        .map(|mut r| {
+                            r.name = normalized.clone();
+                            r
+                        })
+                        .collect());
+                }
+            }
+        }
+
+        Ok(records)
+    }
+
+    fn lookup_exact(
+        conn: &Connection,
+        normalized: &str,
+        record_type: Option<RecordKind>,
+    ) -> Result<Vec<DnsRecord>> {
         let mut records = Vec::new();
 
         if let Some(rt) = record_type {
@@ -752,13 +935,40 @@ impl Database {
     ) -> Vec<DnsRecord> {
         let normalized = normalize_name(name);
 
+        let records = self.lookup_scoped_exact(scope_name, &normalized, record_type);
+
+        // RFC 4592: If exact match fails, try wildcard
+        if records.is_empty() {
+            if let Some(wildcard_name) = make_wildcard_name(&normalized) {
+                let wildcard_records =
+                    self.lookup_scoped_exact(scope_name, &wildcard_name, record_type);
+                if !wildcard_records.is_empty() {
+                    return wildcard_records
+                        .into_iter()
+                        .map(|mut r| {
+                            r.name = normalized.clone();
+                            r
+                        })
+                        .collect();
+                }
+            }
+        }
+
+        records
+    }
+
+    fn lookup_scoped_exact(
+        &self,
+        scope_name: &str,
+        normalized: &str,
+        record_type: Option<RecordKind>,
+    ) -> Vec<DnsRecord> {
         if let Some(rt) = record_type {
-            let cache_key = scoped_record_cache_key(scope_name, &normalized, Some(rt));
+            let cache_key = scoped_record_cache_key(scope_name, normalized, Some(rt));
             if let Some(entry) = self.scoped_record_cache.get(&cache_key) {
                 return entry.records.clone();
             }
         } else {
-            // Without a type filter, we need to collect all record types for this name
             let mut records = Vec::new();
             let prefix = format!("{}:{}:", scope_name, normalized);
             for entry in self.scoped_record_cache.iter() {
@@ -886,6 +1096,462 @@ impl Database {
             None => Ok(Vec::new()),
         }
     }
+
+    // ================================================================
+    // Authoritative Zone Management
+    // ================================================================
+
+    pub fn add_authoritative_zone(&self, zone: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let normalized = normalize_name(zone);
+        conn.execute(
+            "INSERT OR IGNORE INTO authoritative_zones (zone) VALUES (?1)",
+            params![normalized],
+        )
+        .context("failed to add authoritative zone")?;
+        Ok(())
+    }
+
+    pub fn remove_authoritative_zone(&self, zone: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let normalized = normalize_name(zone);
+        let count = conn
+            .execute(
+                "DELETE FROM authoritative_zones WHERE zone = ?1",
+                params![normalized],
+            )
+            .context("failed to remove authoritative zone")?;
+        Ok(count > 0)
+    }
+
+    pub fn list_authoritative_zones(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT zone FROM authoritative_zones")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut zones = Vec::new();
+        for row in rows {
+            zones.push(row?);
+        }
+        Ok(zones)
+    }
+
+    pub fn is_authoritative_zone(&self, name: &str) -> bool {
+        let normalized = normalize_name(name);
+        // Check explicit authoritative zones
+        if let Ok(zones) = self.list_authoritative_zones() {
+            for zone in &zones {
+                if normalized.ends_with(zone.as_str()) || normalized == *zone {
+                    return true;
+                }
+            }
+        }
+        // Also check if there are local records for this zone (implicit authoritative)
+        if let Ok(managed) = self.get_managed_zones() {
+            for zone in &managed {
+                if normalized.ends_with(zone.as_str()) || normalized == *zone {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    // ================================================================
+    // Local RBL Management
+    // ================================================================
+
+    pub fn add_local_rbl_entry(&self, name: &str, reason: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO local_rbl_entries (name, reason) VALUES (?1, ?2)",
+            params![name, reason],
+        )
+        .context("failed to add local RBL entry")?;
+        Ok(())
+    }
+
+    pub fn remove_local_rbl_entry(&self, name: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let count = conn
+            .execute(
+                "DELETE FROM local_rbl_entries WHERE name = ?1",
+                params![name],
+            )
+            .context("failed to remove local RBL entry")?;
+        Ok(count > 0)
+    }
+
+    pub fn list_local_rbl_entries(&self) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT name, reason FROM local_rbl_entries")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?);
+        }
+        Ok(entries)
+    }
+
+    pub fn lookup_local_rbl(&self, name: &str) -> bool {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT 1 FROM local_rbl_entries WHERE name = ?1",
+            params![name],
+            |_| Ok(()),
+        )
+        .is_ok()
+    }
+
+    // ================================================================
+    // Latency Stats
+    // ================================================================
+
+    pub fn update_latency_stat(&self, server: &str, avg_latency_ms: f64, query_count: u64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO query_latency_stats (server, avg_latency_ms, query_count) VALUES (?1, ?2, ?3)",
+            params![server, avg_latency_ms, query_count as i64],
+        )
+        .context("failed to update latency stat")?;
+        Ok(())
+    }
+
+    pub fn get_latency_stats(&self) -> Result<Vec<(String, f64, u64)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT server, avg_latency_ms, query_count FROM query_latency_stats")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, f64>(1)?,
+                row.get::<_, i64>(2)? as u64,
+            ))
+        })?;
+        let mut stats = Vec::new();
+        for row in rows {
+            stats.push(row?);
+        }
+        Ok(stats)
+    }
+
+    // ================================================================
+    // DNS Cache (database-backed)
+    // ================================================================
+
+    pub fn cache_insert(
+        &self,
+        name: &str,
+        record_type: &str,
+        value: &str,
+        ttl: u32,
+        original_ttl: u32,
+        source: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        conn.execute(
+            "INSERT INTO dns_cache (name, record_type, value, ttl, original_ttl, cached_at, source) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![name, record_type, value, ttl as i64, original_ttl as i64, now, source],
+        )
+        .context("failed to insert cache entry")?;
+        Ok(())
+    }
+
+    pub fn cache_lookup(
+        &self,
+        name: &str,
+        record_type: Option<&str>,
+    ) -> Result<Vec<DnsRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let mut records = Vec::new();
+
+        if let Some(rt) = record_type {
+            let mut stmt = conn.prepare(
+                "SELECT name, record_type, value, ttl, cached_at FROM dns_cache WHERE name = ?1 AND record_type = ?2",
+            )?;
+            let rows = stmt.query_map(params![name, rt], |row| {
+                let ttl: i64 = row.get(3)?;
+                let cached_at: i64 = row.get(4)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    ttl,
+                    cached_at,
+                ))
+            })?;
+            for row in rows {
+                let (n, rt_str, val, ttl, cached_at) = row?;
+                let elapsed = now - cached_at;
+                if elapsed < ttl as i64 {
+                    let remaining_ttl = (ttl as i64 - elapsed) as u32;
+                    records.push(DnsRecord {
+                        id: None,
+                        name: n,
+                        record_type: RecordKind::from_str(&rt_str).unwrap_or(RecordKind::A),
+                        value: val,
+                        ttl: remaining_ttl,
+                        priority: 0,
+                    });
+                }
+            }
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT name, record_type, value, ttl, cached_at FROM dns_cache WHERE name = ?1",
+            )?;
+            let rows = stmt.query_map(params![name], |row| {
+                let ttl: i64 = row.get(3)?;
+                let cached_at: i64 = row.get(4)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    ttl,
+                    cached_at,
+                ))
+            })?;
+            for row in rows {
+                let (n, rt_str, val, ttl, cached_at) = row?;
+                let elapsed = now - cached_at;
+                if elapsed < ttl as i64 {
+                    let remaining_ttl = (ttl as i64 - elapsed) as u32;
+                    records.push(DnsRecord {
+                        id: None,
+                        name: n,
+                        record_type: RecordKind::from_str(&rt_str).unwrap_or(RecordKind::A),
+                        value: val,
+                        ttl: remaining_ttl,
+                        priority: 0,
+                    });
+                }
+            }
+        }
+
+        Ok(records)
+    }
+
+    pub fn cache_flush(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM dns_cache", [])
+            .context("failed to flush DNS cache")?;
+        Ok(())
+    }
+
+    pub fn cache_count(&self) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM dns_cache", [], |row| row.get(0))?;
+        Ok(count as u64)
+    }
+
+    // ================================================================
+    // DNSSEC Key Management
+    // ================================================================
+
+    /// Stores a DNSSEC key in the database.
+    pub fn store_dnssec_key(
+        &self,
+        zone: &str,
+        scope: &str,
+        algorithm: &str,
+        key_type: &str,
+        private_key: &[u8],
+        public_key: &[u8],
+        key_tag: u16,
+    ) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let scope_val = if scope.is_empty() {
+            None
+        } else {
+            Some(scope.to_string())
+        };
+        conn.execute(
+            "INSERT INTO dnssec_keys (zone, scope_name, algorithm, key_type, private_key, public_key, key_tag, created_at, active)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1)",
+            params![
+                normalize_name(zone),
+                scope_val,
+                algorithm,
+                key_type,
+                private_key,
+                public_key,
+                key_tag as i64,
+                now,
+            ],
+        )
+        .context("failed to store DNSSEC key")?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Lists all DNSSEC keys for a zone.
+    pub fn list_dnssec_keys(&self, zone: &str) -> Result<Vec<DnssecKeyRow>> {
+        let conn = self.conn.lock().unwrap();
+        let normalized = normalize_name(zone);
+        let mut stmt = conn.prepare(
+            "SELECT id, zone, scope_name, algorithm, key_type, private_key, public_key, key_tag, created_at, active
+             FROM dnssec_keys WHERE zone = ?1",
+        )?;
+        let rows = stmt.query_map(params![normalized], |row| {
+            Ok(DnssecKeyRow {
+                id: row.get(0)?,
+                zone: row.get(1)?,
+                scope_name: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                algorithm: row.get(3)?,
+                key_type: row.get(4)?,
+                private_key: row.get(5)?,
+                public_key: row.get(6)?,
+                key_tag: row.get::<_, i64>(7)? as u16,
+                created_at: row.get(8)?,
+                active: row.get(9)?,
+            })
+        })?;
+        let mut keys = Vec::new();
+        for row in rows {
+            keys.push(row?);
+        }
+        Ok(keys)
+    }
+
+    /// Deletes a DNSSEC key by ID. Returns true if a key was deleted.
+    pub fn delete_dnssec_key(&self, id: i64) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let count = conn.execute(
+            "DELETE FROM dnssec_keys WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(count > 0)
+    }
+
+    /// Gets active keys for a zone filtered by key type (KSK or ZSK).
+    pub fn get_active_keys(&self, zone: &str, key_type: &str) -> Result<Vec<DnssecKeyRow>> {
+        let conn = self.conn.lock().unwrap();
+        let normalized = normalize_name(zone);
+        let mut stmt = conn.prepare(
+            "SELECT id, zone, scope_name, algorithm, key_type, private_key, public_key, key_tag, created_at, active
+             FROM dnssec_keys WHERE zone = ?1 AND key_type = ?2 AND active = 1",
+        )?;
+        let rows = stmt.query_map(params![normalized, key_type], |row| {
+            Ok(DnssecKeyRow {
+                id: row.get(0)?,
+                zone: row.get(1)?,
+                scope_name: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                algorithm: row.get(3)?,
+                key_type: row.get(4)?,
+                private_key: row.get(5)?,
+                public_key: row.get(6)?,
+                key_tag: row.get::<_, i64>(7)? as u16,
+                created_at: row.get(8)?,
+                active: row.get(9)?,
+            })
+        })?;
+        let mut keys = Vec::new();
+        for row in rows {
+            keys.push(row?);
+        }
+        Ok(keys)
+    }
+
+    // ================================================================
+    // DANE Root CA Management
+    // ================================================================
+
+    /// Stores a DANE root CA certificate.
+    pub fn store_dane_root_ca(&self, name: &str, cert_pem: &str, key_pem: &str) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        conn.execute(
+            "INSERT INTO dane_root_cas (name, cert_pem, key_pem, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![name, cert_pem, key_pem, now],
+        )
+        .context("failed to store DANE root CA")?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Gets a DANE root CA by name.
+    pub fn get_dane_root_ca(&self, name: &str) -> Result<Option<(i64, String, String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, cert_pem, key_pem FROM dane_root_cas WHERE name = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![name], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
+
+    // ================================================================
+    // ACME Certificate Management
+    // ================================================================
+
+    /// Stores an ACME certificate.
+    pub fn store_acme_certificate(
+        &self,
+        domain: &str,
+        cert_pem: &str,
+        key_pem: &str,
+        chain_pem: &str,
+        expires_at: i64,
+    ) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        conn.execute(
+            "INSERT INTO acme_certificates (domain, cert_pem, key_pem, chain_pem, issued_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![domain, cert_pem, key_pem, chain_pem, now, expires_at],
+        )
+        .context("failed to store ACME certificate")?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Gets the latest ACME certificate for a domain.
+    pub fn get_acme_certificate(&self, domain: &str) -> Result<Option<AcmeCertRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, domain, cert_pem, key_pem, chain_pem, issued_at, expires_at
+             FROM acme_certificates WHERE domain = ?1 ORDER BY issued_at DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(params![domain], |row| {
+            Ok(AcmeCertRow {
+                id: row.get(0)?,
+                domain: row.get(1)?,
+                cert_pem: row.get(2)?,
+                key_pem: row.get(3)?,
+                chain_pem: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                issued_at: row.get(5)?,
+                expires_at: row.get(6)?,
+            })
+        })?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
 }
 
 fn row_mapper(row: &rusqlite::Row) -> rusqlite::Result<DnsRecord> {
@@ -971,6 +1637,18 @@ pub fn normalize_name(name: &str) -> String {
         lower
     } else {
         format!("{}.", lower)
+    }
+}
+
+/// Constructs a wildcard name by replacing the first label with "*".
+/// E.g. "foo.example.com." -> "*.example.com."
+/// Returns None if there's no parent domain (single-label or empty).
+pub fn make_wildcard_name(normalized: &str) -> Option<String> {
+    let trimmed = normalized.trim_end_matches('.');
+    if let Some(dot_pos) = trimmed.find('.') {
+        Some(format!("*.{}.", &trimmed[dot_pos + 1..]))
+    } else {
+        None
     }
 }
 

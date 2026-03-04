@@ -37,6 +37,37 @@ type mockRolodexService struct {
 	removeScopedRecordFn     func(ctx context.Context, req *pb.RemoveScopedRecordRequest) (*pb.RemoveScopedRecordResponse, error)
 	listScopedRecordsFn      func(ctx context.Context, req *pb.ListScopedRecordsRequest) (*pb.ListScopedRecordsResponse, error)
 	getSearchDomainsFn       func(ctx context.Context, req *pb.GetSearchDomainsRequest) (*pb.GetSearchDomainsResponse, error)
+	addAuthoritativeZoneFn   func(ctx context.Context, req *pb.AddAuthoritativeZoneRequest) (*pb.AddAuthoritativeZoneResponse, error)
+	removeAuthoritativeZoneFn func(ctx context.Context, req *pb.RemoveAuthoritativeZoneRequest) (*pb.RemoveAuthoritativeZoneResponse, error)
+	listAuthoritativeZonesFn func(ctx context.Context, req *pb.ListAuthoritativeZonesRequest) (*pb.ListAuthoritativeZonesResponse, error)
+	getCacheStatsFn          func(ctx context.Context, req *pb.GetCacheStatsRequest) (*pb.GetCacheStatsResponse, error)
+	flushDnsCacheFn          func(ctx context.Context, req *pb.FlushDnsCacheRequest) (*pb.FlushDnsCacheResponse, error)
+	setTtlDriftConfigFn      func(ctx context.Context, req *pb.SetTtlDriftConfigRequest) (*pb.SetTtlDriftConfigResponse, error)
+	getTtlDriftConfigFn      func(ctx context.Context, req *pb.GetTtlDriftConfigRequest) (*pb.GetTtlDriftConfigResponse, error)
+	getQueryLatencyStatsFn   func(ctx context.Context, req *pb.GetQueryLatencyStatsRequest) (*pb.GetQueryLatencyStatsResponse, error)
+	addLocalRblEntryFn       func(ctx context.Context, req *pb.AddLocalRblEntryRequest) (*pb.AddLocalRblEntryResponse, error)
+	removeLocalRblEntryFn    func(ctx context.Context, req *pb.RemoveLocalRblEntryRequest) (*pb.RemoveLocalRblEntryResponse, error)
+	listLocalRblEntriesFn    func(ctx context.Context, req *pb.ListLocalRblEntriesRequest) (*pb.ListLocalRblEntriesResponse, error)
+	setDotConfigFn           func(ctx context.Context, req *pb.SetDotConfigRequest) (*pb.SetDotConfigResponse, error)
+	getDotConfigFn           func(ctx context.Context, req *pb.GetDotConfigRequest) (*pb.GetDotConfigResponse, error)
+	setDohConfigFn           func(ctx context.Context, req *pb.SetDohConfigRequest) (*pb.SetDohConfigResponse, error)
+	getDohConfigFn           func(ctx context.Context, req *pb.GetDohConfigRequest) (*pb.GetDohConfigResponse, error)
+	setDoqConfigFn           func(ctx context.Context, req *pb.SetDoqConfigRequest) (*pb.SetDoqConfigResponse, error)
+	getDoqConfigFn           func(ctx context.Context, req *pb.GetDoqConfigRequest) (*pb.GetDoqConfigResponse, error)
+	setProxyConfigFn         func(ctx context.Context, req *pb.SetProxyConfigRequest) (*pb.SetProxyConfigResponse, error)
+	getProxyConfigFn         func(ctx context.Context, req *pb.GetProxyConfigRequest) (*pb.GetProxyConfigResponse, error)
+	generateDnssecKeyFn      func(ctx context.Context, req *pb.GenerateDnssecKeyRequest) (*pb.GenerateDnssecKeyResponse, error)
+	listDnssecKeysFn         func(ctx context.Context, req *pb.ListDnssecKeysRequest) (*pb.ListDnssecKeysResponse, error)
+	deleteDnssecKeyFn        func(ctx context.Context, req *pb.DeleteDnssecKeyRequest) (*pb.DeleteDnssecKeyResponse, error)
+	getDsRecordsFn           func(ctx context.Context, req *pb.GetDsRecordsRequest) (*pb.GetDsRecordsResponse, error)
+	signZoneFn               func(ctx context.Context, req *pb.SignZoneRequest) (*pb.SignZoneResponse, error)
+	generateTlsaRecordFn     func(ctx context.Context, req *pb.GenerateTlsaRecordRequest) (*pb.GenerateTlsaRecordResponse, error)
+	listTlsaRecordsFn        func(ctx context.Context, req *pb.ListTlsaRecordsRequest) (*pb.ListTlsaRecordsResponse, error)
+	generateDaneRootCaFn     func(ctx context.Context, req *pb.GenerateDaneRootCaRequest) (*pb.GenerateDaneRootCaResponse, error)
+	requestAcmeCertFn        func(ctx context.Context, req *pb.RequestAcmeCertRequest) (*pb.RequestAcmeCertResponse, error)
+	getAcmeStatusFn          func(ctx context.Context, req *pb.GetAcmeStatusRequest) (*pb.GetAcmeStatusResponse, error)
+	setDns64ConfigFn         func(ctx context.Context, req *pb.SetDns64ConfigRequest) (*pb.SetDns64ConfigResponse, error)
+	getDns64ConfigFn         func(ctx context.Context, req *pb.GetDns64ConfigRequest) (*pb.GetDns64ConfigResponse, error)
 }
 
 func (m *mockRolodexService) AddRecord(ctx context.Context, req *pb.AddRecordRequest) (*pb.AddRecordResponse, error) {
@@ -154,6 +185,223 @@ func (m *mockRolodexService) ListScopedRecords(ctx context.Context, req *pb.List
 func (m *mockRolodexService) GetSearchDomains(ctx context.Context, req *pb.GetSearchDomainsRequest) (*pb.GetSearchDomainsResponse, error) {
 	if m.getSearchDomainsFn != nil {
 		return m.getSearchDomainsFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) AddAuthoritativeZone(ctx context.Context, req *pb.AddAuthoritativeZoneRequest) (*pb.AddAuthoritativeZoneResponse, error) {
+	if m.addAuthoritativeZoneFn != nil {
+		return m.addAuthoritativeZoneFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) RemoveAuthoritativeZone(ctx context.Context, req *pb.RemoveAuthoritativeZoneRequest) (*pb.RemoveAuthoritativeZoneResponse, error) {
+	if m.removeAuthoritativeZoneFn != nil {
+		return m.removeAuthoritativeZoneFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) ListAuthoritativeZones(ctx context.Context, req *pb.ListAuthoritativeZonesRequest) (*pb.ListAuthoritativeZonesResponse, error) {
+	if m.listAuthoritativeZonesFn != nil {
+		return m.listAuthoritativeZonesFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) GetCacheStats(ctx context.Context, req *pb.GetCacheStatsRequest) (*pb.GetCacheStatsResponse, error) {
+	if m.getCacheStatsFn != nil {
+		return m.getCacheStatsFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) FlushDnsCache(ctx context.Context, req *pb.FlushDnsCacheRequest) (*pb.FlushDnsCacheResponse, error) {
+	if m.flushDnsCacheFn != nil {
+		return m.flushDnsCacheFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) SetTtlDriftConfig(ctx context.Context, req *pb.SetTtlDriftConfigRequest) (*pb.SetTtlDriftConfigResponse, error) {
+	if m.setTtlDriftConfigFn != nil {
+		return m.setTtlDriftConfigFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) GetTtlDriftConfig(ctx context.Context, req *pb.GetTtlDriftConfigRequest) (*pb.GetTtlDriftConfigResponse, error) {
+	if m.getTtlDriftConfigFn != nil {
+		return m.getTtlDriftConfigFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) GetQueryLatencyStats(ctx context.Context, req *pb.GetQueryLatencyStatsRequest) (*pb.GetQueryLatencyStatsResponse, error) {
+	if m.getQueryLatencyStatsFn != nil {
+		return m.getQueryLatencyStatsFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) AddLocalRblEntry(ctx context.Context, req *pb.AddLocalRblEntryRequest) (*pb.AddLocalRblEntryResponse, error) {
+	if m.addLocalRblEntryFn != nil {
+		return m.addLocalRblEntryFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) RemoveLocalRblEntry(ctx context.Context, req *pb.RemoveLocalRblEntryRequest) (*pb.RemoveLocalRblEntryResponse, error) {
+	if m.removeLocalRblEntryFn != nil {
+		return m.removeLocalRblEntryFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) ListLocalRblEntries(ctx context.Context, req *pb.ListLocalRblEntriesRequest) (*pb.ListLocalRblEntriesResponse, error) {
+	if m.listLocalRblEntriesFn != nil {
+		return m.listLocalRblEntriesFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) SetDotConfig(ctx context.Context, req *pb.SetDotConfigRequest) (*pb.SetDotConfigResponse, error) {
+	if m.setDotConfigFn != nil {
+		return m.setDotConfigFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) GetDotConfig(ctx context.Context, req *pb.GetDotConfigRequest) (*pb.GetDotConfigResponse, error) {
+	if m.getDotConfigFn != nil {
+		return m.getDotConfigFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) SetDohConfig(ctx context.Context, req *pb.SetDohConfigRequest) (*pb.SetDohConfigResponse, error) {
+	if m.setDohConfigFn != nil {
+		return m.setDohConfigFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) GetDohConfig(ctx context.Context, req *pb.GetDohConfigRequest) (*pb.GetDohConfigResponse, error) {
+	if m.getDohConfigFn != nil {
+		return m.getDohConfigFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) SetDoqConfig(ctx context.Context, req *pb.SetDoqConfigRequest) (*pb.SetDoqConfigResponse, error) {
+	if m.setDoqConfigFn != nil {
+		return m.setDoqConfigFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) GetDoqConfig(ctx context.Context, req *pb.GetDoqConfigRequest) (*pb.GetDoqConfigResponse, error) {
+	if m.getDoqConfigFn != nil {
+		return m.getDoqConfigFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) SetProxyConfig(ctx context.Context, req *pb.SetProxyConfigRequest) (*pb.SetProxyConfigResponse, error) {
+	if m.setProxyConfigFn != nil {
+		return m.setProxyConfigFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) GetProxyConfig(ctx context.Context, req *pb.GetProxyConfigRequest) (*pb.GetProxyConfigResponse, error) {
+	if m.getProxyConfigFn != nil {
+		return m.getProxyConfigFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) GenerateDnssecKey(ctx context.Context, req *pb.GenerateDnssecKeyRequest) (*pb.GenerateDnssecKeyResponse, error) {
+	if m.generateDnssecKeyFn != nil {
+		return m.generateDnssecKeyFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) ListDnssecKeys(ctx context.Context, req *pb.ListDnssecKeysRequest) (*pb.ListDnssecKeysResponse, error) {
+	if m.listDnssecKeysFn != nil {
+		return m.listDnssecKeysFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) DeleteDnssecKey(ctx context.Context, req *pb.DeleteDnssecKeyRequest) (*pb.DeleteDnssecKeyResponse, error) {
+	if m.deleteDnssecKeyFn != nil {
+		return m.deleteDnssecKeyFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) GetDsRecords(ctx context.Context, req *pb.GetDsRecordsRequest) (*pb.GetDsRecordsResponse, error) {
+	if m.getDsRecordsFn != nil {
+		return m.getDsRecordsFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) SignZone(ctx context.Context, req *pb.SignZoneRequest) (*pb.SignZoneResponse, error) {
+	if m.signZoneFn != nil {
+		return m.signZoneFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) GenerateTlsaRecord(ctx context.Context, req *pb.GenerateTlsaRecordRequest) (*pb.GenerateTlsaRecordResponse, error) {
+	if m.generateTlsaRecordFn != nil {
+		return m.generateTlsaRecordFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) ListTlsaRecords(ctx context.Context, req *pb.ListTlsaRecordsRequest) (*pb.ListTlsaRecordsResponse, error) {
+	if m.listTlsaRecordsFn != nil {
+		return m.listTlsaRecordsFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) GenerateDaneRootCa(ctx context.Context, req *pb.GenerateDaneRootCaRequest) (*pb.GenerateDaneRootCaResponse, error) {
+	if m.generateDaneRootCaFn != nil {
+		return m.generateDaneRootCaFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) RequestAcmeCert(ctx context.Context, req *pb.RequestAcmeCertRequest) (*pb.RequestAcmeCertResponse, error) {
+	if m.requestAcmeCertFn != nil {
+		return m.requestAcmeCertFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) GetAcmeStatus(ctx context.Context, req *pb.GetAcmeStatusRequest) (*pb.GetAcmeStatusResponse, error) {
+	if m.getAcmeStatusFn != nil {
+		return m.getAcmeStatusFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) SetDns64Config(ctx context.Context, req *pb.SetDns64ConfigRequest) (*pb.SetDns64ConfigResponse, error) {
+	if m.setDns64ConfigFn != nil {
+		return m.setDns64ConfigFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexService) GetDns64Config(ctx context.Context, req *pb.GetDns64ConfigRequest) (*pb.GetDns64ConfigResponse, error) {
+	if m.getDns64ConfigFn != nil {
+		return m.getDns64ConfigFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
@@ -1290,5 +1538,848 @@ func TestUnixSocketEnvFile(t *testing.T) {
 	// Verify socket file exists
 	if _, err := os.Stat(socketPath); err != nil {
 		t.Errorf("socket file should exist: %v", err)
+	}
+}
+
+func TestAddAuthoritativeZone(t *testing.T) {
+	var captured *pb.AddAuthoritativeZoneRequest
+	mock := &mockRolodexService{
+		addAuthoritativeZoneFn: func(_ context.Context, req *pb.AddAuthoritativeZoneRequest) (*pb.AddAuthoritativeZoneResponse, error) {
+			captured = req
+			return &pb.AddAuthoritativeZoneResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	err := client.AddAuthoritativeZone(context.Background(), "example.com.")
+	if err != nil {
+		t.Fatalf("AddAuthoritativeZone: %v", err)
+	}
+	if captured.Zone != "example.com." {
+		t.Errorf("zone = %q, want %q", captured.Zone, "example.com.")
+	}
+	if captured.AuthToken != "tok" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tok")
+	}
+}
+
+func TestRemoveAuthoritativeZone(t *testing.T) {
+	var captured *pb.RemoveAuthoritativeZoneRequest
+	mock := &mockRolodexService{
+		removeAuthoritativeZoneFn: func(_ context.Context, req *pb.RemoveAuthoritativeZoneRequest) (*pb.RemoveAuthoritativeZoneResponse, error) {
+			captured = req
+			return &pb.RemoveAuthoritativeZoneResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	err := client.RemoveAuthoritativeZone(context.Background(), "example.com.")
+	if err != nil {
+		t.Fatalf("RemoveAuthoritativeZone: %v", err)
+	}
+	if captured.Zone != "example.com." {
+		t.Errorf("zone = %q, want %q", captured.Zone, "example.com.")
+	}
+	if captured.AuthToken != "tok" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tok")
+	}
+}
+
+func TestListAuthoritativeZones(t *testing.T) {
+	mock := &mockRolodexService{
+		listAuthoritativeZonesFn: func(_ context.Context, req *pb.ListAuthoritativeZonesRequest) (*pb.ListAuthoritativeZonesResponse, error) {
+			return &pb.ListAuthoritativeZonesResponse{
+				Zones: []string{"example.com.", "test.org."},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	zones, err := client.ListAuthoritativeZones(context.Background())
+	if err != nil {
+		t.Fatalf("ListAuthoritativeZones: %v", err)
+	}
+	if len(zones) != 2 {
+		t.Fatalf("got %d zones, want 2", len(zones))
+	}
+	if zones[0] != "example.com." {
+		t.Errorf("zones[0] = %q, want %q", zones[0], "example.com.")
+	}
+	if zones[1] != "test.org." {
+		t.Errorf("zones[1] = %q, want %q", zones[1], "test.org.")
+	}
+}
+
+func TestGetCacheStats(t *testing.T) {
+	mock := &mockRolodexService{
+		getCacheStatsFn: func(_ context.Context, req *pb.GetCacheStatsRequest) (*pb.GetCacheStatsResponse, error) {
+			return &pb.GetCacheStatsResponse{
+				TotalEntries: 100,
+				HitCount:     80,
+				MissCount:    20,
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	stats, err := client.GetCacheStats(context.Background())
+	if err != nil {
+		t.Fatalf("GetCacheStats: %v", err)
+	}
+	if stats.TotalEntries != 100 {
+		t.Errorf("TotalEntries = %d, want 100", stats.TotalEntries)
+	}
+	if stats.HitCount != 80 {
+		t.Errorf("HitCount = %d, want 80", stats.HitCount)
+	}
+	if stats.MissCount != 20 {
+		t.Errorf("MissCount = %d, want 20", stats.MissCount)
+	}
+}
+
+func TestFlushDnsCache(t *testing.T) {
+	var captured *pb.FlushDnsCacheRequest
+	mock := &mockRolodexService{
+		flushDnsCacheFn: func(_ context.Context, req *pb.FlushDnsCacheRequest) (*pb.FlushDnsCacheResponse, error) {
+			captured = req
+			return &pb.FlushDnsCacheResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	err := client.FlushDnsCache(context.Background())
+	if err != nil {
+		t.Fatalf("FlushDnsCache: %v", err)
+	}
+	if captured.AuthToken != "tok" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tok")
+	}
+}
+
+func TestSetTtlDriftConfig(t *testing.T) {
+	var captured *pb.SetTtlDriftConfigRequest
+	mock := &mockRolodexService{
+		setTtlDriftConfigFn: func(_ context.Context, req *pb.SetTtlDriftConfigRequest) (*pb.SetTtlDriftConfigResponse, error) {
+			captured = req
+			return &pb.SetTtlDriftConfigResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	cfg := &TtlDriftConfig{
+		Mode:            "fixed",
+		FixedAdjustment: "5m",
+		LogMultiplier:   0,
+	}
+	err := client.SetTtlDriftConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("SetTtlDriftConfig: %v", err)
+	}
+	if captured.Config.Mode != "fixed" {
+		t.Errorf("mode = %q, want %q", captured.Config.Mode, "fixed")
+	}
+	if captured.Config.FixedAdjustment != "5m" {
+		t.Errorf("fixed_adjustment = %q, want %q", captured.Config.FixedAdjustment, "5m")
+	}
+	if captured.AuthToken != "tok" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tok")
+	}
+}
+
+func TestGetTtlDriftConfig(t *testing.T) {
+	mock := &mockRolodexService{
+		getTtlDriftConfigFn: func(_ context.Context, req *pb.GetTtlDriftConfigRequest) (*pb.GetTtlDriftConfigResponse, error) {
+			return &pb.GetTtlDriftConfigResponse{
+				Config: &pb.TtlDriftConfig{
+					Mode:          "logarithmic",
+					LogMultiplier: 1.5,
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	cfg, err := client.GetTtlDriftConfig(context.Background())
+	if err != nil {
+		t.Fatalf("GetTtlDriftConfig: %v", err)
+	}
+	if cfg.Mode != "logarithmic" {
+		t.Errorf("mode = %q, want %q", cfg.Mode, "logarithmic")
+	}
+	if cfg.LogMultiplier != 1.5 {
+		t.Errorf("log_multiplier = %f, want 1.5", cfg.LogMultiplier)
+	}
+}
+
+func TestGetQueryLatencyStats(t *testing.T) {
+	mock := &mockRolodexService{
+		getQueryLatencyStatsFn: func(_ context.Context, req *pb.GetQueryLatencyStatsRequest) (*pb.GetQueryLatencyStatsResponse, error) {
+			return &pb.GetQueryLatencyStatsResponse{
+				Stats: []*pb.QueryLatencyStat{
+					{Server: "8.8.8.8:53", AvgLatencyMs: 12.5, QueryCount: 100},
+					{Server: "1.1.1.1:53", AvgLatencyMs: 8.3, QueryCount: 200},
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	stats, err := client.GetQueryLatencyStats(context.Background())
+	if err != nil {
+		t.Fatalf("GetQueryLatencyStats: %v", err)
+	}
+	if len(stats) != 2 {
+		t.Fatalf("got %d stats, want 2", len(stats))
+	}
+	if stats[0].Server != "8.8.8.8:53" {
+		t.Errorf("stats[0].Server = %q, want %q", stats[0].Server, "8.8.8.8:53")
+	}
+	if stats[0].AvgLatencyMs != 12.5 {
+		t.Errorf("stats[0].AvgLatencyMs = %f, want 12.5", stats[0].AvgLatencyMs)
+	}
+	if stats[0].QueryCount != 100 {
+		t.Errorf("stats[0].QueryCount = %d, want 100", stats[0].QueryCount)
+	}
+}
+
+func TestAddLocalRblEntry(t *testing.T) {
+	var captured *pb.AddLocalRblEntryRequest
+	mock := &mockRolodexService{
+		addLocalRblEntryFn: func(_ context.Context, req *pb.AddLocalRblEntryRequest) (*pb.AddLocalRblEntryResponse, error) {
+			captured = req
+			return &pb.AddLocalRblEntryResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	entry := &LocalRblEntry{
+		Name:   "malware.example.com",
+		Reason: "known malware domain",
+	}
+	err := client.AddLocalRblEntry(context.Background(), entry)
+	if err != nil {
+		t.Fatalf("AddLocalRblEntry: %v", err)
+	}
+	if captured.Entry.Name != "malware.example.com" {
+		t.Errorf("name = %q, want %q", captured.Entry.Name, "malware.example.com")
+	}
+	if captured.Entry.Reason != "known malware domain" {
+		t.Errorf("reason = %q, want %q", captured.Entry.Reason, "known malware domain")
+	}
+	if captured.AuthToken != "tok" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tok")
+	}
+}
+
+func TestRemoveLocalRblEntry(t *testing.T) {
+	var captured *pb.RemoveLocalRblEntryRequest
+	mock := &mockRolodexService{
+		removeLocalRblEntryFn: func(_ context.Context, req *pb.RemoveLocalRblEntryRequest) (*pb.RemoveLocalRblEntryResponse, error) {
+			captured = req
+			return &pb.RemoveLocalRblEntryResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	err := client.RemoveLocalRblEntry(context.Background(), "malware.example.com")
+	if err != nil {
+		t.Fatalf("RemoveLocalRblEntry: %v", err)
+	}
+	if captured.Name != "malware.example.com" {
+		t.Errorf("name = %q, want %q", captured.Name, "malware.example.com")
+	}
+	if captured.AuthToken != "tok" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tok")
+	}
+}
+
+func TestListLocalRblEntries(t *testing.T) {
+	mock := &mockRolodexService{
+		listLocalRblEntriesFn: func(_ context.Context, req *pb.ListLocalRblEntriesRequest) (*pb.ListLocalRblEntriesResponse, error) {
+			return &pb.ListLocalRblEntriesResponse{
+				Entries: []*pb.LocalRblEntry{
+					{Name: "bad.example.com", Reason: "spam"},
+					{Name: "evil.example.com", Reason: "phishing"},
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	entries, err := client.ListLocalRblEntries(context.Background())
+	if err != nil {
+		t.Fatalf("ListLocalRblEntries: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("got %d entries, want 2", len(entries))
+	}
+	if entries[0].Name != "bad.example.com" {
+		t.Errorf("entries[0].Name = %q, want %q", entries[0].Name, "bad.example.com")
+	}
+	if entries[1].Reason != "phishing" {
+		t.Errorf("entries[1].Reason = %q, want %q", entries[1].Reason, "phishing")
+	}
+}
+
+func TestSetDotConfig(t *testing.T) {
+	var captured *pb.SetDotConfigRequest
+	mock := &mockRolodexService{
+		setDotConfigFn: func(_ context.Context, req *pb.SetDotConfigRequest) (*pb.SetDotConfigResponse, error) {
+			captured = req
+			return &pb.SetDotConfigResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	cfg := &DotConfig{
+		Bind: "0.0.0.0:853",
+		Tls: &pb.TlsConfig{
+			CertPath: "/etc/ssl/cert.pem",
+			KeyPath:  "/etc/ssl/key.pem",
+		},
+	}
+	err := client.SetDotConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("SetDotConfig: %v", err)
+	}
+	if captured.Config.Bind != "0.0.0.0:853" {
+		t.Errorf("bind = %q, want %q", captured.Config.Bind, "0.0.0.0:853")
+	}
+	if captured.Config.Tls.CertPath != "/etc/ssl/cert.pem" {
+		t.Errorf("cert_path = %q, want %q", captured.Config.Tls.CertPath, "/etc/ssl/cert.pem")
+	}
+	if captured.AuthToken != "tok" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tok")
+	}
+}
+
+func TestGetDotConfig(t *testing.T) {
+	mock := &mockRolodexService{
+		getDotConfigFn: func(_ context.Context, req *pb.GetDotConfigRequest) (*pb.GetDotConfigResponse, error) {
+			return &pb.GetDotConfigResponse{
+				Config: &pb.DotConfig{
+					Bind: "0.0.0.0:853",
+					Tls: &pb.TlsConfig{
+						CertPath:       "/etc/ssl/cert.pem",
+						KeyPath:        "/etc/ssl/key.pem",
+						AutoSelfSigned: true,
+					},
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	cfg, err := client.GetDotConfig(context.Background())
+	if err != nil {
+		t.Fatalf("GetDotConfig: %v", err)
+	}
+	if cfg.Bind != "0.0.0.0:853" {
+		t.Errorf("bind = %q, want %q", cfg.Bind, "0.0.0.0:853")
+	}
+	if !cfg.Tls.AutoSelfSigned {
+		t.Errorf("auto_self_signed = false, want true")
+	}
+}
+
+func TestSetDohConfig(t *testing.T) {
+	var captured *pb.SetDohConfigRequest
+	mock := &mockRolodexService{
+		setDohConfigFn: func(_ context.Context, req *pb.SetDohConfigRequest) (*pb.SetDohConfigResponse, error) {
+			captured = req
+			return &pb.SetDohConfigResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	cfg := &DohConfig{
+		Bind: "0.0.0.0:443",
+		Tls: &pb.TlsConfig{
+			CertPath: "/etc/ssl/cert.pem",
+			KeyPath:  "/etc/ssl/key.pem",
+		},
+		EnableH3: true,
+	}
+	err := client.SetDohConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("SetDohConfig: %v", err)
+	}
+	if captured.Config.Bind != "0.0.0.0:443" {
+		t.Errorf("bind = %q, want %q", captured.Config.Bind, "0.0.0.0:443")
+	}
+	if !captured.Config.EnableH3 {
+		t.Errorf("enable_h3 = false, want true")
+	}
+	if captured.AuthToken != "tok" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tok")
+	}
+}
+
+func TestGetDohConfig(t *testing.T) {
+	mock := &mockRolodexService{
+		getDohConfigFn: func(_ context.Context, req *pb.GetDohConfigRequest) (*pb.GetDohConfigResponse, error) {
+			return &pb.GetDohConfigResponse{
+				Config: &pb.DohConfig{
+					Bind: "0.0.0.0:443",
+					Tls: &pb.TlsConfig{
+						CertPath: "/etc/ssl/cert.pem",
+						KeyPath:  "/etc/ssl/key.pem",
+					},
+					EnableH3: true,
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	cfg, err := client.GetDohConfig(context.Background())
+	if err != nil {
+		t.Fatalf("GetDohConfig: %v", err)
+	}
+	if cfg.Bind != "0.0.0.0:443" {
+		t.Errorf("bind = %q, want %q", cfg.Bind, "0.0.0.0:443")
+	}
+	if !cfg.EnableH3 {
+		t.Errorf("enable_h3 = false, want true")
+	}
+}
+
+func TestSetDoqConfig(t *testing.T) {
+	var captured *pb.SetDoqConfigRequest
+	mock := &mockRolodexService{
+		setDoqConfigFn: func(_ context.Context, req *pb.SetDoqConfigRequest) (*pb.SetDoqConfigResponse, error) {
+			captured = req
+			return &pb.SetDoqConfigResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	cfg := &DoqConfig{
+		Bind: "0.0.0.0:8853",
+		Tls: &pb.TlsConfig{
+			CertPath: "/etc/ssl/cert.pem",
+			KeyPath:  "/etc/ssl/key.pem",
+		},
+	}
+	err := client.SetDoqConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("SetDoqConfig: %v", err)
+	}
+	if captured.Config.Bind != "0.0.0.0:8853" {
+		t.Errorf("bind = %q, want %q", captured.Config.Bind, "0.0.0.0:8853")
+	}
+	if captured.Config.Tls.CertPath != "/etc/ssl/cert.pem" {
+		t.Errorf("cert_path = %q, want %q", captured.Config.Tls.CertPath, "/etc/ssl/cert.pem")
+	}
+	if captured.AuthToken != "tok" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tok")
+	}
+}
+
+func TestGetDoqConfig(t *testing.T) {
+	mock := &mockRolodexService{
+		getDoqConfigFn: func(_ context.Context, req *pb.GetDoqConfigRequest) (*pb.GetDoqConfigResponse, error) {
+			return &pb.GetDoqConfigResponse{
+				Config: &pb.DoqConfig{
+					Bind: "0.0.0.0:8853",
+					Tls: &pb.TlsConfig{
+						CertPath: "/etc/ssl/cert.pem",
+						KeyPath:  "/etc/ssl/key.pem",
+					},
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	cfg, err := client.GetDoqConfig(context.Background())
+	if err != nil {
+		t.Fatalf("GetDoqConfig: %v", err)
+	}
+	if cfg.Bind != "0.0.0.0:8853" {
+		t.Errorf("bind = %q, want %q", cfg.Bind, "0.0.0.0:8853")
+	}
+	if cfg.Tls.KeyPath != "/etc/ssl/key.pem" {
+		t.Errorf("key_path = %q, want %q", cfg.Tls.KeyPath, "/etc/ssl/key.pem")
+	}
+}
+
+func TestSetProxyConfig(t *testing.T) {
+	var captured *pb.SetProxyConfigRequest
+	mock := &mockRolodexService{
+		setProxyConfigFn: func(_ context.Context, req *pb.SetProxyConfigRequest) (*pb.SetProxyConfigResponse, error) {
+			captured = req
+			return &pb.SetProxyConfigResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	cfg := &ProxyConfig{
+		Url:  "http://proxy.example.com:8080",
+		Auth: "user:pass",
+		Mode: "connect",
+	}
+	err := client.SetProxyConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("SetProxyConfig: %v", err)
+	}
+	if captured.Config.Url != "http://proxy.example.com:8080" {
+		t.Errorf("url = %q, want %q", captured.Config.Url, "http://proxy.example.com:8080")
+	}
+	if captured.Config.Auth != "user:pass" {
+		t.Errorf("auth = %q, want %q", captured.Config.Auth, "user:pass")
+	}
+	if captured.Config.Mode != "connect" {
+		t.Errorf("mode = %q, want %q", captured.Config.Mode, "connect")
+	}
+	if captured.AuthToken != "tok" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tok")
+	}
+}
+
+func TestGetProxyConfig(t *testing.T) {
+	mock := &mockRolodexService{
+		getProxyConfigFn: func(_ context.Context, req *pb.GetProxyConfigRequest) (*pb.GetProxyConfigResponse, error) {
+			return &pb.GetProxyConfigResponse{
+				Config: &pb.ProxyConfig{
+					Url:  "http://proxy.example.com:8080",
+					Auth: "user:pass",
+					Mode: "doh",
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	cfg, err := client.GetProxyConfig(context.Background())
+	if err != nil {
+		t.Fatalf("GetProxyConfig: %v", err)
+	}
+	if cfg.Url != "http://proxy.example.com:8080" {
+		t.Errorf("url = %q, want %q", cfg.Url, "http://proxy.example.com:8080")
+	}
+	if cfg.Mode != "doh" {
+		t.Errorf("mode = %q, want %q", cfg.Mode, "doh")
+	}
+}
+
+func TestGenerateDnssecKey(t *testing.T) {
+	var captured *pb.GenerateDnssecKeyRequest
+	mock := &mockRolodexService{
+		generateDnssecKeyFn: func(_ context.Context, req *pb.GenerateDnssecKeyRequest) (*pb.GenerateDnssecKeyResponse, error) {
+			captured = req
+			return &pb.GenerateDnssecKeyResponse{
+				Success: true,
+				Key: &pb.DnssecKey{
+					Id:        1,
+					Zone:      "example.com.",
+					Algorithm: "ECDSAP256SHA256",
+					KeyType:   "KSK",
+					KeyTag:    12345,
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	key, err := client.GenerateDnssecKey(context.Background(), "example.com.", "ECDSAP256SHA256", "KSK")
+	if err != nil {
+		t.Fatalf("GenerateDnssecKey: %v", err)
+	}
+	if captured.Zone != "example.com." {
+		t.Errorf("zone = %q, want %q", captured.Zone, "example.com.")
+	}
+	if captured.Algorithm != "ECDSAP256SHA256" {
+		t.Errorf("algorithm = %q, want %q", captured.Algorithm, "ECDSAP256SHA256")
+	}
+	if captured.KeyType != "KSK" {
+		t.Errorf("key_type = %q, want %q", captured.KeyType, "KSK")
+	}
+	if captured.AuthToken != "tok" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tok")
+	}
+	if key.Id != 1 {
+		t.Errorf("key.Id = %d, want 1", key.Id)
+	}
+	if key.KeyTag != 12345 {
+		t.Errorf("key.KeyTag = %d, want 12345", key.KeyTag)
+	}
+}
+
+func TestListDnssecKeys(t *testing.T) {
+	mock := &mockRolodexService{
+		listDnssecKeysFn: func(_ context.Context, req *pb.ListDnssecKeysRequest) (*pb.ListDnssecKeysResponse, error) {
+			return &pb.ListDnssecKeysResponse{
+				Keys: []*pb.DnssecKey{
+					{Id: 1, Zone: "example.com.", Algorithm: "ECDSAP256SHA256", KeyType: "KSK", KeyTag: 12345},
+					{Id: 2, Zone: "example.com.", Algorithm: "ECDSAP256SHA256", KeyType: "ZSK", KeyTag: 67890},
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	keys, err := client.ListDnssecKeys(context.Background(), "example.com.")
+	if err != nil {
+		t.Fatalf("ListDnssecKeys: %v", err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("got %d keys, want 2", len(keys))
+	}
+	if keys[0].KeyType != "KSK" {
+		t.Errorf("keys[0].KeyType = %q, want %q", keys[0].KeyType, "KSK")
+	}
+	if keys[1].KeyType != "ZSK" {
+		t.Errorf("keys[1].KeyType = %q, want %q", keys[1].KeyType, "ZSK")
+	}
+}
+
+func TestDeleteDnssecKey(t *testing.T) {
+	var captured *pb.DeleteDnssecKeyRequest
+	mock := &mockRolodexService{
+		deleteDnssecKeyFn: func(_ context.Context, req *pb.DeleteDnssecKeyRequest) (*pb.DeleteDnssecKeyResponse, error) {
+			captured = req
+			return &pb.DeleteDnssecKeyResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	err := client.DeleteDnssecKey(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("DeleteDnssecKey: %v", err)
+	}
+	if captured.KeyId != 42 {
+		t.Errorf("key_id = %d, want 42", captured.KeyId)
+	}
+	if captured.AuthToken != "tok" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tok")
+	}
+}
+
+func TestGetDsRecords(t *testing.T) {
+	mock := &mockRolodexService{
+		getDsRecordsFn: func(_ context.Context, req *pb.GetDsRecordsRequest) (*pb.GetDsRecordsResponse, error) {
+			return &pb.GetDsRecordsResponse{
+				DsRecords: []string{
+					"example.com. IN DS 12345 13 2 AABB...",
+					"example.com. IN DS 67890 13 2 CCDD...",
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	records, err := client.GetDsRecords(context.Background(), "example.com.")
+	if err != nil {
+		t.Fatalf("GetDsRecords: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("got %d records, want 2", len(records))
+	}
+	if records[0] != "example.com. IN DS 12345 13 2 AABB..." {
+		t.Errorf("records[0] = %q, want %q", records[0], "example.com. IN DS 12345 13 2 AABB...")
+	}
+}
+
+func TestSignZone(t *testing.T) {
+	var captured *pb.SignZoneRequest
+	mock := &mockRolodexService{
+		signZoneFn: func(_ context.Context, req *pb.SignZoneRequest) (*pb.SignZoneResponse, error) {
+			captured = req
+			return &pb.SignZoneResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	err := client.SignZone(context.Background(), "example.com.")
+	if err != nil {
+		t.Fatalf("SignZone: %v", err)
+	}
+	if captured.Zone != "example.com." {
+		t.Errorf("zone = %q, want %q", captured.Zone, "example.com.")
+	}
+	if captured.AuthToken != "tok" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tok")
+	}
+}
+
+func TestGenerateTlsaRecord(t *testing.T) {
+	var captured *pb.GenerateTlsaRecordRequest
+	mock := &mockRolodexService{
+		generateTlsaRecordFn: func(_ context.Context, req *pb.GenerateTlsaRecordRequest) (*pb.GenerateTlsaRecordResponse, error) {
+			captured = req
+			return &pb.GenerateTlsaRecordResponse{
+				Success:    true,
+				TlsaRecord: "_443._tcp.example.com. IN TLSA 3 1 1 AABBCCDD...",
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	record, err := client.GenerateTlsaRecord(context.Background(), &GenerateTlsaRecordOptions{
+		Domain:       "example.com.",
+		Port:         443,
+		Protocol:     "tcp",
+		Usage:        3,
+		Selector:     1,
+		MatchingType: 1,
+		CertPem:      "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----",
+	})
+	if err != nil {
+		t.Fatalf("GenerateTlsaRecord: %v", err)
+	}
+	if captured.Domain != "example.com." {
+		t.Errorf("domain = %q, want %q", captured.Domain, "example.com.")
+	}
+	if captured.Port != 443 {
+		t.Errorf("port = %d, want 443", captured.Port)
+	}
+	if captured.Protocol != "tcp" {
+		t.Errorf("protocol = %q, want %q", captured.Protocol, "tcp")
+	}
+	if captured.Usage != 3 {
+		t.Errorf("usage = %d, want 3", captured.Usage)
+	}
+	if captured.Selector != 1 {
+		t.Errorf("selector = %d, want 1", captured.Selector)
+	}
+	if captured.MatchingType != 1 {
+		t.Errorf("matching_type = %d, want 1", captured.MatchingType)
+	}
+	if captured.AuthToken != "tok" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tok")
+	}
+	if record != "_443._tcp.example.com. IN TLSA 3 1 1 AABBCCDD..." {
+		t.Errorf("record = %q, want %q", record, "_443._tcp.example.com. IN TLSA 3 1 1 AABBCCDD...")
+	}
+}
+
+func TestListTlsaRecords(t *testing.T) {
+	mock := &mockRolodexService{
+		listTlsaRecordsFn: func(_ context.Context, req *pb.ListTlsaRecordsRequest) (*pb.ListTlsaRecordsResponse, error) {
+			return &pb.ListTlsaRecordsResponse{
+				Records: []*pb.DnsRecord{
+					{Name: "_443._tcp.example.com.", RecordType: pb.RecordType_TLSA, Value: "3 1 1 AABBCCDD"},
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	records, err := client.ListTlsaRecords(context.Background(), "example.com.")
+	if err != nil {
+		t.Fatalf("ListTlsaRecords: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("got %d records, want 1", len(records))
+	}
+	if records[0].Name != "_443._tcp.example.com." {
+		t.Errorf("records[0].Name = %q, want %q", records[0].Name, "_443._tcp.example.com.")
+	}
+	if records[0].RecordType != pb.RecordType_TLSA {
+		t.Errorf("records[0].RecordType = %v, want TLSA", records[0].RecordType)
+	}
+}
+
+func TestGenerateDaneRootCa(t *testing.T) {
+	var captured *pb.GenerateDaneRootCaRequest
+	mock := &mockRolodexService{
+		generateDaneRootCaFn: func(_ context.Context, req *pb.GenerateDaneRootCaRequest) (*pb.GenerateDaneRootCaResponse, error) {
+			captured = req
+			return &pb.GenerateDaneRootCaResponse{
+				Success: true,
+				CertPem: "-----BEGIN CERTIFICATE-----\nROOTCA\n-----END CERTIFICATE-----",
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	certPem, err := client.GenerateDaneRootCa(context.Background(), "My DANE Root CA")
+	if err != nil {
+		t.Fatalf("GenerateDaneRootCa: %v", err)
+	}
+	if captured.Name != "My DANE Root CA" {
+		t.Errorf("name = %q, want %q", captured.Name, "My DANE Root CA")
+	}
+	if captured.AuthToken != "tok" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tok")
+	}
+	if certPem != "-----BEGIN CERTIFICATE-----\nROOTCA\n-----END CERTIFICATE-----" {
+		t.Errorf("cert_pem = %q, want PEM certificate", certPem)
+	}
+}
+
+func TestRequestAcmeCert(t *testing.T) {
+	var captured *pb.RequestAcmeCertRequest
+	mock := &mockRolodexService{
+		requestAcmeCertFn: func(_ context.Context, req *pb.RequestAcmeCertRequest) (*pb.RequestAcmeCertResponse, error) {
+			captured = req
+			return &pb.RequestAcmeCertResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	err := client.RequestAcmeCert(context.Background(), "example.com", "https://acme-v02.api.letsencrypt.org/directory")
+	if err != nil {
+		t.Fatalf("RequestAcmeCert: %v", err)
+	}
+	if captured.Domain != "example.com" {
+		t.Errorf("domain = %q, want %q", captured.Domain, "example.com")
+	}
+	if captured.ProviderUrl != "https://acme-v02.api.letsencrypt.org/directory" {
+		t.Errorf("provider_url = %q, want %q", captured.ProviderUrl, "https://acme-v02.api.letsencrypt.org/directory")
+	}
+	if captured.AuthToken != "tok" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tok")
+	}
+}
+
+func TestGetAcmeStatus(t *testing.T) {
+	mock := &mockRolodexService{
+		getAcmeStatusFn: func(_ context.Context, req *pb.GetAcmeStatusRequest) (*pb.GetAcmeStatusResponse, error) {
+			return &pb.GetAcmeStatusResponse{
+				Status:    "valid",
+				ExpiresAt: 1700000000,
+				Domain:    "example.com",
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	acmeStatus, err := client.GetAcmeStatus(context.Background(), "example.com")
+	if err != nil {
+		t.Fatalf("GetAcmeStatus: %v", err)
+	}
+	if acmeStatus.Status != "valid" {
+		t.Errorf("status = %q, want %q", acmeStatus.Status, "valid")
+	}
+	if acmeStatus.ExpiresAt != 1700000000 {
+		t.Errorf("expires_at = %d, want 1700000000", acmeStatus.ExpiresAt)
+	}
+	if acmeStatus.Domain != "example.com" {
+		t.Errorf("domain = %q, want %q", acmeStatus.Domain, "example.com")
+	}
+}
+
+func TestSetDns64Config(t *testing.T) {
+	var captured *pb.SetDns64ConfigRequest
+	mock := &mockRolodexService{
+		setDns64ConfigFn: func(_ context.Context, req *pb.SetDns64ConfigRequest) (*pb.SetDns64ConfigResponse, error) {
+			captured = req
+			return &pb.SetDns64ConfigResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	cfg := &Dns64Config{
+		Enabled: true,
+		Prefix:  "64:ff9b::",
+	}
+	err := client.SetDns64Config(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("SetDns64Config: %v", err)
+	}
+	if !captured.Config.Enabled {
+		t.Errorf("enabled = false, want true")
+	}
+	if captured.Config.Prefix != "64:ff9b::" {
+		t.Errorf("prefix = %q, want %q", captured.Config.Prefix, "64:ff9b::")
+	}
+	if captured.AuthToken != "tok" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tok")
+	}
+}
+
+func TestGetDns64Config(t *testing.T) {
+	mock := &mockRolodexService{
+		getDns64ConfigFn: func(_ context.Context, req *pb.GetDns64ConfigRequest) (*pb.GetDns64ConfigResponse, error) {
+			return &pb.GetDns64ConfigResponse{
+				Config: &pb.Dns64Config{
+					Enabled: true,
+					Prefix:  "64:ff9b::",
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	cfg, err := client.GetDns64Config(context.Background())
+	if err != nil {
+		t.Fatalf("GetDns64Config: %v", err)
+	}
+	if !cfg.Enabled {
+		t.Errorf("enabled = false, want true")
+	}
+	if cfg.Prefix != "64:ff9b::" {
+		t.Errorf("prefix = %q, want %q", cfg.Prefix, "64:ff9b::")
 	}
 }

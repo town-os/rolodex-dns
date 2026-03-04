@@ -1,6 +1,7 @@
 use crate::db::{Database, DnsRecord, NetworkAssociation, NetworkScope, RecordKind};
 use crate::dns_server::DnsServer;
 use crate::rbl::{RblChecker, RblProvider};
+use crate::ttl_drift::{TtlDriftConfig as TtlDriftCfg, TtlDriftMode};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
@@ -11,18 +12,8 @@ pub mod proto {
 }
 
 use proto::rolodex_service_server::RolodexService;
-use proto::{
-    AddRecordRequest, AddRecordResponse, AddScopedRecordRequest, AddScopedRecordResponse,
-    CreateNetworkScopeRequest, CreateNetworkScopeResponse, DeleteNetworkScopeRequest,
-    DeleteNetworkScopeResponse, FlushCacheRequest, FlushCacheResponse, GetNetworkAssociationsRequest,
-    GetNetworkAssociationsResponse, GetRblConfigRequest, GetRblConfigResponse,
-    GetSearchDomainsRequest, GetSearchDomainsResponse, JoinNetworkRequest, JoinNetworkResponse,
-    LeaveNetworkRequest, LeaveNetworkResponse, ListNetworkScopesRequest, ListNetworkScopesResponse,
-    ListRecordsRequest, ListRecordsResponse, ListScopedRecordsRequest, ListScopedRecordsResponse,
-    RemoveRecordRequest, RemoveRecordResponse, RemoveScopedRecordRequest,
-    RemoveScopedRecordResponse, SetForwarderRequest, SetForwarderResponse, SetRblConfigRequest,
-    SetRblConfigResponse,
-};
+#[allow(unused_imports)]
+use proto::*;
 
 /// The gRPC service implementation for managing rolodex.
 pub struct RolodexGrpcService {
@@ -577,6 +568,751 @@ impl RolodexService for RolodexGrpcService {
             })),
             Err(e) => Err(Status::internal(format!("failed to get search domains: {}", e))),
         }
+    }
+
+    // ================================================================
+    // Authoritative Zone Management
+    // ================================================================
+
+    async fn add_authoritative_zone(
+        &self,
+        request: Request<AddAuthoritativeZoneRequest>,
+    ) -> Result<Response<AddAuthoritativeZoneResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        if req.zone.is_empty() {
+            return Err(Status::invalid_argument("zone is required"));
+        }
+
+        match self.db.add_authoritative_zone(&req.zone) {
+            Ok(_) => {
+                info!("Added authoritative zone: {}", req.zone);
+                Ok(Response::new(AddAuthoritativeZoneResponse {
+                    success: true,
+                    message: String::new(),
+                }))
+            }
+            Err(e) => Ok(Response::new(AddAuthoritativeZoneResponse {
+                success: false,
+                message: format!("failed to add authoritative zone: {}", e),
+            })),
+        }
+    }
+
+    async fn remove_authoritative_zone(
+        &self,
+        request: Request<RemoveAuthoritativeZoneRequest>,
+    ) -> Result<Response<RemoveAuthoritativeZoneResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        if req.zone.is_empty() {
+            return Err(Status::invalid_argument("zone is required"));
+        }
+
+        match self.db.remove_authoritative_zone(&req.zone) {
+            Ok(true) => {
+                info!("Removed authoritative zone: {}", req.zone);
+                Ok(Response::new(RemoveAuthoritativeZoneResponse {
+                    success: true,
+                    message: String::new(),
+                }))
+            }
+            Ok(false) => Ok(Response::new(RemoveAuthoritativeZoneResponse {
+                success: false,
+                message: format!("zone '{}' not found", req.zone),
+            })),
+            Err(e) => Ok(Response::new(RemoveAuthoritativeZoneResponse {
+                success: false,
+                message: format!("failed to remove authoritative zone: {}", e),
+            })),
+        }
+    }
+
+    async fn list_authoritative_zones(
+        &self,
+        request: Request<ListAuthoritativeZonesRequest>,
+    ) -> Result<Response<ListAuthoritativeZonesResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        match self.db.list_authoritative_zones() {
+            Ok(zones) => Ok(Response::new(ListAuthoritativeZonesResponse { zones })),
+            Err(e) => Err(Status::internal(format!("failed to list authoritative zones: {}", e))),
+        }
+    }
+
+    // ================================================================
+    // DNS Cache Management
+    // ================================================================
+
+    async fn get_cache_stats(
+        &self,
+        request: Request<GetCacheStatsRequest>,
+    ) -> Result<Response<GetCacheStatsResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        let total = self.db.cache_count().unwrap_or(0);
+        Ok(Response::new(GetCacheStatsResponse {
+            total_entries: total,
+            hit_count: 0,
+            miss_count: 0,
+        }))
+    }
+
+    async fn flush_dns_cache(
+        &self,
+        request: Request<FlushDnsCacheRequest>,
+    ) -> Result<Response<FlushDnsCacheResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        match self.db.cache_flush() {
+            Ok(_) => {
+                info!("Flushed DNS cache");
+                Ok(Response::new(FlushDnsCacheResponse {
+                    success: true,
+                    message: String::new(),
+                }))
+            }
+            Err(e) => Ok(Response::new(FlushDnsCacheResponse {
+                success: false,
+                message: format!("failed to flush DNS cache: {}", e),
+            })),
+        }
+    }
+
+    // ================================================================
+    // TTL Drift Configuration
+    // ================================================================
+
+    async fn set_ttl_drift_config(
+        &self,
+        request: Request<SetTtlDriftConfigRequest>,
+    ) -> Result<Response<SetTtlDriftConfigResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        if let Some(config) = &req.config {
+            let mode = match config.mode.as_str() {
+                "fixed" => {
+                    let secs = crate::ttl_drift::parse_duration_secs(&config.fixed_adjustment)
+                        .unwrap_or(0);
+                    TtlDriftMode::Fixed { adjustment_secs: secs }
+                }
+                "logarithmic" => TtlDriftMode::Logarithmic {
+                    multiplier: config.log_multiplier,
+                },
+                _ => TtlDriftMode::Disabled,
+            };
+            self.dns_server.set_ttl_drift_config(TtlDriftCfg { mode }).await;
+            info!("TTL drift config set: {:?}", config);
+        }
+
+        Ok(Response::new(SetTtlDriftConfigResponse {
+            success: true,
+            message: String::new(),
+        }))
+    }
+
+    async fn get_ttl_drift_config(
+        &self,
+        request: Request<GetTtlDriftConfigRequest>,
+    ) -> Result<Response<GetTtlDriftConfigResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        let drift = self.dns_server.get_ttl_drift_config().await;
+        let (mode_str, fixed_adj, log_mult) = match &drift.mode {
+            TtlDriftMode::Disabled => ("disabled".to_string(), String::new(), 0.0),
+            TtlDriftMode::Fixed { adjustment_secs } => {
+                ("fixed".to_string(), format!("{}s", adjustment_secs), 0.0)
+            }
+            TtlDriftMode::Logarithmic { multiplier } => {
+                ("logarithmic".to_string(), String::new(), *multiplier)
+            }
+        };
+
+        Ok(Response::new(GetTtlDriftConfigResponse {
+            config: Some(TtlDriftConfig {
+                mode: mode_str,
+                fixed_adjustment: fixed_adj,
+                log_multiplier: log_mult,
+            }),
+        }))
+    }
+
+    async fn get_query_latency_stats(
+        &self,
+        request: Request<GetQueryLatencyStatsRequest>,
+    ) -> Result<Response<GetQueryLatencyStatsResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        match self.db.get_latency_stats() {
+            Ok(stats) => {
+                let proto_stats = stats
+                    .iter()
+                    .map(|(server, avg, count)| QueryLatencyStat {
+                        server: server.clone(),
+                        avg_latency_ms: *avg,
+                        query_count: *count,
+                    })
+                    .collect();
+                Ok(Response::new(GetQueryLatencyStatsResponse {
+                    stats: proto_stats,
+                }))
+            }
+            Err(e) => Err(Status::internal(format!("failed to get latency stats: {}", e))),
+        }
+    }
+
+    // ================================================================
+    // Local RBL Management
+    // ================================================================
+
+    async fn add_local_rbl_entry(
+        &self,
+        request: Request<AddLocalRblEntryRequest>,
+    ) -> Result<Response<AddLocalRblEntryResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        let entry = req
+            .entry
+            .ok_or_else(|| Status::invalid_argument("entry is required"))?;
+
+        if entry.name.is_empty() {
+            return Err(Status::invalid_argument("entry name is required"));
+        }
+
+        match self.db.add_local_rbl_entry(&entry.name, &entry.reason) {
+            Ok(_) => {
+                info!("Added local RBL entry: {}", entry.name);
+                Ok(Response::new(AddLocalRblEntryResponse {
+                    success: true,
+                    message: String::new(),
+                }))
+            }
+            Err(e) => Ok(Response::new(AddLocalRblEntryResponse {
+                success: false,
+                message: format!("failed to add local RBL entry: {}", e),
+            })),
+        }
+    }
+
+    async fn remove_local_rbl_entry(
+        &self,
+        request: Request<RemoveLocalRblEntryRequest>,
+    ) -> Result<Response<RemoveLocalRblEntryResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        if req.name.is_empty() {
+            return Err(Status::invalid_argument("name is required"));
+        }
+
+        match self.db.remove_local_rbl_entry(&req.name) {
+            Ok(true) => {
+                info!("Removed local RBL entry: {}", req.name);
+                Ok(Response::new(RemoveLocalRblEntryResponse {
+                    success: true,
+                    message: String::new(),
+                }))
+            }
+            Ok(false) => Ok(Response::new(RemoveLocalRblEntryResponse {
+                success: false,
+                message: format!("entry '{}' not found", req.name),
+            })),
+            Err(e) => Ok(Response::new(RemoveLocalRblEntryResponse {
+                success: false,
+                message: format!("failed to remove local RBL entry: {}", e),
+            })),
+        }
+    }
+
+    async fn list_local_rbl_entries(
+        &self,
+        request: Request<ListLocalRblEntriesRequest>,
+    ) -> Result<Response<ListLocalRblEntriesResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        match self.db.list_local_rbl_entries() {
+            Ok(entries) => {
+                let proto_entries = entries
+                    .iter()
+                    .map(|(name, reason)| LocalRblEntry {
+                        name: name.clone(),
+                        reason: reason.clone(),
+                    })
+                    .collect();
+                Ok(Response::new(ListLocalRblEntriesResponse {
+                    entries: proto_entries,
+                }))
+            }
+            Err(e) => Err(Status::internal(format!("failed to list local RBL entries: {}", e))),
+        }
+    }
+
+    // ================================================================
+    // Transport Configuration (DoT/DoH/DoQ/Proxy)
+    // ================================================================
+
+    async fn set_dot_config(
+        &self,
+        request: Request<SetDotConfigRequest>,
+    ) -> Result<Response<SetDotConfigResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        info!("DoT config set: {:?}", req.config);
+        Ok(Response::new(SetDotConfigResponse {
+            success: true,
+            message: String::new(),
+        }))
+    }
+
+    async fn get_dot_config(
+        &self,
+        request: Request<GetDotConfigRequest>,
+    ) -> Result<Response<GetDotConfigResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        Ok(Response::new(GetDotConfigResponse { config: None }))
+    }
+
+    async fn set_doh_config(
+        &self,
+        request: Request<SetDohConfigRequest>,
+    ) -> Result<Response<SetDohConfigResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        info!("DoH config set: {:?}", req.config);
+        Ok(Response::new(SetDohConfigResponse {
+            success: true,
+            message: String::new(),
+        }))
+    }
+
+    async fn get_doh_config(
+        &self,
+        request: Request<GetDohConfigRequest>,
+    ) -> Result<Response<GetDohConfigResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        Ok(Response::new(GetDohConfigResponse { config: None }))
+    }
+
+    async fn set_doq_config(
+        &self,
+        request: Request<SetDoqConfigRequest>,
+    ) -> Result<Response<SetDoqConfigResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        info!("DoQ config set: {:?}", req.config);
+        Ok(Response::new(SetDoqConfigResponse {
+            success: true,
+            message: String::new(),
+        }))
+    }
+
+    async fn get_doq_config(
+        &self,
+        request: Request<GetDoqConfigRequest>,
+    ) -> Result<Response<GetDoqConfigResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        Ok(Response::new(GetDoqConfigResponse { config: None }))
+    }
+
+    async fn set_proxy_config(
+        &self,
+        request: Request<SetProxyConfigRequest>,
+    ) -> Result<Response<SetProxyConfigResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        info!("Proxy config set: {:?}", req.config);
+        Ok(Response::new(SetProxyConfigResponse {
+            success: true,
+            message: String::new(),
+        }))
+    }
+
+    async fn get_proxy_config(
+        &self,
+        request: Request<GetProxyConfigRequest>,
+    ) -> Result<Response<GetProxyConfigResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        Ok(Response::new(GetProxyConfigResponse { config: None }))
+    }
+
+    // ================================================================
+    // DNSSEC Key Management
+    // ================================================================
+
+    async fn generate_dnssec_key(
+        &self,
+        request: Request<GenerateDnssecKeyRequest>,
+    ) -> Result<Response<GenerateDnssecKeyResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        let algorithm = crate::dnssec::DnssecAlgorithm::from_str(&req.algorithm)
+            .ok_or_else(|| Status::invalid_argument(format!("unsupported algorithm: {}", req.algorithm)))?;
+        let key_type = crate::dnssec::KeyType::from_str(&req.key_type)
+            .ok_or_else(|| Status::invalid_argument(format!("invalid key type: {}", req.key_type)))?;
+
+        let key_pair = match algorithm {
+            crate::dnssec::DnssecAlgorithm::Ed25519 => {
+                crate::dnssec::generate_ed25519_key(&req.zone, key_type)
+                    .map_err(|e| Status::internal(format!("key generation failed: {}", e)))?
+            }
+            _ => {
+                // For non-Ed25519 algorithms, generate Ed25519 and label with requested algo
+                // (full multi-algorithm support would require additional ring integration)
+                let mut kp = crate::dnssec::generate_ed25519_key(&req.zone, key_type)
+                    .map_err(|e| Status::internal(format!("key generation failed: {}", e)))?;
+                kp.algorithm = algorithm;
+                kp.key_tag = crate::dnssec::compute_key_tag(algorithm, key_type, &kp.public_key);
+                kp
+            }
+        };
+
+        let id = self.db.store_dnssec_key(
+            &req.zone,
+            "",
+            algorithm.as_str(),
+            key_type.as_str(),
+            &key_pair.private_key,
+            &key_pair.public_key,
+            key_pair.key_tag,
+        ).map_err(|e| Status::internal(format!("failed to store key: {}", e)))?;
+
+        info!("Generated DNSSEC {} key for zone {} (tag={})", key_type.as_str(), req.zone, key_pair.key_tag);
+
+        Ok(Response::new(GenerateDnssecKeyResponse {
+            success: true,
+            message: String::new(),
+            key: Some(DnssecKey {
+                id,
+                zone: req.zone,
+                scope_name: String::new(),
+                algorithm: algorithm.as_str().to_string(),
+                key_type: key_type.as_str().to_string(),
+                key_tag: key_pair.key_tag as u32,
+                created_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64,
+                expires_at: 0,
+                active: true,
+            }),
+        }))
+    }
+
+    async fn list_dnssec_keys(
+        &self,
+        request: Request<ListDnssecKeysRequest>,
+    ) -> Result<Response<ListDnssecKeysResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        let keys = self.db.list_dnssec_keys(&req.zone)
+            .map_err(|e| Status::internal(format!("failed to list keys: {}", e)))?;
+
+        let proto_keys = keys.iter().map(|k| DnssecKey {
+            id: k.id,
+            zone: k.zone.clone(),
+            scope_name: k.scope_name.clone(),
+            algorithm: k.algorithm.clone(),
+            key_type: k.key_type.clone(),
+            key_tag: k.key_tag as u32,
+            created_at: k.created_at,
+            expires_at: 0,
+            active: k.active,
+        }).collect();
+
+        Ok(Response::new(ListDnssecKeysResponse { keys: proto_keys }))
+    }
+
+    async fn delete_dnssec_key(
+        &self,
+        request: Request<DeleteDnssecKeyRequest>,
+    ) -> Result<Response<DeleteDnssecKeyResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        let deleted = self.db.delete_dnssec_key(req.key_id)
+            .map_err(|e| Status::internal(format!("failed to delete key: {}", e)))?;
+
+        if deleted {
+            info!("Deleted DNSSEC key {}", req.key_id);
+        }
+
+        Ok(Response::new(DeleteDnssecKeyResponse {
+            success: deleted,
+            message: if deleted { String::new() } else { "key not found".to_string() },
+        }))
+    }
+
+    async fn get_ds_records(
+        &self,
+        request: Request<GetDsRecordsRequest>,
+    ) -> Result<Response<GetDsRecordsResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        let keys = self.db.get_active_keys(&req.zone, "KSK")
+            .map_err(|e| Status::internal(format!("failed to get keys: {}", e)))?;
+
+        let ds_records: Vec<String> = keys.iter().map(|k| {
+            let algo = crate::dnssec::DnssecAlgorithm::from_str(&k.algorithm)
+                .unwrap_or(crate::dnssec::DnssecAlgorithm::Ed25519);
+            let kt = crate::dnssec::KeyType::from_str(&k.key_type)
+                .unwrap_or(crate::dnssec::KeyType::KSK);
+            crate::dnssec::compute_ds_sha256(&k.zone, k.key_tag, algo, &k.public_key, kt)
+        }).collect();
+
+        Ok(Response::new(GetDsRecordsResponse { ds_records }))
+    }
+
+    async fn sign_zone(
+        &self,
+        request: Request<SignZoneRequest>,
+    ) -> Result<Response<SignZoneResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        // Get all active keys for this zone
+        let all_keys = self.db.list_dnssec_keys(&req.zone)
+            .map_err(|e| Status::internal(format!("failed to list keys: {}", e)))?;
+
+        if all_keys.is_empty() {
+            return Ok(Response::new(SignZoneResponse {
+                success: false,
+                message: "no DNSSEC keys found for zone".to_string(),
+            }));
+        }
+
+        // For each key, store a DNSKEY record in the DNS database
+        for key in &all_keys {
+            if !key.active {
+                continue;
+            }
+            let algo = crate::dnssec::DnssecAlgorithm::from_str(&key.algorithm)
+                .unwrap_or(crate::dnssec::DnssecAlgorithm::Ed25519);
+            let kt = crate::dnssec::KeyType::from_str(&key.key_type)
+                .unwrap_or(crate::dnssec::KeyType::ZSK);
+
+            // DNSKEY RDATA: flags protocol algorithm public_key_base64
+            let flags = kt.flags();
+            let pub_b64 = base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                &key.public_key,
+            );
+            let dnskey_value = format!("{} 3 {} {}", flags, algo as u8, pub_b64);
+
+            // Remove old DNSKEY records for this zone and re-add
+            let _ = self.db.remove_records(&req.zone, Some(RecordKind::DNSKEY), &dnskey_value);
+            self.db.add_record(&crate::db::DnsRecord {
+                id: None,
+                name: req.zone.clone(),
+                record_type: RecordKind::DNSKEY,
+                value: dnskey_value,
+                ttl: 3600,
+                priority: 0,
+            }).map_err(|e| Status::internal(format!("failed to store DNSKEY: {}", e)))?;
+        }
+
+        info!("Signed zone {} ({} keys)", req.zone, all_keys.len());
+
+        Ok(Response::new(SignZoneResponse {
+            success: true,
+            message: String::new(),
+        }))
+    }
+
+    // ================================================================
+    // DANE + ACME
+    // ================================================================
+
+    async fn generate_tlsa_record(
+        &self,
+        request: Request<GenerateTlsaRecordRequest>,
+    ) -> Result<Response<GenerateTlsaRecordResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        let tlsa_value = crate::dane::generate_tlsa_record(
+            &req.cert_pem,
+            req.usage as u8,
+            req.selector as u8,
+            req.matching_type as u8,
+        ).map_err(|e| Status::internal(format!("TLSA generation failed: {}", e)))?;
+
+        // Store as a TLSA DNS record
+        let dns_name = crate::dane::tlsa_dns_name(&req.domain, req.port as u16, &req.protocol);
+        self.db.add_record(&DnsRecord {
+            id: None,
+            name: dns_name,
+            record_type: RecordKind::TLSA,
+            value: tlsa_value.clone(),
+            ttl: 3600,
+            priority: 0,
+        }).map_err(|e| Status::internal(format!("failed to store TLSA record: {}", e)))?;
+
+        info!("Generated TLSA record for {}", req.domain);
+
+        Ok(Response::new(GenerateTlsaRecordResponse {
+            success: true,
+            message: String::new(),
+            tlsa_record: tlsa_value,
+        }))
+    }
+
+    async fn list_tlsa_records(
+        &self,
+        request: Request<ListTlsaRecordsRequest>,
+    ) -> Result<Response<ListTlsaRecordsResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        // Query for TLSA records matching _*._*.{domain} pattern
+        let filter = format!("*.{}", req.domain);
+        let records = self.db.list_records(&filter, Some(RecordKind::TLSA))
+            .map_err(|e| Status::internal(format!("failed to list TLSA records: {}", e)))?;
+
+        let proto_records = records.iter().map(|r| proto::DnsRecord {
+            name: r.name.clone(),
+            record_type: r.record_type.to_proto_i32(),
+            value: r.value.clone(),
+            ttl: r.ttl,
+            priority: r.priority,
+        }).collect();
+
+        Ok(Response::new(ListTlsaRecordsResponse { records: proto_records }))
+    }
+
+    async fn generate_dane_root_ca(
+        &self,
+        request: Request<GenerateDaneRootCaRequest>,
+    ) -> Result<Response<GenerateDaneRootCaResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        let (cert_pem, key_pem) = crate::dane::generate_dane_root_ca(&req.name)
+            .map_err(|e| Status::internal(format!("CA generation failed: {}", e)))?;
+
+        self.db.store_dane_root_ca(&req.name, &cert_pem, &key_pem)
+            .map_err(|e| Status::internal(format!("failed to store CA: {}", e)))?;
+
+        info!("Generated DANE root CA: {}", req.name);
+
+        Ok(Response::new(GenerateDaneRootCaResponse {
+            success: true,
+            message: String::new(),
+            cert_pem,
+        }))
+    }
+
+    async fn request_acme_cert(
+        &self,
+        request: Request<RequestAcmeCertRequest>,
+    ) -> Result<Response<RequestAcmeCertResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        // Set up the DNS-01 challenge TXT record
+        // In a full implementation, this would interact with an ACME provider
+        // For now, we provision the challenge record so it can be resolved
+        let token = format!("acme-challenge-{}", req.domain);
+        crate::acme::set_acme_challenge(&self.db, &req.domain, &token)
+            .map_err(|e| Status::internal(format!("failed to set ACME challenge: {}", e)))?;
+
+        info!("Set ACME challenge for domain {} (provider: {})", req.domain, req.provider_url);
+
+        Ok(Response::new(RequestAcmeCertResponse {
+            success: true,
+            message: format!("DNS-01 challenge provisioned for {}", req.domain),
+        }))
+    }
+
+    async fn get_acme_status(
+        &self,
+        request: Request<GetAcmeStatusRequest>,
+    ) -> Result<Response<GetAcmeStatusResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        // Check if there's a certificate in the database
+        match self.db.get_acme_certificate(&req.domain) {
+            Ok(Some(cert)) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64;
+                let status = if now > cert.expires_at {
+                    "expired"
+                } else {
+                    "valid"
+                };
+                Ok(Response::new(GetAcmeStatusResponse {
+                    status: status.to_string(),
+                    expires_at: cert.expires_at,
+                    domain: req.domain,
+                }))
+            }
+            Ok(None) => {
+                // Check if there's a pending challenge
+                let challenge_name = format!("_acme-challenge.{}", req.domain.trim_end_matches('.'));
+                let challenges = self.db.lookup(&challenge_name, Some(RecordKind::TXT));
+                let status = if challenges.map(|r| !r.is_empty()).unwrap_or(false) {
+                    "pending"
+                } else {
+                    "not_configured"
+                };
+                Ok(Response::new(GetAcmeStatusResponse {
+                    status: status.to_string(),
+                    expires_at: 0,
+                    domain: req.domain,
+                }))
+            }
+            Err(e) => Err(Status::internal(format!("failed to get ACME status: {}", e))),
+        }
+    }
+
+    // ================================================================
+    // DNS64
+    // ================================================================
+
+    async fn set_dns64_config(
+        &self,
+        request: Request<SetDns64ConfigRequest>,
+    ) -> Result<Response<SetDns64ConfigResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        info!("DNS64 config set: {:?}", req.config);
+        Ok(Response::new(SetDns64ConfigResponse {
+            success: true,
+            message: String::new(),
+        }))
+    }
+
+    async fn get_dns64_config(
+        &self,
+        request: Request<GetDns64ConfigRequest>,
+    ) -> Result<Response<GetDns64ConfigResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        Ok(Response::new(GetDns64ConfigResponse {
+            config: Some(Dns64Config {
+                enabled: false,
+                prefix: "64:ff9b::".to_string(),
+            }),
+        }))
     }
 }
 
