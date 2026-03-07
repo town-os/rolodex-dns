@@ -81,13 +81,7 @@ Images are published to `quay.io/town-os/rolodex`.
 
 ### Building
 
-Build a local production image:
-
-```
-make production-image
-```
-
-Build a release image (tagged as `quay.io/town-os/rolodex`):
+Build the release image (tagged as `quay.io/town-os/rolodex`):
 
 ```
 make release-image
@@ -103,13 +97,13 @@ Login to quay.io (reads `QUAY_USERNAME` and `QUAY_PASSWORD` from the environment
 make quay-login
 ```
 
-Push a release candidate (tags `rc.YYYYMMDD` and `rc.latest`):
+Build and push a release candidate (tags `rc.YYYYMMDD` and `rc.latest`):
 
 ```
 make push-rc
 ```
 
-Push a release (builds, then tags `release.YYYYMMDD` and `latest`):
+Build and push a release (tags `release.YYYYMMDD` and `latest`):
 
 ```
 make push-release

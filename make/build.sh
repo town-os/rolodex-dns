@@ -3,19 +3,6 @@ set -e
 . make/lib.sh
 
 case "$1" in
-  production)
-    step "Building build image"
-    mkdir -p .cache/cargo-registry .cache/cargo-git
-    ${SUDO} podman build \
-      --volume "$(pwd)/.cache/cargo-registry:/usr/local/cargo/registry:z" \
-      --volume "$(pwd)/.cache/cargo-git:/usr/local/cargo/git:z" \
-      -t "${PODMAN_BUILD_IMAGE}" -f Containerfile.build .
-
-    step "Building production image"
-    ${SUDO} podman build --pull=never \
-      --build-arg "BUILD_IMAGE=${PODMAN_BUILD_IMAGE}" \
-      -t "${PODMAN_IMAGE}" -f Containerfile .
-    ;;
   release)
     step "Building build image"
     mkdir -p .cache/cargo-registry .cache/cargo-git
@@ -57,7 +44,7 @@ case "$1" in
     registry_login quay.io QUAY_USERNAME QUAY_PASSWORD
     ;;
   *)
-    echo "Usage: $0 {production|release|push-rc|push-release|quay-login}"
+    echo "Usage: $0 {release|push-rc|push-release|quay-login}"
     exit 1
     ;;
 esac
