@@ -84,7 +84,7 @@ Images are published to `quay.io/town-os/rolodex`.
 Build the release image (tagged as `quay.io/town-os/rolodex`):
 
 ```
-make release-image
+make image
 ```
 
 Cargo registry and git caches are persisted in `.cache/` to speed up rebuilds.
