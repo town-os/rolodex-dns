@@ -1,0 +1,13 @@
+target/
+.git/
+.cache/
+go/
+tests/
+rolodex.db
+*.md
+dev.yml
+make/
+Makefile
+.containerignore
+.gitignore
+LICENSE

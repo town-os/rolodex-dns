@@ -73,6 +73,56 @@ make install
 
 After the dev server is running, you can manage it using the `rolodex-cli` binary or the Go client library connected to `/tmp/rolodex.sock`. Press Ctrl+C to stop the server.
 
+## Container Images
+
+Rolodex builds with Podman using two Containerfiles: `Containerfile.build` compiles the Rust binaries in a full toolchain image, and `Containerfile` provisions a lean runtime image (`debian:bookworm-slim`) containing only the stripped binaries and CA certificates.
+
+Images are published to `quay.io/town-os/rolodex`.
+
+### Building
+
+Build a local production image:
+
+```
+make production-image
+```
+
+Build a release image (tagged as `quay.io/town-os/rolodex`):
+
+```
+make release-image
+```
+
+Cargo registry and git caches are persisted in `.cache/` to speed up rebuilds.
+
+### Pushing
+
+Login to quay.io (reads `QUAY_USERNAME` and `QUAY_PASSWORD` from the environment or `.env`):
+
+```
+make quay-login
+```
+
+Push a release candidate (tags `rc.YYYYMMDD` and `rc.latest`):
+
+```
+make push-rc
+```
+
+Push a release (builds, then tags `release.YYYYMMDD` and `latest`):
+
+```
+make push-release
+```
+
+### Cleanup
+
+Remove local container images:
+
+```
+make clean-containers
+```
+
 ## Configuration
 
 Rolodex reads configuration from a YAML file (default: `rolodex.yml`).

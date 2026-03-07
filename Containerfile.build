@@ -1,0 +1,8 @@
+FROM docker.io/library/rust:bookworm
+RUN apt-get update && apt-get install -y protobuf-compiler \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY Cargo.toml Cargo.lock build.rs /src/
+COPY proto/ /src/proto/
+COPY src/ /src/src/
+RUN cargo build --release && strip target/release/rolodex target/release/rolodex-cli
