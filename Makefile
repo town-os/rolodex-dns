@@ -8,7 +8,7 @@ export INSTANCE_ID
 
 # Image names (unique per working directory).
 PODMAN_BUILD_IMAGE := rolodex-build-$(INSTANCE_ID)
-RELEASE_IMAGE      := quay.io/town-os/rolodex
+RELEASE_IMAGE      := quay.io/town/rolodex
 export PODMAN_BUILD_IMAGE RELEASE_IMAGE
 
 .PHONY: test build clean go-test go-integration-test dev dev-release install

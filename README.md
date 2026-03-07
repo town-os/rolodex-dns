@@ -77,11 +77,11 @@ After the dev server is running, you can manage it using the `rolodex-cli` binar
 
 Rolodex builds with Podman using two Containerfiles: `Containerfile.build` compiles the Rust binaries in a full toolchain image, and `Containerfile` provisions a lean runtime image (`debian:bookworm-slim`) containing only the stripped binaries and CA certificates.
 
-Images are published to `quay.io/town-os/rolodex`.
+Images are published to `quay.io/town/rolodex`.
 
 ### Building
 
-Build the release image (tagged as `quay.io/town-os/rolodex`):
+Build the release image (tagged as `quay.io/town/rolodex`):
 
 ```
 make image
