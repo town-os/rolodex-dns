@@ -6678,7 +6678,7 @@ const file_rolodex_proto_rawDesc = "" +
 	"\x0fRequestAcmeCert\x12\x1f.rolodex.RequestAcmeCertRequest\x1a .rolodex.RequestAcmeCertResponse\x12N\n" +
 	"\rGetAcmeStatus\x12\x1d.rolodex.GetAcmeStatusRequest\x1a\x1e.rolodex.GetAcmeStatusResponse\x12Q\n" +
 	"\x0eSetDns64Config\x12\x1e.rolodex.SetDns64ConfigRequest\x1a\x1f.rolodex.SetDns64ConfigResponse\x12Q\n" +
-	"\x0eGetDns64Config\x12\x1e.rolodex.GetDns64ConfigRequest\x1a\x1f.rolodex.GetDns64ConfigResponseB'Z%github.com/erikh/rolodex/go/rolodexpbb\x06proto3"
+	"\x0eGetDns64Config\x12\x1e.rolodex.GetDns64ConfigRequest\x1a\x1f.rolodex.GetDns64ConfigResponseB(Z&gitea.com/town-os/rolodex/go/rolodexpbb\x06proto3"
 
 var (
 	file_rolodex_proto_rawDescOnce sync.Once

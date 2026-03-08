@@ -40,11 +40,11 @@ case "$1" in
     substep "Pushing ${RELEASE_IMAGE}:latest"
     ${SUDO} podman push "${RELEASE_IMAGE}:latest"
     ;;
-  quay-login)
-    registry_login quay.io QUAY_USERNAME QUAY_PASSWORD
+  gitea-login)
+    registry_login gitea.com GITEA_USERNAME GITEA_PASSWORD
     ;;
   *)
-    echo "Usage: $0 {release|push-rc|push-release|quay-login}"
+    echo "Usage: $0 {release|push-rc|push-release|gitea-login}"
     exit 1
     ;;
 esac

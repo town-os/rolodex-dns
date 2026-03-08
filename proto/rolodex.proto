@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package rolodex;
 
-option go_package = "github.com/erikh/rolodex/go/rolodexpb";
+option go_package = "gitea.com/town-os/rolodex/go/rolodexpb";
 
 // RecordType enumerates the supported DNS record types.
 enum RecordType {

@@ -1,6 +1,6 @@
 -include .env
-export QUAY_USERNAME
-export QUAY_PASSWORD
+export GITEA_USERNAME
+export GITEA_PASSWORD
 
 # Unique instance ID from working directory path.
 INSTANCE_ID := $(shell echo -n "$(CURDIR)" | md5sum | cut -c1-8)
@@ -8,11 +8,11 @@ export INSTANCE_ID
 
 # Image names (unique per working directory).
 PODMAN_BUILD_IMAGE := rolodex-build-$(INSTANCE_ID)
-RELEASE_IMAGE      := quay.io/town/rolodex
+RELEASE_IMAGE      := gitea.com/town-os/rolodex
 export PODMAN_BUILD_IMAGE RELEASE_IMAGE
 
 .PHONY: test build clean go-test go-integration-test dev dev-release install
-.PHONY: image push push-rc push-release quay-login clean-containers
+.PHONY: image push push-rc push-release gitea-login clean-containers
 
 test: go-test
 	cargo test
@@ -51,14 +51,14 @@ image:
 
 push: push-rc
 
-push-rc: image quay-login
+push-rc: image gitea-login
 	@make/build.sh push-rc
 
-push-release: image quay-login
+push-release: image gitea-login
 	@make/build.sh push-release
 
-quay-login:
-	@make/build.sh quay-login
+gitea-login:
+	@make/build.sh gitea-login
 
 clean-containers:
 	-sudo podman rmi $(PODMAN_BUILD_IMAGE) $(RELEASE_IMAGE) 2>/dev/null || true

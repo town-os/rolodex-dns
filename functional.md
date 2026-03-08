@@ -112,7 +112,7 @@ The `list-records` subcommand displays results in a tabular format with columns 
 
 ## Go Client Library
 
-A Go client library is provided in the `go/` directory, importable as `github.com/erikh/rolodex/go`. It wraps the gRPC API with idiomatic Go types and supports the same transport and authentication modes as the CLI.
+A Go client library is provided in the `go/` directory, importable as `gitea.com/town-os/rolodex/go`. It wraps the gRPC API with idiomatic Go types and supports the same transport and authentication modes as the CLI.
 
 ### Connection
 

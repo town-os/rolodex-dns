@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	pb "github.com/erikh/rolodex/go/rolodexpb"
+	pb "gitea.com/town-os/rolodex/go/rolodexpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

@@ -77,11 +77,11 @@ After the dev server is running, you can manage it using the `rolodex-cli` binar
 
 Rolodex builds with Podman using two Containerfiles: `Containerfile.build` compiles the Rust binaries in a full toolchain image, and `Containerfile` provisions a lean runtime image (`debian:bookworm-slim`) containing only the stripped binaries and CA certificates.
 
-Images are published to `quay.io/town/rolodex`.
+Images are published to `gitea.com/town-os/rolodex`.
 
 ### Building
 
-Build the release image (tagged as `quay.io/town/rolodex`):
+Build the release image (tagged as `gitea.com/town-os/rolodex`):
 
 ```
 make image
@@ -91,10 +91,10 @@ Cargo registry and git caches are persisted in `.cache/` to speed up rebuilds.
 
 ### Pushing
 
-Login to quay.io (reads `QUAY_USERNAME` and `QUAY_PASSWORD` from the environment or `.env`):
+Login to gitea.com (reads `GITEA_USERNAME` and `GITEA_PASSWORD` from the environment or `.env`):
 
 ```
-make quay-login
+make gitea-login
 ```
 
 Build and push a release candidate (tags `rc.YYYYMMDD` and `rc.latest`):
@@ -1179,7 +1179,7 @@ A Go client library is included at `go/` for programmatic access to the Rolodex 
 ### Installation
 
 ```
-go get github.com/erikh/rolodex/go
+go get gitea.com/town-os/rolodex/go
 ```
 
 ### Connecting
