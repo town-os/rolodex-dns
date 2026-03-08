@@ -1,11 +1,11 @@
 use assert_cmd::cargo;
 use assert_cmd::Command;
 use predicates::prelude::*;
-use rolodex::db::Database;
-use rolodex::dns_server::DnsServer;
-use rolodex::grpc_service::proto::rolodex_service_server::RolodexServiceServer;
-use rolodex::grpc_service::RolodexGrpcService;
-use rolodex::rbl::{RblChecker, RblResolver};
+use rolodex_dns::db::Database;
+use rolodex_dns::dns_server::DnsServer;
+use rolodex_dns::grpc_service::proto::rolodex_dns_service_server::RolodexDnsServiceServer;
+use rolodex_dns::grpc_service::RolodexDnsGrpcService;
+use rolodex_dns::rbl::{RblChecker, RblResolver};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::net::UnixListener;
@@ -30,7 +30,7 @@ struct TestServer {
 impl TestServer {
     async fn start(shared_secret: &str) -> Self {
         let tmpdir = tempfile::tempdir().unwrap();
-        let socket_path = tmpdir.path().join("rolodex-test.sock");
+        let socket_path = tmpdir.path().join("rolodex-dns-test.sock");
         let socket_path_str = socket_path.to_str().unwrap().to_string();
 
         let db = Database::open_memory().unwrap();
@@ -46,7 +46,7 @@ impl TestServer {
         let tcp_addr = tcp_listener.local_addr().unwrap().to_string();
         let tcp_incoming = tokio_stream::wrappers::TcpListenerStream::new(tcp_listener);
 
-        let tcp_service = RolodexGrpcService::new(
+        let tcp_service = RolodexDnsGrpcService::new(
             db.clone(),
             dns_server.clone(),
             rbl.clone(),
@@ -58,7 +58,7 @@ impl TestServer {
         let uds = UnixListener::bind(&socket_path).unwrap();
         let uds_stream = tokio_stream::wrappers::UnixListenerStream::new(uds);
 
-        let unix_service = RolodexGrpcService::new(
+        let unix_service = RolodexDnsGrpcService::new(
             db.clone(),
             dns_server.clone(),
             rbl.clone(),
@@ -70,11 +70,11 @@ impl TestServer {
 
         tokio::spawn(async move {
             let tcp_server = Server::builder()
-                .add_service(RolodexServiceServer::new(tcp_service))
+                .add_service(RolodexDnsServiceServer::new(tcp_service))
                 .serve_with_incoming(tcp_incoming);
 
             let unix_server = Server::builder()
-                .add_service(RolodexServiceServer::new(unix_service))
+                .add_service(RolodexDnsServiceServer::new(unix_service))
                 .serve_with_incoming(uds_stream);
 
             tokio::select! {
@@ -96,14 +96,14 @@ impl TestServer {
     }
 
     fn cli_tcp(&self) -> Command {
-        let mut cmd = Command::new(cargo::cargo_bin!("rolodex-cli"));
+        let mut cmd = Command::new(cargo::cargo_bin!("rolodex-dns-cli"));
         cmd.args(["-a", &self.tcp_addr, "-t", "test-secret"]);
         cmd.timeout(std::time::Duration::from_secs(10));
         cmd
     }
 
     fn cli_unix(&self) -> Command {
-        let mut cmd = Command::new(cargo::cargo_bin!("rolodex-cli"));
+        let mut cmd = Command::new(cargo::cargo_bin!("rolodex-dns-cli"));
         cmd.args(["-u", &self.unix_path]);
         cmd.timeout(std::time::Duration::from_secs(10));
         cmd
@@ -442,7 +442,7 @@ async fn test_cli_auth_failure_tcp() {
     let server = TestServer::start("test-secret").await;
 
     run_cmd({
-        let mut cmd = Command::new(cargo::cargo_bin!("rolodex-cli"));
+        let mut cmd = Command::new(cargo::cargo_bin!("rolodex-dns-cli"));
         cmd.args(["-a", &server.tcp_addr, "-t", "wrong-secret"]);
         cmd.args(["list-records"]);
         cmd.timeout(std::time::Duration::from_secs(10));
@@ -520,7 +520,7 @@ async fn test_cli_unix_bypasses_auth() {
 
     // Unix socket should work without any auth token
     run_cmd({
-        let mut cmd = Command::new(cargo::cargo_bin!("rolodex-cli"));
+        let mut cmd = Command::new(cargo::cargo_bin!("rolodex-dns-cli"));
         cmd.args(["-u", &server.unix_path]);
         cmd.args(["list-records"]);
         cmd.timeout(std::time::Duration::from_secs(10));
@@ -777,7 +777,7 @@ async fn test_cli_add_ptr_record() {
 
 #[test]
 fn test_cli_help_output() {
-    Command::new(cargo::cargo_bin!("rolodex-cli"))
+    Command::new(cargo::cargo_bin!("rolodex-dns-cli"))
         .arg("--help")
         .assert()
         .success()
@@ -793,7 +793,7 @@ fn test_cli_help_output() {
 
 #[test]
 fn test_cli_add_record_help() {
-    Command::new(cargo::cargo_bin!("rolodex-cli"))
+    Command::new(cargo::cargo_bin!("rolodex-dns-cli"))
         .args(["add-record", "--help"])
         .assert()
         .success()
@@ -807,7 +807,7 @@ fn test_cli_add_record_help() {
 
 #[test]
 fn test_cli_remove_record_help() {
-    Command::new(cargo::cargo_bin!("rolodex-cli"))
+    Command::new(cargo::cargo_bin!("rolodex-dns-cli"))
         .args(["remove-record", "--help"])
         .assert()
         .success()
@@ -817,7 +817,7 @@ fn test_cli_remove_record_help() {
 
 #[test]
 fn test_cli_list_records_help() {
-    Command::new(cargo::cargo_bin!("rolodex-cli"))
+    Command::new(cargo::cargo_bin!("rolodex-dns-cli"))
         .args(["list-records", "--help"])
         .assert()
         .success()
@@ -837,7 +837,7 @@ async fn test_cli_empty_auth_server() {
 
     // Should work with any token
     run_cmd({
-        let mut cmd = Command::new(cargo::cargo_bin!("rolodex-cli"));
+        let mut cmd = Command::new(cargo::cargo_bin!("rolodex-dns-cli"));
         cmd.args(["-a", &server.tcp_addr, "-t", "anything"]);
         cmd.args(["list-records"]);
         cmd.timeout(std::time::Duration::from_secs(10));

@@ -1,4 +1,4 @@
-module gitea.com/town-os/rolodex/go
+module gitea.com/town-os/rolodex-dns/go
 
 go 1.25.6
 

@@ -1,4 +1,4 @@
-// Package rolodex provides a Go client for the Rolodex split-horizon DNS server's
+// Package rolodexdns provides a Go client for the Rolodex DNS split-horizon DNS server's
 // gRPC management API.
 //
 // The client supports two transport modes:
@@ -9,26 +9,26 @@
 //
 // Connect over TCP with authentication:
 //
-//	client, err := rolodex.Dial(ctx, "localhost:50051",
-//	    rolodex.WithAuthToken("my-secret"),
+//	client, err := rolodexdns.Dial(ctx, "localhost:50051",
+//	    rolodexdns.WithAuthToken("my-secret"),
 //	)
 //
 // Connect over a Unix socket (authentication is bypassed server-side):
 //
-//	client, err := rolodex.Dial(ctx, "/var/run/rolodex.sock",
-//	    rolodex.WithUnixSocket(),
+//	client, err := rolodexdns.Dial(ctx, "/var/run/rolodex-dns.sock",
+//	    rolodexdns.WithUnixSocket(),
 //	)
 //
 // All RPC methods accept a context.Context for cancellation and deadlines.
 // Call [Client.Close] when finished to release the underlying gRPC connection.
-package rolodex
+package rolodexdns
 
 import (
 	"context"
 	"fmt"
 	"net"
 
-	pb "gitea.com/town-os/rolodex/go/rolodexpb"
+	pb "gitea.com/town-os/rolodex-dns/go/rolodexdnspb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -82,7 +82,7 @@ const (
 	RecordTypeNSEC3PARAM RecordType = pb.RecordType_NSEC3PARAM
 )
 
-// DnsRecord represents a DNS record managed by the Rolodex server.
+// DnsRecord represents a DNS record managed by the Rolodex DNS server.
 type DnsRecord = pb.DnsRecord
 
 // RblConfig represents a single RBL (Realtime Blackhole List) provider configuration.
@@ -173,19 +173,19 @@ func WithGRPCDialOption(opt grpc.DialOption) Option {
 	}
 }
 
-// Client provides high-level access to the Rolodex gRPC management API.
+// Client provides high-level access to the Rolodex DNS gRPC management API.
 // Create one with [Dial] and close it with [Client.Close] when finished.
 type Client struct {
 	conn      *grpc.ClientConn
-	rpc       pb.RolodexServiceClient
+	rpc       pb.RolodexDnsServiceClient
 	authToken string
 }
 
-// Dial establishes a gRPC connection to a Rolodex server and returns a [Client].
+// Dial establishes a gRPC connection to a Rolodex DNS server and returns a [Client].
 //
 // The addr parameter specifies either:
 //   - A TCP address in "host:port" format (e.g. "localhost:50051")
-//   - A Unix socket path (e.g. "/var/run/rolodex.sock") when [WithUnixSocket] is used
+//   - A Unix socket path (e.g. "/var/run/rolodex-dns.sock") when [WithUnixSocket] is used
 //
 // Supported options:
 //   - [WithAuthToken]: set the shared secret for TCP authentication
@@ -215,12 +215,12 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 
 	conn, err := grpc.NewClient(target, dialOpts...)
 	if err != nil {
-		return nil, fmt.Errorf("rolodex: dial %s: %w", addr, err)
+		return nil, fmt.Errorf("rolodex-dns: dial %s: %w", addr, err)
 	}
 
 	return &Client{
 		conn:      conn,
-		rpc:       pb.NewRolodexServiceClient(conn),
+		rpc:       pb.NewRolodexDnsServiceClient(conn),
 		authToken: cfg.authToken,
 	}, nil
 }
@@ -230,7 +230,7 @@ func (c *Client) Close() error {
 	return c.conn.Close()
 }
 
-// AddRecord adds a DNS record to the Rolodex server's local database.
+// AddRecord adds a DNS record to the Rolodex DNS server's local database.
 //
 // Parameters:
 //   - record: the DNS record to add (name, record_type, value are required;
@@ -238,17 +238,17 @@ func (c *Client) Close() error {
 //
 // Returns an error if the RPC fails or the server reports a failure.
 //
-// Remote API path: /rolodex.RolodexService/AddRecord
+// Remote API path: /rolodex_dns.RolodexDnsService/AddRecord
 func (c *Client) AddRecord(ctx context.Context, record *DnsRecord) error {
 	resp, err := c.rpc.AddRecord(ctx, &pb.AddRecordRequest{
 		Record:    record,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: add record: %w", err)
+		return fmt.Errorf("rolodex-dns: add record: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: add record: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: add record: %s", resp.Message)
 	}
 	return nil
 }
@@ -263,7 +263,7 @@ type RemoveRecordOptions struct {
 	Value string
 }
 
-// RemoveRecord removes DNS records from the Rolodex server's local database.
+// RemoveRecord removes DNS records from the Rolodex DNS server's local database.
 //
 // Parameters:
 //   - name: the fully qualified domain name to remove records for (e.g. "example.com.")
@@ -272,7 +272,7 @@ type RemoveRecordOptions struct {
 //
 // Returns the number of records removed and any error.
 //
-// Remote API path: /rolodex.RolodexService/RemoveRecord
+// Remote API path: /rolodex_dns.RolodexDnsService/RemoveRecord
 func (c *Client) RemoveRecord(ctx context.Context, name string, opts *RemoveRecordOptions) (uint32, error) {
 	req := &pb.RemoveRecordRequest{
 		Name:      name,
@@ -287,10 +287,10 @@ func (c *Client) RemoveRecord(ctx context.Context, name string, opts *RemoveReco
 
 	resp, err := c.rpc.RemoveRecord(ctx, req)
 	if err != nil {
-		return 0, fmt.Errorf("rolodex: remove record: %w", err)
+		return 0, fmt.Errorf("rolodex-dns: remove record: %w", err)
 	}
 	if !resp.Success {
-		return 0, fmt.Errorf("rolodex: remove record: %s", resp.Message)
+		return 0, fmt.Errorf("rolodex-dns: remove record: %s", resp.Message)
 	}
 	return resp.RemovedCount, nil
 }
@@ -306,7 +306,7 @@ type ListRecordsOptions struct {
 	RecordType *RecordType
 }
 
-// ListRecords queries the Rolodex server's local DNS database.
+// ListRecords queries the Rolodex DNS server's local DNS database.
 //
 // Parameters:
 //   - opts: optional filters for name and/or record type. If nil, all records
@@ -314,7 +314,7 @@ type ListRecordsOptions struct {
 //
 // Returns the matching DNS records and any error.
 //
-// Remote API path: /rolodex.RolodexService/ListRecords
+// Remote API path: /rolodex_dns.RolodexDnsService/ListRecords
 func (c *Client) ListRecords(ctx context.Context, opts *ListRecordsOptions) ([]*DnsRecord, error) {
 	req := &pb.ListRecordsRequest{
 		AuthToken: c.authToken,
@@ -329,41 +329,41 @@ func (c *Client) ListRecords(ctx context.Context, opts *ListRecordsOptions) ([]*
 
 	resp, err := c.rpc.ListRecords(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("rolodex: list records: %w", err)
+		return nil, fmt.Errorf("rolodex-dns: list records: %w", err)
 	}
 	return resp.Records, nil
 }
 
-// SetForwarders configures the upstream DNS forwarders on the Rolodex server.
+// SetForwarders configures the upstream DNS forwarders on the Rolodex DNS server.
 // Forwarders are specified as "host:port" strings (e.g. "8.8.8.8:53").
 // This replaces the entire forwarder list.
 //
 // Parameters:
 //   - forwarders: list of upstream DNS server addresses in "host:port" format
 //
-// Remote API path: /rolodex.RolodexService/SetForwarders
+// Remote API path: /rolodex_dns.RolodexDnsService/SetForwarders
 func (c *Client) SetForwarders(ctx context.Context, forwarders []string) error {
 	resp, err := c.rpc.SetForwarders(ctx, &pb.SetForwarderRequest{
 		Forwarders: forwarders,
 		AuthToken:  c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: set forwarders: %w", err)
+		return fmt.Errorf("rolodex-dns: set forwarders: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: set forwarders: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: set forwarders: %s", resp.Message)
 	}
 	return nil
 }
 
-// SetRblConfig configures Realtime Blackhole List settings on the Rolodex server.
+// SetRblConfig configures Realtime Blackhole List settings on the Rolodex DNS server.
 // This replaces the entire RBL configuration.
 //
 // Parameters:
 //   - enabled: whether RBL checking is globally enabled (default: false when first configured)
 //   - providers: list of RBL provider configurations, each with a zone name and enabled flag
 //
-// Remote API path: /rolodex.RolodexService/SetRblConfig
+// Remote API path: /rolodex_dns.RolodexDnsService/SetRblConfig
 func (c *Client) SetRblConfig(ctx context.Context, enabled bool, providers []*RblConfig) error {
 	resp, err := c.rpc.SetRblConfig(ctx, &pb.SetRblConfigRequest{
 		Enabled:   enabled,
@@ -371,10 +371,10 @@ func (c *Client) SetRblConfig(ctx context.Context, enabled bool, providers []*Rb
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: set rbl config: %w", err)
+		return fmt.Errorf("rolodex-dns: set rbl config: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: set rbl config: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: set rbl config: %s", resp.Message)
 	}
 	return nil
 }
@@ -387,15 +387,15 @@ type RblStatus struct {
 	Providers []*RblConfig
 }
 
-// GetRblConfig retrieves the current RBL configuration from the Rolodex server.
+// GetRblConfig retrieves the current RBL configuration from the Rolodex DNS server.
 //
-// Remote API path: /rolodex.RolodexService/GetRblConfig
+// Remote API path: /rolodex_dns.RolodexDnsService/GetRblConfig
 func (c *Client) GetRblConfig(ctx context.Context) (*RblStatus, error) {
 	resp, err := c.rpc.GetRblConfig(ctx, &pb.GetRblConfigRequest{
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("rolodex: get rbl config: %w", err)
+		return nil, fmt.Errorf("rolodex-dns: get rbl config: %w", err)
 	}
 	return &RblStatus{
 		Enabled:   resp.Enabled,
@@ -403,18 +403,18 @@ func (c *Client) GetRblConfig(ctx context.Context) (*RblStatus, error) {
 	}, nil
 }
 
-// FlushCache clears the RBL lookup cache on the Rolodex server.
+// FlushCache clears the RBL lookup cache on the Rolodex DNS server.
 //
-// Remote API path: /rolodex.RolodexService/FlushCache
+// Remote API path: /rolodex_dns.RolodexDnsService/FlushCache
 func (c *Client) FlushCache(ctx context.Context) error {
 	resp, err := c.rpc.FlushCache(ctx, &pb.FlushCacheRequest{
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: flush cache: %w", err)
+		return fmt.Errorf("rolodex-dns: flush cache: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: flush cache: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: flush cache: %s", resp.Message)
 	}
 	return nil
 }
@@ -425,7 +425,7 @@ type NetworkScope = pb.NetworkScope
 // NetworkAssociation represents a client IP's membership in a network scope.
 type NetworkAssociation = pb.NetworkAssociation
 
-// CreateNetworkScope creates a new network scope on the Rolodex server.
+// CreateNetworkScope creates a new network scope on the Rolodex DNS server.
 //
 // Each scope has a unique name and a reserved .home domain that serves
 // as the default search domain for DNS clients in that network.
@@ -434,17 +434,17 @@ type NetworkAssociation = pb.NetworkAssociation
 //   - scope: the network scope to create. If HomeDomain is empty, it defaults
 //     to "<name>.home" (e.g. "office" becomes "office.home").
 //
-// Remote API path: /rolodex.RolodexService/CreateNetworkScope
+// Remote API path: /rolodex_dns.RolodexDnsService/CreateNetworkScope
 func (c *Client) CreateNetworkScope(ctx context.Context, scope *NetworkScope) error {
 	resp, err := c.rpc.CreateNetworkScope(ctx, &pb.CreateNetworkScopeRequest{
 		Scope:     scope,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: create network scope: %w", err)
+		return fmt.Errorf("rolodex-dns: create network scope: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: create network scope: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: create network scope: %s", resp.Message)
 	}
 	return nil
 }
@@ -454,30 +454,30 @@ func (c *Client) CreateNetworkScope(ctx context.Context, scope *NetworkScope) er
 // Parameters:
 //   - name: the unique name of the scope to delete
 //
-// Remote API path: /rolodex.RolodexService/DeleteNetworkScope
+// Remote API path: /rolodex_dns.RolodexDnsService/DeleteNetworkScope
 func (c *Client) DeleteNetworkScope(ctx context.Context, name string) error {
 	resp, err := c.rpc.DeleteNetworkScope(ctx, &pb.DeleteNetworkScopeRequest{
 		Name:      name,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: delete network scope: %w", err)
+		return fmt.Errorf("rolodex-dns: delete network scope: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: delete network scope: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: delete network scope: %s", resp.Message)
 	}
 	return nil
 }
 
 // ListNetworkScopes retrieves all configured network scopes.
 //
-// Remote API path: /rolodex.RolodexService/ListNetworkScopes
+// Remote API path: /rolodex_dns.RolodexDnsService/ListNetworkScopes
 func (c *Client) ListNetworkScopes(ctx context.Context) ([]*NetworkScope, error) {
 	resp, err := c.rpc.ListNetworkScopes(ctx, &pb.ListNetworkScopesRequest{
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("rolodex: list network scopes: %w", err)
+		return nil, fmt.Errorf("rolodex-dns: list network scopes: %w", err)
 	}
 	return resp.Scopes, nil
 }
@@ -493,7 +493,7 @@ func (c *Client) ListNetworkScopes(ctx context.Context) ([]*NetworkScope, error)
 //   - scopeName: the network scope name to join
 //   - ttlSeconds: TTL in seconds for this association (0 defaults to 300)
 //
-// Remote API path: /rolodex.RolodexService/JoinNetwork
+// Remote API path: /rolodex_dns.RolodexDnsService/JoinNetwork
 func (c *Client) JoinNetwork(ctx context.Context, ipAddress, scopeName string, ttlSeconds uint64) error {
 	resp, err := c.rpc.JoinNetwork(ctx, &pb.JoinNetworkRequest{
 		IpAddress:  ipAddress,
@@ -502,10 +502,10 @@ func (c *Client) JoinNetwork(ctx context.Context, ipAddress, scopeName string, t
 		AuthToken:  c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: join network: %w", err)
+		return fmt.Errorf("rolodex-dns: join network: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: join network: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: join network: %s", resp.Message)
 	}
 	return nil
 }
@@ -515,17 +515,17 @@ func (c *Client) JoinNetwork(ctx context.Context, ipAddress, scopeName string, t
 // Parameters:
 //   - ipAddress: the client IP to disassociate
 //
-// Remote API path: /rolodex.RolodexService/LeaveNetwork
+// Remote API path: /rolodex_dns.RolodexDnsService/LeaveNetwork
 func (c *Client) LeaveNetwork(ctx context.Context, ipAddress string) error {
 	resp, err := c.rpc.LeaveNetwork(ctx, &pb.LeaveNetworkRequest{
 		IpAddress: ipAddress,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: leave network: %w", err)
+		return fmt.Errorf("rolodex-dns: leave network: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: leave network: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: leave network: %s", resp.Message)
 	}
 	return nil
 }
@@ -536,14 +536,14 @@ func (c *Client) LeaveNetwork(ctx context.Context, ipAddress string) error {
 //   - scopeName: if non-empty, only return associations for this scope.
 //     If empty, returns all associations.
 //
-// Remote API path: /rolodex.RolodexService/GetNetworkAssociations
+// Remote API path: /rolodex_dns.RolodexDnsService/GetNetworkAssociations
 func (c *Client) GetNetworkAssociations(ctx context.Context, scopeName string) ([]*NetworkAssociation, error) {
 	resp, err := c.rpc.GetNetworkAssociations(ctx, &pb.GetNetworkAssociationsRequest{
 		ScopeName: scopeName,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("rolodex: get network associations: %w", err)
+		return nil, fmt.Errorf("rolodex-dns: get network associations: %w", err)
 	}
 	return resp.Associations, nil
 }
@@ -555,7 +555,7 @@ func (c *Client) GetNetworkAssociations(ctx context.Context, scopeName string) (
 //   - scopeName: the network scope to add the record to
 //   - record: the DNS record to add
 //
-// Remote API path: /rolodex.RolodexService/AddScopedRecord
+// Remote API path: /rolodex_dns.RolodexDnsService/AddScopedRecord
 func (c *Client) AddScopedRecord(ctx context.Context, scopeName string, record *DnsRecord) error {
 	resp, err := c.rpc.AddScopedRecord(ctx, &pb.AddScopedRecordRequest{
 		ScopeName: scopeName,
@@ -563,10 +563,10 @@ func (c *Client) AddScopedRecord(ctx context.Context, scopeName string, record *
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: add scoped record: %w", err)
+		return fmt.Errorf("rolodex-dns: add scoped record: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: add scoped record: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: add scoped record: %s", resp.Message)
 	}
 	return nil
 }
@@ -590,7 +590,7 @@ type RemoveScopedRecordOptions struct {
 //
 // Returns the number of records removed and any error.
 //
-// Remote API path: /rolodex.RolodexService/RemoveScopedRecord
+// Remote API path: /rolodex_dns.RolodexDnsService/RemoveScopedRecord
 func (c *Client) RemoveScopedRecord(ctx context.Context, scopeName, name string, opts *RemoveScopedRecordOptions) (uint32, error) {
 	req := &pb.RemoveScopedRecordRequest{
 		ScopeName: scopeName,
@@ -606,10 +606,10 @@ func (c *Client) RemoveScopedRecord(ctx context.Context, scopeName, name string,
 
 	resp, err := c.rpc.RemoveScopedRecord(ctx, req)
 	if err != nil {
-		return 0, fmt.Errorf("rolodex: remove scoped record: %w", err)
+		return 0, fmt.Errorf("rolodex-dns: remove scoped record: %w", err)
 	}
 	if !resp.Success {
-		return 0, fmt.Errorf("rolodex: remove scoped record: %s", resp.Message)
+		return 0, fmt.Errorf("rolodex-dns: remove scoped record: %s", resp.Message)
 	}
 	return resp.RemovedCount, nil
 }
@@ -628,7 +628,7 @@ type ListScopedRecordsOptions struct {
 //   - scopeName: the network scope to query
 //   - opts: optional filters. If nil, all records in the scope are returned.
 //
-// Remote API path: /rolodex.RolodexService/ListScopedRecords
+// Remote API path: /rolodex_dns.RolodexDnsService/ListScopedRecords
 func (c *Client) ListScopedRecords(ctx context.Context, scopeName string, opts *ListScopedRecordsOptions) ([]*DnsRecord, error) {
 	req := &pb.ListScopedRecordsRequest{
 		ScopeName: scopeName,
@@ -644,7 +644,7 @@ func (c *Client) ListScopedRecords(ctx context.Context, scopeName string, opts *
 
 	resp, err := c.rpc.ListScopedRecords(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("rolodex: list scoped records: %w", err)
+		return nil, fmt.Errorf("rolodex-dns: list scoped records: %w", err)
 	}
 	return resp.Records, nil
 }
@@ -656,35 +656,35 @@ func (c *Client) ListScopedRecords(ctx context.Context, scopeName string, opts *
 // Parameters:
 //   - ipAddress: the client IP to look up search domains for
 //
-// Remote API path: /rolodex.RolodexService/GetSearchDomains
+// Remote API path: /rolodex_dns.RolodexDnsService/GetSearchDomains
 func (c *Client) GetSearchDomains(ctx context.Context, ipAddress string) ([]string, error) {
 	resp, err := c.rpc.GetSearchDomains(ctx, &pb.GetSearchDomainsRequest{
 		IpAddress: ipAddress,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("rolodex: get search domains: %w", err)
+		return nil, fmt.Errorf("rolodex-dns: get search domains: %w", err)
 	}
 	return resp.SearchDomains, nil
 }
 
-// AddAuthoritativeZone registers a zone as authoritative on the Rolodex server.
+// AddAuthoritativeZone registers a zone as authoritative on the Rolodex DNS server.
 // Queries for names within authoritative zones will not be forwarded upstream.
 //
 // Parameters:
 //   - zone: the zone name (e.g. "example.com.")
 //
-// Remote API path: /rolodex.RolodexService/AddAuthoritativeZone
+// Remote API path: /rolodex_dns.RolodexDnsService/AddAuthoritativeZone
 func (c *Client) AddAuthoritativeZone(ctx context.Context, zone string) error {
 	resp, err := c.rpc.AddAuthoritativeZone(ctx, &pb.AddAuthoritativeZoneRequest{
 		Zone:      zone,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: add authoritative zone: %w", err)
+		return fmt.Errorf("rolodex-dns: add authoritative zone: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: add authoritative zone: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: add authoritative zone: %s", resp.Message)
 	}
 	return nil
 }
@@ -694,107 +694,107 @@ func (c *Client) AddAuthoritativeZone(ctx context.Context, zone string) error {
 // Parameters:
 //   - zone: the zone name to remove (e.g. "example.com.")
 //
-// Remote API path: /rolodex.RolodexService/RemoveAuthoritativeZone
+// Remote API path: /rolodex_dns.RolodexDnsService/RemoveAuthoritativeZone
 func (c *Client) RemoveAuthoritativeZone(ctx context.Context, zone string) error {
 	resp, err := c.rpc.RemoveAuthoritativeZone(ctx, &pb.RemoveAuthoritativeZoneRequest{
 		Zone:      zone,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: remove authoritative zone: %w", err)
+		return fmt.Errorf("rolodex-dns: remove authoritative zone: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: remove authoritative zone: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: remove authoritative zone: %s", resp.Message)
 	}
 	return nil
 }
 
 // ListAuthoritativeZones retrieves all authoritative zone names.
 //
-// Remote API path: /rolodex.RolodexService/ListAuthoritativeZones
+// Remote API path: /rolodex_dns.RolodexDnsService/ListAuthoritativeZones
 func (c *Client) ListAuthoritativeZones(ctx context.Context) ([]string, error) {
 	resp, err := c.rpc.ListAuthoritativeZones(ctx, &pb.ListAuthoritativeZonesRequest{
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("rolodex: list authoritative zones: %w", err)
+		return nil, fmt.Errorf("rolodex-dns: list authoritative zones: %w", err)
 	}
 	return resp.Zones, nil
 }
 
-// GetCacheStats retrieves DNS cache statistics from the Rolodex server.
+// GetCacheStats retrieves DNS cache statistics from the Rolodex DNS server.
 //
-// Remote API path: /rolodex.RolodexService/GetCacheStats
+// Remote API path: /rolodex_dns.RolodexDnsService/GetCacheStats
 func (c *Client) GetCacheStats(ctx context.Context) (*CacheStats, error) {
 	resp, err := c.rpc.GetCacheStats(ctx, &pb.GetCacheStatsRequest{
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("rolodex: get cache stats: %w", err)
+		return nil, fmt.Errorf("rolodex-dns: get cache stats: %w", err)
 	}
 	return resp, nil
 }
 
-// FlushDnsCache clears the DNS record cache on the Rolodex server.
+// FlushDnsCache clears the DNS record cache on the Rolodex DNS server.
 //
-// Remote API path: /rolodex.RolodexService/FlushDnsCache
+// Remote API path: /rolodex_dns.RolodexDnsService/FlushDnsCache
 func (c *Client) FlushDnsCache(ctx context.Context) error {
 	resp, err := c.rpc.FlushDnsCache(ctx, &pb.FlushDnsCacheRequest{
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: flush dns cache: %w", err)
+		return fmt.Errorf("rolodex-dns: flush dns cache: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: flush dns cache: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: flush dns cache: %s", resp.Message)
 	}
 	return nil
 }
 
-// SetTtlDriftConfig configures TTL drift adjustment on the Rolodex server.
+// SetTtlDriftConfig configures TTL drift adjustment on the Rolodex DNS server.
 // TTL drift modifies cached record TTLs to reduce thundering-herd cache
 // expiration storms.
 //
 // Parameters:
 //   - config: the TTL drift configuration (mode, fixed_adjustment, log_multiplier)
 //
-// Remote API path: /rolodex.RolodexService/SetTtlDriftConfig
+// Remote API path: /rolodex_dns.RolodexDnsService/SetTtlDriftConfig
 func (c *Client) SetTtlDriftConfig(ctx context.Context, config *TtlDriftConfig) error {
 	resp, err := c.rpc.SetTtlDriftConfig(ctx, &pb.SetTtlDriftConfigRequest{
 		Config:    config,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: set ttl drift config: %w", err)
+		return fmt.Errorf("rolodex-dns: set ttl drift config: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: set ttl drift config: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: set ttl drift config: %s", resp.Message)
 	}
 	return nil
 }
 
 // GetTtlDriftConfig retrieves the current TTL drift configuration.
 //
-// Remote API path: /rolodex.RolodexService/GetTtlDriftConfig
+// Remote API path: /rolodex_dns.RolodexDnsService/GetTtlDriftConfig
 func (c *Client) GetTtlDriftConfig(ctx context.Context) (*TtlDriftConfig, error) {
 	resp, err := c.rpc.GetTtlDriftConfig(ctx, &pb.GetTtlDriftConfigRequest{
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("rolodex: get ttl drift config: %w", err)
+		return nil, fmt.Errorf("rolodex-dns: get ttl drift config: %w", err)
 	}
 	return resp.Config, nil
 }
 
 // GetQueryLatencyStats retrieves per-server query latency statistics.
 //
-// Remote API path: /rolodex.RolodexService/GetQueryLatencyStats
+// Remote API path: /rolodex_dns.RolodexDnsService/GetQueryLatencyStats
 func (c *Client) GetQueryLatencyStats(ctx context.Context) ([]*QueryLatencyStats, error) {
 	resp, err := c.rpc.GetQueryLatencyStats(ctx, &pb.GetQueryLatencyStatsRequest{
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("rolodex: get query latency stats: %w", err)
+		return nil, fmt.Errorf("rolodex-dns: get query latency stats: %w", err)
 	}
 	return resp.Stats, nil
 }
@@ -804,17 +804,17 @@ func (c *Client) GetQueryLatencyStats(ctx context.Context) ([]*QueryLatencyStats
 // Parameters:
 //   - entry: the local RBL entry to add (name and reason)
 //
-// Remote API path: /rolodex.RolodexService/AddLocalRblEntry
+// Remote API path: /rolodex_dns.RolodexDnsService/AddLocalRblEntry
 func (c *Client) AddLocalRblEntry(ctx context.Context, entry *LocalRblEntry) error {
 	resp, err := c.rpc.AddLocalRblEntry(ctx, &pb.AddLocalRblEntryRequest{
 		Entry:     entry,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: add local rbl entry: %w", err)
+		return fmt.Errorf("rolodex-dns: add local rbl entry: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: add local rbl entry: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: add local rbl entry: %s", resp.Message)
 	}
 	return nil
 }
@@ -824,162 +824,162 @@ func (c *Client) AddLocalRblEntry(ctx context.Context, entry *LocalRblEntry) err
 // Parameters:
 //   - name: the name or IP to unblock
 //
-// Remote API path: /rolodex.RolodexService/RemoveLocalRblEntry
+// Remote API path: /rolodex_dns.RolodexDnsService/RemoveLocalRblEntry
 func (c *Client) RemoveLocalRblEntry(ctx context.Context, name string) error {
 	resp, err := c.rpc.RemoveLocalRblEntry(ctx, &pb.RemoveLocalRblEntryRequest{
 		Name:      name,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: remove local rbl entry: %w", err)
+		return fmt.Errorf("rolodex-dns: remove local rbl entry: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: remove local rbl entry: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: remove local rbl entry: %s", resp.Message)
 	}
 	return nil
 }
 
 // ListLocalRblEntries retrieves all entries in the local RBL blocklist.
 //
-// Remote API path: /rolodex.RolodexService/ListLocalRblEntries
+// Remote API path: /rolodex_dns.RolodexDnsService/ListLocalRblEntries
 func (c *Client) ListLocalRblEntries(ctx context.Context) ([]*LocalRblEntry, error) {
 	resp, err := c.rpc.ListLocalRblEntries(ctx, &pb.ListLocalRblEntriesRequest{
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("rolodex: list local rbl entries: %w", err)
+		return nil, fmt.Errorf("rolodex-dns: list local rbl entries: %w", err)
 	}
 	return resp.Entries, nil
 }
 
-// SetDotConfig configures DNS-over-TLS settings on the Rolodex server.
+// SetDotConfig configures DNS-over-TLS settings on the Rolodex DNS server.
 //
 // Parameters:
 //   - config: the DoT configuration (bind address and TLS settings)
 //
-// Remote API path: /rolodex.RolodexService/SetDotConfig
+// Remote API path: /rolodex_dns.RolodexDnsService/SetDotConfig
 func (c *Client) SetDotConfig(ctx context.Context, config *DotConfig) error {
 	resp, err := c.rpc.SetDotConfig(ctx, &pb.SetDotConfigRequest{
 		Config:    config,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: set dot config: %w", err)
+		return fmt.Errorf("rolodex-dns: set dot config: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: set dot config: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: set dot config: %s", resp.Message)
 	}
 	return nil
 }
 
 // GetDotConfig retrieves the current DNS-over-TLS configuration.
 //
-// Remote API path: /rolodex.RolodexService/GetDotConfig
+// Remote API path: /rolodex_dns.RolodexDnsService/GetDotConfig
 func (c *Client) GetDotConfig(ctx context.Context) (*DotConfig, error) {
 	resp, err := c.rpc.GetDotConfig(ctx, &pb.GetDotConfigRequest{
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("rolodex: get dot config: %w", err)
+		return nil, fmt.Errorf("rolodex-dns: get dot config: %w", err)
 	}
 	return resp.Config, nil
 }
 
-// SetDohConfig configures DNS-over-HTTPS settings on the Rolodex server.
+// SetDohConfig configures DNS-over-HTTPS settings on the Rolodex DNS server.
 //
 // Parameters:
 //   - config: the DoH configuration (bind address, TLS settings, HTTP/3 support)
 //
-// Remote API path: /rolodex.RolodexService/SetDohConfig
+// Remote API path: /rolodex_dns.RolodexDnsService/SetDohConfig
 func (c *Client) SetDohConfig(ctx context.Context, config *DohConfig) error {
 	resp, err := c.rpc.SetDohConfig(ctx, &pb.SetDohConfigRequest{
 		Config:    config,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: set doh config: %w", err)
+		return fmt.Errorf("rolodex-dns: set doh config: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: set doh config: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: set doh config: %s", resp.Message)
 	}
 	return nil
 }
 
 // GetDohConfig retrieves the current DNS-over-HTTPS configuration.
 //
-// Remote API path: /rolodex.RolodexService/GetDohConfig
+// Remote API path: /rolodex_dns.RolodexDnsService/GetDohConfig
 func (c *Client) GetDohConfig(ctx context.Context) (*DohConfig, error) {
 	resp, err := c.rpc.GetDohConfig(ctx, &pb.GetDohConfigRequest{
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("rolodex: get doh config: %w", err)
+		return nil, fmt.Errorf("rolodex-dns: get doh config: %w", err)
 	}
 	return resp.Config, nil
 }
 
-// SetDoqConfig configures DNS-over-QUIC settings on the Rolodex server.
+// SetDoqConfig configures DNS-over-QUIC settings on the Rolodex DNS server.
 //
 // Parameters:
 //   - config: the DoQ configuration (bind address and TLS settings)
 //
-// Remote API path: /rolodex.RolodexService/SetDoqConfig
+// Remote API path: /rolodex_dns.RolodexDnsService/SetDoqConfig
 func (c *Client) SetDoqConfig(ctx context.Context, config *DoqConfig) error {
 	resp, err := c.rpc.SetDoqConfig(ctx, &pb.SetDoqConfigRequest{
 		Config:    config,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: set doq config: %w", err)
+		return fmt.Errorf("rolodex-dns: set doq config: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: set doq config: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: set doq config: %s", resp.Message)
 	}
 	return nil
 }
 
 // GetDoqConfig retrieves the current DNS-over-QUIC configuration.
 //
-// Remote API path: /rolodex.RolodexService/GetDoqConfig
+// Remote API path: /rolodex_dns.RolodexDnsService/GetDoqConfig
 func (c *Client) GetDoqConfig(ctx context.Context) (*DoqConfig, error) {
 	resp, err := c.rpc.GetDoqConfig(ctx, &pb.GetDoqConfigRequest{
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("rolodex: get doq config: %w", err)
+		return nil, fmt.Errorf("rolodex-dns: get doq config: %w", err)
 	}
 	return resp.Config, nil
 }
 
-// SetProxyConfig configures DNS proxy transport settings on the Rolodex server.
+// SetProxyConfig configures DNS proxy transport settings on the Rolodex DNS server.
 //
 // Parameters:
 //   - config: the proxy configuration (URL, authentication, mode)
 //
-// Remote API path: /rolodex.RolodexService/SetProxyConfig
+// Remote API path: /rolodex_dns.RolodexDnsService/SetProxyConfig
 func (c *Client) SetProxyConfig(ctx context.Context, config *ProxyConfig) error {
 	resp, err := c.rpc.SetProxyConfig(ctx, &pb.SetProxyConfigRequest{
 		Config:    config,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: set proxy config: %w", err)
+		return fmt.Errorf("rolodex-dns: set proxy config: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: set proxy config: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: set proxy config: %s", resp.Message)
 	}
 	return nil
 }
 
 // GetProxyConfig retrieves the current DNS proxy transport configuration.
 //
-// Remote API path: /rolodex.RolodexService/GetProxyConfig
+// Remote API path: /rolodex_dns.RolodexDnsService/GetProxyConfig
 func (c *Client) GetProxyConfig(ctx context.Context) (*ProxyConfig, error) {
 	resp, err := c.rpc.GetProxyConfig(ctx, &pb.GetProxyConfigRequest{
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("rolodex: get proxy config: %w", err)
+		return nil, fmt.Errorf("rolodex-dns: get proxy config: %w", err)
 	}
 	return resp.Config, nil
 }
@@ -993,7 +993,7 @@ func (c *Client) GetProxyConfig(ctx context.Context) (*ProxyConfig, error) {
 //
 // Returns the generated key and any error.
 //
-// Remote API path: /rolodex.RolodexService/GenerateDnssecKey
+// Remote API path: /rolodex_dns.RolodexDnsService/GenerateDnssecKey
 func (c *Client) GenerateDnssecKey(ctx context.Context, zone, algorithm, keyType string) (*DnssecKey, error) {
 	resp, err := c.rpc.GenerateDnssecKey(ctx, &pb.GenerateDnssecKeyRequest{
 		Zone:      zone,
@@ -1002,10 +1002,10 @@ func (c *Client) GenerateDnssecKey(ctx context.Context, zone, algorithm, keyType
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("rolodex: generate dnssec key: %w", err)
+		return nil, fmt.Errorf("rolodex-dns: generate dnssec key: %w", err)
 	}
 	if !resp.Success {
-		return nil, fmt.Errorf("rolodex: generate dnssec key: %s", resp.Message)
+		return nil, fmt.Errorf("rolodex-dns: generate dnssec key: %s", resp.Message)
 	}
 	return resp.Key, nil
 }
@@ -1015,14 +1015,14 @@ func (c *Client) GenerateDnssecKey(ctx context.Context, zone, algorithm, keyType
 // Parameters:
 //   - zone: the zone to list keys for (e.g. "example.com.")
 //
-// Remote API path: /rolodex.RolodexService/ListDnssecKeys
+// Remote API path: /rolodex_dns.RolodexDnsService/ListDnssecKeys
 func (c *Client) ListDnssecKeys(ctx context.Context, zone string) ([]*DnssecKey, error) {
 	resp, err := c.rpc.ListDnssecKeys(ctx, &pb.ListDnssecKeysRequest{
 		Zone:      zone,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("rolodex: list dnssec keys: %w", err)
+		return nil, fmt.Errorf("rolodex-dns: list dnssec keys: %w", err)
 	}
 	return resp.Keys, nil
 }
@@ -1032,17 +1032,17 @@ func (c *Client) ListDnssecKeys(ctx context.Context, zone string) ([]*DnssecKey,
 // Parameters:
 //   - keyID: the numeric ID of the key to delete
 //
-// Remote API path: /rolodex.RolodexService/DeleteDnssecKey
+// Remote API path: /rolodex_dns.RolodexDnsService/DeleteDnssecKey
 func (c *Client) DeleteDnssecKey(ctx context.Context, keyID int64) error {
 	resp, err := c.rpc.DeleteDnssecKey(ctx, &pb.DeleteDnssecKeyRequest{
 		KeyId:     keyID,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: delete dnssec key: %w", err)
+		return fmt.Errorf("rolodex-dns: delete dnssec key: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: delete dnssec key: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: delete dnssec key: %s", resp.Message)
 	}
 	return nil
 }
@@ -1053,14 +1053,14 @@ func (c *Client) DeleteDnssecKey(ctx context.Context, keyID int64) error {
 // Parameters:
 //   - zone: the zone to get DS records for (e.g. "example.com.")
 //
-// Remote API path: /rolodex.RolodexService/GetDsRecords
+// Remote API path: /rolodex_dns.RolodexDnsService/GetDsRecords
 func (c *Client) GetDsRecords(ctx context.Context, zone string) ([]string, error) {
 	resp, err := c.rpc.GetDsRecords(ctx, &pb.GetDsRecordsRequest{
 		Zone:      zone,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("rolodex: get ds records: %w", err)
+		return nil, fmt.Errorf("rolodex-dns: get ds records: %w", err)
 	}
 	return resp.DsRecords, nil
 }
@@ -1070,17 +1070,17 @@ func (c *Client) GetDsRecords(ctx context.Context, zone string) ([]string, error
 // Parameters:
 //   - zone: the zone to sign (e.g. "example.com.")
 //
-// Remote API path: /rolodex.RolodexService/SignZone
+// Remote API path: /rolodex_dns.RolodexDnsService/SignZone
 func (c *Client) SignZone(ctx context.Context, zone string) error {
 	resp, err := c.rpc.SignZone(ctx, &pb.SignZoneRequest{
 		Zone:      zone,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: sign zone: %w", err)
+		return fmt.Errorf("rolodex-dns: sign zone: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: sign zone: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: sign zone: %s", resp.Message)
 	}
 	return nil
 }
@@ -1110,7 +1110,7 @@ type GenerateTlsaRecordOptions struct {
 //
 // Returns the generated TLSA record string and any error.
 //
-// Remote API path: /rolodex.RolodexService/GenerateTlsaRecord
+// Remote API path: /rolodex_dns.RolodexDnsService/GenerateTlsaRecord
 func (c *Client) GenerateTlsaRecord(ctx context.Context, opts *GenerateTlsaRecordOptions) (string, error) {
 	resp, err := c.rpc.GenerateTlsaRecord(ctx, &pb.GenerateTlsaRecordRequest{
 		Domain:       opts.Domain,
@@ -1123,10 +1123,10 @@ func (c *Client) GenerateTlsaRecord(ctx context.Context, opts *GenerateTlsaRecor
 		AuthToken:    c.authToken,
 	})
 	if err != nil {
-		return "", fmt.Errorf("rolodex: generate tlsa record: %w", err)
+		return "", fmt.Errorf("rolodex-dns: generate tlsa record: %w", err)
 	}
 	if !resp.Success {
-		return "", fmt.Errorf("rolodex: generate tlsa record: %s", resp.Message)
+		return "", fmt.Errorf("rolodex-dns: generate tlsa record: %s", resp.Message)
 	}
 	return resp.TlsaRecord, nil
 }
@@ -1136,14 +1136,14 @@ func (c *Client) GenerateTlsaRecord(ctx context.Context, opts *GenerateTlsaRecor
 // Parameters:
 //   - domain: the domain to list TLSA records for
 //
-// Remote API path: /rolodex.RolodexService/ListTlsaRecords
+// Remote API path: /rolodex_dns.RolodexDnsService/ListTlsaRecords
 func (c *Client) ListTlsaRecords(ctx context.Context, domain string) ([]*DnsRecord, error) {
 	resp, err := c.rpc.ListTlsaRecords(ctx, &pb.ListTlsaRecordsRequest{
 		Domain:    domain,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("rolodex: list tlsa records: %w", err)
+		return nil, fmt.Errorf("rolodex-dns: list tlsa records: %w", err)
 	}
 	return resp.Records, nil
 }
@@ -1155,17 +1155,17 @@ func (c *Client) ListTlsaRecords(ctx context.Context, domain string) ([]*DnsReco
 //
 // Returns the PEM-encoded root CA certificate and any error.
 //
-// Remote API path: /rolodex.RolodexService/GenerateDaneRootCa
+// Remote API path: /rolodex_dns.RolodexDnsService/GenerateDaneRootCa
 func (c *Client) GenerateDaneRootCa(ctx context.Context, name string) (string, error) {
 	resp, err := c.rpc.GenerateDaneRootCa(ctx, &pb.GenerateDaneRootCaRequest{
 		Name:      name,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return "", fmt.Errorf("rolodex: generate dane root ca: %w", err)
+		return "", fmt.Errorf("rolodex-dns: generate dane root ca: %w", err)
 	}
 	if !resp.Success {
-		return "", fmt.Errorf("rolodex: generate dane root ca: %s", resp.Message)
+		return "", fmt.Errorf("rolodex-dns: generate dane root ca: %s", resp.Message)
 	}
 	return resp.CertPem, nil
 }
@@ -1176,7 +1176,7 @@ func (c *Client) GenerateDaneRootCa(ctx context.Context, name string) (string, e
 //   - domain: the domain to request a certificate for
 //   - providerURL: the ACME provider URL (e.g. Let's Encrypt directory URL)
 //
-// Remote API path: /rolodex.RolodexService/RequestAcmeCert
+// Remote API path: /rolodex_dns.RolodexDnsService/RequestAcmeCert
 func (c *Client) RequestAcmeCert(ctx context.Context, domain, providerURL string) error {
 	resp, err := c.rpc.RequestAcmeCert(ctx, &pb.RequestAcmeCertRequest{
 		Domain:      domain,
@@ -1184,10 +1184,10 @@ func (c *Client) RequestAcmeCert(ctx context.Context, domain, providerURL string
 		AuthToken:   c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: request acme cert: %w", err)
+		return fmt.Errorf("rolodex-dns: request acme cert: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: request acme cert: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: request acme cert: %s", resp.Message)
 	}
 	return nil
 }
@@ -1197,48 +1197,48 @@ func (c *Client) RequestAcmeCert(ctx context.Context, domain, providerURL string
 // Parameters:
 //   - domain: the domain to check ACME status for
 //
-// Remote API path: /rolodex.RolodexService/GetAcmeStatus
+// Remote API path: /rolodex_dns.RolodexDnsService/GetAcmeStatus
 func (c *Client) GetAcmeStatus(ctx context.Context, domain string) (*AcmeStatus, error) {
 	resp, err := c.rpc.GetAcmeStatus(ctx, &pb.GetAcmeStatusRequest{
 		Domain:    domain,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("rolodex: get acme status: %w", err)
+		return nil, fmt.Errorf("rolodex-dns: get acme status: %w", err)
 	}
 	return resp, nil
 }
 
-// SetDns64Config configures DNS64 synthesis on the Rolodex server.
+// SetDns64Config configures DNS64 synthesis on the Rolodex DNS server.
 // DNS64 synthesizes AAAA records from A records for IPv6-only clients.
 //
 // Parameters:
 //   - config: the DNS64 configuration (enabled flag and IPv6 prefix)
 //
-// Remote API path: /rolodex.RolodexService/SetDns64Config
+// Remote API path: /rolodex_dns.RolodexDnsService/SetDns64Config
 func (c *Client) SetDns64Config(ctx context.Context, config *Dns64Config) error {
 	resp, err := c.rpc.SetDns64Config(ctx, &pb.SetDns64ConfigRequest{
 		Config:    config,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex: set dns64 config: %w", err)
+		return fmt.Errorf("rolodex-dns: set dns64 config: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex: set dns64 config: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: set dns64 config: %s", resp.Message)
 	}
 	return nil
 }
 
 // GetDns64Config retrieves the current DNS64 configuration.
 //
-// Remote API path: /rolodex.RolodexService/GetDns64Config
+// Remote API path: /rolodex_dns.RolodexDnsService/GetDns64Config
 func (c *Client) GetDns64Config(ctx context.Context) (*Dns64Config, error) {
 	resp, err := c.rpc.GetDns64Config(ctx, &pb.GetDns64ConfigRequest{
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("rolodex: get dns64 config: %w", err)
+		return nil, fmt.Errorf("rolodex-dns: get dns64 config: %w", err)
 	}
 	return resp.Config, nil
 }

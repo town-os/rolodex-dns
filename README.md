@@ -1,10 +1,10 @@
-# Rolodex
+# Rolodex DNS
 
 A privacy-first, split-horizon DNS server and forwarding resolver with encrypted transports, DNSSEC, and gRPC management, written in Rust.
 
-Rolodex provides DNS over UDP, TCP, TLS (DoT), HTTPS (DoH), and QUIC (DoQ) with a local record database that takes priority over forwarded queries. Records are managed remotely via gRPC (shared secret authentication over TCP, or unauthenticated over Unix socket). It supports TLD-level resolution with domain overlay, so internal DNS representations are always preferred. A built-in DNS response cache prevents query leakage to upstream resolvers once a record has been seen.
+Rolodex DNS provides DNS over UDP, TCP, TLS (DoT), HTTPS (DoH), and QUIC (DoQ) with a local record database that takes priority over forwarded queries. Records are managed remotely via gRPC (shared secret authentication over TCP, or unauthenticated over Unix socket). It supports TLD-level resolution with domain overlay, so internal DNS representations are always preferred. A built-in DNS response cache prevents query leakage to upstream resolvers once a record has been seen.
 
-Rolodex also supports Realtime Blackhole Lists (RBLs) for DNS-based spam/malware filtering, DNSSEC zone signing, DANE TLSA certificate association, ACME DNS-01 challenge handling, and DNS64 AAAA synthesis.
+Rolodex DNS also supports Realtime Blackhole Lists (RBLs) for DNS-based spam/malware filtering, DNSSEC zone signing, DANE TLSA certificate association, ACME DNS-01 challenge handling, and DNS64 AAAA synthesis.
 
 ## Features
 
@@ -55,8 +55,8 @@ This will:
 1. Build the project in debug mode (`cargo build`)
 2. Start the server using `dev.yml` with the following settings:
    - DNS listeners on `127.0.0.1:5300` (UDP and TCP)
-   - gRPC Unix socket at `/tmp/rolodex.sock` (no TCP gRPC listener)
-   - SQLite database at `/tmp/rolodex-dev.db`
+   - gRPC Unix socket at `/tmp/rolodex-dns.sock` (no TCP gRPC listener)
+   - SQLite database at `/tmp/rolodex-dns-dev.db`
    - No authentication required
    - RBL checking disabled
    - Default upstream forwarders (`8.8.8.8:53`, `8.8.4.4:53`)
@@ -71,17 +71,17 @@ To install the binaries to your Cargo bin directory:
 make install
 ```
 
-After the dev server is running, you can manage it using the `rolodex-cli` binary or the Go client library connected to `/tmp/rolodex.sock`. Press Ctrl+C to stop the server.
+After the dev server is running, you can manage it using the `rolodex-dns-cli` binary or the Go client library connected to `/tmp/rolodex-dns.sock`. Press Ctrl+C to stop the server.
 
 ## Container Images
 
-Rolodex builds with Podman using two Containerfiles: `Containerfile.build` compiles the Rust binaries in a full toolchain image, and `Containerfile` provisions a lean runtime image (`debian:bookworm-slim`) containing only the stripped binaries and CA certificates.
+Rolodex DNS builds with Podman using two Containerfiles: `Containerfile.build` compiles the Rust binaries in a full toolchain image, and `Containerfile` provisions a lean runtime image (`debian:bookworm-slim`) containing only the stripped binaries and CA certificates.
 
-Images are published to `gitea.com/town-os/rolodex`.
+Images are published to `gitea.com/town-os/rolodex-dns`.
 
 ### Building
 
-Build the release image (tagged as `gitea.com/town-os/rolodex`):
+Build the release image (tagged as `gitea.com/town-os/rolodex-dns`):
 
 ```
 make image
@@ -119,11 +119,11 @@ make clean-containers
 
 ## Configuration
 
-Rolodex reads configuration from a YAML file (default: `rolodex.yml`).
+Rolodex DNS reads configuration from a YAML file (default: `rolodex-dns.yml`).
 
 ```yaml
 # Database file path
-database_path: rolodex.db
+database_path: rolodex-dns.db
 
 # Upstream DNS forwarders (address:port format)
 # Set to empty list for a purely authoritative server (no upstream forwarding)
@@ -141,16 +141,16 @@ dns:
 dot:
   bind: "0.0.0.0:853"
   tls:
-    cert_path: /etc/rolodex/cert.pem
-    key_path: /etc/rolodex/key.pem
+    cert_path: /etc/rolodex-dns/cert.pem
+    key_path: /etc/rolodex-dns/key.pem
     auto_self_signed: false
 
 # DNS-over-HTTPS (RFC 8484)
 doh:
   bind: "0.0.0.0:443"
   tls:
-    cert_path: /etc/rolodex/cert.pem
-    key_path: /etc/rolodex/key.pem
+    cert_path: /etc/rolodex-dns/cert.pem
+    key_path: /etc/rolodex-dns/key.pem
     auto_self_signed: false
   enable_h3: false
 
@@ -158,15 +158,15 @@ doh:
 doq:
   bind: "0.0.0.0:8853"
   tls:
-    cert_path: /etc/rolodex/cert.pem
-    key_path: /etc/rolodex/key.pem
+    cert_path: /etc/rolodex-dns/cert.pem
+    key_path: /etc/rolodex-dns/key.pem
     auto_self_signed: false
 
 grpc:
   # TCP gRPC listener (empty string to disable)
   tcp_bind: "127.0.0.1:50051"
   # Unix socket path (empty string to disable)
-  unix_socket: /var/run/rolodex.sock
+  unix_socket: /var/run/rolodex-dns.sock
   # Shared secret for TCP gRPC authentication (not required for Unix socket)
   shared_secret: your-secret-here
 
@@ -212,7 +212,7 @@ security:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `database_path` | `"rolodex.db"` | Path to the SQLite database file |
+| `database_path` | `"rolodex-dns.db"` | Path to the SQLite database file |
 | `forwarders` | `["8.8.8.8:53", "8.8.4.4:53"]` | Upstream DNS resolver addresses. Empty list = purely authoritative |
 | `dns.udp_bind` | `"0.0.0.0:53"` | UDP DNS listener bind address |
 | `dns.tcp_bind` | `"0.0.0.0:53"` | TCP DNS listener bind address |
@@ -230,7 +230,7 @@ security:
 | `doq.tls.key_path` | `""` | TLS private key path for DoQ |
 | `doq.tls.auto_self_signed` | `false` | Auto-generate a self-signed certificate for DoQ |
 | `grpc.tcp_bind` | `"127.0.0.1:50051"` | TCP gRPC listener address (empty to disable) |
-| `grpc.unix_socket` | `"/var/run/rolodex.sock"` | Unix socket path (empty to disable) |
+| `grpc.unix_socket` | `"/var/run/rolodex-dns.sock"` | Unix socket path (empty to disable) |
 | `grpc.shared_secret` | `""` | Shared secret for TCP gRPC auth (empty = no auth) |
 | `rbl.enabled` | `false` | Enable RBL checking globally |
 | `rbl.providers[].zone` | -- | DNSBL zone to query |
@@ -250,19 +250,19 @@ security:
 ### Server
 
 ```
-rolodex [OPTIONS]
+rolodex-dns [OPTIONS]
 
 Options:
-  -c, --config <CONFIG>  Path to configuration file [default: rolodex.yml]
+  -c, --config <CONFIG>  Path to configuration file [default: rolodex-dns.yml]
   -h, --help             Print help
 ```
 
 ### CLI Client
 
-`rolodex-cli` is a command-line client for managing a running Rolodex server via its gRPC management interface. It supports both TCP and Unix socket transports.
+`rolodex-dns-cli` is a command-line client for managing a running Rolodex DNS server via its gRPC management interface. It supports both TCP and Unix socket transports.
 
 ```
-rolodex-cli [OPTIONS] <COMMAND>
+rolodex-dns-cli [OPTIONS] <COMMAND>
 ```
 
 #### Global Options
@@ -335,15 +335,15 @@ rolodex-cli [OPTIONS] <COMMAND>
 | **Observability** | |
 | `get-query-latency-stats` | Show per-server upstream query latency |
 
-See the original command sections below for detailed usage on core record management commands. For the full set of command flags, run `rolodex-cli <COMMAND> --help`.
+See the original command sections below for detailed usage on core record management commands. For the full set of command flags, run `rolodex-dns-cli <COMMAND> --help`.
 
 ##### `add-record`
 
 Add a DNS record to the local database.
-**gRPC path:** `/rolodex.RolodexService/AddRecord`
+**gRPC path:** `/rolodex_dns.RolodexDnsService/AddRecord`
 
 ```
-rolodex-cli add-record -n <NAME> -v <VALUE> [OPTIONS]
+rolodex-dns-cli add-record -n <NAME> -v <VALUE> [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -357,39 +357,39 @@ rolodex-cli add-record -n <NAME> -v <VALUE> [OPTIONS]
 Examples:
 ```bash
 # Add an A record via TCP
-rolodex-cli -a 127.0.0.1:50051 -t my-secret add-record \
+rolodex-dns-cli -a 127.0.0.1:50051 -t my-secret add-record \
   -n example.com. -r a -v 10.0.0.1 --ttl 600
 
 # Add an MX record via Unix socket
-rolodex-cli -u /var/run/rolodex.sock add-record \
+rolodex-dns-cli -u /var/run/rolodex-dns.sock add-record \
   -n example.com. -r mx -v mail.example.com. -p 10
 
 # Add a CNAME record
-rolodex-cli add-record -n www.example.com. -r cname -v example.com.
+rolodex-dns-cli add-record -n www.example.com. -r cname -v example.com.
 
 # Add an SRV record
-rolodex-cli add-record -n _sip._tcp.example.com. -r srv \
+rolodex-dns-cli add-record -n _sip._tcp.example.com. -r srv \
   -v "5 5060 sip.example.com." -p 10
 
 # Add a URI record
-rolodex-cli add-record -n example.com. -r uri \
+rolodex-dns-cli add-record -n example.com. -r uri \
   -v "10 1 \"https://example.com/\"" -p 10
 
 # Add an SSHFP record
-rolodex-cli add-record -n host.example.com. -r sshfp \
+rolodex-dns-cli add-record -n host.example.com. -r sshfp \
   -v "2 1 123456789abcdef..."
 
 # Add a wildcard record
-rolodex-cli add-record -n "*.example.com." -r a -v 10.0.0.99
+rolodex-dns-cli add-record -n "*.example.com." -r a -v 10.0.0.99
 ```
 
 ##### `remove-record`
 
 Remove DNS record(s) from the local database. Removes by name, with optional type and value filters.
-**gRPC path:** `/rolodex.RolodexService/RemoveRecord`
+**gRPC path:** `/rolodex_dns.RolodexDnsService/RemoveRecord`
 
 ```
-rolodex-cli remove-record -n <NAME> [OPTIONS]
+rolodex-dns-cli remove-record -n <NAME> [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -401,22 +401,22 @@ rolodex-cli remove-record -n <NAME> [OPTIONS]
 Examples:
 ```bash
 # Remove all records for a name
-rolodex-cli remove-record -n old.example.com.
+rolodex-dns-cli remove-record -n old.example.com.
 
 # Remove only A records for a name
-rolodex-cli remove-record -n example.com. -r a
+rolodex-dns-cli remove-record -n example.com. -r a
 
 # Remove a specific record by value
-rolodex-cli remove-record -n example.com. -r a -v 10.0.0.1
+rolodex-dns-cli remove-record -n example.com. -r a -v 10.0.0.1
 ```
 
 ##### `list-records`
 
 List DNS records from the local database with optional filters.
-**gRPC path:** `/rolodex.RolodexService/ListRecords`
+**gRPC path:** `/rolodex_dns.RolodexDnsService/ListRecords`
 
 ```
-rolodex-cli list-records [OPTIONS]
+rolodex-dns-cli list-records [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -427,25 +427,25 @@ rolodex-cli list-records [OPTIONS]
 Examples:
 ```bash
 # List all records
-rolodex-cli list-records
+rolodex-dns-cli list-records
 
 # List records for a specific name
-rolodex-cli list-records -n example.com.
+rolodex-dns-cli list-records -n example.com.
 
 # List all subdomains
-rolodex-cli list-records -n "*.example.com."
+rolodex-dns-cli list-records -n "*.example.com."
 
 # List only AAAA records
-rolodex-cli list-records -r aaaa
+rolodex-dns-cli list-records -r aaaa
 ```
 
 ##### `set-forwarders`
 
 Set upstream DNS forwarders at runtime. Replaces the entire forwarder list.
-**gRPC path:** `/rolodex.RolodexService/SetForwarders`
+**gRPC path:** `/rolodex_dns.RolodexDnsService/SetForwarders`
 
 ```
-rolodex-cli set-forwarders -f <ADDR>...
+rolodex-dns-cli set-forwarders -f <ADDR>...
 ```
 
 | Option | Default | Description |
@@ -455,22 +455,22 @@ rolodex-cli set-forwarders -f <ADDR>...
 Examples:
 ```bash
 # Set Google and Cloudflare DNS
-rolodex-cli set-forwarders -f 8.8.8.8:53 1.1.1.1:53
+rolodex-dns-cli set-forwarders -f 8.8.8.8:53 1.1.1.1:53
 
 # Set a single forwarder
-rolodex-cli set-forwarders -f 9.9.9.9:53
+rolodex-dns-cli set-forwarders -f 9.9.9.9:53
 
 # Remove all forwarders (purely authoritative mode)
-rolodex-cli set-forwarders -f ""
+rolodex-dns-cli set-forwarders -f ""
 ```
 
 ##### `set-rbl-config`
 
 Configure RBL (Realtime Blackhole List) settings at runtime. Replaces the entire RBL configuration.
-**gRPC path:** `/rolodex.RolodexService/SetRblConfig`
+**gRPC path:** `/rolodex_dns.RolodexDnsService/SetRblConfig`
 
 ```
-rolodex-cli set-rbl-config [OPTIONS]
+rolodex-dns-cli set-rbl-config [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -481,25 +481,25 @@ rolodex-cli set-rbl-config [OPTIONS]
 Examples:
 ```bash
 # Enable RBL with Spamhaus
-rolodex-cli set-rbl-config -e -p "zen.spamhaus.org:true"
+rolodex-dns-cli set-rbl-config -e -p "zen.spamhaus.org:true"
 
 # Enable RBL with multiple providers (some disabled)
-rolodex-cli set-rbl-config -e \
+rolodex-dns-cli set-rbl-config -e \
   -p "zen.spamhaus.org:true" \
   -p "bl.spamcop.net:false" \
   -p "dnsbl.sorbs.net:true"
 
 # Disable RBL entirely
-rolodex-cli set-rbl-config
+rolodex-dns-cli set-rbl-config
 ```
 
 ##### `get-rbl-config`
 
 Retrieve the current RBL configuration.
-**gRPC path:** `/rolodex.RolodexService/GetRblConfig`
+**gRPC path:** `/rolodex_dns.RolodexDnsService/GetRblConfig`
 
 ```
-rolodex-cli get-rbl-config
+rolodex-dns-cli get-rbl-config
 ```
 
 Example output:
@@ -516,19 +516,19 @@ bl.spamcop.net                           false
 ##### `flush-cache`
 
 Flush the RBL result cache. Forces fresh lookups for subsequent reverse DNS queries.
-**gRPC path:** `/rolodex.RolodexService/FlushCache`
+**gRPC path:** `/rolodex_dns.RolodexDnsService/FlushCache`
 
 ```
-rolodex-cli flush-cache
+rolodex-dns-cli flush-cache
 ```
 
 ##### `create-scope`
 
 Create a new network scope with a reserved `.home` domain.
-**gRPC path:** `/rolodex.RolodexService/CreateNetworkScope`
+**gRPC path:** `/rolodex_dns.RolodexDnsService/CreateNetworkScope`
 
 ```
-rolodex-cli create-scope -n <NAME> [OPTIONS]
+rolodex-dns-cli create-scope -n <NAME> [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -539,20 +539,20 @@ rolodex-cli create-scope -n <NAME> [OPTIONS]
 Examples:
 ```bash
 # Create a scope with default home domain
-rolodex-cli create-scope -n office
+rolodex-dns-cli create-scope -n office
 # Creates scope "office" with home domain "office.home."
 
 # Create a scope with custom home domain
-rolodex-cli create-scope -n lab -d lab.internal.
+rolodex-dns-cli create-scope -n lab -d lab.internal.
 ```
 
 ##### `delete-scope`
 
 Delete a network scope and all its records and associations.
-**gRPC path:** `/rolodex.RolodexService/DeleteNetworkScope`
+**gRPC path:** `/rolodex_dns.RolodexDnsService/DeleteNetworkScope`
 
 ```
-rolodex-cli delete-scope -n <NAME>
+rolodex-dns-cli delete-scope -n <NAME>
 ```
 
 | Option | Default | Description |
@@ -562,19 +562,19 @@ rolodex-cli delete-scope -n <NAME>
 ##### `list-scopes`
 
 List all configured network scopes.
-**gRPC path:** `/rolodex.RolodexService/ListNetworkScopes`
+**gRPC path:** `/rolodex_dns.RolodexDnsService/ListNetworkScopes`
 
 ```
-rolodex-cli list-scopes
+rolodex-dns-cli list-scopes
 ```
 
 ##### `join-network`
 
 Associate an IP address with a network scope. The association has a TTL and must be refreshed regularly.
-**gRPC path:** `/rolodex.RolodexService/JoinNetwork`
+**gRPC path:** `/rolodex_dns.RolodexDnsService/JoinNetwork`
 
 ```
-rolodex-cli join-network -i <IP> -s <SCOPE> [OPTIONS]
+rolodex-dns-cli join-network -i <IP> -s <SCOPE> [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -586,19 +586,19 @@ rolodex-cli join-network -i <IP> -s <SCOPE> [OPTIONS]
 Examples:
 ```bash
 # Join with default TTL
-rolodex-cli join-network -i 192.168.1.100 -s office
+rolodex-dns-cli join-network -i 192.168.1.100 -s office
 
 # Join with custom TTL
-rolodex-cli join-network -i 10.0.0.5 -s lab --ttl 600
+rolodex-dns-cli join-network -i 10.0.0.5 -s lab --ttl 600
 ```
 
 ##### `leave-network`
 
 Remove an IP address's association with its network scope.
-**gRPC path:** `/rolodex.RolodexService/LeaveNetwork`
+**gRPC path:** `/rolodex_dns.RolodexDnsService/LeaveNetwork`
 
 ```
-rolodex-cli leave-network -i <IP>
+rolodex-dns-cli leave-network -i <IP>
 ```
 
 | Option | Default | Description |
@@ -608,10 +608,10 @@ rolodex-cli leave-network -i <IP>
 ##### `list-associations`
 
 List IP-to-scope associations, optionally filtered by scope.
-**gRPC path:** `/rolodex.RolodexService/GetNetworkAssociations`
+**gRPC path:** `/rolodex_dns.RolodexDnsService/GetNetworkAssociations`
 
 ```
-rolodex-cli list-associations [OPTIONS]
+rolodex-dns-cli list-associations [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -621,10 +621,10 @@ rolodex-cli list-associations [OPTIONS]
 ##### `add-scoped-record`
 
 Add a DNS record within a specific network scope. Scoped records are only visible to IPs associated with that scope.
-**gRPC path:** `/rolodex.RolodexService/AddScopedRecord`
+**gRPC path:** `/rolodex_dns.RolodexDnsService/AddScopedRecord`
 
 ```
-rolodex-cli add-scoped-record -s <SCOPE> -n <NAME> -v <VALUE> [OPTIONS]
+rolodex-dns-cli add-scoped-record -s <SCOPE> -n <NAME> -v <VALUE> [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -639,19 +639,19 @@ rolodex-cli add-scoped-record -s <SCOPE> -n <NAME> -v <VALUE> [OPTIONS]
 Examples:
 ```bash
 # Add a scoped A record
-rolodex-cli add-scoped-record -s office -n printer.office.home. -v 192.168.1.50
+rolodex-dns-cli add-scoped-record -s office -n printer.office.home. -v 192.168.1.50
 
 # Add a scoped CNAME
-rolodex-cli add-scoped-record -s lab -n app.lab.home. -r cname -v server.lab.home.
+rolodex-dns-cli add-scoped-record -s lab -n app.lab.home. -r cname -v server.lab.home.
 ```
 
 ##### `remove-scoped-record`
 
 Remove DNS records from a specific network scope.
-**gRPC path:** `/rolodex.RolodexService/RemoveScopedRecord`
+**gRPC path:** `/rolodex_dns.RolodexDnsService/RemoveScopedRecord`
 
 ```
-rolodex-cli remove-scoped-record -s <SCOPE> -n <NAME> [OPTIONS]
+rolodex-dns-cli remove-scoped-record -s <SCOPE> -n <NAME> [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -664,10 +664,10 @@ rolodex-cli remove-scoped-record -s <SCOPE> -n <NAME> [OPTIONS]
 ##### `list-scoped-records`
 
 List DNS records within a network scope.
-**gRPC path:** `/rolodex.RolodexService/ListScopedRecords`
+**gRPC path:** `/rolodex_dns.RolodexDnsService/ListScopedRecords`
 
 ```
-rolodex-cli list-scoped-records -s <SCOPE> [OPTIONS]
+rolodex-dns-cli list-scoped-records -s <SCOPE> [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -679,10 +679,10 @@ rolodex-cli list-scoped-records -s <SCOPE> [OPTIONS]
 ##### `get-search-domains`
 
 Retrieve the search domains for a client IP address.
-**gRPC path:** `/rolodex.RolodexService/GetSearchDomains`
+**gRPC path:** `/rolodex_dns.RolodexDnsService/GetSearchDomains`
 
 ```
-rolodex-cli get-search-domains -i <IP>
+rolodex-dns-cli get-search-domains -i <IP>
 ```
 
 | Option | Default | Description |
@@ -691,15 +691,15 @@ rolodex-cli get-search-domains -i <IP>
 
 ## gRPC API
 
-The management API is defined in `proto/rolodex.proto`. All methods accept an `auth_token` field for shared-secret authentication when connecting over TCP. Unix socket connections bypass authentication.
+The management API is defined in `proto/rolodex_dns.proto`. All methods accept an `auth_token` field for shared-secret authentication when connecting over TCP. Unix socket connections bypass authentication.
 
 See the proto file for the full API reference. The service defines 47 RPC methods covering record management, network scoping, encrypted transports, DNSSEC, DANE/ACME, caching, DNS64, and observability.
 
-### Service: `rolodex.RolodexService`
+### Service: `rolodex_dns.RolodexDnsService`
 
 #### `AddRecord`
 
-**Path:** `/rolodex.RolodexService/AddRecord`
+**Path:** `/rolodex_dns.RolodexDnsService/AddRecord`
 
 Adds a DNS record to the local database.
 
@@ -718,7 +718,7 @@ Adds a DNS record to the local database.
 
 #### `RemoveRecord`
 
-**Path:** `/rolodex.RolodexService/RemoveRecord`
+**Path:** `/rolodex_dns.RolodexDnsService/RemoveRecord`
 
 Removes DNS record(s) from the local database.
 
@@ -735,7 +735,7 @@ Removes DNS record(s) from the local database.
 
 #### `ListRecords`
 
-**Path:** `/rolodex.RolodexService/ListRecords`
+**Path:** `/rolodex_dns.RolodexDnsService/ListRecords`
 
 Queries the local DNS database with optional filters.
 
@@ -750,7 +750,7 @@ Queries the local DNS database with optional filters.
 
 #### `SetForwarders`
 
-**Path:** `/rolodex.RolodexService/SetForwarders`
+**Path:** `/rolodex_dns.RolodexDnsService/SetForwarders`
 
 Configures upstream DNS forwarders at runtime.
 
@@ -764,7 +764,7 @@ Configures upstream DNS forwarders at runtime.
 
 #### `SetRblConfig`
 
-**Path:** `/rolodex.RolodexService/SetRblConfig`
+**Path:** `/rolodex_dns.RolodexDnsService/SetRblConfig`
 
 Configures Realtime Blackhole List settings at runtime.
 
@@ -781,7 +781,7 @@ Configures Realtime Blackhole List settings at runtime.
 
 #### `GetRblConfig`
 
-**Path:** `/rolodex.RolodexService/GetRblConfig`
+**Path:** `/rolodex_dns.RolodexDnsService/GetRblConfig`
 
 Retrieves the current RBL configuration.
 
@@ -794,7 +794,7 @@ Retrieves the current RBL configuration.
 
 #### `FlushCache`
 
-**Path:** `/rolodex.RolodexService/FlushCache`
+**Path:** `/rolodex_dns.RolodexDnsService/FlushCache`
 
 Clears the RBL lookup cache.
 
@@ -807,7 +807,7 @@ Clears the RBL lookup cache.
 
 #### `CreateNetworkScope`
 
-**Path:** `/rolodex.RolodexService/CreateNetworkScope`
+**Path:** `/rolodex_dns.RolodexDnsService/CreateNetworkScope`
 
 Creates a new network scope with a reserved `.home` domain.
 
@@ -823,7 +823,7 @@ Creates a new network scope with a reserved `.home` domain.
 
 #### `DeleteNetworkScope`
 
-**Path:** `/rolodex.RolodexService/DeleteNetworkScope`
+**Path:** `/rolodex_dns.RolodexDnsService/DeleteNetworkScope`
 
 Deletes a network scope and all its records and associations.
 
@@ -837,7 +837,7 @@ Deletes a network scope and all its records and associations.
 
 #### `ListNetworkScopes`
 
-**Path:** `/rolodex.RolodexService/ListNetworkScopes`
+**Path:** `/rolodex_dns.RolodexDnsService/ListNetworkScopes`
 
 Retrieves all configured network scopes.
 
@@ -849,7 +849,7 @@ Retrieves all configured network scopes.
 
 #### `JoinNetwork`
 
-**Path:** `/rolodex.RolodexService/JoinNetwork`
+**Path:** `/rolodex_dns.RolodexDnsService/JoinNetwork`
 
 Associates a client IP address with a network scope. The association has a TTL that must be refreshed regularly to maintain DNS resolution.
 
@@ -865,7 +865,7 @@ Associates a client IP address with a network scope. The association has a TTL t
 
 #### `LeaveNetwork`
 
-**Path:** `/rolodex.RolodexService/LeaveNetwork`
+**Path:** `/rolodex_dns.RolodexDnsService/LeaveNetwork`
 
 Removes an IP address's association with its network scope.
 
@@ -879,7 +879,7 @@ Removes an IP address's association with its network scope.
 
 #### `GetNetworkAssociations`
 
-**Path:** `/rolodex.RolodexService/GetNetworkAssociations`
+**Path:** `/rolodex_dns.RolodexDnsService/GetNetworkAssociations`
 
 Retrieves IP-to-scope associations.
 
@@ -895,7 +895,7 @@ Retrieves IP-to-scope associations.
 
 #### `AddScopedRecord`
 
-**Path:** `/rolodex.RolodexService/AddScopedRecord`
+**Path:** `/rolodex_dns.RolodexDnsService/AddScopedRecord`
 
 Adds a DNS record within a specific network scope. Scoped records are only visible to IPs associated with that scope.
 
@@ -910,7 +910,7 @@ Adds a DNS record within a specific network scope. Scoped records are only visib
 
 #### `RemoveScopedRecord`
 
-**Path:** `/rolodex.RolodexService/RemoveScopedRecord`
+**Path:** `/rolodex_dns.RolodexDnsService/RemoveScopedRecord`
 
 Removes DNS records from a specific network scope.
 
@@ -928,7 +928,7 @@ Removes DNS records from a specific network scope.
 
 #### `ListScopedRecords`
 
-**Path:** `/rolodex.RolodexService/ListScopedRecords`
+**Path:** `/rolodex_dns.RolodexDnsService/ListScopedRecords`
 
 Queries DNS records within a network scope.
 
@@ -944,7 +944,7 @@ Queries DNS records within a network scope.
 
 #### `GetSearchDomains`
 
-**Path:** `/rolodex.RolodexService/GetSearchDomains`
+**Path:** `/rolodex_dns.RolodexDnsService/GetSearchDomains`
 
 Retrieves the search domains for a client IP address. Returns the `.home` domain of the scope the IP is associated with.
 
@@ -957,7 +957,7 @@ Retrieves the search domains for a client IP address. Returns the `.home` domain
 
 #### Additional gRPC Methods
 
-The following methods are also available. See `proto/rolodex.proto` for full request/response definitions.
+The following methods are also available. See `proto/rolodex_dns.proto` for full request/response definitions.
 
 | Method | Description |
 |--------|-------------|
@@ -1016,7 +1016,7 @@ The following methods are also available. See `proto/rolodex.proto` for full req
 
 ## Privacy-First Caching
 
-Rolodex caches DNS responses locally so that repeated queries for the same name are answered without contacting any upstream forwarder. This prevents DNS query leakage -- once a record has been cached, no external observer can see that the query was made again.
+Rolodex DNS caches DNS responses locally so that repeated queries for the same name are answered without contacting any upstream forwarder. This prevents DNS query leakage -- once a record has been cached, no external observer can see that the query was made again.
 
 The cache distinguishes between two kinds of entries:
 
@@ -1025,11 +1025,11 @@ The cache distinguishes between two kinds of entries:
 
 Cache statistics are available via `GetCacheStats` and the cache can be flushed via `FlushDnsCache`.
 
-For maximum privacy, set `forwarders: []` to run Rolodex as a purely authoritative server with no upstream forwarding at all. All answers will come from the local database.
+For maximum privacy, set `forwarders: []` to run Rolodex DNS as a purely authoritative server with no upstream forwarding at all. All answers will come from the local database.
 
 ## Encrypted Transports
 
-Rolodex supports three encrypted DNS transport protocols to prevent eavesdropping on DNS queries:
+Rolodex DNS supports three encrypted DNS transport protocols to prevent eavesdropping on DNS queries:
 
 **DNS-over-TLS (DoT)** -- RFC 7858, default port 853. Standard TLS-wrapped DNS over TCP. Configure with `dot` section in YAML or `SetDotConfig` via gRPC.
 
@@ -1037,11 +1037,11 @@ Rolodex supports three encrypted DNS transport protocols to prevent eavesdroppin
 
 **DNS-over-QUIC (DoQ)** -- RFC 9250, default port 8853. DNS queries over QUIC transport for low-latency encrypted resolution. Configure with `doq` section in YAML or `SetDoqConfig` via gRPC.
 
-All three protocols require TLS certificates. You can provide your own certificate and key, or set `auto_self_signed: true` to have Rolodex generate a self-signed certificate automatically.
+All three protocols require TLS certificates. You can provide your own certificate and key, or set `auto_self_signed: true` to have Rolodex DNS generate a self-signed certificate automatically.
 
 ## DNSSEC
 
-Rolodex supports DNSSEC zone signing with the following algorithms:
+Rolodex DNS supports DNSSEC zone signing with the following algorithms:
 
 - **Ed25519** (preferred) -- compact keys and signatures, fast signing
 - **ECDSA P-256/SHA-256** and **ECDSA P-384/SHA-384**
@@ -1053,25 +1053,25 @@ Ed448 is not supported due to a limitation in the ring cryptography crate.
 
 1. Generate a Key Signing Key (KSK) and Zone Signing Key (ZSK) for your zone:
    ```bash
-   rolodex-cli generate-dnssec-key --zone example.com. --algorithm ED25519 --key-type KSK
-   rolodex-cli generate-dnssec-key --zone example.com. --algorithm ED25519 --key-type ZSK
+   rolodex-dns-cli generate-dnssec-key --zone example.com. --algorithm ED25519 --key-type KSK
+   rolodex-dns-cli generate-dnssec-key --zone example.com. --algorithm ED25519 --key-type ZSK
    ```
 
 2. Sign the zone:
    ```bash
-   rolodex-cli sign-zone --zone example.com.
+   rolodex-dns-cli sign-zone --zone example.com.
    ```
 
 3. Retrieve DS records for your registrar:
    ```bash
-   rolodex-cli get-ds-records --zone example.com.
+   rolodex-dns-cli get-ds-records --zone example.com.
    ```
 
 Signing produces DNSKEY, RRSIG, NSEC/NSEC3, and NSEC3PARAM records automatically. Re-run `sign-zone` after adding or modifying records.
 
 ## DNS64
 
-DNS64 (RFC 6147) synthesizes AAAA records from A records for IPv6-only clients that need to reach IPv4-only hosts. When a client queries for a AAAA record and none exists, but an A record does, Rolodex constructs a synthetic AAAA by embedding the IPv4 address in the configured IPv6 prefix.
+DNS64 (RFC 6147) synthesizes AAAA records from A records for IPv6-only clients that need to reach IPv4-only hosts. When a client queries for a AAAA record and none exists, but an A record does, Rolodex DNS constructs a synthetic AAAA by embedding the IPv4 address in the configured IPv6 prefix.
 
 The default prefix is `64:ff9b::/96` (the well-known NAT64 prefix). For example, an A record of `192.0.2.1` would be synthesized as `64:ff9b::192.0.2.1` (`64:ff9b::c000:201`).
 
@@ -1086,21 +1086,21 @@ Or at runtime via gRPC: `SetDns64Config` / `GetDns64Config`.
 
 ## RBL (Realtime Blackhole List)
 
-When RBL is enabled, rolodex checks IP addresses found in reverse DNS queries against configured DNSBL providers. If an IP is listed in any enabled provider, the query receives an `NXDOMAIN` response.
+When RBL is enabled, Rolodex DNS checks IP addresses found in reverse DNS queries against configured DNSBL providers. If an IP is listed in any enabled provider, the query receives an `NXDOMAIN` response.
 
 ### Local RBL Database
 
-In addition to external RBL providers, Rolodex supports locally-managed blocklist entries. Local entries are checked before external providers and are managed via `AddLocalRblEntry`, `RemoveLocalRblEntry`, and `ListLocalRblEntries`.
+In addition to external RBL providers, Rolodex DNS supports locally-managed blocklist entries. Local entries are checked before external providers and are managed via `AddLocalRblEntry`, `RemoveLocalRblEntry`, and `ListLocalRblEntries`.
 
 ```bash
 # Block a specific IP with a reason
-rolodex-cli add-local-rbl-entry --name 10.0.0.5 --reason "known spam source"
+rolodex-dns-cli add-local-rbl-entry --name 10.0.0.5 --reason "known spam source"
 
 # List local entries
-rolodex-cli list-local-rbl-entries
+rolodex-dns-cli list-local-rbl-entries
 
 # Remove an entry
-rolodex-cli remove-local-rbl-entry --name 10.0.0.5
+rolodex-dns-cli remove-local-rbl-entry --name 10.0.0.5
 ```
 
 ### Default Providers
@@ -1120,7 +1120,7 @@ These match the common providers used by unbound and other DNS resolvers:
 1. A reverse DNS query arrives (e.g. `100.1.168.192.in-addr.arpa.`)
 2. The IP is extracted from the query name (`192.168.1.100`)
 3. Local RBL entries are checked first
-4. For each enabled RBL provider, rolodex constructs a query: `<reversed-ip>.<rbl-zone>`
+4. For each enabled RBL provider, Rolodex DNS constructs a query: `<reversed-ip>.<rbl-zone>`
 5. If any RBL responds with an A record, the IP is considered listed
 6. Results are cached in memory for the TTL returned by the RBL
 7. Listed IPs receive `NXDOMAIN` for the original query
@@ -1174,12 +1174,12 @@ Network scoping provides split-horizon DNS views, allowing different DNS respons
 
 ## Go Client
 
-A Go client library is included at `go/` for programmatic access to the Rolodex gRPC API. It can be imported as a Go module dependency.
+A Go client library is included at `go/` for programmatic access to the Rolodex DNS gRPC API. It can be imported as a Go module dependency.
 
 ### Installation
 
 ```
-go get gitea.com/town-os/rolodex/go
+go get gitea.com/town-os/rolodex-dns/go
 ```
 
 ### Connecting
@@ -1189,8 +1189,8 @@ The client supports two transports:
 **TCP** (with shared-secret authentication):
 
 ```go
-client, err := rolodex.Dial(ctx, "localhost:50051",
-    rolodex.WithAuthToken("my-secret"),
+client, err := rolodex_dns.Dial(ctx, "localhost:50051",
+    rolodex_dns.WithAuthToken("my-secret"),
 )
 defer client.Close()
 ```
@@ -1198,8 +1198,8 @@ defer client.Close()
 **Unix socket** (authentication bypassed server-side):
 
 ```go
-client, err := rolodex.Dial(ctx, "/var/run/rolodex.sock",
-    rolodex.WithUnixSocket(),
+client, err := rolodex_dns.Dial(ctx, "/var/run/rolodex-dns.sock",
+    rolodex_dns.WithUnixSocket(),
 )
 defer client.Close()
 ```

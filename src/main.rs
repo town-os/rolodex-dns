@@ -1,25 +1,25 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use rolodex::config::Config;
-use rolodex::db::Database;
-use rolodex::dns_cache::DnsCache;
-use rolodex::dns_server::DnsServer;
-use rolodex::grpc_service::proto::rolodex_service_server::RolodexServiceServer;
-use rolodex::grpc_service::RolodexGrpcService;
-use rolodex::rbl::{RblChecker, RblProvider};
+use rolodex_dns::config::Config;
+use rolodex_dns::db::Database;
+use rolodex_dns::dns_cache::DnsCache;
+use rolodex_dns::dns_server::DnsServer;
+use rolodex_dns::grpc_service::proto::rolodex_dns_service_server::RolodexDnsServiceServer;
+use rolodex_dns::grpc_service::RolodexDnsGrpcService;
+use rolodex_dns::rbl::{RblChecker, RblProvider};
 use std::net::{Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::net::UnixListener;
 use tonic::transport::Server;
 use tracing::{error, info};
 
-/// Rolodex - Split-horizon DNS server with gRPC management
+/// Rolodex DNS - Split-horizon DNS server with gRPC management
 #[derive(Parser)]
-#[command(name = "rolodex")]
+#[command(name = "rolodex-dns")]
 #[command(about = "A split-horizon DNS server and forwarding resolver")]
 struct Cli {
     /// Path to configuration file
-    #[arg(short, long, default_value = "rolodex.yml")]
+    #[arg(short, long, default_value = "rolodex-dns.yml")]
     config: String,
 }
 
@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("rolodex=info".parse().unwrap()),
+                .add_directive("rolodex_dns=info".parse().unwrap()),
         )
         .init();
 
@@ -111,19 +111,19 @@ async fn main() -> Result<()> {
 
     // Spawn DNS-over-TLS (DoT) server if configured
     if let Some(ref dot_config) = config.dot {
-        let tls_cfg = rolodex::tls::TlsConfig {
+        let tls_cfg = rolodex_dns::tls::TlsConfig {
             cert_path: dot_config.tls.cert_path.clone(),
             key_path: dot_config.tls.key_path.clone(),
             auto_self_signed: dot_config.tls.auto_self_signed,
         };
-        match rolodex::tls::TlsManager::new(tls_cfg, vec![]) {
+        match rolodex_dns::tls::TlsManager::new(tls_cfg, vec![]) {
             Ok(tls_mgr) => {
                 let dot_bind = dot_config.bind.clone();
                 let dot_dns = Arc::clone(&dns_server);
                 let acceptor = tokio_rustls::TlsAcceptor::from(tls_mgr.server_config());
                 tokio::spawn(async move {
                     if let Err(e) =
-                        rolodex::dot_server::serve_dot(&dot_bind, dot_dns, acceptor).await
+                        rolodex_dns::dot_server::serve_dot(&dot_bind, dot_dns, acceptor).await
                     {
                         error!("DoT server error: {}", e);
                     }
@@ -135,19 +135,19 @@ async fn main() -> Result<()> {
 
     // Spawn DNS-over-HTTPS (DoH) server if configured
     if let Some(ref doh_config) = config.doh {
-        let tls_cfg = rolodex::tls::TlsConfig {
+        let tls_cfg = rolodex_dns::tls::TlsConfig {
             cert_path: doh_config.tls.cert_path.clone(),
             key_path: doh_config.tls.key_path.clone(),
             auto_self_signed: doh_config.tls.auto_self_signed,
         };
-        match rolodex::tls::TlsManager::new(tls_cfg, vec![b"h2".to_vec(), b"http/1.1".to_vec()]) {
+        match rolodex_dns::tls::TlsManager::new(tls_cfg, vec![b"h2".to_vec(), b"http/1.1".to_vec()]) {
             Ok(tls_mgr) => {
                 let doh_bind = doh_config.bind.clone();
                 let doh_dns = Arc::clone(&dns_server);
                 let server_config = tls_mgr.server_config();
                 tokio::spawn(async move {
                     if let Err(e) =
-                        rolodex::doh_server::serve_doh(&doh_bind, doh_dns, server_config).await
+                        rolodex_dns::doh_server::serve_doh(&doh_bind, doh_dns, server_config).await
                     {
                         error!("DoH server error: {}", e);
                     }
@@ -159,19 +159,19 @@ async fn main() -> Result<()> {
 
     // Spawn DNS-over-QUIC (DoQ) server if configured
     if let Some(ref doq_config) = config.doq {
-        let tls_cfg = rolodex::tls::TlsConfig {
+        let tls_cfg = rolodex_dns::tls::TlsConfig {
             cert_path: doq_config.tls.cert_path.clone(),
             key_path: doq_config.tls.key_path.clone(),
             auto_self_signed: doq_config.tls.auto_self_signed,
         };
-        match rolodex::tls::TlsManager::new(tls_cfg, vec![b"doq".to_vec()]) {
+        match rolodex_dns::tls::TlsManager::new(tls_cfg, vec![b"doq".to_vec()]) {
             Ok(tls_mgr) => {
                 let doq_bind = doq_config.bind.clone();
                 let doq_dns = Arc::clone(&dns_server);
                 let server_config = tls_mgr.server_config();
                 tokio::spawn(async move {
                     if let Err(e) =
-                        rolodex::doq_server::serve_doq(&doq_bind, doq_dns, server_config).await
+                        rolodex_dns::doq_server::serve_doq(&doq_bind, doq_dns, server_config).await
                     {
                         error!("DoQ server error: {}", e);
                     }
@@ -183,7 +183,7 @@ async fn main() -> Result<()> {
 
     // Spawn gRPC TCP server
     if !config.grpc.tcp_bind.is_empty() {
-        let grpc_service = RolodexGrpcService::new(
+        let grpc_service = RolodexDnsGrpcService::new(
             db.clone(),
             Arc::clone(&dns_server),
             rbl.clone(),
@@ -194,7 +194,7 @@ async fn main() -> Result<()> {
         info!("gRPC TCP server listening on {}", addr);
         tokio::spawn(async move {
             if let Err(e) = Server::builder()
-                .add_service(RolodexServiceServer::new(grpc_service))
+                .add_service(RolodexDnsServiceServer::new(grpc_service))
                 .serve(addr)
                 .await
             {
@@ -212,7 +212,7 @@ async fn main() -> Result<()> {
         let uds = UnixListener::bind(&socket_path).context("failed to bind Unix socket")?;
         let uds_stream = tokio_stream::wrappers::UnixListenerStream::new(uds);
 
-        let grpc_service = RolodexGrpcService::new(
+        let grpc_service = RolodexDnsGrpcService::new(
             db.clone(),
             Arc::clone(&dns_server),
             rbl.clone(),
@@ -222,7 +222,7 @@ async fn main() -> Result<()> {
         info!("gRPC Unix socket server listening on {}", socket_path);
         tokio::spawn(async move {
             if let Err(e) = Server::builder()
-                .add_service(RolodexServiceServer::new(grpc_service))
+                .add_service(RolodexDnsServiceServer::new(grpc_service))
                 .serve_with_incoming(uds_stream)
                 .await
             {

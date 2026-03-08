@@ -7,10 +7,10 @@
 ///   6. Authoritative zones (AA bit, NXDOMAIN)
 ///   7. New record types (SSHFP, TLSA)
 ///   8. DNS64 synthesis
-use rolodex::db::{Database, DnsRecord, RecordKind};
-use rolodex::dns_cache::DnsCache;
-use rolodex::dns_server::DnsServer;
-use rolodex::rbl::{RblChecker, RblResolver};
+use rolodex_dns::db::{Database, DnsRecord, RecordKind};
+use rolodex_dns::dns_cache::DnsCache;
+use rolodex_dns::dns_server::DnsServer;
+use rolodex_dns::rbl::{RblChecker, RblResolver};
 use std::net::Ipv6Addr;
 use std::sync::Arc;
 
@@ -1083,14 +1083,14 @@ async fn test_dname_in_scoped_records() {
     let db = Database::open_memory().unwrap();
 
     // Create scope
-    db.create_network_scope(&rolodex::db::NetworkScope {
+    db.create_network_scope(&rolodex_dns::db::NetworkScope {
         name: "dnamescope".to_string(),
         home_domain: "dnamescope.home".to_string(),
     })
     .unwrap();
 
     // Associate IP
-    db.join_network(&rolodex::db::NetworkAssociation {
+    db.join_network(&rolodex_dns::db::NetworkAssociation {
         ip_address: "192.168.10.1".to_string(),
         scope_name: "dnamescope".to_string(),
         ttl_seconds: 3600,
@@ -1225,7 +1225,7 @@ async fn test_doh_post_handler() {
     .unwrap();
 
     let server = make_server(db);
-    let app = rolodex::doh_server::build_router(server);
+    let app = rolodex_dns::doh_server::build_router(server);
 
     let dns_query = build_dns_query("doh.example.com.", RecordType::A);
 
@@ -1264,7 +1264,7 @@ async fn test_doh_get_handler_base64url() {
     .unwrap();
 
     let server = make_server(db);
-    let app = rolodex::doh_server::build_router(server);
+    let app = rolodex_dns::doh_server::build_router(server);
 
     let dns_query = build_dns_query("dohget.example.com.", RecordType::A);
     let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&dns_query);
@@ -1291,7 +1291,7 @@ async fn test_doh_get_missing_param() {
 
     let db = Database::open_memory().unwrap();
     let server = make_server(db);
-    let app = rolodex::doh_server::build_router(server);
+    let app = rolodex_dns::doh_server::build_router(server);
 
     let request = HttpRequest::builder()
         .method("GET")
@@ -1311,7 +1311,7 @@ async fn test_doh_get_invalid_base64() {
 
     let db = Database::open_memory().unwrap();
     let server = make_server(db);
-    let app = rolodex::doh_server::build_router(server);
+    let app = rolodex_dns::doh_server::build_router(server);
 
     let request = HttpRequest::builder()
         .method("GET")
@@ -1341,7 +1341,7 @@ async fn test_doh_cache_control_header() {
     .unwrap();
 
     let server = make_server(db);
-    let app = rolodex::doh_server::build_router(server);
+    let app = rolodex_dns::doh_server::build_router(server);
 
     let dns_query = build_dns_query("cc.example.com.", RecordType::A);
     let request = HttpRequest::builder()
@@ -1362,7 +1362,7 @@ async fn test_doh_cache_control_header() {
 
 #[test]
 fn test_proxy_config_parsing() {
-    use rolodex::doh_proxy::{ProxyConfig, ProxyMode};
+    use rolodex_dns::doh_proxy::{ProxyConfig, ProxyMode};
     let _cfg = ProxyConfig {
         url: "http://proxy:8080".to_string(),
         auth: None,
@@ -1441,19 +1441,19 @@ async fn test_cache_no_upstream_by_default() {
 
 #[test]
 fn test_fancy_duration_compound() {
-    use rolodex::ttl_drift::parse_duration_secs;
+    use rolodex_dns::ttl_drift::parse_duration_secs;
     assert_eq!(parse_duration_secs("1h30m"), Some(5400));
 }
 
 #[test]
 fn test_fancy_duration_negative() {
-    use rolodex::ttl_drift::parse_duration_secs;
+    use rolodex_dns::ttl_drift::parse_duration_secs;
     assert_eq!(parse_duration_secs("-1h30m"), Some(-5400));
 }
 
 #[test]
 fn test_ttl_drift_applied_to_cached_records() {
-    use rolodex::ttl_drift::apply_fixed_drift;
+    use rolodex_dns::ttl_drift::apply_fixed_drift;
     let result = apply_fixed_drift(300, 60);
     assert_eq!(result, 360);
 
@@ -1463,7 +1463,7 @@ fn test_ttl_drift_applied_to_cached_records() {
 
 #[test]
 fn test_ttl_drift_logarithmic_integration() {
-    use rolodex::ttl_drift::apply_logarithmic_drift;
+    use rolodex_dns::ttl_drift::apply_logarithmic_drift;
     // High latency (200ms vs 50ms baseline) should increase TTL
     let result = apply_logarithmic_drift(300, 200.0, 0.5);
     assert!(result > 300);
@@ -1481,7 +1481,7 @@ fn test_ttl_drift_logarithmic_integration() {
 async fn test_grpc_generate_dnssec_key_ed25519() {
     let service = make_grpc_service();
     let resp = service.generate_dnssec_key(tonic::Request::new(
-        rolodex::grpc_service::proto::GenerateDnssecKeyRequest {
+        rolodex_dns::grpc_service::proto::GenerateDnssecKeyRequest {
             zone: "example.com.".to_string(),
             algorithm: "ed25519".to_string(),
             key_type: "ZSK".to_string(),
@@ -1500,7 +1500,7 @@ async fn test_grpc_generate_dnssec_key_ed25519() {
 async fn test_grpc_generate_dnssec_key_ecdsa() {
     let service = make_grpc_service();
     let resp = service.generate_dnssec_key(tonic::Request::new(
-        rolodex::grpc_service::proto::GenerateDnssecKeyRequest {
+        rolodex_dns::grpc_service::proto::GenerateDnssecKeyRequest {
             zone: "example.com.".to_string(),
             algorithm: "ecdsa-p256".to_string(),
             key_type: "ZSK".to_string(),
@@ -1519,7 +1519,7 @@ async fn test_grpc_list_dnssec_keys() {
 
     // Generate two keys
     service.generate_dnssec_key(tonic::Request::new(
-        rolodex::grpc_service::proto::GenerateDnssecKeyRequest {
+        rolodex_dns::grpc_service::proto::GenerateDnssecKeyRequest {
             zone: "list.example.com.".to_string(),
             algorithm: "ed25519".to_string(),
             key_type: "ZSK".to_string(),
@@ -1528,7 +1528,7 @@ async fn test_grpc_list_dnssec_keys() {
     )).await.unwrap();
 
     service.generate_dnssec_key(tonic::Request::new(
-        rolodex::grpc_service::proto::GenerateDnssecKeyRequest {
+        rolodex_dns::grpc_service::proto::GenerateDnssecKeyRequest {
             zone: "list.example.com.".to_string(),
             algorithm: "ed25519".to_string(),
             key_type: "KSK".to_string(),
@@ -1537,7 +1537,7 @@ async fn test_grpc_list_dnssec_keys() {
     )).await.unwrap();
 
     let resp = service.list_dnssec_keys(tonic::Request::new(
-        rolodex::grpc_service::proto::ListDnssecKeysRequest {
+        rolodex_dns::grpc_service::proto::ListDnssecKeysRequest {
             zone: "list.example.com.".to_string(),
             auth_token: String::new(),
         },
@@ -1551,7 +1551,7 @@ async fn test_grpc_delete_dnssec_key() {
     let service = make_grpc_service();
 
     let gen_resp = service.generate_dnssec_key(tonic::Request::new(
-        rolodex::grpc_service::proto::GenerateDnssecKeyRequest {
+        rolodex_dns::grpc_service::proto::GenerateDnssecKeyRequest {
             zone: "del.example.com.".to_string(),
             algorithm: "ed25519".to_string(),
             key_type: "ZSK".to_string(),
@@ -1562,7 +1562,7 @@ async fn test_grpc_delete_dnssec_key() {
     let key_id = gen_resp.key.unwrap().id;
 
     let del_resp = service.delete_dnssec_key(tonic::Request::new(
-        rolodex::grpc_service::proto::DeleteDnssecKeyRequest {
+        rolodex_dns::grpc_service::proto::DeleteDnssecKeyRequest {
             key_id,
             auth_token: String::new(),
         },
@@ -1572,7 +1572,7 @@ async fn test_grpc_delete_dnssec_key() {
 
     // Verify it's gone
     let list_resp = service.list_dnssec_keys(tonic::Request::new(
-        rolodex::grpc_service::proto::ListDnssecKeysRequest {
+        rolodex_dns::grpc_service::proto::ListDnssecKeysRequest {
             zone: "del.example.com.".to_string(),
             auth_token: String::new(),
         },
@@ -1586,7 +1586,7 @@ async fn test_grpc_get_ds_records() {
     let service = make_grpc_service();
 
     service.generate_dnssec_key(tonic::Request::new(
-        rolodex::grpc_service::proto::GenerateDnssecKeyRequest {
+        rolodex_dns::grpc_service::proto::GenerateDnssecKeyRequest {
             zone: "ds.example.com.".to_string(),
             algorithm: "ed25519".to_string(),
             key_type: "KSK".to_string(),
@@ -1595,7 +1595,7 @@ async fn test_grpc_get_ds_records() {
     )).await.unwrap();
 
     let resp = service.get_ds_records(tonic::Request::new(
-        rolodex::grpc_service::proto::GetDsRecordsRequest {
+        rolodex_dns::grpc_service::proto::GetDsRecordsRequest {
             zone: "ds.example.com.".to_string(),
             auth_token: String::new(),
         },
@@ -1611,7 +1611,7 @@ async fn test_grpc_sign_zone() {
 
     // Generate a key first
     service.generate_dnssec_key(tonic::Request::new(
-        rolodex::grpc_service::proto::GenerateDnssecKeyRequest {
+        rolodex_dns::grpc_service::proto::GenerateDnssecKeyRequest {
             zone: "sign.example.com.".to_string(),
             algorithm: "ed25519".to_string(),
             key_type: "ZSK".to_string(),
@@ -1620,7 +1620,7 @@ async fn test_grpc_sign_zone() {
     )).await.unwrap();
 
     let resp = service.sign_zone(tonic::Request::new(
-        rolodex::grpc_service::proto::SignZoneRequest {
+        rolodex_dns::grpc_service::proto::SignZoneRequest {
             zone: "sign.example.com.".to_string(),
             auth_token: String::new(),
         },
@@ -1639,14 +1639,14 @@ async fn test_grpc_generate_tlsa_record() {
 
     // First generate a CA to get a cert PEM
     let ca_resp = service.generate_dane_root_ca(tonic::Request::new(
-        rolodex::grpc_service::proto::GenerateDaneRootCaRequest {
+        rolodex_dns::grpc_service::proto::GenerateDaneRootCaRequest {
             name: "Test CA".to_string(),
             auth_token: String::new(),
         },
     )).await.unwrap().into_inner();
 
     let resp = service.generate_tlsa_record(tonic::Request::new(
-        rolodex::grpc_service::proto::GenerateTlsaRecordRequest {
+        rolodex_dns::grpc_service::proto::GenerateTlsaRecordRequest {
             domain: "example.com.".to_string(),
             port: 443,
             protocol: "tcp".to_string(),
@@ -1668,14 +1668,14 @@ async fn test_grpc_list_tlsa_records() {
 
     // Generate a CA and TLSA record
     let ca_resp = service.generate_dane_root_ca(tonic::Request::new(
-        rolodex::grpc_service::proto::GenerateDaneRootCaRequest {
+        rolodex_dns::grpc_service::proto::GenerateDaneRootCaRequest {
             name: "TLSA List CA".to_string(),
             auth_token: String::new(),
         },
     )).await.unwrap().into_inner();
 
     service.generate_tlsa_record(tonic::Request::new(
-        rolodex::grpc_service::proto::GenerateTlsaRecordRequest {
+        rolodex_dns::grpc_service::proto::GenerateTlsaRecordRequest {
             domain: "tlsalist.example.com.".to_string(),
             port: 443,
             protocol: "tcp".to_string(),
@@ -1688,7 +1688,7 @@ async fn test_grpc_list_tlsa_records() {
     )).await.unwrap();
 
     let resp = service.list_tlsa_records(tonic::Request::new(
-        rolodex::grpc_service::proto::ListTlsaRecordsRequest {
+        rolodex_dns::grpc_service::proto::ListTlsaRecordsRequest {
             domain: "tlsalist.example.com.".to_string(),
             auth_token: String::new(),
         },
@@ -1701,7 +1701,7 @@ async fn test_grpc_list_tlsa_records() {
 async fn test_grpc_generate_dane_root_ca() {
     let service = make_grpc_service();
     let resp = service.generate_dane_root_ca(tonic::Request::new(
-        rolodex::grpc_service::proto::GenerateDaneRootCaRequest {
+        rolodex_dns::grpc_service::proto::GenerateDaneRootCaRequest {
             name: "My Root CA".to_string(),
             auth_token: String::new(),
         },
@@ -1717,7 +1717,7 @@ async fn test_grpc_acme_challenge_dns() {
 
     // Request an ACME cert (provisions DNS-01 challenge)
     let resp = service.request_acme_cert(tonic::Request::new(
-        rolodex::grpc_service::proto::RequestAcmeCertRequest {
+        rolodex_dns::grpc_service::proto::RequestAcmeCertRequest {
             domain: "acme.example.com.".to_string(),
             provider_url: "https://acme.test/directory".to_string(),
             auth_token: String::new(),
@@ -1728,7 +1728,7 @@ async fn test_grpc_acme_challenge_dns() {
 
     // Check status is pending
     let status = service.get_acme_status(tonic::Request::new(
-        rolodex::grpc_service::proto::GetAcmeStatusRequest {
+        rolodex_dns::grpc_service::proto::GetAcmeStatusRequest {
             domain: "acme.example.com.".to_string(),
             auth_token: String::new(),
         },
@@ -1743,7 +1743,7 @@ async fn test_grpc_acme_challenge_dns() {
 
 #[test]
 fn test_qname_randomization_changes_case() {
-    use rolodex::dns_server::randomize_qname_case;
+    use rolodex_dns::dns_server::randomize_qname_case;
     let query = build_dns_query("example.com.", RecordType::A);
     if let Some((modified, _original, _randomized)) = randomize_qname_case(&query) {
         // The modified query should differ in case from original
@@ -1756,7 +1756,7 @@ fn test_qname_randomization_changes_case() {
 fn test_qname_randomization_preserves_non_alpha() {
     // Verify the basic DNS query structure is preserved
     let query = build_dns_query("123.example.com.", RecordType::A);
-    if let Some((modified, _original, _randomized)) = rolodex::dns_server::randomize_qname_case(&query) {
+    if let Some((modified, _original, _randomized)) = rolodex_dns::dns_server::randomize_qname_case(&query) {
         let msg = Message::from_bytes(&modified).unwrap();
         let qname = msg.queries()[0].name().to_string().to_lowercase();
         assert_eq!(qname, "123.example.com.");
@@ -1903,7 +1903,7 @@ async fn test_network_scope_refuses_unassociated() {
     let db = Database::open_memory().unwrap();
 
     // Create a scope
-    db.create_network_scope(&rolodex::db::NetworkScope {
+    db.create_network_scope(&rolodex_dns::db::NetworkScope {
         name: "testscope".to_string(),
         home_domain: "testscope.home.".to_string(),
     })
@@ -2063,7 +2063,7 @@ async fn test_rfc6147_dns64_multiple_a_records() {
 
 #[tokio::test]
 async fn test_rfc5782_rbl_query_format() {
-    use rolodex::rbl::build_rbl_query;
+    use rolodex_dns::rbl::build_rbl_query;
     let ip: std::net::IpAddr = "192.0.2.1".parse().unwrap();
     let query = build_rbl_query(&ip, "dnsbl.example.com.");
     assert_eq!(query, "1.2.0.192.dnsbl.example.com.");
@@ -2415,8 +2415,8 @@ async fn test_grpc_set_get_ttl_drift_config() {
 
     // Set fixed mode
     service.set_ttl_drift_config(tonic::Request::new(
-        rolodex::grpc_service::proto::SetTtlDriftConfigRequest {
-            config: Some(rolodex::grpc_service::proto::TtlDriftConfig {
+        rolodex_dns::grpc_service::proto::SetTtlDriftConfigRequest {
+            config: Some(rolodex_dns::grpc_service::proto::TtlDriftConfig {
                 mode: "fixed".to_string(),
                 fixed_adjustment: "30s".to_string(),
                 log_multiplier: 0.0,
@@ -2426,7 +2426,7 @@ async fn test_grpc_set_get_ttl_drift_config() {
     )).await.unwrap();
 
     let resp = service.get_ttl_drift_config(tonic::Request::new(
-        rolodex::grpc_service::proto::GetTtlDriftConfigRequest {
+        rolodex_dns::grpc_service::proto::GetTtlDriftConfigRequest {
             auth_token: String::new(),
         },
     )).await.unwrap().into_inner();
@@ -2441,8 +2441,8 @@ async fn test_grpc_set_get_dns64_config() {
     let service = make_grpc_service();
 
     service.set_dns64_config(tonic::Request::new(
-        rolodex::grpc_service::proto::SetDns64ConfigRequest {
-            config: Some(rolodex::grpc_service::proto::Dns64Config {
+        rolodex_dns::grpc_service::proto::SetDns64ConfigRequest {
+            config: Some(rolodex_dns::grpc_service::proto::Dns64Config {
                 enabled: true,
                 prefix: "64:ff9b::".to_string(),
             }),
@@ -2451,7 +2451,7 @@ async fn test_grpc_set_get_dns64_config() {
     )).await.unwrap();
 
     let resp = service.get_dns64_config(tonic::Request::new(
-        rolodex::grpc_service::proto::GetDns64ConfigRequest {
+        rolodex_dns::grpc_service::proto::GetDns64ConfigRequest {
             auth_token: String::new(),
         },
     )).await.unwrap().into_inner();
@@ -2463,11 +2463,11 @@ async fn test_grpc_set_get_dns64_config() {
 // gRPC service helper for tests
 // ========================================================
 
-use rolodex::grpc_service::proto::rolodex_service_server::RolodexService;
+use rolodex_dns::grpc_service::proto::rolodex_dns_service_server::RolodexDnsService;
 
-fn make_grpc_service() -> rolodex::grpc_service::RolodexGrpcService {
+fn make_grpc_service() -> rolodex_dns::grpc_service::RolodexDnsGrpcService {
     let db = Database::open_memory().unwrap();
     let rbl = make_rbl();
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
-    rolodex::grpc_service::RolodexGrpcService::new(db, dns_server, rbl, String::new(), true)
+    rolodex_dns::grpc_service::RolodexDnsGrpcService::new(db, dns_server, rbl, String::new(), true)
 }

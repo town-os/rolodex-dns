@@ -7,8 +7,8 @@ INSTANCE_ID := $(shell echo -n "$(CURDIR)" | md5sum | cut -c1-8)
 export INSTANCE_ID
 
 # Image names (unique per working directory).
-PODMAN_BUILD_IMAGE := rolodex-build-$(INSTANCE_ID)
-RELEASE_IMAGE      := gitea.com/town-os/rolodex
+PODMAN_BUILD_IMAGE := rolodex-dns-build-$(INSTANCE_ID)
+RELEASE_IMAGE      := gitea.com/town-os/rolodex-dns
 export PODMAN_BUILD_IMAGE RELEASE_IMAGE
 
 .PHONY: test build clean go-test go-integration-test dev dev-release install
@@ -27,20 +27,20 @@ go-test: go-integration-test
 	cd go && go test -v -count=1 ./...
 
 go-integration-test: build
-	cd go && ROLODEX_BINARY=$(CURDIR)/target/debug/rolodex go test -v -count=1 -tags=integration ./...
+	cd go && ROLODEX_DNS_BINARY=$(CURDIR)/target/debug/rolodex-dns go test -v -count=1 -tags=integration ./...
 
 install:
 	cargo install --path .
 
 dev-release:
 	cargo build --release
-	@echo "Starting rolodex dev server on 127.0.0.1:5300 with socket at /tmp/rolodex.sock"
-	$(CURDIR)/target/release/rolodex -c $(CURDIR)/dev.yml
+	@echo "Starting rolodex-dns dev server on 127.0.0.1:5300 with socket at /tmp/rolodex-dns.sock"
+	$(CURDIR)/target/release/rolodex-dns -c $(CURDIR)/dev.yml
 
 dev:
 	cargo build
-	@echo "Starting rolodex dev server on 127.0.0.1:5300 with socket at /tmp/rolodex.sock"
-	$(CURDIR)/target/debug/rolodex -c $(CURDIR)/dev.yml
+	@echo "Starting rolodex-dns dev server on 127.0.0.1:5300 with socket at /tmp/rolodex-dns.sock"
+	$(CURDIR)/target/debug/rolodex-dns -c $(CURDIR)/dev.yml
 
 # ---------------------------------------------------------------------------
 # Container targets

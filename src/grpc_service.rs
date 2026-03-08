@@ -8,15 +8,15 @@ use tonic::{Request, Response, Status};
 use tracing::info;
 
 pub mod proto {
-    tonic::include_proto!("rolodex");
+    tonic::include_proto!("rolodex_dns");
 }
 
-use proto::rolodex_service_server::RolodexService;
+use proto::rolodex_dns_service_server::RolodexDnsService;
 #[allow(unused_imports)]
 use proto::*;
 
-/// The gRPC service implementation for managing rolodex.
-pub struct RolodexGrpcService {
+/// The gRPC service implementation for managing rolodex-dns.
+pub struct RolodexDnsGrpcService {
     db: Database,
     dns_server: Arc<DnsServer>,
     rbl: Arc<RblChecker>,
@@ -26,7 +26,7 @@ pub struct RolodexGrpcService {
     is_unix: bool,
 }
 
-impl RolodexGrpcService {
+impl RolodexDnsGrpcService {
     pub fn new(
         db: Database,
         dns_server: Arc<DnsServer>,
@@ -60,7 +60,7 @@ impl RolodexGrpcService {
 }
 
 #[tonic::async_trait]
-impl RolodexService for RolodexGrpcService {
+impl RolodexDnsService for RolodexDnsGrpcService {
     async fn add_record(
         &self,
         request: Request<AddRecordRequest>,
@@ -1335,7 +1335,7 @@ mod tests {
         }
     }
 
-    fn make_test_service() -> RolodexGrpcService {
+    fn make_test_service() -> RolodexDnsGrpcService {
         let db = Database::open_memory().unwrap();
         let rbl = Arc::new(RblChecker::with_resolver(
             false,
@@ -1343,10 +1343,10 @@ mod tests {
             Arc::new(NeverListedResolver),
         ));
         let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
-        RolodexGrpcService::new(db, dns_server, rbl, "secret123".to_string(), false)
+        RolodexDnsGrpcService::new(db, dns_server, rbl, "secret123".to_string(), false)
     }
 
-    fn make_unix_service() -> RolodexGrpcService {
+    fn make_unix_service() -> RolodexDnsGrpcService {
         let db = Database::open_memory().unwrap();
         let rbl = Arc::new(RblChecker::with_resolver(
             false,
@@ -1354,7 +1354,7 @@ mod tests {
             Arc::new(NeverListedResolver),
         ));
         let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
-        RolodexGrpcService::new(db, dns_server, rbl, "secret123".to_string(), true)
+        RolodexDnsGrpcService::new(db, dns_server, rbl, "secret123".to_string(), true)
     }
 
     #[test]
@@ -1385,7 +1385,7 @@ mod tests {
             Arc::new(NeverListedResolver),
         ));
         let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
-        let service = RolodexGrpcService::new(db, dns_server, rbl, String::new(), false);
+        let service = RolodexDnsGrpcService::new(db, dns_server, rbl, String::new(), false);
         assert!(service.check_auth("anything").is_ok());
     }
 

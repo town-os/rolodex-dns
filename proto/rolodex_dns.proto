@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-package rolodex;
+package rolodex_dns;
 
-option go_package = "gitea.com/town-os/rolodex/go/rolodexpb";
+option go_package = "gitea.com/town-os/rolodex-dns/go/rolodexdnspb";
 
 // RecordType enumerates the supported DNS record types.
 enum RecordType {
@@ -805,201 +805,201 @@ message GetDns64ConfigResponse {
   Dns64Config config = 1;
 }
 
-// RolodexService provides the gRPC management interface for rolodex.
+// RolodexDnsService provides the gRPC management interface for rolodex-dns.
 //
 // All methods accept an auth_token field for shared-secret authentication.
 // When connecting over a unix socket, the auth_token is ignored.
-service RolodexService {
+service RolodexDnsService {
   // AddRecord adds a DNS record to the local database.
-  // Path: /rolodex.RolodexService/AddRecord
+  // Path: /rolodex_dns.RolodexDnsService/AddRecord
   rpc AddRecord(AddRecordRequest) returns (AddRecordResponse);
 
   // RemoveRecord removes DNS record(s) from the local database.
-  // Path: /rolodex.RolodexService/RemoveRecord
+  // Path: /rolodex_dns.RolodexDnsService/RemoveRecord
   rpc RemoveRecord(RemoveRecordRequest) returns (RemoveRecordResponse);
 
   // ListRecords queries the local DNS database with optional filters.
-  // Path: /rolodex.RolodexService/ListRecords
+  // Path: /rolodex_dns.RolodexDnsService/ListRecords
   rpc ListRecords(ListRecordsRequest) returns (ListRecordsResponse);
 
   // SetForwarders configures the upstream DNS forwarders.
-  // Path: /rolodex.RolodexService/SetForwarders
+  // Path: /rolodex_dns.RolodexDnsService/SetForwarders
   rpc SetForwarders(SetForwarderRequest) returns (SetForwarderResponse);
 
   // SetRblConfig configures RBL (Realtime Blackhole List) settings.
-  // Path: /rolodex.RolodexService/SetRblConfig
+  // Path: /rolodex_dns.RolodexDnsService/SetRblConfig
   rpc SetRblConfig(SetRblConfigRequest) returns (SetRblConfigResponse);
 
   // GetRblConfig retrieves the current RBL configuration.
-  // Path: /rolodex.RolodexService/GetRblConfig
+  // Path: /rolodex_dns.RolodexDnsService/GetRblConfig
   rpc GetRblConfig(GetRblConfigRequest) returns (GetRblConfigResponse);
 
   // FlushCache clears DNS and RBL caches.
-  // Path: /rolodex.RolodexService/FlushCache
+  // Path: /rolodex_dns.RolodexDnsService/FlushCache
   rpc FlushCache(FlushCacheRequest) returns (FlushCacheResponse);
 
   // CreateNetworkScope creates a new network scope with a reserved .home domain.
-  // Path: /rolodex.RolodexService/CreateNetworkScope
+  // Path: /rolodex_dns.RolodexDnsService/CreateNetworkScope
   rpc CreateNetworkScope(CreateNetworkScopeRequest) returns (CreateNetworkScopeResponse);
 
   // DeleteNetworkScope removes a network scope and all its records and associations.
-  // Path: /rolodex.RolodexService/DeleteNetworkScope
+  // Path: /rolodex_dns.RolodexDnsService/DeleteNetworkScope
   rpc DeleteNetworkScope(DeleteNetworkScopeRequest) returns (DeleteNetworkScopeResponse);
 
   // ListNetworkScopes retrieves all configured network scopes.
-  // Path: /rolodex.RolodexService/ListNetworkScopes
+  // Path: /rolodex_dns.RolodexDnsService/ListNetworkScopes
   rpc ListNetworkScopes(ListNetworkScopesRequest) returns (ListNetworkScopesResponse);
 
   // JoinNetwork associates a client IP address with a network scope.
   // The association has a TTL and must be refreshed regularly.
-  // Path: /rolodex.RolodexService/JoinNetwork
+  // Path: /rolodex_dns.RolodexDnsService/JoinNetwork
   rpc JoinNetwork(JoinNetworkRequest) returns (JoinNetworkResponse);
 
   // LeaveNetwork removes an IP address's association with its network scope.
-  // Path: /rolodex.RolodexService/LeaveNetwork
+  // Path: /rolodex_dns.RolodexDnsService/LeaveNetwork
   rpc LeaveNetwork(LeaveNetworkRequest) returns (LeaveNetworkResponse);
 
   // GetNetworkAssociations retrieves IP-to-scope associations.
-  // Path: /rolodex.RolodexService/GetNetworkAssociations
+  // Path: /rolodex_dns.RolodexDnsService/GetNetworkAssociations
   rpc GetNetworkAssociations(GetNetworkAssociationsRequest) returns (GetNetworkAssociationsResponse);
 
   // AddScopedRecord adds a DNS record within a specific network scope.
-  // Path: /rolodex.RolodexService/AddScopedRecord
+  // Path: /rolodex_dns.RolodexDnsService/AddScopedRecord
   rpc AddScopedRecord(AddScopedRecordRequest) returns (AddScopedRecordResponse);
 
   // RemoveScopedRecord removes DNS records from a specific network scope.
-  // Path: /rolodex.RolodexService/RemoveScopedRecord
+  // Path: /rolodex_dns.RolodexDnsService/RemoveScopedRecord
   rpc RemoveScopedRecord(RemoveScopedRecordRequest) returns (RemoveScopedRecordResponse);
 
   // ListScopedRecords queries DNS records within a network scope.
-  // Path: /rolodex.RolodexService/ListScopedRecords
+  // Path: /rolodex_dns.RolodexDnsService/ListScopedRecords
   rpc ListScopedRecords(ListScopedRecordsRequest) returns (ListScopedRecordsResponse);
 
   // GetSearchDomains retrieves the search domains for a client IP address.
-  // Path: /rolodex.RolodexService/GetSearchDomains
+  // Path: /rolodex_dns.RolodexDnsService/GetSearchDomains
   rpc GetSearchDomains(GetSearchDomainsRequest) returns (GetSearchDomainsResponse);
 
   // AddAuthoritativeZone declares a zone as authoritative.
-  // Path: /rolodex.RolodexService/AddAuthoritativeZone
+  // Path: /rolodex_dns.RolodexDnsService/AddAuthoritativeZone
   rpc AddAuthoritativeZone(AddAuthoritativeZoneRequest) returns (AddAuthoritativeZoneResponse);
 
   // RemoveAuthoritativeZone removes a zone from the authoritative list.
-  // Path: /rolodex.RolodexService/RemoveAuthoritativeZone
+  // Path: /rolodex_dns.RolodexDnsService/RemoveAuthoritativeZone
   rpc RemoveAuthoritativeZone(RemoveAuthoritativeZoneRequest) returns (RemoveAuthoritativeZoneResponse);
 
   // ListAuthoritativeZones retrieves all authoritative zones.
-  // Path: /rolodex.RolodexService/ListAuthoritativeZones
+  // Path: /rolodex_dns.RolodexDnsService/ListAuthoritativeZones
   rpc ListAuthoritativeZones(ListAuthoritativeZonesRequest) returns (ListAuthoritativeZonesResponse);
 
   // GetCacheStats retrieves DNS cache statistics.
-  // Path: /rolodex.RolodexService/GetCacheStats
+  // Path: /rolodex_dns.RolodexDnsService/GetCacheStats
   rpc GetCacheStats(GetCacheStatsRequest) returns (GetCacheStatsResponse);
 
   // FlushDnsCache clears the DNS response cache.
-  // Path: /rolodex.RolodexService/FlushDnsCache
+  // Path: /rolodex_dns.RolodexDnsService/FlushDnsCache
   rpc FlushDnsCache(FlushDnsCacheRequest) returns (FlushDnsCacheResponse);
 
   // SetTtlDriftConfig sets the TTL drift configuration.
-  // Path: /rolodex.RolodexService/SetTtlDriftConfig
+  // Path: /rolodex_dns.RolodexDnsService/SetTtlDriftConfig
   rpc SetTtlDriftConfig(SetTtlDriftConfigRequest) returns (SetTtlDriftConfigResponse);
 
   // GetTtlDriftConfig retrieves the TTL drift configuration.
-  // Path: /rolodex.RolodexService/GetTtlDriftConfig
+  // Path: /rolodex_dns.RolodexDnsService/GetTtlDriftConfig
   rpc GetTtlDriftConfig(GetTtlDriftConfigRequest) returns (GetTtlDriftConfigResponse);
 
   // GetQueryLatencyStats retrieves upstream query latency statistics.
-  // Path: /rolodex.RolodexService/GetQueryLatencyStats
+  // Path: /rolodex_dns.RolodexDnsService/GetQueryLatencyStats
   rpc GetQueryLatencyStats(GetQueryLatencyStatsRequest) returns (GetQueryLatencyStatsResponse);
 
   // AddLocalRblEntry adds a local RBL entry.
-  // Path: /rolodex.RolodexService/AddLocalRblEntry
+  // Path: /rolodex_dns.RolodexDnsService/AddLocalRblEntry
   rpc AddLocalRblEntry(AddLocalRblEntryRequest) returns (AddLocalRblEntryResponse);
 
   // RemoveLocalRblEntry removes a local RBL entry.
-  // Path: /rolodex.RolodexService/RemoveLocalRblEntry
+  // Path: /rolodex_dns.RolodexDnsService/RemoveLocalRblEntry
   rpc RemoveLocalRblEntry(RemoveLocalRblEntryRequest) returns (RemoveLocalRblEntryResponse);
 
   // ListLocalRblEntries retrieves all local RBL entries.
-  // Path: /rolodex.RolodexService/ListLocalRblEntries
+  // Path: /rolodex_dns.RolodexDnsService/ListLocalRblEntries
   rpc ListLocalRblEntries(ListLocalRblEntriesRequest) returns (ListLocalRblEntriesResponse);
 
   // SetDotConfig sets the DNS-over-TLS configuration.
-  // Path: /rolodex.RolodexService/SetDotConfig
+  // Path: /rolodex_dns.RolodexDnsService/SetDotConfig
   rpc SetDotConfig(SetDotConfigRequest) returns (SetDotConfigResponse);
 
   // GetDotConfig retrieves the DNS-over-TLS configuration.
-  // Path: /rolodex.RolodexService/GetDotConfig
+  // Path: /rolodex_dns.RolodexDnsService/GetDotConfig
   rpc GetDotConfig(GetDotConfigRequest) returns (GetDotConfigResponse);
 
   // SetDohConfig sets the DNS-over-HTTPS configuration.
-  // Path: /rolodex.RolodexService/SetDohConfig
+  // Path: /rolodex_dns.RolodexDnsService/SetDohConfig
   rpc SetDohConfig(SetDohConfigRequest) returns (SetDohConfigResponse);
 
   // GetDohConfig retrieves the DNS-over-HTTPS configuration.
-  // Path: /rolodex.RolodexService/GetDohConfig
+  // Path: /rolodex_dns.RolodexDnsService/GetDohConfig
   rpc GetDohConfig(GetDohConfigRequest) returns (GetDohConfigResponse);
 
   // SetDoqConfig sets the DNS-over-QUIC configuration.
-  // Path: /rolodex.RolodexService/SetDoqConfig
+  // Path: /rolodex_dns.RolodexDnsService/SetDoqConfig
   rpc SetDoqConfig(SetDoqConfigRequest) returns (SetDoqConfigResponse);
 
   // GetDoqConfig retrieves the DNS-over-QUIC configuration.
-  // Path: /rolodex.RolodexService/GetDoqConfig
+  // Path: /rolodex_dns.RolodexDnsService/GetDoqConfig
   rpc GetDoqConfig(GetDoqConfigRequest) returns (GetDoqConfigResponse);
 
   // SetProxyConfig sets the HTTP proxy configuration.
-  // Path: /rolodex.RolodexService/SetProxyConfig
+  // Path: /rolodex_dns.RolodexDnsService/SetProxyConfig
   rpc SetProxyConfig(SetProxyConfigRequest) returns (SetProxyConfigResponse);
 
   // GetProxyConfig retrieves the HTTP proxy configuration.
-  // Path: /rolodex.RolodexService/GetProxyConfig
+  // Path: /rolodex_dns.RolodexDnsService/GetProxyConfig
   rpc GetProxyConfig(GetProxyConfigRequest) returns (GetProxyConfigResponse);
 
   // GenerateDnssecKey generates a new DNSSEC key pair for a zone.
-  // Path: /rolodex.RolodexService/GenerateDnssecKey
+  // Path: /rolodex_dns.RolodexDnsService/GenerateDnssecKey
   rpc GenerateDnssecKey(GenerateDnssecKeyRequest) returns (GenerateDnssecKeyResponse);
 
   // ListDnssecKeys retrieves DNSSEC keys for a zone.
-  // Path: /rolodex.RolodexService/ListDnssecKeys
+  // Path: /rolodex_dns.RolodexDnsService/ListDnssecKeys
   rpc ListDnssecKeys(ListDnssecKeysRequest) returns (ListDnssecKeysResponse);
 
   // DeleteDnssecKey deletes a DNSSEC key.
-  // Path: /rolodex.RolodexService/DeleteDnssecKey
+  // Path: /rolodex_dns.RolodexDnsService/DeleteDnssecKey
   rpc DeleteDnssecKey(DeleteDnssecKeyRequest) returns (DeleteDnssecKeyResponse);
 
   // GetDsRecords retrieves DS records for a zone.
-  // Path: /rolodex.RolodexService/GetDsRecords
+  // Path: /rolodex_dns.RolodexDnsService/GetDsRecords
   rpc GetDsRecords(GetDsRecordsRequest) returns (GetDsRecordsResponse);
 
   // SignZone signs a zone with its DNSSEC keys.
-  // Path: /rolodex.RolodexService/SignZone
+  // Path: /rolodex_dns.RolodexDnsService/SignZone
   rpc SignZone(SignZoneRequest) returns (SignZoneResponse);
 
   // GenerateTlsaRecord generates a TLSA record from a certificate.
-  // Path: /rolodex.RolodexService/GenerateTlsaRecord
+  // Path: /rolodex_dns.RolodexDnsService/GenerateTlsaRecord
   rpc GenerateTlsaRecord(GenerateTlsaRecordRequest) returns (GenerateTlsaRecordResponse);
 
   // ListTlsaRecords retrieves TLSA records for a domain.
-  // Path: /rolodex.RolodexService/ListTlsaRecords
+  // Path: /rolodex_dns.RolodexDnsService/ListTlsaRecords
   rpc ListTlsaRecords(ListTlsaRecordsRequest) returns (ListTlsaRecordsResponse);
 
   // GenerateDaneRootCa generates a DANE root CA certificate.
-  // Path: /rolodex.RolodexService/GenerateDaneRootCa
+  // Path: /rolodex_dns.RolodexDnsService/GenerateDaneRootCa
   rpc GenerateDaneRootCa(GenerateDaneRootCaRequest) returns (GenerateDaneRootCaResponse);
 
   // RequestAcmeCert requests a certificate via ACME DNS-01.
-  // Path: /rolodex.RolodexService/RequestAcmeCert
+  // Path: /rolodex_dns.RolodexDnsService/RequestAcmeCert
   rpc RequestAcmeCert(RequestAcmeCertRequest) returns (RequestAcmeCertResponse);
 
   // GetAcmeStatus retrieves ACME certificate status.
-  // Path: /rolodex.RolodexService/GetAcmeStatus
+  // Path: /rolodex_dns.RolodexDnsService/GetAcmeStatus
   rpc GetAcmeStatus(GetAcmeStatusRequest) returns (GetAcmeStatusResponse);
 
   // SetDns64Config sets the DNS64 configuration.
-  // Path: /rolodex.RolodexService/SetDns64Config
+  // Path: /rolodex_dns.RolodexDnsService/SetDns64Config
   rpc SetDns64Config(SetDns64ConfigRequest) returns (SetDns64ConfigResponse);
 
   // GetDns64Config retrieves the DNS64 configuration.
-  // Path: /rolodex.RolodexService/GetDns64Config
+  // Path: /rolodex_dns.RolodexDnsService/GetDns64Config
   rpc GetDns64Config(GetDns64ConfigRequest) returns (GetDns64ConfigResponse);
 }

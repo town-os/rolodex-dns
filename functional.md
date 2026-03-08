@@ -1,10 +1,10 @@
-# Rolodex Functional Specification
+# Rolodex DNS Functional Specification
 
-Rolodex is a split-horizon DNS server and forwarding resolver with remote management via gRPC. It is written in Rust and licensed under AGPL-3.0-only.
+Rolodex DNS is a split-horizon DNS server and forwarding resolver with remote management via gRPC. It is written in Rust and licensed under AGPL-3.0-only.
 
 ## DNS Resolution
 
-Rolodex serves DNS queries over both UDP and TCP on configurable bind addresses (default `0.0.0.0:53`). TCP uses the standard 2-byte length prefix framing. Maximum UDP message size is 4096 bytes; maximum TCP message size is 65535 bytes.
+Rolodex DNS serves DNS queries over both UDP and TCP on configurable bind addresses (default `0.0.0.0:53`). TCP uses the standard 2-byte length prefix framing. Maximum UDP message size is 4096 bytes; maximum TCP message size is 65535 bytes.
 
 ### Supported Record Types
 
@@ -24,7 +24,7 @@ This ordering ensures the inside representation always takes priority over exter
 
 ## Local Record Database
 
-Records are stored in SQLite with WAL mode enabled for concurrent read performance. The database path is configurable (default `rolodex.db`). An in-memory mode is available for testing.
+Records are stored in SQLite with WAL mode enabled for concurrent read performance. The database path is configurable (default `rolodex-dns.db`). An in-memory mode is available for testing.
 
 Domain names are normalized to lowercase with a trailing dot on storage and lookup, providing case-insensitive matching. The database has indices on `name` and `(name, record_type)`.
 
@@ -34,7 +34,7 @@ SOA values are stored as `"mname rname serial refresh retry expire minimum"`. SR
 
 ## Realtime Blackhole Lists (RBL)
 
-Rolodex checks IPs against DNS-based blackhole lists using the standard reversed-IP lookup format:
+Rolodex DNS checks IPs against DNS-based blackhole lists using the standard reversed-IP lookup format:
 
 - **IPv4**: Octets are reversed and appended to the RBL zone (e.g., `192.168.1.100` becomes `100.1.168.192.zen.spamhaus.org`).
 - **IPv6**: Nibbles are expanded, reversed, and appended to the RBL zone.
@@ -63,7 +63,7 @@ The cache can be flushed via gRPC.
 
 ## gRPC Management Interface
 
-The management API is defined in `proto/rolodex.proto` under the `RolodexService` service. It can listen on TCP (default `127.0.0.1:50051`) and/or a Unix socket (default `/var/run/rolodex.sock`). Either transport can be disabled by setting its bind address to an empty string.
+The management API is defined in `proto/rolodex_dns.proto` under the `RolodexDnsService` service. It can listen on TCP (default `127.0.0.1:50051`) and/or a Unix socket (default `/var/run/rolodex-dns.sock`). Either transport can be disabled by setting its bind address to an empty string.
 
 ### Authentication
 
@@ -86,7 +86,7 @@ All changes made via gRPC (record additions/removals, forwarder updates, RBL con
 
 ## CLI Client
 
-The `rolodex-cli` binary is a command-line client for the gRPC management interface. It supports all gRPC operations as subcommands and can connect over TCP or Unix socket.
+The `rolodex-dns-cli` binary is a command-line client for the gRPC management interface. It supports all gRPC operations as subcommands and can connect over TCP or Unix socket.
 
 ### Global Options
 
@@ -112,7 +112,7 @@ The `list-records` subcommand displays results in a tabular format with columns 
 
 ## Go Client Library
 
-A Go client library is provided in the `go/` directory, importable as `gitea.com/town-os/rolodex/go`. It wraps the gRPC API with idiomatic Go types and supports the same transport and authentication modes as the CLI.
+A Go client library is provided in the `go/` directory, importable as `gitea.com/town-os/rolodex-dns/go`. It wraps the gRPC API with idiomatic Go types and supports the same transport and authentication modes as the CLI.
 
 ### Connection
 
@@ -150,11 +150,11 @@ The client automatically includes the auth token in every RPC call. All methods 
 
 ### Generated Protobuf Code
 
-Generated Go protobuf and gRPC bindings are in `go/rolodexpb/`, produced from `proto/rolodex.proto`. The client library re-exports the key types so consumers do not need to import the generated package directly.
+Generated Go protobuf and gRPC bindings are in `go/rolodexdnspb/`, produced from `proto/rolodex_dns.proto`. The client library re-exports the key types so consumers do not need to import the generated package directly.
 
 ## Configuration
 
-Configuration is loaded from a YAML file (default path `rolodex.yml`, overridable via `-c`/`--config` CLI flag). If the file does not exist, sensible defaults are used.
+Configuration is loaded from a YAML file (default path `rolodex-dns.yml`, overridable via `-c`/`--config` CLI flag). If the file does not exist, sensible defaults are used.
 
 ### Configuration Fields
 
@@ -163,10 +163,10 @@ Configuration is loaded from a YAML file (default path `rolodex.yml`, overridabl
 | `dns.udp_bind` | `0.0.0.0:53` | DNS UDP listener address |
 | `dns.tcp_bind` | `0.0.0.0:53` | DNS TCP listener address |
 | `grpc.tcp_bind` | `127.0.0.1:50051` | gRPC TCP listener address |
-| `grpc.unix_socket` | `/var/run/rolodex.sock` | gRPC Unix socket path |
+| `grpc.unix_socket` | `/var/run/rolodex-dns.sock` | gRPC Unix socket path |
 | `grpc.shared_secret` | (empty) | Shared secret for TCP gRPC auth |
 | `forwarders` | `["8.8.8.8:53", "8.8.4.4:53"]` | Upstream DNS resolvers |
-| `database_path` | `rolodex.db` | SQLite database file path |
+| `database_path` | `rolodex-dns.db` | SQLite database file path |
 | `rbl.enabled` | `false` | Global RBL enable flag |
 | `rbl.providers` | 5 default zones (see above) | RBL provider list |
 
@@ -176,11 +176,11 @@ The project uses a top-level Makefile with the following targets:
 
 | Target | Description |
 |---|---|
-| `build` | Compile the Rust project in debug mode (`cargo build`). Produces the `rolodex` server and `rolodex-cli` client binaries. |
+| `build` | Compile the Rust project in debug mode (`cargo build`). Produces the `rolodex-dns` server and `rolodex-dns-cli` client binaries. |
 | `test` | Run all tests: Go integration tests, Go unit tests, and Rust tests (`cargo test`). |
 | `clean` | Clean build artifacts (`cargo clean`). |
 | `go-test` | Run Go unit tests (depends on `go-integration-test`). |
-| `go-integration-test` | Build the Rust binaries, then run Go integration tests with the `integration` build tag, passing the compiled server binary path via `ROLODEX_BINARY`. |
+| `go-integration-test` | Build the Rust binaries, then run Go integration tests with the `integration` build tag, passing the compiled server binary path via `ROLODEX_DNS_BINARY`. |
 | `install` | Install the Rust binaries to the Cargo bin directory (`cargo install --path .`). |
 | `dev` | Build the Rust project in debug mode, then start a development server using `dev.yml`. |
 | `dev-release` | Build the Rust project in release mode, then start a development server using `dev.yml`. |
@@ -192,8 +192,8 @@ The Makefile is designed to be extended for non-cargo scenarios. Protocol buffer
 The `make dev` target starts a local development instance configured via `dev.yml`:
 
 - DNS listeners on `127.0.0.1:5300` (UDP and TCP) — a non-privileged port that does not require root.
-- gRPC management via Unix socket at `/tmp/rolodex.sock` only (TCP gRPC disabled).
-- Database at `/tmp/rolodex-dev.db`.
+- gRPC management via Unix socket at `/tmp/rolodex-dns.sock` only (TCP gRPC disabled).
+- Database at `/tmp/rolodex-dns-dev.db`.
 - No authentication (empty shared secret).
 - RBL disabled.
 - Google DNS forwarders (`8.8.8.8:53`, `8.8.4.4:53`).
@@ -208,14 +208,14 @@ Rust tests (`cargo test`) include unit tests and integration tests covering gRPC
 
 ### CLI Integration Tests
 
-The `rolodex-cli` binary has integration tests that spawn a test gRPC server and execute the CLI binary against it. Tests cover all subcommands over both TCP and Unix socket transports, authentication (success, failure, and Unix socket bypass), all record types (A, AAAA, CNAME, MX, TXT, NS, SRV, PTR), wildcard filtering, and help output validation.
+The `rolodex-dns-cli` binary has integration tests that spawn a test gRPC server and execute the CLI binary against it. Tests cover all subcommands over both TCP and Unix socket transports, authentication (success, failure, and Unix socket bypass), all record types (A, AAAA, CNAME, MX, TXT, NS, SRV, PTR), wildcard filtering, and help output validation.
 
 ### Go Client Tests
 
 The Go client has two test layers:
 
 - **Unit tests** — Use an in-process mock gRPC server via `bufconn` to test all client methods, authentication token propagation, transport modes, error handling, and edge cases (idempotent close, lazy dial, custom dial options).
-- **Integration tests** — Gated behind the `integration` build tag. Each test starts a real Rolodex server subprocess with a unique temporary directory, random ports, and isolated database. Tests cover record CRUD, wildcard filtering, forwarder configuration, RBL round-trip, cache flushing, Unix socket transport, authentication failure, default TTL behavior, and concurrent clients (5 simultaneous).
+- **Integration tests** — Gated behind the `integration` build tag. Each test starts a real Rolodex DNS server subprocess with a unique temporary directory, random ports, and isolated database. Tests cover record CRUD, wildcard filtering, forwarder configuration, RBL round-trip, cache flushing, Unix socket transport, authentication failure, default TTL behavior, and concurrent clients (5 simultaneous).
 
 The `make test` target runs the full test suite: Go integration tests, Go unit tests, and Rust tests, in that order.
 

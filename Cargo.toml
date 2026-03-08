@@ -1,5 +1,5 @@
 [package]
-name = "rolodex"
+name = "rolodex-dns"
 version = "0.1.0"
 edition = "2024"
 description = "A split-horizon DNS server and forwarding resolver with gRPC management"
@@ -73,12 +73,12 @@ tonic-prost-build = "0.14"
 prost-build = "0.14"
 
 [[bin]]
-name = "rolodex"
+name = "rolodex-dns"
 path = "src/main.rs"
 
 [[bin]]
-name = "rolodex-cli"
-path = "src/bin/rolodex-cli.rs"
+name = "rolodex-dns-cli"
+path = "src/bin/rolodex-dns-cli.rs"
 
 [dev-dependencies]
 tempfile = "3"

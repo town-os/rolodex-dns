@@ -5,4 +5,4 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock build.rs /src/
 COPY proto/ /src/proto/
 COPY src/ /src/src/
-RUN cargo build --release && strip target/release/rolodex target/release/rolodex-cli
+RUN cargo build --release && strip target/release/rolodex-dns target/release/rolodex-dns-cli

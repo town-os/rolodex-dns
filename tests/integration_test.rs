@@ -1,15 +1,15 @@
-use rolodex::db::{Database, DnsRecord, RecordKind};
-use rolodex::dns_server::DnsServer;
-use rolodex::grpc_service::proto::rolodex_service_server::RolodexService;
-use rolodex::grpc_service::proto::{
+use rolodex_dns::db::{Database, DnsRecord, RecordKind};
+use rolodex_dns::dns_server::DnsServer;
+use rolodex_dns::grpc_service::proto::rolodex_dns_service_server::RolodexDnsService;
+use rolodex_dns::grpc_service::proto::{
     AddRecordRequest, AddScopedRecordRequest, CreateNetworkScopeRequest,
     DeleteNetworkScopeRequest, FlushCacheRequest, GetNetworkAssociationsRequest,
     GetRblConfigRequest, GetSearchDomainsRequest, JoinNetworkRequest, LeaveNetworkRequest,
     ListNetworkScopesRequest, ListRecordsRequest, ListScopedRecordsRequest, RemoveRecordRequest,
     RemoveScopedRecordRequest, SetForwarderRequest, SetRblConfigRequest,
 };
-use rolodex::grpc_service::RolodexGrpcService;
-use rolodex::rbl::{RblChecker, RblProvider, RblResolver};
+use rolodex_dns::grpc_service::RolodexDnsGrpcService;
+use rolodex_dns::rbl::{RblChecker, RblProvider, RblResolver};
 use std::sync::Arc;
 use tonic::Request;
 
@@ -31,7 +31,7 @@ impl RblResolver for AlwaysListedResolver {
     }
 }
 
-fn make_test_stack() -> (Database, Arc<DnsServer>, Arc<RblChecker>, RolodexGrpcService) {
+fn make_test_stack() -> (Database, Arc<DnsServer>, Arc<RblChecker>, RolodexDnsGrpcService) {
     let db = Database::open_memory().unwrap();
     let rbl = Arc::new(RblChecker::with_resolver(
         false,
@@ -39,7 +39,7 @@ fn make_test_stack() -> (Database, Arc<DnsServer>, Arc<RblChecker>, RolodexGrpcS
         Arc::new(NeverListedResolver),
     ));
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
-    let service = RolodexGrpcService::new(
+    let service = RolodexDnsGrpcService::new(
         db.clone(),
         dns_server.clone(),
         rbl.clone(),
@@ -59,7 +59,7 @@ async fn test_grpc_add_then_dns_query() {
 
     // Add a record via gRPC
     let add_req = Request::new(AddRecordRequest {
-        record: Some(rolodex::grpc_service::proto::DnsRecord {
+        record: Some(rolodex_dns::grpc_service::proto::DnsRecord {
             name: "integration.test.".to_string(),
             record_type: 0, // A
             value: "10.20.30.40".to_string(),
@@ -94,7 +94,7 @@ async fn test_grpc_remove_then_dns_query() {
 
     // Add a record
     let add_req = Request::new(AddRecordRequest {
-        record: Some(rolodex::grpc_service::proto::DnsRecord {
+        record: Some(rolodex_dns::grpc_service::proto::DnsRecord {
             name: "remove-test.local.".to_string(),
             record_type: 0,
             value: "1.2.3.4".to_string(),
@@ -143,7 +143,7 @@ async fn test_grpc_list_with_filters() {
         ("other.test.com.", 0i32, "172.16.0.1"),
     ] {
         let req = Request::new(AddRecordRequest {
-            record: Some(rolodex::grpc_service::proto::DnsRecord {
+            record: Some(rolodex_dns::grpc_service::proto::DnsRecord {
                 name: name.to_string(),
                 record_type: *rtype,
                 value: value.to_string(),
@@ -227,7 +227,7 @@ async fn test_rbl_integration() {
         Arc::new(AlwaysListedResolver),
     ));
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
-    let service = RolodexGrpcService::new(
+    let service = RolodexDnsGrpcService::new(
         db.clone(),
         dns_server.clone(),
         rbl.clone(),
@@ -276,11 +276,11 @@ async fn test_rbl_config_roundtrip() {
     let req = Request::new(SetRblConfigRequest {
         enabled: true,
         providers: vec![
-            rolodex::grpc_service::proto::RblConfig {
+            rolodex_dns::grpc_service::proto::RblConfig {
                 zone: "zen.spamhaus.org".to_string(),
                 enabled: true,
             },
-            rolodex::grpc_service::proto::RblConfig {
+            rolodex_dns::grpc_service::proto::RblConfig {
                 zone: "bl.spamcop.net".to_string(),
                 enabled: false,
             },
@@ -328,7 +328,7 @@ async fn test_split_horizon_overlay() {
 
     // Add a local record that overrides public DNS
     let add_req = Request::new(AddRecordRequest {
-        record: Some(rolodex::grpc_service::proto::DnsRecord {
+        record: Some(rolodex_dns::grpc_service::proto::DnsRecord {
             name: "www.google.com.".to_string(),
             record_type: 0, // A
             value: "10.0.0.99".to_string(),
@@ -368,7 +368,7 @@ async fn test_tld_level_record() {
 
     // Add a TLD-level record
     let add_req = Request::new(AddRecordRequest {
-        record: Some(rolodex::grpc_service::proto::DnsRecord {
+        record: Some(rolodex_dns::grpc_service::proto::DnsRecord {
             name: "internal.".to_string(),
             record_type: 0,
             value: "10.0.0.1".to_string(),
@@ -401,7 +401,7 @@ async fn test_multiple_record_types_same_name() {
 
     // Add A and AAAA for same name
     let add_a = Request::new(AddRecordRequest {
-        record: Some(rolodex::grpc_service::proto::DnsRecord {
+        record: Some(rolodex_dns::grpc_service::proto::DnsRecord {
             name: "dual-stack.local.".to_string(),
             record_type: 0, // A
             value: "10.0.0.1".to_string(),
@@ -413,7 +413,7 @@ async fn test_multiple_record_types_same_name() {
     service.add_record(add_a).await.unwrap();
 
     let add_aaaa = Request::new(AddRecordRequest {
-        record: Some(rolodex::grpc_service::proto::DnsRecord {
+        record: Some(rolodex_dns::grpc_service::proto::DnsRecord {
             name: "dual-stack.local.".to_string(),
             record_type: 1, // AAAA
             value: "fd00::1".to_string(),
@@ -651,7 +651,7 @@ async fn test_unix_socket_bypasses_auth() {
         Arc::new(NeverListedResolver),
     ));
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
-    let service = RolodexGrpcService::new(
+    let service = RolodexDnsGrpcService::new(
         db.clone(),
         dns_server.clone(),
         rbl.clone(),
@@ -676,9 +676,9 @@ async fn test_unix_socket_bypasses_auth() {
 
 #[test]
 fn test_config_roundtrip() {
-    let config = rolodex::config::Config::default();
+    let config = rolodex_dns::config::Config::default();
     let yaml_str = serde_yaml_ng::to_string(&config).unwrap();
-    let deserialized: rolodex::config::Config = serde_yaml_ng::from_str(&yaml_str).unwrap();
+    let deserialized: rolodex_dns::config::Config = serde_yaml_ng::from_str(&yaml_str).unwrap();
 
     assert_eq!(config.dns.udp_bind, deserialized.dns.udp_bind);
     assert_eq!(config.dns.tcp_bind, deserialized.dns.tcp_bind);
@@ -698,12 +698,12 @@ fn test_config_roundtrip() {
 #[test]
 fn test_dev_config_parses() {
     let content = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/dev.yml")).unwrap();
-    let config: rolodex::config::Config = serde_yaml_ng::from_str(&content).unwrap();
+    let config: rolodex_dns::config::Config = serde_yaml_ng::from_str(&content).unwrap();
     assert_eq!(config.dns.udp_bind, "127.0.0.1:5300");
     assert_eq!(config.dns.tcp_bind, "127.0.0.1:5300");
-    assert_eq!(config.database_path, "/tmp/rolodex-dev.db");
+    assert_eq!(config.database_path, "/tmp/rolodex-dns-dev.db");
     assert!(config.grpc.tcp_bind.is_empty());
-    assert_eq!(config.grpc.unix_socket, "/tmp/rolodex.sock");
+    assert_eq!(config.grpc.unix_socket, "/tmp/rolodex-dns.sock");
     assert!(!config.rbl.enabled);
 }
 
@@ -741,7 +741,7 @@ async fn test_network_scope_lifecycle() {
 
     // Create scope
     let req = Request::new(CreateNetworkScopeRequest {
-        scope: Some(rolodex::grpc_service::proto::NetworkScope {
+        scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
             name: "testnet".to_string(),
             home_domain: "testnet.home".to_string(),
         }),
@@ -783,7 +783,7 @@ async fn test_scoped_dns_resolution_integration() {
 
     // Create scope
     let req = Request::new(CreateNetworkScopeRequest {
-        scope: Some(rolodex::grpc_service::proto::NetworkScope {
+        scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
             name: "corp".to_string(),
             home_domain: "corp.home".to_string(),
         }),
@@ -803,7 +803,7 @@ async fn test_scoped_dns_resolution_integration() {
     // Add scoped record
     let add_req = Request::new(AddScopedRecordRequest {
         scope_name: "corp".to_string(),
-        record: Some(rolodex::grpc_service::proto::DnsRecord {
+        record: Some(rolodex_dns::grpc_service::proto::DnsRecord {
             name: "intranet.corp.home.".to_string(),
             record_type: 0,
             value: "10.10.0.1".to_string(),
@@ -844,7 +844,7 @@ async fn test_scope_isolation_integration() {
     // Create two scopes
     for (name, domain) in &[("dev", "dev.home"), ("prod", "prod.home")] {
         let req = Request::new(CreateNetworkScopeRequest {
-            scope: Some(rolodex::grpc_service::proto::NetworkScope {
+            scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
                 name: name.to_string(),
                 home_domain: domain.to_string(),
             }),
@@ -857,7 +857,7 @@ async fn test_scope_isolation_integration() {
     for (scope, ip) in &[("dev", "10.0.0.1"), ("prod", "10.0.0.2")] {
         let req = Request::new(AddScopedRecordRequest {
             scope_name: scope.to_string(),
-            record: Some(rolodex::grpc_service::proto::DnsRecord {
+            record: Some(rolodex_dns::grpc_service::proto::DnsRecord {
                 name: "api.internal.".to_string(),
                 record_type: 0,
                 value: ip.to_string(),
@@ -919,7 +919,7 @@ async fn test_search_domains_integration() {
 
     // Create scope
     let req = Request::new(CreateNetworkScopeRequest {
-        scope: Some(rolodex::grpc_service::proto::NetworkScope {
+        scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
             name: "homenet".to_string(),
             home_domain: "myhome.local".to_string(),
         }),
@@ -965,7 +965,7 @@ async fn test_scoped_record_crud_integration() {
 
     // Create scope
     let req = Request::new(CreateNetworkScopeRequest {
-        scope: Some(rolodex::grpc_service::proto::NetworkScope {
+        scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
             name: "crud".to_string(),
             home_domain: "crud.home".to_string(),
         }),
@@ -977,7 +977,7 @@ async fn test_scoped_record_crud_integration() {
     for (name, value) in &[("host1.crud.home.", "10.0.0.1"), ("host2.crud.home.", "10.0.0.2")] {
         let req = Request::new(AddScopedRecordRequest {
             scope_name: "crud".to_string(),
-            record: Some(rolodex::grpc_service::proto::DnsRecord {
+            record: Some(rolodex_dns::grpc_service::proto::DnsRecord {
                 name: name.to_string(),
                 record_type: 0,
                 value: value.to_string(),
@@ -1033,7 +1033,7 @@ async fn test_leave_network_integration() {
 
     // Create scope and join
     let req = Request::new(CreateNetworkScopeRequest {
-        scope: Some(rolodex::grpc_service::proto::NetworkScope {
+        scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
             name: "leavenet".to_string(),
             home_domain: "leavenet.home".to_string(),
         }),
@@ -1052,7 +1052,7 @@ async fn test_leave_network_integration() {
     // Add scoped record
     let add_req = Request::new(AddScopedRecordRequest {
         scope_name: "leavenet".to_string(),
-        record: Some(rolodex::grpc_service::proto::DnsRecord {
+        record: Some(rolodex_dns::grpc_service::proto::DnsRecord {
             name: "server.leavenet.home.".to_string(),
             record_type: 0,
             value: "10.0.0.1".to_string(),
@@ -1098,7 +1098,7 @@ async fn test_global_records_accessible_from_scope() {
 
     // Create scope and join
     let req = Request::new(CreateNetworkScopeRequest {
-        scope: Some(rolodex::grpc_service::proto::NetworkScope {
+        scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
             name: "globaltest".to_string(),
             home_domain: "globaltest.home".to_string(),
         }),
@@ -1116,7 +1116,7 @@ async fn test_global_records_accessible_from_scope() {
 
     // Add global record
     let add_req = Request::new(AddRecordRequest {
-        record: Some(rolodex::grpc_service::proto::DnsRecord {
+        record: Some(rolodex_dns::grpc_service::proto::DnsRecord {
             name: "public.test.".to_string(),
             record_type: 0,
             value: "1.2.3.4".to_string(),
@@ -1148,7 +1148,7 @@ async fn test_delete_scope_cascade() {
 
     // Create scope, add records, add associations
     let req = Request::new(CreateNetworkScopeRequest {
-        scope: Some(rolodex::grpc_service::proto::NetworkScope {
+        scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
             name: "cascade".to_string(),
             home_domain: "cascade.home".to_string(),
         }),
@@ -1158,7 +1158,7 @@ async fn test_delete_scope_cascade() {
 
     let add_req = Request::new(AddScopedRecordRequest {
         scope_name: "cascade".to_string(),
-        record: Some(rolodex::grpc_service::proto::DnsRecord {
+        record: Some(rolodex_dns::grpc_service::proto::DnsRecord {
             name: "host.cascade.home.".to_string(),
             record_type: 0,
             value: "10.0.0.1".to_string(),
@@ -1222,12 +1222,12 @@ async fn test_rbl_with_scoping() {
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
 
     // Create scope and associate IP
-    db.create_network_scope(&rolodex::db::NetworkScope {
+    db.create_network_scope(&rolodex_dns::db::NetworkScope {
         name: "rblscoped".to_string(),
         home_domain: "rblscoped.home".to_string(),
     }).unwrap();
 
-    db.join_network(&rolodex::db::NetworkAssociation {
+    db.join_network(&rolodex_dns::db::NetworkAssociation {
         ip_address: "192.168.1.1".to_string(),
         scope_name: "rblscoped".to_string(),
         ttl_seconds: 3600,
@@ -1253,7 +1253,7 @@ async fn test_scoped_managed_zone_nxdomain_integration() {
 
     // Create scope and add records to establish the managed zone
     let req = Request::new(CreateNetworkScopeRequest {
-        scope: Some(rolodex::grpc_service::proto::NetworkScope {
+        scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
             name: "zonenet".to_string(),
             home_domain: "zonenet.home".to_string(),
         }),
@@ -1264,7 +1264,7 @@ async fn test_scoped_managed_zone_nxdomain_integration() {
     // Add a record at the zone level to make it authoritative
     let zone_req = Request::new(AddScopedRecordRequest {
         scope_name: "zonenet".to_string(),
-        record: Some(rolodex::grpc_service::proto::DnsRecord {
+        record: Some(rolodex_dns::grpc_service::proto::DnsRecord {
             name: "zonenet.home.".to_string(),
             record_type: 0,
             value: "10.0.0.99".to_string(),
@@ -1277,7 +1277,7 @@ async fn test_scoped_managed_zone_nxdomain_integration() {
 
     let add_req = Request::new(AddScopedRecordRequest {
         scope_name: "zonenet".to_string(),
-        record: Some(rolodex::grpc_service::proto::DnsRecord {
+        record: Some(rolodex_dns::grpc_service::proto::DnsRecord {
             name: "known.zonenet.home.".to_string(),
             record_type: 0,
             value: "10.0.0.1".to_string(),

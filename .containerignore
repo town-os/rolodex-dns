@@ -3,7 +3,7 @@ target/
 .cache/
 go/
 tests/
-rolodex.db
+rolodex-dns.db
 *.md
 dev.yml
 make/

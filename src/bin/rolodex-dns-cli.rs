@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use rolodex::grpc_service::proto::rolodex_service_client::RolodexServiceClient;
+use rolodex_dns::grpc_service::proto::rolodex_dns_service_client::RolodexDnsServiceClient;
 #[allow(unused_imports)]
-use rolodex::grpc_service::proto::*;
+use rolodex_dns::grpc_service::proto::*;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
 
@@ -12,7 +12,7 @@ use tower::service_fn;
 /// forwarder configuration, and RBL settings can be controlled through
 /// subcommands.
 #[derive(Parser)]
-#[command(name = "rolodex-cli")]
+#[command(name = "rolodex-dns-cli")]
 #[command(version)]
 #[command(about = "CLI client for managing a Rolodex DNS server via gRPC")]
 #[command(long_about = "CLI client for managing a Rolodex split-horizon DNS server.\n\n\
@@ -155,7 +155,7 @@ impl RecordTypeArg {
 #[derive(Subcommand)]
 enum Commands {
     /// Add a DNS record to the local database.
-    /// gRPC path: /rolodex.RolodexService/AddRecord
+    /// gRPC path: /rolodex_dns.RolodexDnsService/AddRecord
     #[command(name = "add-record")]
     AddRecord {
         /// Fully qualified domain name (e.g. "example.com." — trailing dot recommended)
@@ -194,7 +194,7 @@ enum Commands {
 
     /// Remove DNS record(s) from the local database.
     /// Removes by name, with optional type and value filters.
-    /// gRPC path: /rolodex.RolodexService/RemoveRecord
+    /// gRPC path: /rolodex_dns.RolodexDnsService/RemoveRecord
     #[command(name = "remove-record")]
     RemoveRecord {
         /// Fully qualified domain name of records to remove
@@ -213,7 +213,7 @@ enum Commands {
     },
 
     /// List DNS records from the local database with optional filters.
-    /// gRPC path: /rolodex.RolodexService/ListRecords
+    /// gRPC path: /rolodex_dns.RolodexDnsService/ListRecords
     #[command(name = "list-records")]
     ListRecords {
         /// Filter by domain name. Supports wildcard prefix "*." to match
@@ -231,7 +231,7 @@ enum Commands {
     /// Set upstream DNS forwarders at runtime.
     /// Replaces the entire forwarder list. The DNS server will use these
     /// forwarders for queries not resolved by the local database.
-    /// gRPC path: /rolodex.RolodexService/SetForwarders
+    /// gRPC path: /rolodex_dns.RolodexDnsService/SetForwarders
     #[command(name = "set-forwarders")]
     SetForwarders {
         /// Upstream DNS server addresses in "host:port" format.
@@ -244,7 +244,7 @@ enum Commands {
     /// Configure RBL (Realtime Blackhole List) settings at runtime.
     /// Replaces the entire RBL configuration including the global enable
     /// flag and all providers.
-    /// gRPC path: /rolodex.RolodexService/SetRblConfig
+    /// gRPC path: /rolodex_dns.RolodexDnsService/SetRblConfig
     #[command(name = "set-rbl-config")]
     SetRblConfig {
         /// Enable or disable RBL checking globally.
@@ -263,20 +263,20 @@ enum Commands {
 
     /// Retrieve the current RBL configuration.
     /// Shows the global enabled state and all configured providers.
-    /// gRPC path: /rolodex.RolodexService/GetRblConfig
+    /// gRPC path: /rolodex_dns.RolodexDnsService/GetRblConfig
     #[command(name = "get-rbl-config")]
     GetRblConfig,
 
     /// Flush the RBL result cache.
     /// Clears all cached RBL lookup results, forcing fresh lookups
     /// for subsequent reverse DNS queries.
-    /// gRPC path: /rolodex.RolodexService/FlushCache
+    /// gRPC path: /rolodex_dns.RolodexDnsService/FlushCache
     #[command(name = "flush-cache")]
     FlushCache,
 
     /// Create a new network scope with a reserved .home domain.
     /// Each scope defines a DNS view that associates IPs with scoped records.
-    /// gRPC path: /rolodex.RolodexService/CreateNetworkScope
+    /// gRPC path: /rolodex_dns.RolodexDnsService/CreateNetworkScope
     #[command(name = "create-scope")]
     CreateScope {
         /// Unique name for the network scope (e.g. "office", "lab")
@@ -291,7 +291,7 @@ enum Commands {
     },
 
     /// Delete a network scope and all its records and associations.
-    /// gRPC path: /rolodex.RolodexService/DeleteNetworkScope
+    /// gRPC path: /rolodex_dns.RolodexDnsService/DeleteNetworkScope
     #[command(name = "delete-scope")]
     DeleteScope {
         /// Name of the scope to delete
@@ -300,7 +300,7 @@ enum Commands {
     },
 
     /// List all configured network scopes.
-    /// gRPC path: /rolodex.RolodexService/ListNetworkScopes
+    /// gRPC path: /rolodex_dns.RolodexDnsService/ListNetworkScopes
     #[command(name = "list-scopes")]
     ListScopes,
 
@@ -308,7 +308,7 @@ enum Commands {
     /// The association has a TTL that must be refreshed to maintain DNS
     /// resolution. If the TTL expires, the DNS server stops resolving
     /// queries from this IP.
-    /// gRPC path: /rolodex.RolodexService/JoinNetwork
+    /// gRPC path: /rolodex_dns.RolodexDnsService/JoinNetwork
     #[command(name = "join-network")]
     JoinNetwork {
         /// The client IP address to associate (e.g. "192.168.1.100")
@@ -326,7 +326,7 @@ enum Commands {
     },
 
     /// Remove an IP address's association with its network scope ("leave the network").
-    /// gRPC path: /rolodex.RolodexService/LeaveNetwork
+    /// gRPC path: /rolodex_dns.RolodexDnsService/LeaveNetwork
     #[command(name = "leave-network")]
     LeaveNetwork {
         /// The client IP address to disassociate
@@ -335,7 +335,7 @@ enum Commands {
     },
 
     /// List IP-to-scope associations.
-    /// gRPC path: /rolodex.RolodexService/GetNetworkAssociations
+    /// gRPC path: /rolodex_dns.RolodexDnsService/GetNetworkAssociations
     #[command(name = "list-associations")]
     ListAssociations {
         /// Filter by scope name. If omitted, lists all associations.
@@ -345,7 +345,7 @@ enum Commands {
 
     /// Add a DNS record within a specific network scope.
     /// Scoped records are only visible to IPs associated with the scope.
-    /// gRPC path: /rolodex.RolodexService/AddScopedRecord
+    /// gRPC path: /rolodex_dns.RolodexDnsService/AddScopedRecord
     #[command(name = "add-scoped-record")]
     AddScopedRecord {
         /// The network scope name to add the record to
@@ -374,7 +374,7 @@ enum Commands {
     },
 
     /// Remove DNS record(s) from a specific network scope.
-    /// gRPC path: /rolodex.RolodexService/RemoveScopedRecord
+    /// gRPC path: /rolodex_dns.RolodexDnsService/RemoveScopedRecord
     #[command(name = "remove-scoped-record")]
     RemoveScopedRecord {
         /// The network scope name
@@ -395,7 +395,7 @@ enum Commands {
     },
 
     /// List DNS records within a network scope.
-    /// gRPC path: /rolodex.RolodexService/ListScopedRecords
+    /// gRPC path: /rolodex_dns.RolodexDnsService/ListScopedRecords
     #[command(name = "list-scoped-records")]
     ListScopedRecords {
         /// The network scope name
@@ -413,7 +413,7 @@ enum Commands {
 
     /// Get the search domains for a client IP address.
     /// Returns the .home domain of the scope the IP is associated with.
-    /// gRPC path: /rolodex.RolodexService/GetSearchDomains
+    /// gRPC path: /rolodex_dns.RolodexDnsService/GetSearchDomains
     #[command(name = "get-search-domains")]
     GetSearchDomains {
         /// The IP address to look up search domains for
@@ -422,7 +422,7 @@ enum Commands {
     },
 
     /// Add an authoritative zone declaration.
-    /// gRPC path: /rolodex.RolodexService/AddAuthoritativeZone
+    /// gRPC path: /rolodex_dns.RolodexDnsService/AddAuthoritativeZone
     #[command(name = "add-auth-zone")]
     AddAuthZone {
         /// The zone name (e.g. "example.com.")
@@ -431,7 +431,7 @@ enum Commands {
     },
 
     /// Remove an authoritative zone declaration.
-    /// gRPC path: /rolodex.RolodexService/RemoveAuthoritativeZone
+    /// gRPC path: /rolodex_dns.RolodexDnsService/RemoveAuthoritativeZone
     #[command(name = "remove-auth-zone")]
     RemoveAuthZone {
         /// The zone name to remove
@@ -440,22 +440,22 @@ enum Commands {
     },
 
     /// List all authoritative zone declarations.
-    /// gRPC path: /rolodex.RolodexService/ListAuthoritativeZones
+    /// gRPC path: /rolodex_dns.RolodexDnsService/ListAuthoritativeZones
     #[command(name = "list-auth-zones")]
     ListAuthZones,
 
     /// Flush the DNS response cache.
-    /// gRPC path: /rolodex.RolodexService/FlushDnsCache
+    /// gRPC path: /rolodex_dns.RolodexDnsService/FlushDnsCache
     #[command(name = "flush-dns-cache")]
     FlushDnsCache,
 
     /// Get DNS cache statistics.
-    /// gRPC path: /rolodex.RolodexService/GetCacheStats
+    /// gRPC path: /rolodex_dns.RolodexDnsService/GetCacheStats
     #[command(name = "cache-stats")]
     CacheStats,
 
     /// Add a local RBL entry.
-    /// gRPC path: /rolodex.RolodexService/AddLocalRblEntry
+    /// gRPC path: /rolodex_dns.RolodexDnsService/AddLocalRblEntry
     #[command(name = "add-local-rbl")]
     AddLocalRbl {
         /// The name or IP to block
@@ -468,7 +468,7 @@ enum Commands {
     },
 
     /// Remove a local RBL entry.
-    /// gRPC path: /rolodex.RolodexService/RemoveLocalRblEntry
+    /// gRPC path: /rolodex_dns.RolodexDnsService/RemoveLocalRblEntry
     #[command(name = "remove-local-rbl")]
     RemoveLocalRbl {
         /// The name to unblock
@@ -477,12 +477,12 @@ enum Commands {
     },
 
     /// List all local RBL entries.
-    /// gRPC path: /rolodex.RolodexService/ListLocalRblEntries
+    /// gRPC path: /rolodex_dns.RolodexDnsService/ListLocalRblEntries
     #[command(name = "list-local-rbl")]
     ListLocalRbl,
 
     /// Set TTL drift configuration.
-    /// gRPC path: /rolodex.RolodexService/SetTtlDriftConfig
+    /// gRPC path: /rolodex_dns.RolodexDnsService/SetTtlDriftConfig
     #[command(name = "set-ttl-drift")]
     SetTtlDrift {
         /// Drift mode: "disabled", "fixed", or "logarithmic"
@@ -497,17 +497,17 @@ enum Commands {
     },
 
     /// Get current TTL drift configuration.
-    /// gRPC path: /rolodex.RolodexService/GetTtlDriftConfig
+    /// gRPC path: /rolodex_dns.RolodexDnsService/GetTtlDriftConfig
     #[command(name = "get-ttl-drift")]
     GetTtlDrift,
 
     /// Get query latency statistics for upstream servers.
-    /// gRPC path: /rolodex.RolodexService/GetQueryLatencyStats
+    /// gRPC path: /rolodex_dns.RolodexDnsService/GetQueryLatencyStats
     #[command(name = "latency-stats")]
     LatencyStats,
 
     /// Set DNS64 configuration.
-    /// gRPC path: /rolodex.RolodexService/SetDns64Config
+    /// gRPC path: /rolodex_dns.RolodexDnsService/SetDns64Config
     #[command(name = "set-dns64")]
     SetDns64 {
         /// Enable or disable DNS64 synthesis.
@@ -519,12 +519,12 @@ enum Commands {
     },
 
     /// Get current DNS64 configuration.
-    /// gRPC path: /rolodex.RolodexService/GetDns64Config
+    /// gRPC path: /rolodex_dns.RolodexDnsService/GetDns64Config
     #[command(name = "get-dns64")]
     GetDns64,
 
     /// Generate a DNSSEC key pair for a zone.
-    /// gRPC path: /rolodex.RolodexService/GenerateDnssecKey
+    /// gRPC path: /rolodex_dns.RolodexDnsService/GenerateDnssecKey
     #[command(name = "generate-dnssec-key")]
     GenerateDnssecKey {
         /// The DNS zone to generate a key for (e.g. "example.com.")
@@ -539,7 +539,7 @@ enum Commands {
     },
 
     /// List DNSSEC keys for a zone.
-    /// gRPC path: /rolodex.RolodexService/ListDnssecKeys
+    /// gRPC path: /rolodex_dns.RolodexDnsService/ListDnssecKeys
     #[command(name = "list-dnssec-keys")]
     ListDnssecKeys {
         /// The DNS zone to list keys for
@@ -548,7 +548,7 @@ enum Commands {
     },
 
     /// Sign a zone with DNSSEC.
-    /// gRPC path: /rolodex.RolodexService/SignZone
+    /// gRPC path: /rolodex_dns.RolodexDnsService/SignZone
     #[command(name = "sign-zone")]
     SignZone {
         /// The DNS zone to sign
@@ -557,7 +557,7 @@ enum Commands {
     },
 
     /// Generate a DANE TLSA record from a certificate.
-    /// gRPC path: /rolodex.RolodexService/GenerateTlsaRecord
+    /// gRPC path: /rolodex_dns.RolodexDnsService/GenerateTlsaRecord
     #[command(name = "generate-tlsa")]
     GenerateTlsa {
         /// Domain name for the TLSA record
@@ -584,7 +584,7 @@ enum Commands {
     },
 
     /// Request an ACME certificate via DNS-01 challenge.
-    /// gRPC path: /rolodex.RolodexService/RequestAcmeCert
+    /// gRPC path: /rolodex_dns.RolodexDnsService/RequestAcmeCert
     #[command(name = "request-acme-cert")]
     RequestAcmeCert {
         /// Domain to request a certificate for
@@ -596,7 +596,7 @@ enum Commands {
     },
 
     /// Get ACME certificate status for a domain.
-    /// gRPC path: /rolodex.RolodexService/GetAcmeStatus
+    /// gRPC path: /rolodex_dns.RolodexDnsService/GetAcmeStatus
     #[command(name = "acme-status")]
     AcmeStatus {
         /// Domain to check status for
@@ -605,7 +605,7 @@ enum Commands {
     },
 }
 
-async fn connect(cli: &Cli) -> Result<RolodexServiceClient<Channel>> {
+async fn connect(cli: &Cli) -> Result<RolodexDnsServiceClient<Channel>> {
     if let Some(ref socket_path) = cli.unix_socket {
         let socket_path = socket_path.clone();
         let channel = Endpoint::try_from("http://[::]:50051")
@@ -619,7 +619,7 @@ async fn connect(cli: &Cli) -> Result<RolodexServiceClient<Channel>> {
             }))
             .await
             .context("failed to connect to Unix socket")?;
-        Ok(RolodexServiceClient::new(channel))
+        Ok(RolodexDnsServiceClient::new(channel))
     } else {
         let addr = format!("http://{}", cli.address);
         let channel = Channel::from_shared(addr.clone())
@@ -627,7 +627,7 @@ async fn connect(cli: &Cli) -> Result<RolodexServiceClient<Channel>> {
             .connect()
             .await
             .context(format!("failed to connect to {}", addr))?;
-        Ok(RolodexServiceClient::new(channel))
+        Ok(RolodexDnsServiceClient::new(channel))
     }
 }
 
@@ -820,7 +820,7 @@ async fn main() -> Result<()> {
         Commands::CreateScope { name, home_domain } => {
             let response = client
                 .create_network_scope(CreateNetworkScopeRequest {
-                    scope: Some(rolodex::grpc_service::proto::NetworkScope {
+                    scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
                         name: name.clone(),
                         home_domain: home_domain.unwrap_or_default(),
                     }),

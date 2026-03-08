@@ -2,6 +2,6 @@
 /.cache
 verify-passed.txt
 verify-failed.txt
-rolodex-dev.db
-rolodex.db
+rolodex-dns-dev.db
+rolodex-dns.db
 stuff.md

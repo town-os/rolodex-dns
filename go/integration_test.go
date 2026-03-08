@@ -1,17 +1,17 @@
-// Integration tests for the rolodex Go client.
+// Integration tests for the rolodex-dns Go client.
 //
-// These tests start a real Rolodex server process and exercise the Go client
+// These tests start a real Rolodex DNS server process and exercise the Go client
 // against it over both TCP and Unix socket transports. They are fully isolated:
 // each test uses a private temporary directory, random ports, and a per-test
 // database file.
 //
-// The tests require the "rolodex" binary to be built first (see Makefile).
+// The tests require the "rolodex-dns" binary to be built first (see Makefile).
 // They are gated behind the "integration" build tag so they do not run during
 // normal `go test` invocations.
 
 //go:build integration
 
-package rolodex
+package rolodexdns
 
 import (
 	"context"
@@ -24,12 +24,12 @@ import (
 	"time"
 )
 
-// rolodexBinary returns the path to the pre-built rolodex binary.
+// rolodexBinary returns the path to the pre-built rolodex-dns binary.
 func rolodexBinary() string {
-	if p := os.Getenv("ROLODEX_BINARY"); p != "" {
+	if p := os.Getenv("ROLODEX_DNS_BINARY"); p != "" {
 		return p
 	}
-	return "rolodex"
+	return "rolodex-dns"
 }
 
 // serverConfig holds the configuration for a test server instance.
@@ -43,7 +43,7 @@ type serverConfig struct {
 	sharedSecret string
 }
 
-// startServer starts a rolodex server process with the given configuration and
+// startServer starts a rolodex-dns server process with the given configuration and
 // returns a cleanup function that stops the process.
 func startServer(t *testing.T, cfg serverConfig) {
 	t.Helper()
@@ -65,7 +65,7 @@ rbl:
   providers: []
 `, cfg.dbPath, cfg.dnsUDPAddr, cfg.dnsTCPAddr, cfg.grpcTCPAddr, cfg.unixSocket, cfg.sharedSecret)
 
-	configPath := filepath.Join(cfg.dir, "rolodex.yml")
+	configPath := filepath.Join(cfg.dir, "rolodex-dns.yml")
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -109,16 +109,16 @@ func allocatePort(t *testing.T) string {
 }
 
 // setupTestServer creates a temporary directory, allocates random ports, starts
-// a rolodex server, and returns a connected TCP client.
+// a rolodex-dns server, and returns a connected TCP client.
 func setupTestServer(t *testing.T) (*Client, serverConfig) {
 	t.Helper()
 
 	dir := t.TempDir()
 	cfg := serverConfig{
 		dir:          dir,
-		dbPath:       filepath.Join(dir, "rolodex.db"),
+		dbPath:       filepath.Join(dir, "rolodex-dns.db"),
 		grpcTCPAddr:  allocatePort(t),
-		unixSocket:   filepath.Join(dir, "rolodex.sock"),
+		unixSocket:   filepath.Join(dir, "rolodex-dns.sock"),
 		dnsUDPAddr:   allocatePort(t),
 		dnsTCPAddr:   allocatePort(t),
 		sharedSecret: "integration-test-secret",

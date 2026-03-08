@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Configuration for the rolodex DNS server.
+/// Configuration for the rolodex-dns server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// DNS listener configuration.
@@ -286,11 +286,11 @@ impl Default for Config {
             },
             grpc: GrpcConfig {
                 tcp_bind: "127.0.0.1:50051".to_string(),
-                unix_socket: "/var/run/rolodex.sock".to_string(),
+                unix_socket: "/var/run/rolodex-dns.sock".to_string(),
                 shared_secret: String::new(),
             },
             forwarders: vec!["8.8.8.8:53".to_string(), "8.8.4.4:53".to_string()],
-            database_path: "rolodex.db".to_string(),
+            database_path: "rolodex-dns.db".to_string(),
             rbl: RblSettings {
                 enabled: false,
                 providers: default_rbl_providers(),
@@ -480,11 +480,11 @@ dns:
   tcp_bind: "0.0.0.0:53"
 grpc:
   tcp_bind: "127.0.0.1:50051"
-  unix_socket: "/var/run/rolodex.sock"
+  unix_socket: "/var/run/rolodex-dns.sock"
   shared_secret: ""
 forwarders:
   - "8.8.8.8:53"
-database_path: "rolodex.db"
+database_path: "rolodex-dns.db"
 rbl:
   enabled: false
   providers: []

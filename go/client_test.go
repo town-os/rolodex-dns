@@ -1,4 +1,4 @@
-package rolodex
+package rolodexdns
 
 import (
 	"context"
@@ -7,18 +7,18 @@ import (
 	"path/filepath"
 	"testing"
 
-	pb "gitea.com/town-os/rolodex/go/rolodexpb"
+	pb "gitea.com/town-os/rolodex-dns/go/rolodexdnspb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
-// mockRolodexService is a configurable mock implementation of the gRPC service.
+// mockRolodexDnsService is a configurable mock implementation of the gRPC service.
 // Each field is a function that, if set, handles the corresponding RPC. If nil,
 // the RPC returns an Unimplemented error.
-type mockRolodexService struct {
-	pb.UnimplementedRolodexServiceServer
+type mockRolodexDnsService struct {
+	pb.UnimplementedRolodexDnsServiceServer
 
 	addRecordFn              func(ctx context.Context, req *pb.AddRecordRequest) (*pb.AddRecordResponse, error)
 	removeRecordFn           func(ctx context.Context, req *pb.RemoveRecordRequest) (*pb.RemoveRecordResponse, error)
@@ -70,336 +70,336 @@ type mockRolodexService struct {
 	getDns64ConfigFn         func(ctx context.Context, req *pb.GetDns64ConfigRequest) (*pb.GetDns64ConfigResponse, error)
 }
 
-func (m *mockRolodexService) AddRecord(ctx context.Context, req *pb.AddRecordRequest) (*pb.AddRecordResponse, error) {
+func (m *mockRolodexDnsService) AddRecord(ctx context.Context, req *pb.AddRecordRequest) (*pb.AddRecordResponse, error) {
 	if m.addRecordFn != nil {
 		return m.addRecordFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) RemoveRecord(ctx context.Context, req *pb.RemoveRecordRequest) (*pb.RemoveRecordResponse, error) {
+func (m *mockRolodexDnsService) RemoveRecord(ctx context.Context, req *pb.RemoveRecordRequest) (*pb.RemoveRecordResponse, error) {
 	if m.removeRecordFn != nil {
 		return m.removeRecordFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) ListRecords(ctx context.Context, req *pb.ListRecordsRequest) (*pb.ListRecordsResponse, error) {
+func (m *mockRolodexDnsService) ListRecords(ctx context.Context, req *pb.ListRecordsRequest) (*pb.ListRecordsResponse, error) {
 	if m.listRecordsFn != nil {
 		return m.listRecordsFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) SetForwarders(ctx context.Context, req *pb.SetForwarderRequest) (*pb.SetForwarderResponse, error) {
+func (m *mockRolodexDnsService) SetForwarders(ctx context.Context, req *pb.SetForwarderRequest) (*pb.SetForwarderResponse, error) {
 	if m.setForwarderFn != nil {
 		return m.setForwarderFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) SetRblConfig(ctx context.Context, req *pb.SetRblConfigRequest) (*pb.SetRblConfigResponse, error) {
+func (m *mockRolodexDnsService) SetRblConfig(ctx context.Context, req *pb.SetRblConfigRequest) (*pb.SetRblConfigResponse, error) {
 	if m.setRblConfigFn != nil {
 		return m.setRblConfigFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) GetRblConfig(ctx context.Context, req *pb.GetRblConfigRequest) (*pb.GetRblConfigResponse, error) {
+func (m *mockRolodexDnsService) GetRblConfig(ctx context.Context, req *pb.GetRblConfigRequest) (*pb.GetRblConfigResponse, error) {
 	if m.getRblConfigFn != nil {
 		return m.getRblConfigFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) FlushCache(ctx context.Context, req *pb.FlushCacheRequest) (*pb.FlushCacheResponse, error) {
+func (m *mockRolodexDnsService) FlushCache(ctx context.Context, req *pb.FlushCacheRequest) (*pb.FlushCacheResponse, error) {
 	if m.flushCacheFn != nil {
 		return m.flushCacheFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) CreateNetworkScope(ctx context.Context, req *pb.CreateNetworkScopeRequest) (*pb.CreateNetworkScopeResponse, error) {
+func (m *mockRolodexDnsService) CreateNetworkScope(ctx context.Context, req *pb.CreateNetworkScopeRequest) (*pb.CreateNetworkScopeResponse, error) {
 	if m.createNetworkScopeFn != nil {
 		return m.createNetworkScopeFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) DeleteNetworkScope(ctx context.Context, req *pb.DeleteNetworkScopeRequest) (*pb.DeleteNetworkScopeResponse, error) {
+func (m *mockRolodexDnsService) DeleteNetworkScope(ctx context.Context, req *pb.DeleteNetworkScopeRequest) (*pb.DeleteNetworkScopeResponse, error) {
 	if m.deleteNetworkScopeFn != nil {
 		return m.deleteNetworkScopeFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) ListNetworkScopes(ctx context.Context, req *pb.ListNetworkScopesRequest) (*pb.ListNetworkScopesResponse, error) {
+func (m *mockRolodexDnsService) ListNetworkScopes(ctx context.Context, req *pb.ListNetworkScopesRequest) (*pb.ListNetworkScopesResponse, error) {
 	if m.listNetworkScopesFn != nil {
 		return m.listNetworkScopesFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) JoinNetwork(ctx context.Context, req *pb.JoinNetworkRequest) (*pb.JoinNetworkResponse, error) {
+func (m *mockRolodexDnsService) JoinNetwork(ctx context.Context, req *pb.JoinNetworkRequest) (*pb.JoinNetworkResponse, error) {
 	if m.joinNetworkFn != nil {
 		return m.joinNetworkFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) LeaveNetwork(ctx context.Context, req *pb.LeaveNetworkRequest) (*pb.LeaveNetworkResponse, error) {
+func (m *mockRolodexDnsService) LeaveNetwork(ctx context.Context, req *pb.LeaveNetworkRequest) (*pb.LeaveNetworkResponse, error) {
 	if m.leaveNetworkFn != nil {
 		return m.leaveNetworkFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) GetNetworkAssociations(ctx context.Context, req *pb.GetNetworkAssociationsRequest) (*pb.GetNetworkAssociationsResponse, error) {
+func (m *mockRolodexDnsService) GetNetworkAssociations(ctx context.Context, req *pb.GetNetworkAssociationsRequest) (*pb.GetNetworkAssociationsResponse, error) {
 	if m.getNetworkAssociationsFn != nil {
 		return m.getNetworkAssociationsFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) AddScopedRecord(ctx context.Context, req *pb.AddScopedRecordRequest) (*pb.AddScopedRecordResponse, error) {
+func (m *mockRolodexDnsService) AddScopedRecord(ctx context.Context, req *pb.AddScopedRecordRequest) (*pb.AddScopedRecordResponse, error) {
 	if m.addScopedRecordFn != nil {
 		return m.addScopedRecordFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) RemoveScopedRecord(ctx context.Context, req *pb.RemoveScopedRecordRequest) (*pb.RemoveScopedRecordResponse, error) {
+func (m *mockRolodexDnsService) RemoveScopedRecord(ctx context.Context, req *pb.RemoveScopedRecordRequest) (*pb.RemoveScopedRecordResponse, error) {
 	if m.removeScopedRecordFn != nil {
 		return m.removeScopedRecordFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) ListScopedRecords(ctx context.Context, req *pb.ListScopedRecordsRequest) (*pb.ListScopedRecordsResponse, error) {
+func (m *mockRolodexDnsService) ListScopedRecords(ctx context.Context, req *pb.ListScopedRecordsRequest) (*pb.ListScopedRecordsResponse, error) {
 	if m.listScopedRecordsFn != nil {
 		return m.listScopedRecordsFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) GetSearchDomains(ctx context.Context, req *pb.GetSearchDomainsRequest) (*pb.GetSearchDomainsResponse, error) {
+func (m *mockRolodexDnsService) GetSearchDomains(ctx context.Context, req *pb.GetSearchDomainsRequest) (*pb.GetSearchDomainsResponse, error) {
 	if m.getSearchDomainsFn != nil {
 		return m.getSearchDomainsFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) AddAuthoritativeZone(ctx context.Context, req *pb.AddAuthoritativeZoneRequest) (*pb.AddAuthoritativeZoneResponse, error) {
+func (m *mockRolodexDnsService) AddAuthoritativeZone(ctx context.Context, req *pb.AddAuthoritativeZoneRequest) (*pb.AddAuthoritativeZoneResponse, error) {
 	if m.addAuthoritativeZoneFn != nil {
 		return m.addAuthoritativeZoneFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) RemoveAuthoritativeZone(ctx context.Context, req *pb.RemoveAuthoritativeZoneRequest) (*pb.RemoveAuthoritativeZoneResponse, error) {
+func (m *mockRolodexDnsService) RemoveAuthoritativeZone(ctx context.Context, req *pb.RemoveAuthoritativeZoneRequest) (*pb.RemoveAuthoritativeZoneResponse, error) {
 	if m.removeAuthoritativeZoneFn != nil {
 		return m.removeAuthoritativeZoneFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) ListAuthoritativeZones(ctx context.Context, req *pb.ListAuthoritativeZonesRequest) (*pb.ListAuthoritativeZonesResponse, error) {
+func (m *mockRolodexDnsService) ListAuthoritativeZones(ctx context.Context, req *pb.ListAuthoritativeZonesRequest) (*pb.ListAuthoritativeZonesResponse, error) {
 	if m.listAuthoritativeZonesFn != nil {
 		return m.listAuthoritativeZonesFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) GetCacheStats(ctx context.Context, req *pb.GetCacheStatsRequest) (*pb.GetCacheStatsResponse, error) {
+func (m *mockRolodexDnsService) GetCacheStats(ctx context.Context, req *pb.GetCacheStatsRequest) (*pb.GetCacheStatsResponse, error) {
 	if m.getCacheStatsFn != nil {
 		return m.getCacheStatsFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) FlushDnsCache(ctx context.Context, req *pb.FlushDnsCacheRequest) (*pb.FlushDnsCacheResponse, error) {
+func (m *mockRolodexDnsService) FlushDnsCache(ctx context.Context, req *pb.FlushDnsCacheRequest) (*pb.FlushDnsCacheResponse, error) {
 	if m.flushDnsCacheFn != nil {
 		return m.flushDnsCacheFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) SetTtlDriftConfig(ctx context.Context, req *pb.SetTtlDriftConfigRequest) (*pb.SetTtlDriftConfigResponse, error) {
+func (m *mockRolodexDnsService) SetTtlDriftConfig(ctx context.Context, req *pb.SetTtlDriftConfigRequest) (*pb.SetTtlDriftConfigResponse, error) {
 	if m.setTtlDriftConfigFn != nil {
 		return m.setTtlDriftConfigFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) GetTtlDriftConfig(ctx context.Context, req *pb.GetTtlDriftConfigRequest) (*pb.GetTtlDriftConfigResponse, error) {
+func (m *mockRolodexDnsService) GetTtlDriftConfig(ctx context.Context, req *pb.GetTtlDriftConfigRequest) (*pb.GetTtlDriftConfigResponse, error) {
 	if m.getTtlDriftConfigFn != nil {
 		return m.getTtlDriftConfigFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) GetQueryLatencyStats(ctx context.Context, req *pb.GetQueryLatencyStatsRequest) (*pb.GetQueryLatencyStatsResponse, error) {
+func (m *mockRolodexDnsService) GetQueryLatencyStats(ctx context.Context, req *pb.GetQueryLatencyStatsRequest) (*pb.GetQueryLatencyStatsResponse, error) {
 	if m.getQueryLatencyStatsFn != nil {
 		return m.getQueryLatencyStatsFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) AddLocalRblEntry(ctx context.Context, req *pb.AddLocalRblEntryRequest) (*pb.AddLocalRblEntryResponse, error) {
+func (m *mockRolodexDnsService) AddLocalRblEntry(ctx context.Context, req *pb.AddLocalRblEntryRequest) (*pb.AddLocalRblEntryResponse, error) {
 	if m.addLocalRblEntryFn != nil {
 		return m.addLocalRblEntryFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) RemoveLocalRblEntry(ctx context.Context, req *pb.RemoveLocalRblEntryRequest) (*pb.RemoveLocalRblEntryResponse, error) {
+func (m *mockRolodexDnsService) RemoveLocalRblEntry(ctx context.Context, req *pb.RemoveLocalRblEntryRequest) (*pb.RemoveLocalRblEntryResponse, error) {
 	if m.removeLocalRblEntryFn != nil {
 		return m.removeLocalRblEntryFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) ListLocalRblEntries(ctx context.Context, req *pb.ListLocalRblEntriesRequest) (*pb.ListLocalRblEntriesResponse, error) {
+func (m *mockRolodexDnsService) ListLocalRblEntries(ctx context.Context, req *pb.ListLocalRblEntriesRequest) (*pb.ListLocalRblEntriesResponse, error) {
 	if m.listLocalRblEntriesFn != nil {
 		return m.listLocalRblEntriesFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) SetDotConfig(ctx context.Context, req *pb.SetDotConfigRequest) (*pb.SetDotConfigResponse, error) {
+func (m *mockRolodexDnsService) SetDotConfig(ctx context.Context, req *pb.SetDotConfigRequest) (*pb.SetDotConfigResponse, error) {
 	if m.setDotConfigFn != nil {
 		return m.setDotConfigFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) GetDotConfig(ctx context.Context, req *pb.GetDotConfigRequest) (*pb.GetDotConfigResponse, error) {
+func (m *mockRolodexDnsService) GetDotConfig(ctx context.Context, req *pb.GetDotConfigRequest) (*pb.GetDotConfigResponse, error) {
 	if m.getDotConfigFn != nil {
 		return m.getDotConfigFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) SetDohConfig(ctx context.Context, req *pb.SetDohConfigRequest) (*pb.SetDohConfigResponse, error) {
+func (m *mockRolodexDnsService) SetDohConfig(ctx context.Context, req *pb.SetDohConfigRequest) (*pb.SetDohConfigResponse, error) {
 	if m.setDohConfigFn != nil {
 		return m.setDohConfigFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) GetDohConfig(ctx context.Context, req *pb.GetDohConfigRequest) (*pb.GetDohConfigResponse, error) {
+func (m *mockRolodexDnsService) GetDohConfig(ctx context.Context, req *pb.GetDohConfigRequest) (*pb.GetDohConfigResponse, error) {
 	if m.getDohConfigFn != nil {
 		return m.getDohConfigFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) SetDoqConfig(ctx context.Context, req *pb.SetDoqConfigRequest) (*pb.SetDoqConfigResponse, error) {
+func (m *mockRolodexDnsService) SetDoqConfig(ctx context.Context, req *pb.SetDoqConfigRequest) (*pb.SetDoqConfigResponse, error) {
 	if m.setDoqConfigFn != nil {
 		return m.setDoqConfigFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) GetDoqConfig(ctx context.Context, req *pb.GetDoqConfigRequest) (*pb.GetDoqConfigResponse, error) {
+func (m *mockRolodexDnsService) GetDoqConfig(ctx context.Context, req *pb.GetDoqConfigRequest) (*pb.GetDoqConfigResponse, error) {
 	if m.getDoqConfigFn != nil {
 		return m.getDoqConfigFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) SetProxyConfig(ctx context.Context, req *pb.SetProxyConfigRequest) (*pb.SetProxyConfigResponse, error) {
+func (m *mockRolodexDnsService) SetProxyConfig(ctx context.Context, req *pb.SetProxyConfigRequest) (*pb.SetProxyConfigResponse, error) {
 	if m.setProxyConfigFn != nil {
 		return m.setProxyConfigFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) GetProxyConfig(ctx context.Context, req *pb.GetProxyConfigRequest) (*pb.GetProxyConfigResponse, error) {
+func (m *mockRolodexDnsService) GetProxyConfig(ctx context.Context, req *pb.GetProxyConfigRequest) (*pb.GetProxyConfigResponse, error) {
 	if m.getProxyConfigFn != nil {
 		return m.getProxyConfigFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) GenerateDnssecKey(ctx context.Context, req *pb.GenerateDnssecKeyRequest) (*pb.GenerateDnssecKeyResponse, error) {
+func (m *mockRolodexDnsService) GenerateDnssecKey(ctx context.Context, req *pb.GenerateDnssecKeyRequest) (*pb.GenerateDnssecKeyResponse, error) {
 	if m.generateDnssecKeyFn != nil {
 		return m.generateDnssecKeyFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) ListDnssecKeys(ctx context.Context, req *pb.ListDnssecKeysRequest) (*pb.ListDnssecKeysResponse, error) {
+func (m *mockRolodexDnsService) ListDnssecKeys(ctx context.Context, req *pb.ListDnssecKeysRequest) (*pb.ListDnssecKeysResponse, error) {
 	if m.listDnssecKeysFn != nil {
 		return m.listDnssecKeysFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) DeleteDnssecKey(ctx context.Context, req *pb.DeleteDnssecKeyRequest) (*pb.DeleteDnssecKeyResponse, error) {
+func (m *mockRolodexDnsService) DeleteDnssecKey(ctx context.Context, req *pb.DeleteDnssecKeyRequest) (*pb.DeleteDnssecKeyResponse, error) {
 	if m.deleteDnssecKeyFn != nil {
 		return m.deleteDnssecKeyFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) GetDsRecords(ctx context.Context, req *pb.GetDsRecordsRequest) (*pb.GetDsRecordsResponse, error) {
+func (m *mockRolodexDnsService) GetDsRecords(ctx context.Context, req *pb.GetDsRecordsRequest) (*pb.GetDsRecordsResponse, error) {
 	if m.getDsRecordsFn != nil {
 		return m.getDsRecordsFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) SignZone(ctx context.Context, req *pb.SignZoneRequest) (*pb.SignZoneResponse, error) {
+func (m *mockRolodexDnsService) SignZone(ctx context.Context, req *pb.SignZoneRequest) (*pb.SignZoneResponse, error) {
 	if m.signZoneFn != nil {
 		return m.signZoneFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) GenerateTlsaRecord(ctx context.Context, req *pb.GenerateTlsaRecordRequest) (*pb.GenerateTlsaRecordResponse, error) {
+func (m *mockRolodexDnsService) GenerateTlsaRecord(ctx context.Context, req *pb.GenerateTlsaRecordRequest) (*pb.GenerateTlsaRecordResponse, error) {
 	if m.generateTlsaRecordFn != nil {
 		return m.generateTlsaRecordFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) ListTlsaRecords(ctx context.Context, req *pb.ListTlsaRecordsRequest) (*pb.ListTlsaRecordsResponse, error) {
+func (m *mockRolodexDnsService) ListTlsaRecords(ctx context.Context, req *pb.ListTlsaRecordsRequest) (*pb.ListTlsaRecordsResponse, error) {
 	if m.listTlsaRecordsFn != nil {
 		return m.listTlsaRecordsFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) GenerateDaneRootCa(ctx context.Context, req *pb.GenerateDaneRootCaRequest) (*pb.GenerateDaneRootCaResponse, error) {
+func (m *mockRolodexDnsService) GenerateDaneRootCa(ctx context.Context, req *pb.GenerateDaneRootCaRequest) (*pb.GenerateDaneRootCaResponse, error) {
 	if m.generateDaneRootCaFn != nil {
 		return m.generateDaneRootCaFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) RequestAcmeCert(ctx context.Context, req *pb.RequestAcmeCertRequest) (*pb.RequestAcmeCertResponse, error) {
+func (m *mockRolodexDnsService) RequestAcmeCert(ctx context.Context, req *pb.RequestAcmeCertRequest) (*pb.RequestAcmeCertResponse, error) {
 	if m.requestAcmeCertFn != nil {
 		return m.requestAcmeCertFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) GetAcmeStatus(ctx context.Context, req *pb.GetAcmeStatusRequest) (*pb.GetAcmeStatusResponse, error) {
+func (m *mockRolodexDnsService) GetAcmeStatus(ctx context.Context, req *pb.GetAcmeStatusRequest) (*pb.GetAcmeStatusResponse, error) {
 	if m.getAcmeStatusFn != nil {
 		return m.getAcmeStatusFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) SetDns64Config(ctx context.Context, req *pb.SetDns64ConfigRequest) (*pb.SetDns64ConfigResponse, error) {
+func (m *mockRolodexDnsService) SetDns64Config(ctx context.Context, req *pb.SetDns64ConfigRequest) (*pb.SetDns64ConfigResponse, error) {
 	if m.setDns64ConfigFn != nil {
 		return m.setDns64ConfigFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexService) GetDns64Config(ctx context.Context, req *pb.GetDns64ConfigRequest) (*pb.GetDns64ConfigResponse, error) {
+func (m *mockRolodexDnsService) GetDns64Config(ctx context.Context, req *pb.GetDns64ConfigRequest) (*pb.GetDns64ConfigResponse, error) {
 	if m.getDns64ConfigFn != nil {
 		return m.getDns64ConfigFn(ctx, req)
 	}
@@ -408,12 +408,12 @@ func (m *mockRolodexService) GetDns64Config(ctx context.Context, req *pb.GetDns6
 
 // startMockServer starts an in-process gRPC server using a bufconn listener and
 // returns a connected Client. The server is stopped when the test finishes.
-func startMockServer(t *testing.T, mock *mockRolodexService, opts ...Option) *Client {
+func startMockServer(t *testing.T, mock *mockRolodexDnsService, opts ...Option) *Client {
 	t.Helper()
 
 	lis := bufconn.Listen(1024 * 1024)
 	srv := grpc.NewServer()
-	pb.RegisterRolodexServiceServer(srv, mock)
+	pb.RegisterRolodexDnsServiceServer(srv, mock)
 	t.Cleanup(func() { srv.Stop() })
 
 	go func() {
@@ -439,7 +439,7 @@ func startMockServer(t *testing.T, mock *mockRolodexService, opts ...Option) *Cl
 
 func TestAddRecord(t *testing.T) {
 	var captured *pb.AddRecordRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		addRecordFn: func(_ context.Context, req *pb.AddRecordRequest) (*pb.AddRecordResponse, error) {
 			captured = req
 			return &pb.AddRecordResponse{Success: true}, nil
@@ -476,7 +476,7 @@ func TestAddRecord(t *testing.T) {
 }
 
 func TestAddRecordServerFailure(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		addRecordFn: func(_ context.Context, req *pb.AddRecordRequest) (*pb.AddRecordResponse, error) {
 			return &pb.AddRecordResponse{Success: false, Message: "db error"}, nil
 		},
@@ -494,7 +494,7 @@ func TestAddRecordServerFailure(t *testing.T) {
 }
 
 func TestAddRecordRPCError(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		addRecordFn: func(_ context.Context, req *pb.AddRecordRequest) (*pb.AddRecordResponse, error) {
 			return nil, status.Error(codes.Unauthenticated, "invalid auth token")
 		},
@@ -513,7 +513,7 @@ func TestAddRecordRPCError(t *testing.T) {
 
 func TestRemoveRecord(t *testing.T) {
 	var captured *pb.RemoveRecordRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		removeRecordFn: func(_ context.Context, req *pb.RemoveRecordRequest) (*pb.RemoveRecordResponse, error) {
 			captured = req
 			return &pb.RemoveRecordResponse{Success: true, RemovedCount: 2}, nil
@@ -538,7 +538,7 @@ func TestRemoveRecord(t *testing.T) {
 
 func TestRemoveRecordWithOptions(t *testing.T) {
 	var captured *pb.RemoveRecordRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		removeRecordFn: func(_ context.Context, req *pb.RemoveRecordRequest) (*pb.RemoveRecordResponse, error) {
 			captured = req
 			return &pb.RemoveRecordResponse{Success: true, RemovedCount: 1}, nil
@@ -566,7 +566,7 @@ func TestRemoveRecordWithOptions(t *testing.T) {
 }
 
 func TestRemoveRecordServerFailure(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		removeRecordFn: func(_ context.Context, req *pb.RemoveRecordRequest) (*pb.RemoveRecordResponse, error) {
 			return &pb.RemoveRecordResponse{Success: false, Message: "not found"}, nil
 		},
@@ -580,7 +580,7 @@ func TestRemoveRecordServerFailure(t *testing.T) {
 }
 
 func TestListRecords(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		listRecordsFn: func(_ context.Context, req *pb.ListRecordsRequest) (*pb.ListRecordsResponse, error) {
 			return &pb.ListRecordsResponse{
 				Records: []*pb.DnsRecord{
@@ -606,7 +606,7 @@ func TestListRecords(t *testing.T) {
 
 func TestListRecordsWithFilters(t *testing.T) {
 	var captured *pb.ListRecordsRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		listRecordsFn: func(_ context.Context, req *pb.ListRecordsRequest) (*pb.ListRecordsResponse, error) {
 			captured = req
 			return &pb.ListRecordsResponse{}, nil
@@ -638,7 +638,7 @@ func TestListRecordsWithFilters(t *testing.T) {
 
 func TestSetForwarders(t *testing.T) {
 	var captured *pb.SetForwarderRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		setForwarderFn: func(_ context.Context, req *pb.SetForwarderRequest) (*pb.SetForwarderResponse, error) {
 			captured = req
 			return &pb.SetForwarderResponse{Success: true}, nil
@@ -659,7 +659,7 @@ func TestSetForwarders(t *testing.T) {
 }
 
 func TestSetForwardersServerFailure(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		setForwarderFn: func(_ context.Context, req *pb.SetForwarderRequest) (*pb.SetForwarderResponse, error) {
 			return &pb.SetForwarderResponse{Success: false, Message: "bad address"}, nil
 		},
@@ -674,7 +674,7 @@ func TestSetForwardersServerFailure(t *testing.T) {
 
 func TestSetRblConfig(t *testing.T) {
 	var captured *pb.SetRblConfigRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		setRblConfigFn: func(_ context.Context, req *pb.SetRblConfigRequest) (*pb.SetRblConfigResponse, error) {
 			captured = req
 			return &pb.SetRblConfigResponse{Success: true}, nil
@@ -707,7 +707,7 @@ func TestSetRblConfig(t *testing.T) {
 }
 
 func TestGetRblConfig(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		getRblConfigFn: func(_ context.Context, req *pb.GetRblConfigRequest) (*pb.GetRblConfigResponse, error) {
 			return &pb.GetRblConfigResponse{
 				Enabled: true,
@@ -736,7 +736,7 @@ func TestGetRblConfig(t *testing.T) {
 
 func TestFlushCache(t *testing.T) {
 	var captured *pb.FlushCacheRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		flushCacheFn: func(_ context.Context, req *pb.FlushCacheRequest) (*pb.FlushCacheResponse, error) {
 			captured = req
 			return &pb.FlushCacheResponse{Success: true}, nil
@@ -754,7 +754,7 @@ func TestFlushCache(t *testing.T) {
 }
 
 func TestFlushCacheServerFailure(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		flushCacheFn: func(_ context.Context, req *pb.FlushCacheRequest) (*pb.FlushCacheResponse, error) {
 			return &pb.FlushCacheResponse{Success: false, Message: "cache error"}, nil
 		},
@@ -778,13 +778,13 @@ func TestDialUnixSocket(t *testing.T) {
 		t.Fatalf("failed to listen on unix socket: %v", err)
 	}
 
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		flushCacheFn: func(_ context.Context, req *pb.FlushCacheRequest) (*pb.FlushCacheResponse, error) {
 			return &pb.FlushCacheResponse{Success: true}, nil
 		},
 	}
 	srv := grpc.NewServer()
-	pb.RegisterRolodexServiceServer(srv, mock)
+	pb.RegisterRolodexDnsServiceServer(srv, mock)
 	t.Cleanup(func() { srv.Stop() })
 
 	go func() {
@@ -813,7 +813,7 @@ func TestDialTCP(t *testing.T) {
 		t.Fatalf("failed to listen: %v", err)
 	}
 
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		listRecordsFn: func(_ context.Context, req *pb.ListRecordsRequest) (*pb.ListRecordsResponse, error) {
 			if req.AuthToken != "my-secret" {
 				return nil, status.Error(codes.Unauthenticated, "bad token")
@@ -822,7 +822,7 @@ func TestDialTCP(t *testing.T) {
 		},
 	}
 	srv := grpc.NewServer()
-	pb.RegisterRolodexServiceServer(srv, mock)
+	pb.RegisterRolodexDnsServiceServer(srv, mock)
 	t.Cleanup(func() { srv.Stop() })
 
 	go func() {
@@ -849,7 +849,7 @@ func TestDialTCP(t *testing.T) {
 
 func TestCreateNetworkScope(t *testing.T) {
 	var captured *pb.CreateNetworkScopeRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		createNetworkScopeFn: func(_ context.Context, req *pb.CreateNetworkScopeRequest) (*pb.CreateNetworkScopeResponse, error) {
 			captured = req
 			return &pb.CreateNetworkScopeResponse{Success: true}, nil
@@ -879,7 +879,7 @@ func TestCreateNetworkScope(t *testing.T) {
 }
 
 func TestCreateNetworkScopeServerFailure(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		createNetworkScopeFn: func(_ context.Context, req *pb.CreateNetworkScopeRequest) (*pb.CreateNetworkScopeResponse, error) {
 			return &pb.CreateNetworkScopeResponse{Success: false, Message: "already exists"}, nil
 		},
@@ -894,7 +894,7 @@ func TestCreateNetworkScopeServerFailure(t *testing.T) {
 
 func TestDeleteNetworkScope(t *testing.T) {
 	var captured *pb.DeleteNetworkScopeRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		deleteNetworkScopeFn: func(_ context.Context, req *pb.DeleteNetworkScopeRequest) (*pb.DeleteNetworkScopeResponse, error) {
 			captured = req
 			return &pb.DeleteNetworkScopeResponse{Success: true}, nil
@@ -915,7 +915,7 @@ func TestDeleteNetworkScope(t *testing.T) {
 }
 
 func TestListNetworkScopes(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		listNetworkScopesFn: func(_ context.Context, req *pb.ListNetworkScopesRequest) (*pb.ListNetworkScopesResponse, error) {
 			return &pb.ListNetworkScopesResponse{
 				Scopes: []*pb.NetworkScope{
@@ -944,7 +944,7 @@ func TestListNetworkScopes(t *testing.T) {
 
 func TestJoinNetwork(t *testing.T) {
 	var captured *pb.JoinNetworkRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		joinNetworkFn: func(_ context.Context, req *pb.JoinNetworkRequest) (*pb.JoinNetworkResponse, error) {
 			captured = req
 			return &pb.JoinNetworkResponse{Success: true}, nil
@@ -971,7 +971,7 @@ func TestJoinNetwork(t *testing.T) {
 }
 
 func TestJoinNetworkServerFailure(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		joinNetworkFn: func(_ context.Context, req *pb.JoinNetworkRequest) (*pb.JoinNetworkResponse, error) {
 			return &pb.JoinNetworkResponse{Success: false, Message: "scope not found"}, nil
 		},
@@ -986,7 +986,7 @@ func TestJoinNetworkServerFailure(t *testing.T) {
 
 func TestLeaveNetwork(t *testing.T) {
 	var captured *pb.LeaveNetworkRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		leaveNetworkFn: func(_ context.Context, req *pb.LeaveNetworkRequest) (*pb.LeaveNetworkResponse, error) {
 			captured = req
 			return &pb.LeaveNetworkResponse{Success: true}, nil
@@ -1007,7 +1007,7 @@ func TestLeaveNetwork(t *testing.T) {
 }
 
 func TestGetNetworkAssociations(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		getNetworkAssociationsFn: func(_ context.Context, req *pb.GetNetworkAssociationsRequest) (*pb.GetNetworkAssociationsResponse, error) {
 			return &pb.GetNetworkAssociationsResponse{
 				Associations: []*pb.NetworkAssociation{
@@ -1036,7 +1036,7 @@ func TestGetNetworkAssociations(t *testing.T) {
 
 func TestGetNetworkAssociationsFiltered(t *testing.T) {
 	var captured *pb.GetNetworkAssociationsRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		getNetworkAssociationsFn: func(_ context.Context, req *pb.GetNetworkAssociationsRequest) (*pb.GetNetworkAssociationsResponse, error) {
 			captured = req
 			return &pb.GetNetworkAssociationsResponse{}, nil
@@ -1055,7 +1055,7 @@ func TestGetNetworkAssociationsFiltered(t *testing.T) {
 
 func TestAddScopedRecord(t *testing.T) {
 	var captured *pb.AddScopedRecordRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		addScopedRecordFn: func(_ context.Context, req *pb.AddScopedRecordRequest) (*pb.AddScopedRecordResponse, error) {
 			captured = req
 			return &pb.AddScopedRecordResponse{Success: true}, nil
@@ -1087,7 +1087,7 @@ func TestAddScopedRecord(t *testing.T) {
 }
 
 func TestAddScopedRecordServerFailure(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		addScopedRecordFn: func(_ context.Context, req *pb.AddScopedRecordRequest) (*pb.AddScopedRecordResponse, error) {
 			return &pb.AddScopedRecordResponse{Success: false, Message: "scope not found"}, nil
 		},
@@ -1104,7 +1104,7 @@ func TestAddScopedRecordServerFailure(t *testing.T) {
 
 func TestRemoveScopedRecord(t *testing.T) {
 	var captured *pb.RemoveScopedRecordRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		removeScopedRecordFn: func(_ context.Context, req *pb.RemoveScopedRecordRequest) (*pb.RemoveScopedRecordResponse, error) {
 			captured = req
 			return &pb.RemoveScopedRecordResponse{Success: true, RemovedCount: 1}, nil
@@ -1129,7 +1129,7 @@ func TestRemoveScopedRecord(t *testing.T) {
 
 func TestRemoveScopedRecordWithOptions(t *testing.T) {
 	var captured *pb.RemoveScopedRecordRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		removeScopedRecordFn: func(_ context.Context, req *pb.RemoveScopedRecordRequest) (*pb.RemoveScopedRecordResponse, error) {
 			captured = req
 			return &pb.RemoveScopedRecordResponse{Success: true, RemovedCount: 1}, nil
@@ -1157,7 +1157,7 @@ func TestRemoveScopedRecordWithOptions(t *testing.T) {
 }
 
 func TestListScopedRecords(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		listScopedRecordsFn: func(_ context.Context, req *pb.ListScopedRecordsRequest) (*pb.ListScopedRecordsResponse, error) {
 			return &pb.ListScopedRecordsResponse{
 				Records: []*pb.DnsRecord{
@@ -1182,7 +1182,7 @@ func TestListScopedRecords(t *testing.T) {
 
 func TestListScopedRecordsWithFilters(t *testing.T) {
 	var captured *pb.ListScopedRecordsRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		listScopedRecordsFn: func(_ context.Context, req *pb.ListScopedRecordsRequest) (*pb.ListScopedRecordsResponse, error) {
 			captured = req
 			return &pb.ListScopedRecordsResponse{}, nil
@@ -1213,7 +1213,7 @@ func TestListScopedRecordsWithFilters(t *testing.T) {
 }
 
 func TestGetSearchDomains(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		getSearchDomainsFn: func(_ context.Context, req *pb.GetSearchDomainsRequest) (*pb.GetSearchDomainsResponse, error) {
 			return &pb.GetSearchDomainsResponse{
 				SearchDomains: []string{"office.home."},
@@ -1236,7 +1236,7 @@ func TestGetSearchDomains(t *testing.T) {
 
 func TestGetSearchDomainsAuthToken(t *testing.T) {
 	var captured *pb.GetSearchDomainsRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		getSearchDomainsFn: func(_ context.Context, req *pb.GetSearchDomainsRequest) (*pb.GetSearchDomainsResponse, error) {
 			captured = req
 			return &pb.GetSearchDomainsResponse{}, nil
@@ -1259,7 +1259,7 @@ func TestGetSearchDomainsAuthToken(t *testing.T) {
 func TestAuthTokenSentWithAllRPCs(t *testing.T) {
 	// Verify the auth token is propagated for each RPC method
 	tokens := make(map[string]string)
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		addRecordFn: func(_ context.Context, req *pb.AddRecordRequest) (*pb.AddRecordResponse, error) {
 			tokens["add"] = req.AuthToken
 			return &pb.AddRecordResponse{Success: true}, nil
@@ -1396,7 +1396,7 @@ func TestAuthTokenSentWithAllRPCs(t *testing.T) {
 
 func TestNoAuthToken(t *testing.T) {
 	var captured string
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		flushCacheFn: func(_ context.Context, req *pb.FlushCacheRequest) (*pb.FlushCacheResponse, error) {
 			captured = req.AuthToken
 			return &pb.FlushCacheResponse{Success: true}, nil
@@ -1436,7 +1436,7 @@ func TestRecordTypeConstants(t *testing.T) {
 }
 
 func TestCloseIdempotent(t *testing.T) {
-	mock := &mockRolodexService{}
+	mock := &mockRolodexDnsService{}
 	client := startMockServer(t, mock)
 	// startMockServer already registers Close via t.Cleanup, but we explicitly call it
 	// here to ensure it doesn't panic. The second close from cleanup should also not panic.
@@ -1463,7 +1463,7 @@ func TestDialInvalidAddress(t *testing.T) {
 
 func TestWithGRPCDialOption(t *testing.T) {
 	// Test that custom gRPC dial options are passed through
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		flushCacheFn: func(_ context.Context, req *pb.FlushCacheRequest) (*pb.FlushCacheResponse, error) {
 			return &pb.FlushCacheResponse{Success: true}, nil
 		},
@@ -1475,7 +1475,7 @@ func TestWithGRPCDialOption(t *testing.T) {
 		t.Fatalf("failed to listen: %v", err)
 	}
 	srv := grpc.NewServer()
-	pb.RegisterRolodexServiceServer(srv, mock)
+	pb.RegisterRolodexDnsServiceServer(srv, mock)
 	t.Cleanup(func() { srv.Stop() })
 	go func() { _ = srv.Serve(lis) }()
 
@@ -1497,7 +1497,7 @@ func TestWithGRPCDialOption(t *testing.T) {
 func TestUnixSocketEnvFile(t *testing.T) {
 	// Test that WithUnixSocket uses the unix dialer path
 	dir := t.TempDir()
-	socketPath := filepath.Join(dir, "rolodex.sock")
+	socketPath := filepath.Join(dir, "rolodex-dns.sock")
 
 	lis, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1505,14 +1505,14 @@ func TestUnixSocketEnvFile(t *testing.T) {
 	}
 
 	var capturedToken string
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		flushCacheFn: func(_ context.Context, req *pb.FlushCacheRequest) (*pb.FlushCacheResponse, error) {
 			capturedToken = req.AuthToken
 			return &pb.FlushCacheResponse{Success: true}, nil
 		},
 	}
 	srv := grpc.NewServer()
-	pb.RegisterRolodexServiceServer(srv, mock)
+	pb.RegisterRolodexDnsServiceServer(srv, mock)
 	t.Cleanup(func() { srv.Stop() })
 	go func() { _ = srv.Serve(lis) }()
 
@@ -1543,7 +1543,7 @@ func TestUnixSocketEnvFile(t *testing.T) {
 
 func TestAddAuthoritativeZone(t *testing.T) {
 	var captured *pb.AddAuthoritativeZoneRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		addAuthoritativeZoneFn: func(_ context.Context, req *pb.AddAuthoritativeZoneRequest) (*pb.AddAuthoritativeZoneResponse, error) {
 			captured = req
 			return &pb.AddAuthoritativeZoneResponse{Success: true}, nil
@@ -1564,7 +1564,7 @@ func TestAddAuthoritativeZone(t *testing.T) {
 
 func TestRemoveAuthoritativeZone(t *testing.T) {
 	var captured *pb.RemoveAuthoritativeZoneRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		removeAuthoritativeZoneFn: func(_ context.Context, req *pb.RemoveAuthoritativeZoneRequest) (*pb.RemoveAuthoritativeZoneResponse, error) {
 			captured = req
 			return &pb.RemoveAuthoritativeZoneResponse{Success: true}, nil
@@ -1584,7 +1584,7 @@ func TestRemoveAuthoritativeZone(t *testing.T) {
 }
 
 func TestListAuthoritativeZones(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		listAuthoritativeZonesFn: func(_ context.Context, req *pb.ListAuthoritativeZonesRequest) (*pb.ListAuthoritativeZonesResponse, error) {
 			return &pb.ListAuthoritativeZonesResponse{
 				Zones: []string{"example.com.", "test.org."},
@@ -1608,7 +1608,7 @@ func TestListAuthoritativeZones(t *testing.T) {
 }
 
 func TestGetCacheStats(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		getCacheStatsFn: func(_ context.Context, req *pb.GetCacheStatsRequest) (*pb.GetCacheStatsResponse, error) {
 			return &pb.GetCacheStatsResponse{
 				TotalEntries: 100,
@@ -1635,7 +1635,7 @@ func TestGetCacheStats(t *testing.T) {
 
 func TestFlushDnsCache(t *testing.T) {
 	var captured *pb.FlushDnsCacheRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		flushDnsCacheFn: func(_ context.Context, req *pb.FlushDnsCacheRequest) (*pb.FlushDnsCacheResponse, error) {
 			captured = req
 			return &pb.FlushDnsCacheResponse{Success: true}, nil
@@ -1653,7 +1653,7 @@ func TestFlushDnsCache(t *testing.T) {
 
 func TestSetTtlDriftConfig(t *testing.T) {
 	var captured *pb.SetTtlDriftConfigRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		setTtlDriftConfigFn: func(_ context.Context, req *pb.SetTtlDriftConfigRequest) (*pb.SetTtlDriftConfigResponse, error) {
 			captured = req
 			return &pb.SetTtlDriftConfigResponse{Success: true}, nil
@@ -1681,7 +1681,7 @@ func TestSetTtlDriftConfig(t *testing.T) {
 }
 
 func TestGetTtlDriftConfig(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		getTtlDriftConfigFn: func(_ context.Context, req *pb.GetTtlDriftConfigRequest) (*pb.GetTtlDriftConfigResponse, error) {
 			return &pb.GetTtlDriftConfigResponse{
 				Config: &pb.TtlDriftConfig{
@@ -1705,7 +1705,7 @@ func TestGetTtlDriftConfig(t *testing.T) {
 }
 
 func TestGetQueryLatencyStats(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		getQueryLatencyStatsFn: func(_ context.Context, req *pb.GetQueryLatencyStatsRequest) (*pb.GetQueryLatencyStatsResponse, error) {
 			return &pb.GetQueryLatencyStatsResponse{
 				Stats: []*pb.QueryLatencyStat{
@@ -1736,7 +1736,7 @@ func TestGetQueryLatencyStats(t *testing.T) {
 
 func TestAddLocalRblEntry(t *testing.T) {
 	var captured *pb.AddLocalRblEntryRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		addLocalRblEntryFn: func(_ context.Context, req *pb.AddLocalRblEntryRequest) (*pb.AddLocalRblEntryResponse, error) {
 			captured = req
 			return &pb.AddLocalRblEntryResponse{Success: true}, nil
@@ -1764,7 +1764,7 @@ func TestAddLocalRblEntry(t *testing.T) {
 
 func TestRemoveLocalRblEntry(t *testing.T) {
 	var captured *pb.RemoveLocalRblEntryRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		removeLocalRblEntryFn: func(_ context.Context, req *pb.RemoveLocalRblEntryRequest) (*pb.RemoveLocalRblEntryResponse, error) {
 			captured = req
 			return &pb.RemoveLocalRblEntryResponse{Success: true}, nil
@@ -1784,7 +1784,7 @@ func TestRemoveLocalRblEntry(t *testing.T) {
 }
 
 func TestListLocalRblEntries(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		listLocalRblEntriesFn: func(_ context.Context, req *pb.ListLocalRblEntriesRequest) (*pb.ListLocalRblEntriesResponse, error) {
 			return &pb.ListLocalRblEntriesResponse{
 				Entries: []*pb.LocalRblEntry{
@@ -1812,7 +1812,7 @@ func TestListLocalRblEntries(t *testing.T) {
 
 func TestSetDotConfig(t *testing.T) {
 	var captured *pb.SetDotConfigRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		setDotConfigFn: func(_ context.Context, req *pb.SetDotConfigRequest) (*pb.SetDotConfigResponse, error) {
 			captured = req
 			return &pb.SetDotConfigResponse{Success: true}, nil
@@ -1842,7 +1842,7 @@ func TestSetDotConfig(t *testing.T) {
 }
 
 func TestGetDotConfig(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		getDotConfigFn: func(_ context.Context, req *pb.GetDotConfigRequest) (*pb.GetDotConfigResponse, error) {
 			return &pb.GetDotConfigResponse{
 				Config: &pb.DotConfig{
@@ -1871,7 +1871,7 @@ func TestGetDotConfig(t *testing.T) {
 
 func TestSetDohConfig(t *testing.T) {
 	var captured *pb.SetDohConfigRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		setDohConfigFn: func(_ context.Context, req *pb.SetDohConfigRequest) (*pb.SetDohConfigResponse, error) {
 			captured = req
 			return &pb.SetDohConfigResponse{Success: true}, nil
@@ -1902,7 +1902,7 @@ func TestSetDohConfig(t *testing.T) {
 }
 
 func TestGetDohConfig(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		getDohConfigFn: func(_ context.Context, req *pb.GetDohConfigRequest) (*pb.GetDohConfigResponse, error) {
 			return &pb.GetDohConfigResponse{
 				Config: &pb.DohConfig{
@@ -1931,7 +1931,7 @@ func TestGetDohConfig(t *testing.T) {
 
 func TestSetDoqConfig(t *testing.T) {
 	var captured *pb.SetDoqConfigRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		setDoqConfigFn: func(_ context.Context, req *pb.SetDoqConfigRequest) (*pb.SetDoqConfigResponse, error) {
 			captured = req
 			return &pb.SetDoqConfigResponse{Success: true}, nil
@@ -1961,7 +1961,7 @@ func TestSetDoqConfig(t *testing.T) {
 }
 
 func TestGetDoqConfig(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		getDoqConfigFn: func(_ context.Context, req *pb.GetDoqConfigRequest) (*pb.GetDoqConfigResponse, error) {
 			return &pb.GetDoqConfigResponse{
 				Config: &pb.DoqConfig{
@@ -1989,7 +1989,7 @@ func TestGetDoqConfig(t *testing.T) {
 
 func TestSetProxyConfig(t *testing.T) {
 	var captured *pb.SetProxyConfigRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		setProxyConfigFn: func(_ context.Context, req *pb.SetProxyConfigRequest) (*pb.SetProxyConfigResponse, error) {
 			captured = req
 			return &pb.SetProxyConfigResponse{Success: true}, nil
@@ -2020,7 +2020,7 @@ func TestSetProxyConfig(t *testing.T) {
 }
 
 func TestGetProxyConfig(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		getProxyConfigFn: func(_ context.Context, req *pb.GetProxyConfigRequest) (*pb.GetProxyConfigResponse, error) {
 			return &pb.GetProxyConfigResponse{
 				Config: &pb.ProxyConfig{
@@ -2046,7 +2046,7 @@ func TestGetProxyConfig(t *testing.T) {
 
 func TestGenerateDnssecKey(t *testing.T) {
 	var captured *pb.GenerateDnssecKeyRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		generateDnssecKeyFn: func(_ context.Context, req *pb.GenerateDnssecKeyRequest) (*pb.GenerateDnssecKeyResponse, error) {
 			captured = req
 			return &pb.GenerateDnssecKeyResponse{
@@ -2087,7 +2087,7 @@ func TestGenerateDnssecKey(t *testing.T) {
 }
 
 func TestListDnssecKeys(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		listDnssecKeysFn: func(_ context.Context, req *pb.ListDnssecKeysRequest) (*pb.ListDnssecKeysResponse, error) {
 			return &pb.ListDnssecKeysResponse{
 				Keys: []*pb.DnssecKey{
@@ -2115,7 +2115,7 @@ func TestListDnssecKeys(t *testing.T) {
 
 func TestDeleteDnssecKey(t *testing.T) {
 	var captured *pb.DeleteDnssecKeyRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		deleteDnssecKeyFn: func(_ context.Context, req *pb.DeleteDnssecKeyRequest) (*pb.DeleteDnssecKeyResponse, error) {
 			captured = req
 			return &pb.DeleteDnssecKeyResponse{Success: true}, nil
@@ -2135,7 +2135,7 @@ func TestDeleteDnssecKey(t *testing.T) {
 }
 
 func TestGetDsRecords(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		getDsRecordsFn: func(_ context.Context, req *pb.GetDsRecordsRequest) (*pb.GetDsRecordsResponse, error) {
 			return &pb.GetDsRecordsResponse{
 				DsRecords: []string{
@@ -2160,7 +2160,7 @@ func TestGetDsRecords(t *testing.T) {
 
 func TestSignZone(t *testing.T) {
 	var captured *pb.SignZoneRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		signZoneFn: func(_ context.Context, req *pb.SignZoneRequest) (*pb.SignZoneResponse, error) {
 			captured = req
 			return &pb.SignZoneResponse{Success: true}, nil
@@ -2181,7 +2181,7 @@ func TestSignZone(t *testing.T) {
 
 func TestGenerateTlsaRecord(t *testing.T) {
 	var captured *pb.GenerateTlsaRecordRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		generateTlsaRecordFn: func(_ context.Context, req *pb.GenerateTlsaRecordRequest) (*pb.GenerateTlsaRecordResponse, error) {
 			captured = req
 			return &pb.GenerateTlsaRecordResponse{
@@ -2230,7 +2230,7 @@ func TestGenerateTlsaRecord(t *testing.T) {
 }
 
 func TestListTlsaRecords(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		listTlsaRecordsFn: func(_ context.Context, req *pb.ListTlsaRecordsRequest) (*pb.ListTlsaRecordsResponse, error) {
 			return &pb.ListTlsaRecordsResponse{
 				Records: []*pb.DnsRecord{
@@ -2257,7 +2257,7 @@ func TestListTlsaRecords(t *testing.T) {
 
 func TestGenerateDaneRootCa(t *testing.T) {
 	var captured *pb.GenerateDaneRootCaRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		generateDaneRootCaFn: func(_ context.Context, req *pb.GenerateDaneRootCaRequest) (*pb.GenerateDaneRootCaResponse, error) {
 			captured = req
 			return &pb.GenerateDaneRootCaResponse{
@@ -2284,7 +2284,7 @@ func TestGenerateDaneRootCa(t *testing.T) {
 
 func TestRequestAcmeCert(t *testing.T) {
 	var captured *pb.RequestAcmeCertRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		requestAcmeCertFn: func(_ context.Context, req *pb.RequestAcmeCertRequest) (*pb.RequestAcmeCertResponse, error) {
 			captured = req
 			return &pb.RequestAcmeCertResponse{Success: true}, nil
@@ -2307,7 +2307,7 @@ func TestRequestAcmeCert(t *testing.T) {
 }
 
 func TestGetAcmeStatus(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		getAcmeStatusFn: func(_ context.Context, req *pb.GetAcmeStatusRequest) (*pb.GetAcmeStatusResponse, error) {
 			return &pb.GetAcmeStatusResponse{
 				Status:    "valid",
@@ -2334,7 +2334,7 @@ func TestGetAcmeStatus(t *testing.T) {
 
 func TestSetDns64Config(t *testing.T) {
 	var captured *pb.SetDns64ConfigRequest
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		setDns64ConfigFn: func(_ context.Context, req *pb.SetDns64ConfigRequest) (*pb.SetDns64ConfigResponse, error) {
 			captured = req
 			return &pb.SetDns64ConfigResponse{Success: true}, nil
@@ -2361,7 +2361,7 @@ func TestSetDns64Config(t *testing.T) {
 }
 
 func TestGetDns64Config(t *testing.T) {
-	mock := &mockRolodexService{
+	mock := &mockRolodexDnsService{
 		getDns64ConfigFn: func(_ context.Context, req *pb.GetDns64ConfigRequest) (*pb.GetDns64ConfigResponse, error) {
 			return &pb.GetDns64ConfigResponse{
 				Config: &pb.Dns64Config{
