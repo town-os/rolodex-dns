@@ -2,8 +2,11 @@
 name = "rolodex-dns"
 version = "0.1.0"
 edition = "2024"
+authors = ["Erik Hollensbe <git@hollensbe.org>"]
 description = "A split-horizon DNS server and forwarding resolver with gRPC management"
 license = "AGPL-3.0-only"
+keywords = ["dns", "dns-server", "split-horizon", "grpc", "forwarding-resolver"]
+categories = ["network-programming"]
 
 [dependencies]
 # DNS
