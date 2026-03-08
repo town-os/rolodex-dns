@@ -12,7 +12,7 @@ RELEASE_IMAGE      := quay.io/town/rolodex
 export PODMAN_BUILD_IMAGE RELEASE_IMAGE
 
 .PHONY: test build clean go-test go-integration-test dev dev-release install
-.PHONY: image push-rc push-release quay-login clean-containers
+.PHONY: image push push-rc push-release quay-login clean-containers
 
 test: go-test
 	cargo test
@@ -48,6 +48,8 @@ dev:
 
 image:
 	@make/build.sh release
+
+push: push-rc
 
 push-rc: image quay-login
 	@make/build.sh push-rc
