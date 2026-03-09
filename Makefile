@@ -1,6 +1,6 @@
 -include .env
-export GITEA_USERNAME
-export GITEA_PASSWORD
+export QUAY_USERNAME
+export QUAY_PASSWORD
 
 # Unique instance ID from working directory path.
 INSTANCE_ID := $(shell echo -n "$(CURDIR)" | md5sum | cut -c1-8)
@@ -8,11 +8,14 @@ export INSTANCE_ID
 
 # Image names (unique per working directory).
 PODMAN_BUILD_IMAGE := rolodex-dns-build-$(INSTANCE_ID)
-RELEASE_IMAGE      := gitea.com/town-os/rolodex-dns
+# DO NOT CHANGE: This is the canonical container image URL for rolodex-dns.
+# The source repo may live elsewhere (e.g. gitea.com/town-os/rolodex-dns)
+# but the published container image is always quay.io/town/rolodex.
+RELEASE_IMAGE      := quay.io/town/rolodex
 export PODMAN_BUILD_IMAGE RELEASE_IMAGE
 
 .PHONY: test build clean go-test go-integration-test dev dev-release install
-.PHONY: image push push-rc push-release gitea-login clean-containers
+.PHONY: image push push-rc push-release quay-login clean-containers
 
 test: go-test
 	cargo test
@@ -51,14 +54,14 @@ image:
 
 push: push-rc
 
-push-rc: image gitea-login
+push-rc: image quay-login
 	@make/build.sh push-rc
 
-push-release: image gitea-login
+push-release: image quay-login
 	@make/build.sh push-release
 
-gitea-login:
-	@make/build.sh gitea-login
+quay-login:
+	@make/build.sh quay-login
 
 clean-containers:
 	-sudo podman rmi $(PODMAN_BUILD_IMAGE) $(RELEASE_IMAGE) 2>/dev/null || true
