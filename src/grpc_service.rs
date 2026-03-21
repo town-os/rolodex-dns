@@ -938,7 +938,18 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<SetProxyConfigResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
-        info!("Proxy config set: {:?}", req.config);
+
+        let proxy = req.config.map(|cfg| {
+            crate::doh_proxy::ProxyConfig {
+                url: cfg.url,
+                auth: if cfg.auth.is_empty() { None } else { Some(cfg.auth) },
+                mode: crate::doh_proxy::ProxyMode::from_str(&cfg.mode),
+            }
+        });
+
+        self.dns_server.set_proxy_config(proxy);
+        info!("Proxy config updated");
+
         Ok(Response::new(SetProxyConfigResponse {
             success: true,
             message: String::new(),
@@ -951,7 +962,16 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<GetProxyConfigResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
-        Ok(Response::new(GetProxyConfigResponse { config: None }))
+
+        let config = self.dns_server.get_proxy_config().map(|p| {
+            proto::ProxyConfig {
+                url: p.url,
+                auth: p.auth.unwrap_or_default(),
+                mode: p.mode.as_str().to_string(),
+            }
+        });
+
+        Ok(Response::new(GetProxyConfigResponse { config }))
     }
 
     // ================================================================

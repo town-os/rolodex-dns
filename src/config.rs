@@ -128,6 +128,9 @@ pub struct DohConfig {
     /// TLS settings for the DoH listener.
     #[serde(default)]
     pub tls: TlsConfig,
+    /// Whether to enable HTTP/3 (QUIC) transport for DoH.
+    #[serde(default)]
+    pub enable_h3: bool,
 }
 
 impl Default for DohConfig {
@@ -135,6 +138,7 @@ impl Default for DohConfig {
         Self {
             bind: default_doh_bind(),
             tls: TlsConfig::default(),
+            enable_h3: false,
         }
     }
 }
@@ -408,6 +412,7 @@ mod tests {
         config.doh = Some(DohConfig {
             bind: "0.0.0.0:443".to_string(),
             tls: TlsConfig::default(),
+            enable_h3: false,
         });
         config.doq = Some(DoqConfig {
             bind: "0.0.0.0:8853".to_string(),

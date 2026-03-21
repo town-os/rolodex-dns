@@ -26,7 +26,7 @@ Rolodex DNS also supports Realtime Blackhole Lists (RBLs) for DNS-based spam/mal
 - **gRPC management**: Remote record management via gRPC with shared secret or Unix socket auth
 - **RBL support**: Realtime Blackhole List checking with in-memory caching, plus a local RBL database for custom blocklist entries
 - **Network scoping**: Split-horizon DNS views with per-scope records and IP-based access control
-- **HTTP proxy support**: Forward DNS queries through HTTP CONNECT proxy or DoH proxy
+- **Proxy support**: Forward DNS queries through HTTP CONNECT, SOCKS5, or DoH proxy
 - **SQLite persistence**: DNS records persist across restarts
 - **TLS hot-reload**: Certificates can be reloaded at runtime (e.g. after ACME renewal) without restarting the server
 - **Performance**: Multi-threaded tokio runtime, lock-free RBL state (`AtomicBool` + `ArcSwap`), in-memory boot caches for scopes/zones/RBL entries, UDP socket pool for upstream forwarding, and DashMap/DashSet concurrent caching throughout
@@ -190,7 +190,7 @@ rbl:
 proxy:
   url: "http://proxy:8080"
   auth: "user:pass"
-  mode: "connect"  # "connect" (HTTP CONNECT tunnel) or "doh" (proxy DoH queries)
+  mode: "connect"  # "connect" (HTTP CONNECT tunnel), "socks5" (SOCKS5 proxy), or "doh" (proxy DoH queries)
 
 # TTL drift adjustment
 ttl_drift:
@@ -219,16 +219,16 @@ security:
 | `dot.bind` | `""` (disabled) | DNS-over-TLS listener bind address (typically port 853) |
 | `dot.tls.cert_path` | `""` | TLS certificate path for DoT |
 | `dot.tls.key_path` | `""` | TLS private key path for DoT |
-| `dot.tls.auto_self_signed` | `false` | Auto-generate a self-signed certificate for DoT |
+| `dot.tls.auto_self_signed` | `true` | Auto-generate a self-signed certificate for DoT |
 | `doh.bind` | `""` (disabled) | DNS-over-HTTPS listener bind address (typically port 443) |
 | `doh.tls.cert_path` | `""` | TLS certificate path for DoH |
 | `doh.tls.key_path` | `""` | TLS private key path for DoH |
-| `doh.tls.auto_self_signed` | `false` | Auto-generate a self-signed certificate for DoH |
+| `doh.tls.auto_self_signed` | `true` | Auto-generate a self-signed certificate for DoH |
 | `doh.enable_h3` | `false` | Enable HTTP/3 (QUIC) transport for DoH |
 | `doq.bind` | `""` (disabled) | DNS-over-QUIC listener bind address (typically port 8853) |
 | `doq.tls.cert_path` | `""` | TLS certificate path for DoQ |
 | `doq.tls.key_path` | `""` | TLS private key path for DoQ |
-| `doq.tls.auto_self_signed` | `false` | Auto-generate a self-signed certificate for DoQ |
+| `doq.tls.auto_self_signed` | `true` | Auto-generate a self-signed certificate for DoQ |
 | `grpc.tcp_bind` | `"127.0.0.1:50051"` | TCP gRPC listener address (empty to disable) |
 | `grpc.unix_socket` | `"/var/run/rolodex-dns.sock"` | Unix socket path (empty to disable) |
 | `grpc.shared_secret` | `""` | Shared secret for TCP gRPC auth (empty = no auth) |
@@ -237,13 +237,13 @@ security:
 | `rbl.providers[].enabled` | `true` | Enable/disable individual provider |
 | `proxy.url` | `""` (disabled) | HTTP proxy URL for forwarded DNS queries |
 | `proxy.auth` | `""` | Proxy authentication (`"user:pass"`) |
-| `proxy.mode` | `"connect"` | Proxy mode: `"connect"` (HTTP CONNECT) or `"doh"` |
-| `ttl_drift.mode` | `""` (disabled) | TTL drift mode: `"fixed"` or `"logarithmic"` (experimental) |
+| `proxy.mode` | `"connect"` | Proxy mode: `"connect"` (HTTP CONNECT), `"socks5"` (SOCKS5), or `"doh"` |
+| `ttl_drift.mode` | `"disabled"` | TTL drift mode: `"disabled"`, `"fixed"`, or `"logarithmic"` |
 | `ttl_drift.fixed_adjustment` | `""` | Fixed TTL adjustment. Supports simple (`"5m"`, `"-30s"`, `"1h"`, `"2d"`) and compound durations (`"1h30m"`, `"2d12h"`) |
-| `ttl_drift.log_multiplier` | `0.0` | Logarithmic mode multiplier (experimental: adjusts TTL based on upstream latency) |
+| `ttl_drift.log_multiplier` | `0.1` | Logarithmic mode multiplier (adjusts TTL based on upstream latency) |
 | `dns64.enabled` | `false` | Enable DNS64 AAAA synthesis |
 | `dns64.prefix` | `"64:ff9b::"` | IPv6 prefix for DNS64 synthesis |
-| `security.qname_case_randomization` | `false` | Enable 0x20 QNAME case randomization |
+| `security.qname_case_randomization` | `true` | Enable 0x20 QNAME case randomization |
 
 ## Usage
 

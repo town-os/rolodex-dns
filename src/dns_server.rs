@@ -40,6 +40,8 @@ pub struct DnsServer {
     qname_randomization: bool,
     /// TTL drift configuration for adjusting cached record TTLs.
     ttl_drift_config: Arc<ArcSwap<crate::ttl_drift::TtlDriftConfig>>,
+    /// Optional proxy configuration for upstream forwarding.
+    proxy_config: Arc<ArcSwap<Option<crate::doh_proxy::ProxyConfig>>>,
     /// Pool of pre-bound UDP sockets for forwarding queries.
     forward_sockets: Vec<Arc<tokio::sync::Mutex<Option<UdpSocket>>>>,
     /// Round-robin index for the forward socket pool.
@@ -59,6 +61,7 @@ impl DnsServer {
             dns64_prefix: None,
             qname_randomization: true,
             ttl_drift_config: Arc::new(ArcSwap::from_pointee(crate::ttl_drift::TtlDriftConfig::default())),
+            proxy_config: Arc::new(ArcSwap::from_pointee(None)),
             forward_sockets,
             forward_socket_idx: AtomicUsize::new(0),
         }
@@ -84,6 +87,7 @@ impl DnsServer {
             dns64_prefix,
             qname_randomization,
             ttl_drift_config: Arc::new(ArcSwap::from_pointee(crate::ttl_drift::TtlDriftConfig::default())),
+            proxy_config: Arc::new(ArcSwap::from_pointee(None)),
             forward_sockets,
             forward_socket_idx: AtomicUsize::new(0),
         }
@@ -119,6 +123,16 @@ impl DnsServer {
     /// Returns the current forwarder list.
     pub async fn get_forwarders(&self) -> Vec<SocketAddr> {
         self.forwarders.load().as_ref().clone()
+    }
+
+    /// Sets the proxy configuration for upstream forwarding.
+    pub fn set_proxy_config(&self, config: Option<crate::doh_proxy::ProxyConfig>) {
+        self.proxy_config.store(Arc::new(config));
+    }
+
+    /// Returns the current proxy configuration.
+    pub fn get_proxy_config(&self) -> Option<crate::doh_proxy::ProxyConfig> {
+        self.proxy_config.load().as_ref().clone()
     }
 
     /// Starts the UDP DNS listener.
@@ -723,9 +737,18 @@ impl DnsServer {
             return Ok(make_error_response(query_data, ResponseCode::ServFail));
         }
 
+        let proxy = self.proxy_config.load();
+
         // Try each forwarder in order
         for forwarder in forwarders.iter() {
-            match self.forward_udp(query_data, forwarder).await {
+            let result = if let Some(ref proxy_cfg) = **proxy {
+                // Forward through proxy (TCP tunneled)
+                crate::doh_proxy::forward_via_proxy(query_data, forwarder, proxy_cfg).await
+            } else {
+                // Direct UDP forwarding
+                self.forward_udp(query_data, forwarder).await
+            };
+            match result {
                 Ok(response) => {
                     // Parse upstream response and insert into cache asynchronously
                     if let Some(ref cache) = self.dns_cache {

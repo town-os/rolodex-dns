@@ -91,6 +91,15 @@ async fn main() -> Result<()> {
         config.security.qname_case_randomization,
     ));
 
+    // Apply proxy configuration if set
+    if let Some(ref proxy_cfg) = config.proxy {
+        if !proxy_cfg.url.is_empty() {
+            let runtime_proxy = rolodex_dns::doh_proxy::ProxyConfig::from(proxy_cfg);
+            info!("Proxy configured: {} (mode: {})", proxy_cfg.url, runtime_proxy.mode.as_str());
+            dns_server.set_proxy_config(Some(runtime_proxy));
+        }
+    }
+
     // Spawn DNS UDP server
     let udp_server = Arc::clone(&dns_server);
     let udp_bind = config.dns.udp_bind.clone();

@@ -4424,7 +4424,7 @@ type ProxyConfig struct {
 	Url string `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
 	// Optional proxy authentication ("user:pass")
 	Auth string `protobuf:"bytes,2,opt,name=auth,proto3" json:"auth,omitempty"`
-	// Mode: "connect" or "doh"
+	// Mode: "connect", "socks5", or "doh"
 	Mode          string `protobuf:"bytes,3,opt,name=mode,proto3" json:"mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

@@ -107,7 +107,7 @@ RFC 8484. Listens on a configurable port (default `0.0.0.0:443`) with TLS. Serve
 - **POST**: `Content-Type: application/dns-message` with binary DNS query body.
 - **GET**: `?dns=<base64url-encoded query>` parameter.
 
-Built with Axum and axum-server for TLS support.
+Built with Axum and axum-server for TLS support. HTTP/3 (QUIC) transport can be enabled via `enable_h3` configuration flag.
 
 ### DNS-over-QUIC (DoQ)
 
@@ -208,6 +208,7 @@ Upstream DNS forwarding can be routed through a proxy. Supported modes:
 
 - `connect` — HTTP CONNECT proxy (default)
 - `socks5` — SOCKS5 proxy
+- `doh` — Forward DNS queries as DoH requests through an HTTP proxy
 
 Configuration includes URL (e.g., `"socks5://127.0.0.1:1080"`), optional authentication (`"user:pass"`), and mode. Configurable at runtime via `SetProxyConfig`/`GetProxyConfig`.
 
@@ -584,11 +585,12 @@ Configuration is loaded from a YAML file (default path `rolodex-dns.yml`, overri
 | `dot.tls.auto_self_signed` | `true` | Auto-generate self-signed certificate |
 | `doh.bind` | `0.0.0.0:443` | DoH listener address (section optional) |
 | `doh.tls.*` | (same as DoT) | TLS settings for DoH |
+| `doh.enable_h3` | `false` | Enable HTTP/3 (QUIC) transport for DoH |
 | `doq.bind` | `0.0.0.0:8853` | DoQ listener address (section optional) |
 | `doq.tls.*` | (same as DoT) | TLS settings for DoQ |
 | `proxy.url` | (empty) | Proxy URL (e.g., `socks5://127.0.0.1:1080`) |
 | `proxy.auth` | (none) | Proxy authentication (`user:pass`) |
-| `proxy.mode` | `connect` | Proxy mode (`connect` or `socks5`) |
+| `proxy.mode` | `connect` | Proxy mode (`connect`, `socks5`, or `doh`) |
 | `ttl_drift.mode` | `disabled` | TTL drift mode (`disabled`, `fixed`, `logarithmic`) |
 | `ttl_drift.fixed_adjustment` | `0s` | Fixed TTL adjustment duration |
 | `ttl_drift.log_multiplier` | `0.1` | Logarithmic drift sensitivity |

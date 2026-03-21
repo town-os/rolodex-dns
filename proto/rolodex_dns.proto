@@ -607,7 +607,7 @@ message ProxyConfig {
   string url = 1;
   // Optional proxy authentication ("user:pass")
   string auth = 2;
-  // Mode: "connect" or "doh"
+  // Mode: "connect", "socks5", or "doh"
   string mode = 3;
 }
 
