@@ -523,6 +523,113 @@ enum Commands {
     #[command(name = "get-dns64")]
     GetDns64,
 
+    // ================================================================
+    // DHCP Pool Management
+    // ================================================================
+
+    /// Add a DHCP address pool for a scope.
+    #[command(name = "add-dhcp-pool")]
+    AddDhcpPool {
+        #[arg(short, long)]
+        scope: String,
+        #[arg(long)]
+        range_start: String,
+        #[arg(long)]
+        range_end: String,
+        #[arg(long)]
+        gateway: Option<String>,
+        #[arg(long, default_value = "255.255.255.0")]
+        subnet_mask: String,
+        #[arg(long)]
+        dns_servers: Option<String>,
+    },
+
+    /// Remove a DHCP address pool by ID.
+    #[command(name = "remove-dhcp-pool")]
+    RemoveDhcpPool {
+        #[arg(long)]
+        pool_id: i64,
+    },
+
+    /// List DHCP address pools.
+    #[command(name = "list-dhcp-pools")]
+    ListDhcpPools {
+        #[arg(short, long)]
+        scope: Option<String>,
+    },
+
+    /// List DHCP leases.
+    #[command(name = "list-dhcp-leases")]
+    ListDhcpLeases {
+        #[arg(short, long)]
+        scope: Option<String>,
+    },
+
+    /// Delete a DHCP lease by MAC address.
+    #[command(name = "delete-dhcp-lease")]
+    DeleteDhcpLease {
+        #[arg(long)]
+        mac: String,
+    },
+
+    /// Add a per-scope RBL provider.
+    #[command(name = "add-scope-rbl")]
+    AddScopeRbl {
+        #[arg(short, long)]
+        scope: String,
+        #[arg(short, long)]
+        zone: String,
+        #[arg(short, long, default_value = "true")]
+        enabled: bool,
+    },
+
+    /// Remove a per-scope RBL provider.
+    #[command(name = "remove-scope-rbl")]
+    RemoveScopeRbl {
+        #[arg(short, long)]
+        scope: String,
+        #[arg(short, long)]
+        zone: String,
+    },
+
+    /// List per-scope RBL providers.
+    #[command(name = "list-scope-rbl")]
+    ListScopeRbl {
+        #[arg(short, long)]
+        scope: String,
+    },
+
+    /// Set a DHCP certificate option for a scope.
+    #[command(name = "set-dhcp-cert")]
+    SetDhcpCert {
+        #[arg(short, long)]
+        scope: String,
+        #[arg(long)]
+        option_code: u32,
+        #[arg(long)]
+        cert_path: String,
+        #[arg(long)]
+        description: Option<String>,
+    },
+
+    /// Remove a DHCP certificate option.
+    #[command(name = "remove-dhcp-cert")]
+    RemoveDhcpCert {
+        #[arg(short, long)]
+        scope: String,
+        #[arg(long)]
+        option_code: u32,
+    },
+
+    /// List DHCP certificate options for a scope.
+    #[command(name = "list-dhcp-certs")]
+    ListDhcpCerts {
+        #[arg(short, long)]
+        scope: String,
+    },
+
+    // ================================================================
+
     /// Generate a DNSSEC key pair for a zone.
     /// gRPC path: /rolodex_dns.RolodexDnsService/GenerateDnssecKey
     #[command(name = "generate-dnssec-key")]
@@ -1274,6 +1381,223 @@ async fn main() -> Result<()> {
                 println!("  Prefix:  {}", config.prefix);
             } else {
                 println!("DNS64 not configured.");
+            }
+        }
+
+        // ================================================================
+        // DHCP / Scope RBL / Cert CLI handlers
+        // ================================================================
+
+        Commands::AddDhcpPool { scope, range_start, range_end, gateway, subnet_mask, dns_servers } => {
+            let response = client
+                .add_dhcp_pool(AddDhcpPoolRequest {
+                    pool: Some(DhcpPool {
+                        id: 0,
+                        scope_name: scope.clone(),
+                        range_start,
+                        range_end,
+                        gateway: gateway.unwrap_or_default(),
+                        subnet_mask,
+                        dns_servers: dns_servers.unwrap_or_default(),
+                    }),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("add-dhcp-pool RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("DHCP pool added for scope {}", scope);
+            } else {
+                anyhow::bail!("Failed: {}", resp.message);
+            }
+        }
+
+        Commands::RemoveDhcpPool { pool_id } => {
+            let response = client
+                .remove_dhcp_pool(RemoveDhcpPoolRequest {
+                    pool_id,
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("remove-dhcp-pool RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("DHCP pool {} removed", pool_id);
+            } else {
+                anyhow::bail!("Failed: {}", resp.message);
+            }
+        }
+
+        Commands::ListDhcpPools { scope } => {
+            let response = client
+                .list_dhcp_pools(ListDhcpPoolsRequest {
+                    scope_name: scope.unwrap_or_default(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("list-dhcp-pools RPC failed")?;
+            let resp = response.into_inner();
+            if resp.pools.is_empty() {
+                println!("No DHCP pools configured.");
+            } else {
+                println!("{:<6} {:<15} {:<18} {:<18} {:<18} {:<18}", "ID", "SCOPE", "RANGE START", "RANGE END", "GATEWAY", "SUBNET MASK");
+                println!("{}", "-".repeat(93));
+                for p in resp.pools {
+                    println!("{:<6} {:<15} {:<18} {:<18} {:<18} {:<18}", p.id, p.scope_name, p.range_start, p.range_end, p.gateway, p.subnet_mask);
+                }
+            }
+        }
+
+        Commands::ListDhcpLeases { scope } => {
+            let response = client
+                .list_dhcp_leases(ListDhcpLeasesRequest {
+                    scope_name: scope.unwrap_or_default(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("list-dhcp-leases RPC failed")?;
+            let resp = response.into_inner();
+            if resp.leases.is_empty() {
+                println!("No DHCP leases.");
+            } else {
+                println!("{:<20} {:<18} {:<15} {:<20} {:<10}", "MAC", "IP", "SCOPE", "HOSTNAME", "STATE");
+                println!("{}", "-".repeat(83));
+                for l in resp.leases {
+                    println!("{:<20} {:<18} {:<15} {:<20} {:<10}", l.mac, l.ip, l.scope_name, l.hostname, l.state);
+                }
+            }
+        }
+
+        Commands::DeleteDhcpLease { mac } => {
+            let response = client
+                .delete_dhcp_lease(DeleteDhcpLeaseRequest {
+                    mac: mac.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("delete-dhcp-lease RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("DHCP lease for {} deleted", mac);
+            } else {
+                anyhow::bail!("Failed: {}", resp.message);
+            }
+        }
+
+        Commands::AddScopeRbl { scope, zone, enabled } => {
+            let response = client
+                .add_scope_rbl_provider(AddScopeRblProviderRequest {
+                    provider: Some(ScopeRblProvider {
+                        scope_name: scope.clone(),
+                        zone: zone.clone(),
+                        enabled,
+                    }),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("add-scope-rbl RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("Added RBL provider {} for scope {}", zone, scope);
+            } else {
+                anyhow::bail!("Failed: {}", resp.message);
+            }
+        }
+
+        Commands::RemoveScopeRbl { scope, zone } => {
+            let response = client
+                .remove_scope_rbl_provider(RemoveScopeRblProviderRequest {
+                    scope_name: scope.clone(),
+                    zone: zone.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("remove-scope-rbl RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("Removed RBL provider {} from scope {}", zone, scope);
+            } else {
+                anyhow::bail!("Failed: {}", resp.message);
+            }
+        }
+
+        Commands::ListScopeRbl { scope } => {
+            let response = client
+                .list_scope_rbl_providers(ListScopeRblProvidersRequest {
+                    scope_name: scope.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("list-scope-rbl RPC failed")?;
+            let resp = response.into_inner();
+            if resp.providers.is_empty() {
+                println!("No scope RBL providers for {}", scope);
+            } else {
+                println!("{:<40} {:<10}", "ZONE", "ENABLED");
+                println!("{}", "-".repeat(50));
+                for p in resp.providers {
+                    println!("{:<40} {:<10}", p.zone, p.enabled);
+                }
+            }
+        }
+
+        Commands::SetDhcpCert { scope, option_code, cert_path, description } => {
+            let cert_data = std::fs::read(&cert_path)
+                .with_context(|| format!("failed to read cert file: {}", cert_path))?;
+            let response = client
+                .set_dhcp_cert_option(SetDhcpCertOptionRequest {
+                    option: Some(DhcpCertOption {
+                        scope_name: scope.clone(),
+                        option_code,
+                        cert_data,
+                        description: description.unwrap_or_default(),
+                    }),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("set-dhcp-cert RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("Set DHCP cert option {} for scope {}", option_code, scope);
+            } else {
+                anyhow::bail!("Failed: {}", resp.message);
+            }
+        }
+
+        Commands::RemoveDhcpCert { scope, option_code } => {
+            let response = client
+                .remove_dhcp_cert_option(RemoveDhcpCertOptionRequest {
+                    scope_name: scope.clone(),
+                    option_code,
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("remove-dhcp-cert RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("Removed DHCP cert option {} from scope {}", option_code, scope);
+            } else {
+                anyhow::bail!("Failed: {}", resp.message);
+            }
+        }
+
+        Commands::ListDhcpCerts { scope } => {
+            let response = client
+                .list_dhcp_cert_options(ListDhcpCertOptionsRequest {
+                    scope_name: scope.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("list-dhcp-certs RPC failed")?;
+            let resp = response.into_inner();
+            if resp.options.is_empty() {
+                println!("No DHCP cert options for scope {}", scope);
+            } else {
+                println!("{:<12} {:<12} {:<40}", "OPTION CODE", "SIZE", "DESCRIPTION");
+                println!("{}", "-".repeat(64));
+                for o in resp.options {
+                    println!("{:<12} {:<12} {:<40}", o.option_code, o.cert_data.len(), o.description);
+                }
             }
         }
 

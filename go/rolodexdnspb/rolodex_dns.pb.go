@@ -6176,6 +6176,1450 @@ func (x *GetDns64ConfigResponse) GetConfig() *Dns64Config {
 	return nil
 }
 
+// DhcpPool represents an IP address pool for DHCP allocation within a scope.
+type DhcpPool struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	ScopeName     string                 `protobuf:"bytes,2,opt,name=scope_name,json=scopeName,proto3" json:"scope_name,omitempty"`
+	RangeStart    string                 `protobuf:"bytes,3,opt,name=range_start,json=rangeStart,proto3" json:"range_start,omitempty"`
+	RangeEnd      string                 `protobuf:"bytes,4,opt,name=range_end,json=rangeEnd,proto3" json:"range_end,omitempty"`
+	Gateway       string                 `protobuf:"bytes,5,opt,name=gateway,proto3" json:"gateway,omitempty"`
+	SubnetMask    string                 `protobuf:"bytes,6,opt,name=subnet_mask,json=subnetMask,proto3" json:"subnet_mask,omitempty"`
+	DnsServers    string                 `protobuf:"bytes,7,opt,name=dns_servers,json=dnsServers,proto3" json:"dns_servers,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DhcpPool) Reset() {
+	*x = DhcpPool{}
+	mi := &file_rolodex_dns_proto_msgTypes[110]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DhcpPool) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DhcpPool) ProtoMessage() {}
+
+func (x *DhcpPool) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[110]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DhcpPool.ProtoReflect.Descriptor instead.
+func (*DhcpPool) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{110}
+}
+
+func (x *DhcpPool) GetId() int64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+func (x *DhcpPool) GetScopeName() string {
+	if x != nil {
+		return x.ScopeName
+	}
+	return ""
+}
+
+func (x *DhcpPool) GetRangeStart() string {
+	if x != nil {
+		return x.RangeStart
+	}
+	return ""
+}
+
+func (x *DhcpPool) GetRangeEnd() string {
+	if x != nil {
+		return x.RangeEnd
+	}
+	return ""
+}
+
+func (x *DhcpPool) GetGateway() string {
+	if x != nil {
+		return x.Gateway
+	}
+	return ""
+}
+
+func (x *DhcpPool) GetSubnetMask() string {
+	if x != nil {
+		return x.SubnetMask
+	}
+	return ""
+}
+
+func (x *DhcpPool) GetDnsServers() string {
+	if x != nil {
+		return x.DnsServers
+	}
+	return ""
+}
+
+type AddDhcpPoolRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Pool          *DhcpPool              `protobuf:"bytes,1,opt,name=pool,proto3" json:"pool,omitempty"`
+	AuthToken     string                 `protobuf:"bytes,2,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddDhcpPoolRequest) Reset() {
+	*x = AddDhcpPoolRequest{}
+	mi := &file_rolodex_dns_proto_msgTypes[111]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddDhcpPoolRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddDhcpPoolRequest) ProtoMessage() {}
+
+func (x *AddDhcpPoolRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[111]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddDhcpPoolRequest.ProtoReflect.Descriptor instead.
+func (*AddDhcpPoolRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{111}
+}
+
+func (x *AddDhcpPoolRequest) GetPool() *DhcpPool {
+	if x != nil {
+		return x.Pool
+	}
+	return nil
+}
+
+func (x *AddDhcpPoolRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+type AddDhcpPoolResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddDhcpPoolResponse) Reset() {
+	*x = AddDhcpPoolResponse{}
+	mi := &file_rolodex_dns_proto_msgTypes[112]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddDhcpPoolResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddDhcpPoolResponse) ProtoMessage() {}
+
+func (x *AddDhcpPoolResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[112]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddDhcpPoolResponse.ProtoReflect.Descriptor instead.
+func (*AddDhcpPoolResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{112}
+}
+
+func (x *AddDhcpPoolResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *AddDhcpPoolResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+type RemoveDhcpPoolRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PoolId        int64                  `protobuf:"varint,1,opt,name=pool_id,json=poolId,proto3" json:"pool_id,omitempty"`
+	AuthToken     string                 `protobuf:"bytes,2,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveDhcpPoolRequest) Reset() {
+	*x = RemoveDhcpPoolRequest{}
+	mi := &file_rolodex_dns_proto_msgTypes[113]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveDhcpPoolRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveDhcpPoolRequest) ProtoMessage() {}
+
+func (x *RemoveDhcpPoolRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[113]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveDhcpPoolRequest.ProtoReflect.Descriptor instead.
+func (*RemoveDhcpPoolRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{113}
+}
+
+func (x *RemoveDhcpPoolRequest) GetPoolId() int64 {
+	if x != nil {
+		return x.PoolId
+	}
+	return 0
+}
+
+func (x *RemoveDhcpPoolRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+type RemoveDhcpPoolResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveDhcpPoolResponse) Reset() {
+	*x = RemoveDhcpPoolResponse{}
+	mi := &file_rolodex_dns_proto_msgTypes[114]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveDhcpPoolResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveDhcpPoolResponse) ProtoMessage() {}
+
+func (x *RemoveDhcpPoolResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[114]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveDhcpPoolResponse.ProtoReflect.Descriptor instead.
+func (*RemoveDhcpPoolResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{114}
+}
+
+func (x *RemoveDhcpPoolResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *RemoveDhcpPoolResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+type ListDhcpPoolsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ScopeName     string                 `protobuf:"bytes,1,opt,name=scope_name,json=scopeName,proto3" json:"scope_name,omitempty"`
+	AuthToken     string                 `protobuf:"bytes,2,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListDhcpPoolsRequest) Reset() {
+	*x = ListDhcpPoolsRequest{}
+	mi := &file_rolodex_dns_proto_msgTypes[115]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListDhcpPoolsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListDhcpPoolsRequest) ProtoMessage() {}
+
+func (x *ListDhcpPoolsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[115]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListDhcpPoolsRequest.ProtoReflect.Descriptor instead.
+func (*ListDhcpPoolsRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{115}
+}
+
+func (x *ListDhcpPoolsRequest) GetScopeName() string {
+	if x != nil {
+		return x.ScopeName
+	}
+	return ""
+}
+
+func (x *ListDhcpPoolsRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+type ListDhcpPoolsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Pools         []*DhcpPool            `protobuf:"bytes,1,rep,name=pools,proto3" json:"pools,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListDhcpPoolsResponse) Reset() {
+	*x = ListDhcpPoolsResponse{}
+	mi := &file_rolodex_dns_proto_msgTypes[116]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListDhcpPoolsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListDhcpPoolsResponse) ProtoMessage() {}
+
+func (x *ListDhcpPoolsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[116]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListDhcpPoolsResponse.ProtoReflect.Descriptor instead.
+func (*ListDhcpPoolsResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{116}
+}
+
+func (x *ListDhcpPoolsResponse) GetPools() []*DhcpPool {
+	if x != nil {
+		return x.Pools
+	}
+	return nil
+}
+
+// DhcpLease represents a DHCP lease binding a MAC address to an IP.
+type DhcpLease struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Mac           string                 `protobuf:"bytes,1,opt,name=mac,proto3" json:"mac,omitempty"`
+	Ip            string                 `protobuf:"bytes,2,opt,name=ip,proto3" json:"ip,omitempty"`
+	ScopeName     string                 `protobuf:"bytes,3,opt,name=scope_name,json=scopeName,proto3" json:"scope_name,omitempty"`
+	Hostname      string                 `protobuf:"bytes,4,opt,name=hostname,proto3" json:"hostname,omitempty"`
+	LeaseStart    int64                  `protobuf:"varint,5,opt,name=lease_start,json=leaseStart,proto3" json:"lease_start,omitempty"`
+	LeaseDuration int64                  `protobuf:"varint,6,opt,name=lease_duration,json=leaseDuration,proto3" json:"lease_duration,omitempty"`
+	State         string                 `protobuf:"bytes,7,opt,name=state,proto3" json:"state,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DhcpLease) Reset() {
+	*x = DhcpLease{}
+	mi := &file_rolodex_dns_proto_msgTypes[117]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DhcpLease) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DhcpLease) ProtoMessage() {}
+
+func (x *DhcpLease) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[117]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DhcpLease.ProtoReflect.Descriptor instead.
+func (*DhcpLease) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{117}
+}
+
+func (x *DhcpLease) GetMac() string {
+	if x != nil {
+		return x.Mac
+	}
+	return ""
+}
+
+func (x *DhcpLease) GetIp() string {
+	if x != nil {
+		return x.Ip
+	}
+	return ""
+}
+
+func (x *DhcpLease) GetScopeName() string {
+	if x != nil {
+		return x.ScopeName
+	}
+	return ""
+}
+
+func (x *DhcpLease) GetHostname() string {
+	if x != nil {
+		return x.Hostname
+	}
+	return ""
+}
+
+func (x *DhcpLease) GetLeaseStart() int64 {
+	if x != nil {
+		return x.LeaseStart
+	}
+	return 0
+}
+
+func (x *DhcpLease) GetLeaseDuration() int64 {
+	if x != nil {
+		return x.LeaseDuration
+	}
+	return 0
+}
+
+func (x *DhcpLease) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+type ListDhcpLeasesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ScopeName     string                 `protobuf:"bytes,1,opt,name=scope_name,json=scopeName,proto3" json:"scope_name,omitempty"`
+	AuthToken     string                 `protobuf:"bytes,2,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListDhcpLeasesRequest) Reset() {
+	*x = ListDhcpLeasesRequest{}
+	mi := &file_rolodex_dns_proto_msgTypes[118]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListDhcpLeasesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListDhcpLeasesRequest) ProtoMessage() {}
+
+func (x *ListDhcpLeasesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[118]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListDhcpLeasesRequest.ProtoReflect.Descriptor instead.
+func (*ListDhcpLeasesRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{118}
+}
+
+func (x *ListDhcpLeasesRequest) GetScopeName() string {
+	if x != nil {
+		return x.ScopeName
+	}
+	return ""
+}
+
+func (x *ListDhcpLeasesRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+type ListDhcpLeasesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Leases        []*DhcpLease           `protobuf:"bytes,1,rep,name=leases,proto3" json:"leases,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListDhcpLeasesResponse) Reset() {
+	*x = ListDhcpLeasesResponse{}
+	mi := &file_rolodex_dns_proto_msgTypes[119]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListDhcpLeasesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListDhcpLeasesResponse) ProtoMessage() {}
+
+func (x *ListDhcpLeasesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[119]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListDhcpLeasesResponse.ProtoReflect.Descriptor instead.
+func (*ListDhcpLeasesResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{119}
+}
+
+func (x *ListDhcpLeasesResponse) GetLeases() []*DhcpLease {
+	if x != nil {
+		return x.Leases
+	}
+	return nil
+}
+
+type DeleteDhcpLeaseRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Mac           string                 `protobuf:"bytes,1,opt,name=mac,proto3" json:"mac,omitempty"`
+	AuthToken     string                 `protobuf:"bytes,2,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteDhcpLeaseRequest) Reset() {
+	*x = DeleteDhcpLeaseRequest{}
+	mi := &file_rolodex_dns_proto_msgTypes[120]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteDhcpLeaseRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteDhcpLeaseRequest) ProtoMessage() {}
+
+func (x *DeleteDhcpLeaseRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[120]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteDhcpLeaseRequest.ProtoReflect.Descriptor instead.
+func (*DeleteDhcpLeaseRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{120}
+}
+
+func (x *DeleteDhcpLeaseRequest) GetMac() string {
+	if x != nil {
+		return x.Mac
+	}
+	return ""
+}
+
+func (x *DeleteDhcpLeaseRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+type DeleteDhcpLeaseResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteDhcpLeaseResponse) Reset() {
+	*x = DeleteDhcpLeaseResponse{}
+	mi := &file_rolodex_dns_proto_msgTypes[121]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteDhcpLeaseResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteDhcpLeaseResponse) ProtoMessage() {}
+
+func (x *DeleteDhcpLeaseResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[121]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteDhcpLeaseResponse.ProtoReflect.Descriptor instead.
+func (*DeleteDhcpLeaseResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{121}
+}
+
+func (x *DeleteDhcpLeaseResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *DeleteDhcpLeaseResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+// ScopeRblProvider represents an additional RBL provider for a specific scope.
+type ScopeRblProvider struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ScopeName     string                 `protobuf:"bytes,1,opt,name=scope_name,json=scopeName,proto3" json:"scope_name,omitempty"`
+	Zone          string                 `protobuf:"bytes,2,opt,name=zone,proto3" json:"zone,omitempty"`
+	Enabled       bool                   `protobuf:"varint,3,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScopeRblProvider) Reset() {
+	*x = ScopeRblProvider{}
+	mi := &file_rolodex_dns_proto_msgTypes[122]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScopeRblProvider) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScopeRblProvider) ProtoMessage() {}
+
+func (x *ScopeRblProvider) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[122]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScopeRblProvider.ProtoReflect.Descriptor instead.
+func (*ScopeRblProvider) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{122}
+}
+
+func (x *ScopeRblProvider) GetScopeName() string {
+	if x != nil {
+		return x.ScopeName
+	}
+	return ""
+}
+
+func (x *ScopeRblProvider) GetZone() string {
+	if x != nil {
+		return x.Zone
+	}
+	return ""
+}
+
+func (x *ScopeRblProvider) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+type AddScopeRblProviderRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Provider      *ScopeRblProvider      `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"`
+	AuthToken     string                 `protobuf:"bytes,2,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddScopeRblProviderRequest) Reset() {
+	*x = AddScopeRblProviderRequest{}
+	mi := &file_rolodex_dns_proto_msgTypes[123]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddScopeRblProviderRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddScopeRblProviderRequest) ProtoMessage() {}
+
+func (x *AddScopeRblProviderRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[123]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddScopeRblProviderRequest.ProtoReflect.Descriptor instead.
+func (*AddScopeRblProviderRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{123}
+}
+
+func (x *AddScopeRblProviderRequest) GetProvider() *ScopeRblProvider {
+	if x != nil {
+		return x.Provider
+	}
+	return nil
+}
+
+func (x *AddScopeRblProviderRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+type AddScopeRblProviderResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddScopeRblProviderResponse) Reset() {
+	*x = AddScopeRblProviderResponse{}
+	mi := &file_rolodex_dns_proto_msgTypes[124]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddScopeRblProviderResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddScopeRblProviderResponse) ProtoMessage() {}
+
+func (x *AddScopeRblProviderResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[124]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddScopeRblProviderResponse.ProtoReflect.Descriptor instead.
+func (*AddScopeRblProviderResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{124}
+}
+
+func (x *AddScopeRblProviderResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *AddScopeRblProviderResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+type RemoveScopeRblProviderRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ScopeName     string                 `protobuf:"bytes,1,opt,name=scope_name,json=scopeName,proto3" json:"scope_name,omitempty"`
+	Zone          string                 `protobuf:"bytes,2,opt,name=zone,proto3" json:"zone,omitempty"`
+	AuthToken     string                 `protobuf:"bytes,3,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveScopeRblProviderRequest) Reset() {
+	*x = RemoveScopeRblProviderRequest{}
+	mi := &file_rolodex_dns_proto_msgTypes[125]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveScopeRblProviderRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveScopeRblProviderRequest) ProtoMessage() {}
+
+func (x *RemoveScopeRblProviderRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[125]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveScopeRblProviderRequest.ProtoReflect.Descriptor instead.
+func (*RemoveScopeRblProviderRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{125}
+}
+
+func (x *RemoveScopeRblProviderRequest) GetScopeName() string {
+	if x != nil {
+		return x.ScopeName
+	}
+	return ""
+}
+
+func (x *RemoveScopeRblProviderRequest) GetZone() string {
+	if x != nil {
+		return x.Zone
+	}
+	return ""
+}
+
+func (x *RemoveScopeRblProviderRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+type RemoveScopeRblProviderResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveScopeRblProviderResponse) Reset() {
+	*x = RemoveScopeRblProviderResponse{}
+	mi := &file_rolodex_dns_proto_msgTypes[126]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveScopeRblProviderResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveScopeRblProviderResponse) ProtoMessage() {}
+
+func (x *RemoveScopeRblProviderResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[126]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveScopeRblProviderResponse.ProtoReflect.Descriptor instead.
+func (*RemoveScopeRblProviderResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{126}
+}
+
+func (x *RemoveScopeRblProviderResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *RemoveScopeRblProviderResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+type ListScopeRblProvidersRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ScopeName     string                 `protobuf:"bytes,1,opt,name=scope_name,json=scopeName,proto3" json:"scope_name,omitempty"`
+	AuthToken     string                 `protobuf:"bytes,2,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListScopeRblProvidersRequest) Reset() {
+	*x = ListScopeRblProvidersRequest{}
+	mi := &file_rolodex_dns_proto_msgTypes[127]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListScopeRblProvidersRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListScopeRblProvidersRequest) ProtoMessage() {}
+
+func (x *ListScopeRblProvidersRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[127]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListScopeRblProvidersRequest.ProtoReflect.Descriptor instead.
+func (*ListScopeRblProvidersRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{127}
+}
+
+func (x *ListScopeRblProvidersRequest) GetScopeName() string {
+	if x != nil {
+		return x.ScopeName
+	}
+	return ""
+}
+
+func (x *ListScopeRblProvidersRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+type ListScopeRblProvidersResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Providers     []*ScopeRblProvider    `protobuf:"bytes,1,rep,name=providers,proto3" json:"providers,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListScopeRblProvidersResponse) Reset() {
+	*x = ListScopeRblProvidersResponse{}
+	mi := &file_rolodex_dns_proto_msgTypes[128]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListScopeRblProvidersResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListScopeRblProvidersResponse) ProtoMessage() {}
+
+func (x *ListScopeRblProvidersResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[128]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListScopeRblProvidersResponse.ProtoReflect.Descriptor instead.
+func (*ListScopeRblProvidersResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{128}
+}
+
+func (x *ListScopeRblProvidersResponse) GetProviders() []*ScopeRblProvider {
+	if x != nil {
+		return x.Providers
+	}
+	return nil
+}
+
+// DhcpCertOption represents a certificate delivered via DHCP options.
+type DhcpCertOption struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ScopeName     string                 `protobuf:"bytes,1,opt,name=scope_name,json=scopeName,proto3" json:"scope_name,omitempty"`
+	OptionCode    uint32                 `protobuf:"varint,2,opt,name=option_code,json=optionCode,proto3" json:"option_code,omitempty"`
+	CertData      []byte                 `protobuf:"bytes,3,opt,name=cert_data,json=certData,proto3" json:"cert_data,omitempty"`
+	Description   string                 `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DhcpCertOption) Reset() {
+	*x = DhcpCertOption{}
+	mi := &file_rolodex_dns_proto_msgTypes[129]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DhcpCertOption) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DhcpCertOption) ProtoMessage() {}
+
+func (x *DhcpCertOption) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[129]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DhcpCertOption.ProtoReflect.Descriptor instead.
+func (*DhcpCertOption) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{129}
+}
+
+func (x *DhcpCertOption) GetScopeName() string {
+	if x != nil {
+		return x.ScopeName
+	}
+	return ""
+}
+
+func (x *DhcpCertOption) GetOptionCode() uint32 {
+	if x != nil {
+		return x.OptionCode
+	}
+	return 0
+}
+
+func (x *DhcpCertOption) GetCertData() []byte {
+	if x != nil {
+		return x.CertData
+	}
+	return nil
+}
+
+func (x *DhcpCertOption) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+type SetDhcpCertOptionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Option        *DhcpCertOption        `protobuf:"bytes,1,opt,name=option,proto3" json:"option,omitempty"`
+	AuthToken     string                 `protobuf:"bytes,2,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetDhcpCertOptionRequest) Reset() {
+	*x = SetDhcpCertOptionRequest{}
+	mi := &file_rolodex_dns_proto_msgTypes[130]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetDhcpCertOptionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetDhcpCertOptionRequest) ProtoMessage() {}
+
+func (x *SetDhcpCertOptionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[130]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetDhcpCertOptionRequest.ProtoReflect.Descriptor instead.
+func (*SetDhcpCertOptionRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{130}
+}
+
+func (x *SetDhcpCertOptionRequest) GetOption() *DhcpCertOption {
+	if x != nil {
+		return x.Option
+	}
+	return nil
+}
+
+func (x *SetDhcpCertOptionRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+type SetDhcpCertOptionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetDhcpCertOptionResponse) Reset() {
+	*x = SetDhcpCertOptionResponse{}
+	mi := &file_rolodex_dns_proto_msgTypes[131]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetDhcpCertOptionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetDhcpCertOptionResponse) ProtoMessage() {}
+
+func (x *SetDhcpCertOptionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[131]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetDhcpCertOptionResponse.ProtoReflect.Descriptor instead.
+func (*SetDhcpCertOptionResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{131}
+}
+
+func (x *SetDhcpCertOptionResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *SetDhcpCertOptionResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+type RemoveDhcpCertOptionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ScopeName     string                 `protobuf:"bytes,1,opt,name=scope_name,json=scopeName,proto3" json:"scope_name,omitempty"`
+	OptionCode    uint32                 `protobuf:"varint,2,opt,name=option_code,json=optionCode,proto3" json:"option_code,omitempty"`
+	AuthToken     string                 `protobuf:"bytes,3,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveDhcpCertOptionRequest) Reset() {
+	*x = RemoveDhcpCertOptionRequest{}
+	mi := &file_rolodex_dns_proto_msgTypes[132]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveDhcpCertOptionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveDhcpCertOptionRequest) ProtoMessage() {}
+
+func (x *RemoveDhcpCertOptionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[132]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveDhcpCertOptionRequest.ProtoReflect.Descriptor instead.
+func (*RemoveDhcpCertOptionRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{132}
+}
+
+func (x *RemoveDhcpCertOptionRequest) GetScopeName() string {
+	if x != nil {
+		return x.ScopeName
+	}
+	return ""
+}
+
+func (x *RemoveDhcpCertOptionRequest) GetOptionCode() uint32 {
+	if x != nil {
+		return x.OptionCode
+	}
+	return 0
+}
+
+func (x *RemoveDhcpCertOptionRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+type RemoveDhcpCertOptionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveDhcpCertOptionResponse) Reset() {
+	*x = RemoveDhcpCertOptionResponse{}
+	mi := &file_rolodex_dns_proto_msgTypes[133]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveDhcpCertOptionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveDhcpCertOptionResponse) ProtoMessage() {}
+
+func (x *RemoveDhcpCertOptionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[133]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveDhcpCertOptionResponse.ProtoReflect.Descriptor instead.
+func (*RemoveDhcpCertOptionResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{133}
+}
+
+func (x *RemoveDhcpCertOptionResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *RemoveDhcpCertOptionResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+type ListDhcpCertOptionsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ScopeName     string                 `protobuf:"bytes,1,opt,name=scope_name,json=scopeName,proto3" json:"scope_name,omitempty"`
+	AuthToken     string                 `protobuf:"bytes,2,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListDhcpCertOptionsRequest) Reset() {
+	*x = ListDhcpCertOptionsRequest{}
+	mi := &file_rolodex_dns_proto_msgTypes[134]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListDhcpCertOptionsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListDhcpCertOptionsRequest) ProtoMessage() {}
+
+func (x *ListDhcpCertOptionsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[134]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListDhcpCertOptionsRequest.ProtoReflect.Descriptor instead.
+func (*ListDhcpCertOptionsRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{134}
+}
+
+func (x *ListDhcpCertOptionsRequest) GetScopeName() string {
+	if x != nil {
+		return x.ScopeName
+	}
+	return ""
+}
+
+func (x *ListDhcpCertOptionsRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+type ListDhcpCertOptionsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Options       []*DhcpCertOption      `protobuf:"bytes,1,rep,name=options,proto3" json:"options,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListDhcpCertOptionsResponse) Reset() {
+	*x = ListDhcpCertOptionsResponse{}
+	mi := &file_rolodex_dns_proto_msgTypes[135]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListDhcpCertOptionsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListDhcpCertOptionsResponse) ProtoMessage() {}
+
+func (x *ListDhcpCertOptionsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[135]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListDhcpCertOptionsResponse.ProtoReflect.Descriptor instead.
+func (*ListDhcpCertOptionsResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{135}
+}
+
+func (x *ListDhcpCertOptionsResponse) GetOptions() []*DhcpCertOption {
+	if x != nil {
+		return x.Options
+	}
+	return nil
+}
+
 var File_rolodex_dns_proto protoreflect.FileDescriptor
 
 const file_rolodex_dns_proto_rawDesc = "" +
@@ -6601,7 +8045,123 @@ const file_rolodex_dns_proto_rawDesc = "" +
 	"\n" +
 	"auth_token\x18\x01 \x01(\tR\tauthToken\"J\n" +
 	"\x16GetDns64ConfigResponse\x120\n" +
-	"\x06config\x18\x01 \x01(\v2\x18.rolodex_dns.Dns64ConfigR\x06config*\xe0\x01\n" +
+	"\x06config\x18\x01 \x01(\v2\x18.rolodex_dns.Dns64ConfigR\x06config\"\xd3\x01\n" +
+	"\bDhcpPool\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x1d\n" +
+	"\n" +
+	"scope_name\x18\x02 \x01(\tR\tscopeName\x12\x1f\n" +
+	"\vrange_start\x18\x03 \x01(\tR\n" +
+	"rangeStart\x12\x1b\n" +
+	"\trange_end\x18\x04 \x01(\tR\brangeEnd\x12\x18\n" +
+	"\agateway\x18\x05 \x01(\tR\agateway\x12\x1f\n" +
+	"\vsubnet_mask\x18\x06 \x01(\tR\n" +
+	"subnetMask\x12\x1f\n" +
+	"\vdns_servers\x18\a \x01(\tR\n" +
+	"dnsServers\"^\n" +
+	"\x12AddDhcpPoolRequest\x12)\n" +
+	"\x04pool\x18\x01 \x01(\v2\x15.rolodex_dns.DhcpPoolR\x04pool\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x02 \x01(\tR\tauthToken\"I\n" +
+	"\x13AddDhcpPoolResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"O\n" +
+	"\x15RemoveDhcpPoolRequest\x12\x17\n" +
+	"\apool_id\x18\x01 \x01(\x03R\x06poolId\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x02 \x01(\tR\tauthToken\"L\n" +
+	"\x16RemoveDhcpPoolResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"T\n" +
+	"\x14ListDhcpPoolsRequest\x12\x1d\n" +
+	"\n" +
+	"scope_name\x18\x01 \x01(\tR\tscopeName\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x02 \x01(\tR\tauthToken\"D\n" +
+	"\x15ListDhcpPoolsResponse\x12+\n" +
+	"\x05pools\x18\x01 \x03(\v2\x15.rolodex_dns.DhcpPoolR\x05pools\"\xc6\x01\n" +
+	"\tDhcpLease\x12\x10\n" +
+	"\x03mac\x18\x01 \x01(\tR\x03mac\x12\x0e\n" +
+	"\x02ip\x18\x02 \x01(\tR\x02ip\x12\x1d\n" +
+	"\n" +
+	"scope_name\x18\x03 \x01(\tR\tscopeName\x12\x1a\n" +
+	"\bhostname\x18\x04 \x01(\tR\bhostname\x12\x1f\n" +
+	"\vlease_start\x18\x05 \x01(\x03R\n" +
+	"leaseStart\x12%\n" +
+	"\x0elease_duration\x18\x06 \x01(\x03R\rleaseDuration\x12\x14\n" +
+	"\x05state\x18\a \x01(\tR\x05state\"U\n" +
+	"\x15ListDhcpLeasesRequest\x12\x1d\n" +
+	"\n" +
+	"scope_name\x18\x01 \x01(\tR\tscopeName\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x02 \x01(\tR\tauthToken\"H\n" +
+	"\x16ListDhcpLeasesResponse\x12.\n" +
+	"\x06leases\x18\x01 \x03(\v2\x16.rolodex_dns.DhcpLeaseR\x06leases\"I\n" +
+	"\x16DeleteDhcpLeaseRequest\x12\x10\n" +
+	"\x03mac\x18\x01 \x01(\tR\x03mac\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x02 \x01(\tR\tauthToken\"M\n" +
+	"\x17DeleteDhcpLeaseResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"_\n" +
+	"\x10ScopeRblProvider\x12\x1d\n" +
+	"\n" +
+	"scope_name\x18\x01 \x01(\tR\tscopeName\x12\x12\n" +
+	"\x04zone\x18\x02 \x01(\tR\x04zone\x12\x18\n" +
+	"\aenabled\x18\x03 \x01(\bR\aenabled\"v\n" +
+	"\x1aAddScopeRblProviderRequest\x129\n" +
+	"\bprovider\x18\x01 \x01(\v2\x1d.rolodex_dns.ScopeRblProviderR\bprovider\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x02 \x01(\tR\tauthToken\"Q\n" +
+	"\x1bAddScopeRblProviderResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"q\n" +
+	"\x1dRemoveScopeRblProviderRequest\x12\x1d\n" +
+	"\n" +
+	"scope_name\x18\x01 \x01(\tR\tscopeName\x12\x12\n" +
+	"\x04zone\x18\x02 \x01(\tR\x04zone\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x03 \x01(\tR\tauthToken\"T\n" +
+	"\x1eRemoveScopeRblProviderResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\\\n" +
+	"\x1cListScopeRblProvidersRequest\x12\x1d\n" +
+	"\n" +
+	"scope_name\x18\x01 \x01(\tR\tscopeName\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x02 \x01(\tR\tauthToken\"\\\n" +
+	"\x1dListScopeRblProvidersResponse\x12;\n" +
+	"\tproviders\x18\x01 \x03(\v2\x1d.rolodex_dns.ScopeRblProviderR\tproviders\"\x8f\x01\n" +
+	"\x0eDhcpCertOption\x12\x1d\n" +
+	"\n" +
+	"scope_name\x18\x01 \x01(\tR\tscopeName\x12\x1f\n" +
+	"\voption_code\x18\x02 \x01(\rR\n" +
+	"optionCode\x12\x1b\n" +
+	"\tcert_data\x18\x03 \x01(\fR\bcertData\x12 \n" +
+	"\vdescription\x18\x04 \x01(\tR\vdescription\"n\n" +
+	"\x18SetDhcpCertOptionRequest\x123\n" +
+	"\x06option\x18\x01 \x01(\v2\x1b.rolodex_dns.DhcpCertOptionR\x06option\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x02 \x01(\tR\tauthToken\"O\n" +
+	"\x19SetDhcpCertOptionResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"|\n" +
+	"\x1bRemoveDhcpCertOptionRequest\x12\x1d\n" +
+	"\n" +
+	"scope_name\x18\x01 \x01(\tR\tscopeName\x12\x1f\n" +
+	"\voption_code\x18\x02 \x01(\rR\n" +
+	"optionCode\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x03 \x01(\tR\tauthToken\"R\n" +
+	"\x1cRemoveDhcpCertOptionResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"Z\n" +
+	"\x1aListDhcpCertOptionsRequest\x12\x1d\n" +
+	"\n" +
+	"scope_name\x18\x01 \x01(\tR\tscopeName\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x02 \x01(\tR\tauthToken\"T\n" +
+	"\x1bListDhcpCertOptionsResponse\x125\n" +
+	"\aoptions\x18\x01 \x03(\v2\x1b.rolodex_dns.DhcpCertOptionR\aoptions*\xe0\x01\n" +
 	"\n" +
 	"RecordType\x12\x05\n" +
 	"\x01A\x10\x00\x12\b\n" +
@@ -6628,7 +8188,7 @@ const file_rolodex_dns_proto_rawDesc = "" +
 	"\x04NSEC\x10\x12\x12\t\n" +
 	"\x05NSEC3\x10\x13\x12\x0e\n" +
 	"\n" +
-	"NSEC3PARAM\x10\x142\xa2#\n" +
+	"NSEC3PARAM\x10\x142\xe8+\n" +
 	"\x11RolodexDnsService\x12J\n" +
 	"\tAddRecord\x12\x1d.rolodex_dns.AddRecordRequest\x1a\x1e.rolodex_dns.AddRecordResponse\x12S\n" +
 	"\fRemoveRecord\x12 .rolodex_dns.RemoveRecordRequest\x1a!.rolodex_dns.RemoveRecordResponse\x12P\n" +
@@ -6678,7 +8238,18 @@ const file_rolodex_dns_proto_rawDesc = "" +
 	"\x0fRequestAcmeCert\x12#.rolodex_dns.RequestAcmeCertRequest\x1a$.rolodex_dns.RequestAcmeCertResponse\x12V\n" +
 	"\rGetAcmeStatus\x12!.rolodex_dns.GetAcmeStatusRequest\x1a\".rolodex_dns.GetAcmeStatusResponse\x12Y\n" +
 	"\x0eSetDns64Config\x12\".rolodex_dns.SetDns64ConfigRequest\x1a#.rolodex_dns.SetDns64ConfigResponse\x12Y\n" +
-	"\x0eGetDns64Config\x12\".rolodex_dns.GetDns64ConfigRequest\x1a#.rolodex_dns.GetDns64ConfigResponseB/Z-gitea.com/town-os/rolodex-dns/go/rolodexdnspbb\x06proto3"
+	"\x0eGetDns64Config\x12\".rolodex_dns.GetDns64ConfigRequest\x1a#.rolodex_dns.GetDns64ConfigResponse\x12P\n" +
+	"\vAddDhcpPool\x12\x1f.rolodex_dns.AddDhcpPoolRequest\x1a .rolodex_dns.AddDhcpPoolResponse\x12Y\n" +
+	"\x0eRemoveDhcpPool\x12\".rolodex_dns.RemoveDhcpPoolRequest\x1a#.rolodex_dns.RemoveDhcpPoolResponse\x12V\n" +
+	"\rListDhcpPools\x12!.rolodex_dns.ListDhcpPoolsRequest\x1a\".rolodex_dns.ListDhcpPoolsResponse\x12Y\n" +
+	"\x0eListDhcpLeases\x12\".rolodex_dns.ListDhcpLeasesRequest\x1a#.rolodex_dns.ListDhcpLeasesResponse\x12\\\n" +
+	"\x0fDeleteDhcpLease\x12#.rolodex_dns.DeleteDhcpLeaseRequest\x1a$.rolodex_dns.DeleteDhcpLeaseResponse\x12h\n" +
+	"\x13AddScopeRblProvider\x12'.rolodex_dns.AddScopeRblProviderRequest\x1a(.rolodex_dns.AddScopeRblProviderResponse\x12q\n" +
+	"\x16RemoveScopeRblProvider\x12*.rolodex_dns.RemoveScopeRblProviderRequest\x1a+.rolodex_dns.RemoveScopeRblProviderResponse\x12n\n" +
+	"\x15ListScopeRblProviders\x12).rolodex_dns.ListScopeRblProvidersRequest\x1a*.rolodex_dns.ListScopeRblProvidersResponse\x12b\n" +
+	"\x11SetDhcpCertOption\x12%.rolodex_dns.SetDhcpCertOptionRequest\x1a&.rolodex_dns.SetDhcpCertOptionResponse\x12k\n" +
+	"\x14RemoveDhcpCertOption\x12(.rolodex_dns.RemoveDhcpCertOptionRequest\x1a).rolodex_dns.RemoveDhcpCertOptionResponse\x12h\n" +
+	"\x13ListDhcpCertOptions\x12'.rolodex_dns.ListDhcpCertOptionsRequest\x1a(.rolodex_dns.ListDhcpCertOptionsResponseB/Z-gitea.com/town-os/rolodex-dns/go/rolodexdnspbb\x06proto3"
 
 var (
 	file_rolodex_dns_proto_rawDescOnce sync.Once
@@ -6693,7 +8264,7 @@ func file_rolodex_dns_proto_rawDescGZIP() []byte {
 }
 
 var file_rolodex_dns_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_rolodex_dns_proto_msgTypes = make([]protoimpl.MessageInfo, 110)
+var file_rolodex_dns_proto_msgTypes = make([]protoimpl.MessageInfo, 136)
 var file_rolodex_dns_proto_goTypes = []any{
 	(RecordType)(0),                         // 0: rolodex_dns.RecordType
 	(*DnsRecord)(nil),                       // 1: rolodex_dns.DnsRecord
@@ -6806,6 +8377,32 @@ var file_rolodex_dns_proto_goTypes = []any{
 	(*SetDns64ConfigResponse)(nil),          // 108: rolodex_dns.SetDns64ConfigResponse
 	(*GetDns64ConfigRequest)(nil),           // 109: rolodex_dns.GetDns64ConfigRequest
 	(*GetDns64ConfigResponse)(nil),          // 110: rolodex_dns.GetDns64ConfigResponse
+	(*DhcpPool)(nil),                        // 111: rolodex_dns.DhcpPool
+	(*AddDhcpPoolRequest)(nil),              // 112: rolodex_dns.AddDhcpPoolRequest
+	(*AddDhcpPoolResponse)(nil),             // 113: rolodex_dns.AddDhcpPoolResponse
+	(*RemoveDhcpPoolRequest)(nil),           // 114: rolodex_dns.RemoveDhcpPoolRequest
+	(*RemoveDhcpPoolResponse)(nil),          // 115: rolodex_dns.RemoveDhcpPoolResponse
+	(*ListDhcpPoolsRequest)(nil),            // 116: rolodex_dns.ListDhcpPoolsRequest
+	(*ListDhcpPoolsResponse)(nil),           // 117: rolodex_dns.ListDhcpPoolsResponse
+	(*DhcpLease)(nil),                       // 118: rolodex_dns.DhcpLease
+	(*ListDhcpLeasesRequest)(nil),           // 119: rolodex_dns.ListDhcpLeasesRequest
+	(*ListDhcpLeasesResponse)(nil),          // 120: rolodex_dns.ListDhcpLeasesResponse
+	(*DeleteDhcpLeaseRequest)(nil),          // 121: rolodex_dns.DeleteDhcpLeaseRequest
+	(*DeleteDhcpLeaseResponse)(nil),         // 122: rolodex_dns.DeleteDhcpLeaseResponse
+	(*ScopeRblProvider)(nil),                // 123: rolodex_dns.ScopeRblProvider
+	(*AddScopeRblProviderRequest)(nil),      // 124: rolodex_dns.AddScopeRblProviderRequest
+	(*AddScopeRblProviderResponse)(nil),     // 125: rolodex_dns.AddScopeRblProviderResponse
+	(*RemoveScopeRblProviderRequest)(nil),   // 126: rolodex_dns.RemoveScopeRblProviderRequest
+	(*RemoveScopeRblProviderResponse)(nil),  // 127: rolodex_dns.RemoveScopeRblProviderResponse
+	(*ListScopeRblProvidersRequest)(nil),    // 128: rolodex_dns.ListScopeRblProvidersRequest
+	(*ListScopeRblProvidersResponse)(nil),   // 129: rolodex_dns.ListScopeRblProvidersResponse
+	(*DhcpCertOption)(nil),                  // 130: rolodex_dns.DhcpCertOption
+	(*SetDhcpCertOptionRequest)(nil),        // 131: rolodex_dns.SetDhcpCertOptionRequest
+	(*SetDhcpCertOptionResponse)(nil),       // 132: rolodex_dns.SetDhcpCertOptionResponse
+	(*RemoveDhcpCertOptionRequest)(nil),     // 133: rolodex_dns.RemoveDhcpCertOptionRequest
+	(*RemoveDhcpCertOptionResponse)(nil),    // 134: rolodex_dns.RemoveDhcpCertOptionResponse
+	(*ListDhcpCertOptionsRequest)(nil),      // 135: rolodex_dns.ListDhcpCertOptionsRequest
+	(*ListDhcpCertOptionsResponse)(nil),     // 136: rolodex_dns.ListDhcpCertOptionsResponse
 }
 var file_rolodex_dns_proto_depIdxs = []int32{
 	0,   // 0: rolodex_dns.DnsRecord.record_type:type_name -> rolodex_dns.RecordType
@@ -6843,107 +8440,136 @@ var file_rolodex_dns_proto_depIdxs = []int32{
 	1,   // 32: rolodex_dns.ListTlsaRecordsResponse.records:type_name -> rolodex_dns.DnsRecord
 	106, // 33: rolodex_dns.SetDns64ConfigRequest.config:type_name -> rolodex_dns.Dns64Config
 	106, // 34: rolodex_dns.GetDns64ConfigResponse.config:type_name -> rolodex_dns.Dns64Config
-	2,   // 35: rolodex_dns.RolodexDnsService.AddRecord:input_type -> rolodex_dns.AddRecordRequest
-	4,   // 36: rolodex_dns.RolodexDnsService.RemoveRecord:input_type -> rolodex_dns.RemoveRecordRequest
-	6,   // 37: rolodex_dns.RolodexDnsService.ListRecords:input_type -> rolodex_dns.ListRecordsRequest
-	8,   // 38: rolodex_dns.RolodexDnsService.SetForwarders:input_type -> rolodex_dns.SetForwarderRequest
-	11,  // 39: rolodex_dns.RolodexDnsService.SetRblConfig:input_type -> rolodex_dns.SetRblConfigRequest
-	13,  // 40: rolodex_dns.RolodexDnsService.GetRblConfig:input_type -> rolodex_dns.GetRblConfigRequest
-	15,  // 41: rolodex_dns.RolodexDnsService.FlushCache:input_type -> rolodex_dns.FlushCacheRequest
-	18,  // 42: rolodex_dns.RolodexDnsService.CreateNetworkScope:input_type -> rolodex_dns.CreateNetworkScopeRequest
-	20,  // 43: rolodex_dns.RolodexDnsService.DeleteNetworkScope:input_type -> rolodex_dns.DeleteNetworkScopeRequest
-	22,  // 44: rolodex_dns.RolodexDnsService.ListNetworkScopes:input_type -> rolodex_dns.ListNetworkScopesRequest
-	24,  // 45: rolodex_dns.RolodexDnsService.JoinNetwork:input_type -> rolodex_dns.JoinNetworkRequest
-	26,  // 46: rolodex_dns.RolodexDnsService.LeaveNetwork:input_type -> rolodex_dns.LeaveNetworkRequest
-	28,  // 47: rolodex_dns.RolodexDnsService.GetNetworkAssociations:input_type -> rolodex_dns.GetNetworkAssociationsRequest
-	31,  // 48: rolodex_dns.RolodexDnsService.AddScopedRecord:input_type -> rolodex_dns.AddScopedRecordRequest
-	33,  // 49: rolodex_dns.RolodexDnsService.RemoveScopedRecord:input_type -> rolodex_dns.RemoveScopedRecordRequest
-	35,  // 50: rolodex_dns.RolodexDnsService.ListScopedRecords:input_type -> rolodex_dns.ListScopedRecordsRequest
-	37,  // 51: rolodex_dns.RolodexDnsService.GetSearchDomains:input_type -> rolodex_dns.GetSearchDomainsRequest
-	39,  // 52: rolodex_dns.RolodexDnsService.AddAuthoritativeZone:input_type -> rolodex_dns.AddAuthoritativeZoneRequest
-	41,  // 53: rolodex_dns.RolodexDnsService.RemoveAuthoritativeZone:input_type -> rolodex_dns.RemoveAuthoritativeZoneRequest
-	43,  // 54: rolodex_dns.RolodexDnsService.ListAuthoritativeZones:input_type -> rolodex_dns.ListAuthoritativeZonesRequest
-	45,  // 55: rolodex_dns.RolodexDnsService.GetCacheStats:input_type -> rolodex_dns.GetCacheStatsRequest
-	47,  // 56: rolodex_dns.RolodexDnsService.FlushDnsCache:input_type -> rolodex_dns.FlushDnsCacheRequest
-	50,  // 57: rolodex_dns.RolodexDnsService.SetTtlDriftConfig:input_type -> rolodex_dns.SetTtlDriftConfigRequest
-	52,  // 58: rolodex_dns.RolodexDnsService.GetTtlDriftConfig:input_type -> rolodex_dns.GetTtlDriftConfigRequest
-	55,  // 59: rolodex_dns.RolodexDnsService.GetQueryLatencyStats:input_type -> rolodex_dns.GetQueryLatencyStatsRequest
-	58,  // 60: rolodex_dns.RolodexDnsService.AddLocalRblEntry:input_type -> rolodex_dns.AddLocalRblEntryRequest
-	60,  // 61: rolodex_dns.RolodexDnsService.RemoveLocalRblEntry:input_type -> rolodex_dns.RemoveLocalRblEntryRequest
-	62,  // 62: rolodex_dns.RolodexDnsService.ListLocalRblEntries:input_type -> rolodex_dns.ListLocalRblEntriesRequest
-	66,  // 63: rolodex_dns.RolodexDnsService.SetDotConfig:input_type -> rolodex_dns.SetDotConfigRequest
-	68,  // 64: rolodex_dns.RolodexDnsService.GetDotConfig:input_type -> rolodex_dns.GetDotConfigRequest
-	71,  // 65: rolodex_dns.RolodexDnsService.SetDohConfig:input_type -> rolodex_dns.SetDohConfigRequest
-	73,  // 66: rolodex_dns.RolodexDnsService.GetDohConfig:input_type -> rolodex_dns.GetDohConfigRequest
-	76,  // 67: rolodex_dns.RolodexDnsService.SetDoqConfig:input_type -> rolodex_dns.SetDoqConfigRequest
-	78,  // 68: rolodex_dns.RolodexDnsService.GetDoqConfig:input_type -> rolodex_dns.GetDoqConfigRequest
-	81,  // 69: rolodex_dns.RolodexDnsService.SetProxyConfig:input_type -> rolodex_dns.SetProxyConfigRequest
-	83,  // 70: rolodex_dns.RolodexDnsService.GetProxyConfig:input_type -> rolodex_dns.GetProxyConfigRequest
-	86,  // 71: rolodex_dns.RolodexDnsService.GenerateDnssecKey:input_type -> rolodex_dns.GenerateDnssecKeyRequest
-	88,  // 72: rolodex_dns.RolodexDnsService.ListDnssecKeys:input_type -> rolodex_dns.ListDnssecKeysRequest
-	90,  // 73: rolodex_dns.RolodexDnsService.DeleteDnssecKey:input_type -> rolodex_dns.DeleteDnssecKeyRequest
-	92,  // 74: rolodex_dns.RolodexDnsService.GetDsRecords:input_type -> rolodex_dns.GetDsRecordsRequest
-	94,  // 75: rolodex_dns.RolodexDnsService.SignZone:input_type -> rolodex_dns.SignZoneRequest
-	96,  // 76: rolodex_dns.RolodexDnsService.GenerateTlsaRecord:input_type -> rolodex_dns.GenerateTlsaRecordRequest
-	98,  // 77: rolodex_dns.RolodexDnsService.ListTlsaRecords:input_type -> rolodex_dns.ListTlsaRecordsRequest
-	100, // 78: rolodex_dns.RolodexDnsService.GenerateDaneRootCa:input_type -> rolodex_dns.GenerateDaneRootCaRequest
-	102, // 79: rolodex_dns.RolodexDnsService.RequestAcmeCert:input_type -> rolodex_dns.RequestAcmeCertRequest
-	104, // 80: rolodex_dns.RolodexDnsService.GetAcmeStatus:input_type -> rolodex_dns.GetAcmeStatusRequest
-	107, // 81: rolodex_dns.RolodexDnsService.SetDns64Config:input_type -> rolodex_dns.SetDns64ConfigRequest
-	109, // 82: rolodex_dns.RolodexDnsService.GetDns64Config:input_type -> rolodex_dns.GetDns64ConfigRequest
-	3,   // 83: rolodex_dns.RolodexDnsService.AddRecord:output_type -> rolodex_dns.AddRecordResponse
-	5,   // 84: rolodex_dns.RolodexDnsService.RemoveRecord:output_type -> rolodex_dns.RemoveRecordResponse
-	7,   // 85: rolodex_dns.RolodexDnsService.ListRecords:output_type -> rolodex_dns.ListRecordsResponse
-	9,   // 86: rolodex_dns.RolodexDnsService.SetForwarders:output_type -> rolodex_dns.SetForwarderResponse
-	12,  // 87: rolodex_dns.RolodexDnsService.SetRblConfig:output_type -> rolodex_dns.SetRblConfigResponse
-	14,  // 88: rolodex_dns.RolodexDnsService.GetRblConfig:output_type -> rolodex_dns.GetRblConfigResponse
-	16,  // 89: rolodex_dns.RolodexDnsService.FlushCache:output_type -> rolodex_dns.FlushCacheResponse
-	19,  // 90: rolodex_dns.RolodexDnsService.CreateNetworkScope:output_type -> rolodex_dns.CreateNetworkScopeResponse
-	21,  // 91: rolodex_dns.RolodexDnsService.DeleteNetworkScope:output_type -> rolodex_dns.DeleteNetworkScopeResponse
-	23,  // 92: rolodex_dns.RolodexDnsService.ListNetworkScopes:output_type -> rolodex_dns.ListNetworkScopesResponse
-	25,  // 93: rolodex_dns.RolodexDnsService.JoinNetwork:output_type -> rolodex_dns.JoinNetworkResponse
-	27,  // 94: rolodex_dns.RolodexDnsService.LeaveNetwork:output_type -> rolodex_dns.LeaveNetworkResponse
-	30,  // 95: rolodex_dns.RolodexDnsService.GetNetworkAssociations:output_type -> rolodex_dns.GetNetworkAssociationsResponse
-	32,  // 96: rolodex_dns.RolodexDnsService.AddScopedRecord:output_type -> rolodex_dns.AddScopedRecordResponse
-	34,  // 97: rolodex_dns.RolodexDnsService.RemoveScopedRecord:output_type -> rolodex_dns.RemoveScopedRecordResponse
-	36,  // 98: rolodex_dns.RolodexDnsService.ListScopedRecords:output_type -> rolodex_dns.ListScopedRecordsResponse
-	38,  // 99: rolodex_dns.RolodexDnsService.GetSearchDomains:output_type -> rolodex_dns.GetSearchDomainsResponse
-	40,  // 100: rolodex_dns.RolodexDnsService.AddAuthoritativeZone:output_type -> rolodex_dns.AddAuthoritativeZoneResponse
-	42,  // 101: rolodex_dns.RolodexDnsService.RemoveAuthoritativeZone:output_type -> rolodex_dns.RemoveAuthoritativeZoneResponse
-	44,  // 102: rolodex_dns.RolodexDnsService.ListAuthoritativeZones:output_type -> rolodex_dns.ListAuthoritativeZonesResponse
-	46,  // 103: rolodex_dns.RolodexDnsService.GetCacheStats:output_type -> rolodex_dns.GetCacheStatsResponse
-	48,  // 104: rolodex_dns.RolodexDnsService.FlushDnsCache:output_type -> rolodex_dns.FlushDnsCacheResponse
-	51,  // 105: rolodex_dns.RolodexDnsService.SetTtlDriftConfig:output_type -> rolodex_dns.SetTtlDriftConfigResponse
-	53,  // 106: rolodex_dns.RolodexDnsService.GetTtlDriftConfig:output_type -> rolodex_dns.GetTtlDriftConfigResponse
-	56,  // 107: rolodex_dns.RolodexDnsService.GetQueryLatencyStats:output_type -> rolodex_dns.GetQueryLatencyStatsResponse
-	59,  // 108: rolodex_dns.RolodexDnsService.AddLocalRblEntry:output_type -> rolodex_dns.AddLocalRblEntryResponse
-	61,  // 109: rolodex_dns.RolodexDnsService.RemoveLocalRblEntry:output_type -> rolodex_dns.RemoveLocalRblEntryResponse
-	63,  // 110: rolodex_dns.RolodexDnsService.ListLocalRblEntries:output_type -> rolodex_dns.ListLocalRblEntriesResponse
-	67,  // 111: rolodex_dns.RolodexDnsService.SetDotConfig:output_type -> rolodex_dns.SetDotConfigResponse
-	69,  // 112: rolodex_dns.RolodexDnsService.GetDotConfig:output_type -> rolodex_dns.GetDotConfigResponse
-	72,  // 113: rolodex_dns.RolodexDnsService.SetDohConfig:output_type -> rolodex_dns.SetDohConfigResponse
-	74,  // 114: rolodex_dns.RolodexDnsService.GetDohConfig:output_type -> rolodex_dns.GetDohConfigResponse
-	77,  // 115: rolodex_dns.RolodexDnsService.SetDoqConfig:output_type -> rolodex_dns.SetDoqConfigResponse
-	79,  // 116: rolodex_dns.RolodexDnsService.GetDoqConfig:output_type -> rolodex_dns.GetDoqConfigResponse
-	82,  // 117: rolodex_dns.RolodexDnsService.SetProxyConfig:output_type -> rolodex_dns.SetProxyConfigResponse
-	84,  // 118: rolodex_dns.RolodexDnsService.GetProxyConfig:output_type -> rolodex_dns.GetProxyConfigResponse
-	87,  // 119: rolodex_dns.RolodexDnsService.GenerateDnssecKey:output_type -> rolodex_dns.GenerateDnssecKeyResponse
-	89,  // 120: rolodex_dns.RolodexDnsService.ListDnssecKeys:output_type -> rolodex_dns.ListDnssecKeysResponse
-	91,  // 121: rolodex_dns.RolodexDnsService.DeleteDnssecKey:output_type -> rolodex_dns.DeleteDnssecKeyResponse
-	93,  // 122: rolodex_dns.RolodexDnsService.GetDsRecords:output_type -> rolodex_dns.GetDsRecordsResponse
-	95,  // 123: rolodex_dns.RolodexDnsService.SignZone:output_type -> rolodex_dns.SignZoneResponse
-	97,  // 124: rolodex_dns.RolodexDnsService.GenerateTlsaRecord:output_type -> rolodex_dns.GenerateTlsaRecordResponse
-	99,  // 125: rolodex_dns.RolodexDnsService.ListTlsaRecords:output_type -> rolodex_dns.ListTlsaRecordsResponse
-	101, // 126: rolodex_dns.RolodexDnsService.GenerateDaneRootCa:output_type -> rolodex_dns.GenerateDaneRootCaResponse
-	103, // 127: rolodex_dns.RolodexDnsService.RequestAcmeCert:output_type -> rolodex_dns.RequestAcmeCertResponse
-	105, // 128: rolodex_dns.RolodexDnsService.GetAcmeStatus:output_type -> rolodex_dns.GetAcmeStatusResponse
-	108, // 129: rolodex_dns.RolodexDnsService.SetDns64Config:output_type -> rolodex_dns.SetDns64ConfigResponse
-	110, // 130: rolodex_dns.RolodexDnsService.GetDns64Config:output_type -> rolodex_dns.GetDns64ConfigResponse
-	83,  // [83:131] is the sub-list for method output_type
-	35,  // [35:83] is the sub-list for method input_type
-	35,  // [35:35] is the sub-list for extension type_name
-	35,  // [35:35] is the sub-list for extension extendee
-	0,   // [0:35] is the sub-list for field type_name
+	111, // 35: rolodex_dns.AddDhcpPoolRequest.pool:type_name -> rolodex_dns.DhcpPool
+	111, // 36: rolodex_dns.ListDhcpPoolsResponse.pools:type_name -> rolodex_dns.DhcpPool
+	118, // 37: rolodex_dns.ListDhcpLeasesResponse.leases:type_name -> rolodex_dns.DhcpLease
+	123, // 38: rolodex_dns.AddScopeRblProviderRequest.provider:type_name -> rolodex_dns.ScopeRblProvider
+	123, // 39: rolodex_dns.ListScopeRblProvidersResponse.providers:type_name -> rolodex_dns.ScopeRblProvider
+	130, // 40: rolodex_dns.SetDhcpCertOptionRequest.option:type_name -> rolodex_dns.DhcpCertOption
+	130, // 41: rolodex_dns.ListDhcpCertOptionsResponse.options:type_name -> rolodex_dns.DhcpCertOption
+	2,   // 42: rolodex_dns.RolodexDnsService.AddRecord:input_type -> rolodex_dns.AddRecordRequest
+	4,   // 43: rolodex_dns.RolodexDnsService.RemoveRecord:input_type -> rolodex_dns.RemoveRecordRequest
+	6,   // 44: rolodex_dns.RolodexDnsService.ListRecords:input_type -> rolodex_dns.ListRecordsRequest
+	8,   // 45: rolodex_dns.RolodexDnsService.SetForwarders:input_type -> rolodex_dns.SetForwarderRequest
+	11,  // 46: rolodex_dns.RolodexDnsService.SetRblConfig:input_type -> rolodex_dns.SetRblConfigRequest
+	13,  // 47: rolodex_dns.RolodexDnsService.GetRblConfig:input_type -> rolodex_dns.GetRblConfigRequest
+	15,  // 48: rolodex_dns.RolodexDnsService.FlushCache:input_type -> rolodex_dns.FlushCacheRequest
+	18,  // 49: rolodex_dns.RolodexDnsService.CreateNetworkScope:input_type -> rolodex_dns.CreateNetworkScopeRequest
+	20,  // 50: rolodex_dns.RolodexDnsService.DeleteNetworkScope:input_type -> rolodex_dns.DeleteNetworkScopeRequest
+	22,  // 51: rolodex_dns.RolodexDnsService.ListNetworkScopes:input_type -> rolodex_dns.ListNetworkScopesRequest
+	24,  // 52: rolodex_dns.RolodexDnsService.JoinNetwork:input_type -> rolodex_dns.JoinNetworkRequest
+	26,  // 53: rolodex_dns.RolodexDnsService.LeaveNetwork:input_type -> rolodex_dns.LeaveNetworkRequest
+	28,  // 54: rolodex_dns.RolodexDnsService.GetNetworkAssociations:input_type -> rolodex_dns.GetNetworkAssociationsRequest
+	31,  // 55: rolodex_dns.RolodexDnsService.AddScopedRecord:input_type -> rolodex_dns.AddScopedRecordRequest
+	33,  // 56: rolodex_dns.RolodexDnsService.RemoveScopedRecord:input_type -> rolodex_dns.RemoveScopedRecordRequest
+	35,  // 57: rolodex_dns.RolodexDnsService.ListScopedRecords:input_type -> rolodex_dns.ListScopedRecordsRequest
+	37,  // 58: rolodex_dns.RolodexDnsService.GetSearchDomains:input_type -> rolodex_dns.GetSearchDomainsRequest
+	39,  // 59: rolodex_dns.RolodexDnsService.AddAuthoritativeZone:input_type -> rolodex_dns.AddAuthoritativeZoneRequest
+	41,  // 60: rolodex_dns.RolodexDnsService.RemoveAuthoritativeZone:input_type -> rolodex_dns.RemoveAuthoritativeZoneRequest
+	43,  // 61: rolodex_dns.RolodexDnsService.ListAuthoritativeZones:input_type -> rolodex_dns.ListAuthoritativeZonesRequest
+	45,  // 62: rolodex_dns.RolodexDnsService.GetCacheStats:input_type -> rolodex_dns.GetCacheStatsRequest
+	47,  // 63: rolodex_dns.RolodexDnsService.FlushDnsCache:input_type -> rolodex_dns.FlushDnsCacheRequest
+	50,  // 64: rolodex_dns.RolodexDnsService.SetTtlDriftConfig:input_type -> rolodex_dns.SetTtlDriftConfigRequest
+	52,  // 65: rolodex_dns.RolodexDnsService.GetTtlDriftConfig:input_type -> rolodex_dns.GetTtlDriftConfigRequest
+	55,  // 66: rolodex_dns.RolodexDnsService.GetQueryLatencyStats:input_type -> rolodex_dns.GetQueryLatencyStatsRequest
+	58,  // 67: rolodex_dns.RolodexDnsService.AddLocalRblEntry:input_type -> rolodex_dns.AddLocalRblEntryRequest
+	60,  // 68: rolodex_dns.RolodexDnsService.RemoveLocalRblEntry:input_type -> rolodex_dns.RemoveLocalRblEntryRequest
+	62,  // 69: rolodex_dns.RolodexDnsService.ListLocalRblEntries:input_type -> rolodex_dns.ListLocalRblEntriesRequest
+	66,  // 70: rolodex_dns.RolodexDnsService.SetDotConfig:input_type -> rolodex_dns.SetDotConfigRequest
+	68,  // 71: rolodex_dns.RolodexDnsService.GetDotConfig:input_type -> rolodex_dns.GetDotConfigRequest
+	71,  // 72: rolodex_dns.RolodexDnsService.SetDohConfig:input_type -> rolodex_dns.SetDohConfigRequest
+	73,  // 73: rolodex_dns.RolodexDnsService.GetDohConfig:input_type -> rolodex_dns.GetDohConfigRequest
+	76,  // 74: rolodex_dns.RolodexDnsService.SetDoqConfig:input_type -> rolodex_dns.SetDoqConfigRequest
+	78,  // 75: rolodex_dns.RolodexDnsService.GetDoqConfig:input_type -> rolodex_dns.GetDoqConfigRequest
+	81,  // 76: rolodex_dns.RolodexDnsService.SetProxyConfig:input_type -> rolodex_dns.SetProxyConfigRequest
+	83,  // 77: rolodex_dns.RolodexDnsService.GetProxyConfig:input_type -> rolodex_dns.GetProxyConfigRequest
+	86,  // 78: rolodex_dns.RolodexDnsService.GenerateDnssecKey:input_type -> rolodex_dns.GenerateDnssecKeyRequest
+	88,  // 79: rolodex_dns.RolodexDnsService.ListDnssecKeys:input_type -> rolodex_dns.ListDnssecKeysRequest
+	90,  // 80: rolodex_dns.RolodexDnsService.DeleteDnssecKey:input_type -> rolodex_dns.DeleteDnssecKeyRequest
+	92,  // 81: rolodex_dns.RolodexDnsService.GetDsRecords:input_type -> rolodex_dns.GetDsRecordsRequest
+	94,  // 82: rolodex_dns.RolodexDnsService.SignZone:input_type -> rolodex_dns.SignZoneRequest
+	96,  // 83: rolodex_dns.RolodexDnsService.GenerateTlsaRecord:input_type -> rolodex_dns.GenerateTlsaRecordRequest
+	98,  // 84: rolodex_dns.RolodexDnsService.ListTlsaRecords:input_type -> rolodex_dns.ListTlsaRecordsRequest
+	100, // 85: rolodex_dns.RolodexDnsService.GenerateDaneRootCa:input_type -> rolodex_dns.GenerateDaneRootCaRequest
+	102, // 86: rolodex_dns.RolodexDnsService.RequestAcmeCert:input_type -> rolodex_dns.RequestAcmeCertRequest
+	104, // 87: rolodex_dns.RolodexDnsService.GetAcmeStatus:input_type -> rolodex_dns.GetAcmeStatusRequest
+	107, // 88: rolodex_dns.RolodexDnsService.SetDns64Config:input_type -> rolodex_dns.SetDns64ConfigRequest
+	109, // 89: rolodex_dns.RolodexDnsService.GetDns64Config:input_type -> rolodex_dns.GetDns64ConfigRequest
+	112, // 90: rolodex_dns.RolodexDnsService.AddDhcpPool:input_type -> rolodex_dns.AddDhcpPoolRequest
+	114, // 91: rolodex_dns.RolodexDnsService.RemoveDhcpPool:input_type -> rolodex_dns.RemoveDhcpPoolRequest
+	116, // 92: rolodex_dns.RolodexDnsService.ListDhcpPools:input_type -> rolodex_dns.ListDhcpPoolsRequest
+	119, // 93: rolodex_dns.RolodexDnsService.ListDhcpLeases:input_type -> rolodex_dns.ListDhcpLeasesRequest
+	121, // 94: rolodex_dns.RolodexDnsService.DeleteDhcpLease:input_type -> rolodex_dns.DeleteDhcpLeaseRequest
+	124, // 95: rolodex_dns.RolodexDnsService.AddScopeRblProvider:input_type -> rolodex_dns.AddScopeRblProviderRequest
+	126, // 96: rolodex_dns.RolodexDnsService.RemoveScopeRblProvider:input_type -> rolodex_dns.RemoveScopeRblProviderRequest
+	128, // 97: rolodex_dns.RolodexDnsService.ListScopeRblProviders:input_type -> rolodex_dns.ListScopeRblProvidersRequest
+	131, // 98: rolodex_dns.RolodexDnsService.SetDhcpCertOption:input_type -> rolodex_dns.SetDhcpCertOptionRequest
+	133, // 99: rolodex_dns.RolodexDnsService.RemoveDhcpCertOption:input_type -> rolodex_dns.RemoveDhcpCertOptionRequest
+	135, // 100: rolodex_dns.RolodexDnsService.ListDhcpCertOptions:input_type -> rolodex_dns.ListDhcpCertOptionsRequest
+	3,   // 101: rolodex_dns.RolodexDnsService.AddRecord:output_type -> rolodex_dns.AddRecordResponse
+	5,   // 102: rolodex_dns.RolodexDnsService.RemoveRecord:output_type -> rolodex_dns.RemoveRecordResponse
+	7,   // 103: rolodex_dns.RolodexDnsService.ListRecords:output_type -> rolodex_dns.ListRecordsResponse
+	9,   // 104: rolodex_dns.RolodexDnsService.SetForwarders:output_type -> rolodex_dns.SetForwarderResponse
+	12,  // 105: rolodex_dns.RolodexDnsService.SetRblConfig:output_type -> rolodex_dns.SetRblConfigResponse
+	14,  // 106: rolodex_dns.RolodexDnsService.GetRblConfig:output_type -> rolodex_dns.GetRblConfigResponse
+	16,  // 107: rolodex_dns.RolodexDnsService.FlushCache:output_type -> rolodex_dns.FlushCacheResponse
+	19,  // 108: rolodex_dns.RolodexDnsService.CreateNetworkScope:output_type -> rolodex_dns.CreateNetworkScopeResponse
+	21,  // 109: rolodex_dns.RolodexDnsService.DeleteNetworkScope:output_type -> rolodex_dns.DeleteNetworkScopeResponse
+	23,  // 110: rolodex_dns.RolodexDnsService.ListNetworkScopes:output_type -> rolodex_dns.ListNetworkScopesResponse
+	25,  // 111: rolodex_dns.RolodexDnsService.JoinNetwork:output_type -> rolodex_dns.JoinNetworkResponse
+	27,  // 112: rolodex_dns.RolodexDnsService.LeaveNetwork:output_type -> rolodex_dns.LeaveNetworkResponse
+	30,  // 113: rolodex_dns.RolodexDnsService.GetNetworkAssociations:output_type -> rolodex_dns.GetNetworkAssociationsResponse
+	32,  // 114: rolodex_dns.RolodexDnsService.AddScopedRecord:output_type -> rolodex_dns.AddScopedRecordResponse
+	34,  // 115: rolodex_dns.RolodexDnsService.RemoveScopedRecord:output_type -> rolodex_dns.RemoveScopedRecordResponse
+	36,  // 116: rolodex_dns.RolodexDnsService.ListScopedRecords:output_type -> rolodex_dns.ListScopedRecordsResponse
+	38,  // 117: rolodex_dns.RolodexDnsService.GetSearchDomains:output_type -> rolodex_dns.GetSearchDomainsResponse
+	40,  // 118: rolodex_dns.RolodexDnsService.AddAuthoritativeZone:output_type -> rolodex_dns.AddAuthoritativeZoneResponse
+	42,  // 119: rolodex_dns.RolodexDnsService.RemoveAuthoritativeZone:output_type -> rolodex_dns.RemoveAuthoritativeZoneResponse
+	44,  // 120: rolodex_dns.RolodexDnsService.ListAuthoritativeZones:output_type -> rolodex_dns.ListAuthoritativeZonesResponse
+	46,  // 121: rolodex_dns.RolodexDnsService.GetCacheStats:output_type -> rolodex_dns.GetCacheStatsResponse
+	48,  // 122: rolodex_dns.RolodexDnsService.FlushDnsCache:output_type -> rolodex_dns.FlushDnsCacheResponse
+	51,  // 123: rolodex_dns.RolodexDnsService.SetTtlDriftConfig:output_type -> rolodex_dns.SetTtlDriftConfigResponse
+	53,  // 124: rolodex_dns.RolodexDnsService.GetTtlDriftConfig:output_type -> rolodex_dns.GetTtlDriftConfigResponse
+	56,  // 125: rolodex_dns.RolodexDnsService.GetQueryLatencyStats:output_type -> rolodex_dns.GetQueryLatencyStatsResponse
+	59,  // 126: rolodex_dns.RolodexDnsService.AddLocalRblEntry:output_type -> rolodex_dns.AddLocalRblEntryResponse
+	61,  // 127: rolodex_dns.RolodexDnsService.RemoveLocalRblEntry:output_type -> rolodex_dns.RemoveLocalRblEntryResponse
+	63,  // 128: rolodex_dns.RolodexDnsService.ListLocalRblEntries:output_type -> rolodex_dns.ListLocalRblEntriesResponse
+	67,  // 129: rolodex_dns.RolodexDnsService.SetDotConfig:output_type -> rolodex_dns.SetDotConfigResponse
+	69,  // 130: rolodex_dns.RolodexDnsService.GetDotConfig:output_type -> rolodex_dns.GetDotConfigResponse
+	72,  // 131: rolodex_dns.RolodexDnsService.SetDohConfig:output_type -> rolodex_dns.SetDohConfigResponse
+	74,  // 132: rolodex_dns.RolodexDnsService.GetDohConfig:output_type -> rolodex_dns.GetDohConfigResponse
+	77,  // 133: rolodex_dns.RolodexDnsService.SetDoqConfig:output_type -> rolodex_dns.SetDoqConfigResponse
+	79,  // 134: rolodex_dns.RolodexDnsService.GetDoqConfig:output_type -> rolodex_dns.GetDoqConfigResponse
+	82,  // 135: rolodex_dns.RolodexDnsService.SetProxyConfig:output_type -> rolodex_dns.SetProxyConfigResponse
+	84,  // 136: rolodex_dns.RolodexDnsService.GetProxyConfig:output_type -> rolodex_dns.GetProxyConfigResponse
+	87,  // 137: rolodex_dns.RolodexDnsService.GenerateDnssecKey:output_type -> rolodex_dns.GenerateDnssecKeyResponse
+	89,  // 138: rolodex_dns.RolodexDnsService.ListDnssecKeys:output_type -> rolodex_dns.ListDnssecKeysResponse
+	91,  // 139: rolodex_dns.RolodexDnsService.DeleteDnssecKey:output_type -> rolodex_dns.DeleteDnssecKeyResponse
+	93,  // 140: rolodex_dns.RolodexDnsService.GetDsRecords:output_type -> rolodex_dns.GetDsRecordsResponse
+	95,  // 141: rolodex_dns.RolodexDnsService.SignZone:output_type -> rolodex_dns.SignZoneResponse
+	97,  // 142: rolodex_dns.RolodexDnsService.GenerateTlsaRecord:output_type -> rolodex_dns.GenerateTlsaRecordResponse
+	99,  // 143: rolodex_dns.RolodexDnsService.ListTlsaRecords:output_type -> rolodex_dns.ListTlsaRecordsResponse
+	101, // 144: rolodex_dns.RolodexDnsService.GenerateDaneRootCa:output_type -> rolodex_dns.GenerateDaneRootCaResponse
+	103, // 145: rolodex_dns.RolodexDnsService.RequestAcmeCert:output_type -> rolodex_dns.RequestAcmeCertResponse
+	105, // 146: rolodex_dns.RolodexDnsService.GetAcmeStatus:output_type -> rolodex_dns.GetAcmeStatusResponse
+	108, // 147: rolodex_dns.RolodexDnsService.SetDns64Config:output_type -> rolodex_dns.SetDns64ConfigResponse
+	110, // 148: rolodex_dns.RolodexDnsService.GetDns64Config:output_type -> rolodex_dns.GetDns64ConfigResponse
+	113, // 149: rolodex_dns.RolodexDnsService.AddDhcpPool:output_type -> rolodex_dns.AddDhcpPoolResponse
+	115, // 150: rolodex_dns.RolodexDnsService.RemoveDhcpPool:output_type -> rolodex_dns.RemoveDhcpPoolResponse
+	117, // 151: rolodex_dns.RolodexDnsService.ListDhcpPools:output_type -> rolodex_dns.ListDhcpPoolsResponse
+	120, // 152: rolodex_dns.RolodexDnsService.ListDhcpLeases:output_type -> rolodex_dns.ListDhcpLeasesResponse
+	122, // 153: rolodex_dns.RolodexDnsService.DeleteDhcpLease:output_type -> rolodex_dns.DeleteDhcpLeaseResponse
+	125, // 154: rolodex_dns.RolodexDnsService.AddScopeRblProvider:output_type -> rolodex_dns.AddScopeRblProviderResponse
+	127, // 155: rolodex_dns.RolodexDnsService.RemoveScopeRblProvider:output_type -> rolodex_dns.RemoveScopeRblProviderResponse
+	129, // 156: rolodex_dns.RolodexDnsService.ListScopeRblProviders:output_type -> rolodex_dns.ListScopeRblProvidersResponse
+	132, // 157: rolodex_dns.RolodexDnsService.SetDhcpCertOption:output_type -> rolodex_dns.SetDhcpCertOptionResponse
+	134, // 158: rolodex_dns.RolodexDnsService.RemoveDhcpCertOption:output_type -> rolodex_dns.RemoveDhcpCertOptionResponse
+	136, // 159: rolodex_dns.RolodexDnsService.ListDhcpCertOptions:output_type -> rolodex_dns.ListDhcpCertOptionsResponse
+	101, // [101:160] is the sub-list for method output_type
+	42,  // [42:101] is the sub-list for method input_type
+	42,  // [42:42] is the sub-list for extension type_name
+	42,  // [42:42] is the sub-list for extension extendee
+	0,   // [0:42] is the sub-list for field type_name
 }
 
 func init() { file_rolodex_dns_proto_init() }
@@ -6957,7 +8583,7 @@ func file_rolodex_dns_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_rolodex_dns_proto_rawDesc), len(file_rolodex_dns_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   110,
+			NumMessages:   136,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

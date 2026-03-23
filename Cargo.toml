@@ -70,6 +70,9 @@ quinn = "0.11"
 # DNSSEC
 ring = "0.17"
 
+# DHCP
+dhcproto = "0.14"
+
 [build-dependencies]
 tonic-build = "0.14"
 tonic-prost-build = "0.14"

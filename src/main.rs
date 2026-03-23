@@ -240,6 +240,26 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Spawn DHCP server if configured
+    if let Some(ref dhcp_config) = config.dhcp {
+        let dhcp_server = Arc::new(rolodex_dns::dhcp::DhcpServer::new(
+            db.clone(),
+            Arc::clone(&dns_server),
+            rbl.clone(),
+            dhcp_config,
+        ));
+        let dhcp_bind = dhcp_config.bind.clone();
+        let sweep_server = Arc::clone(&dhcp_server);
+        tokio::spawn(async move {
+            if let Err(e) = dhcp_server.serve_dhcp(&dhcp_bind).await {
+                error!("DHCP server error: {}", e);
+            }
+        });
+        tokio::spawn(async move {
+            sweep_server.run_lease_sweep().await;
+        });
+    }
+
     info!("Rolodex DNS server started");
 
     // Wait forever

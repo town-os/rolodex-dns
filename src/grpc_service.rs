@@ -1339,6 +1339,244 @@ impl RolodexDnsService for RolodexDnsGrpcService {
             }),
         }))
     }
+
+    // ================================================================
+    // DHCP Pool Management
+    // ================================================================
+
+    async fn add_dhcp_pool(
+        &self,
+        request: Request<AddDhcpPoolRequest>,
+    ) -> Result<Response<AddDhcpPoolResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        let pool = req.pool.ok_or_else(|| Status::invalid_argument("pool is required"))?;
+        let db_pool = crate::db::DhcpPool {
+            id: 0,
+            scope_name: pool.scope_name,
+            range_start: pool.range_start,
+            range_end: pool.range_end,
+            gateway: if pool.gateway.is_empty() { None } else { Some(pool.gateway) },
+            subnet_mask: if pool.subnet_mask.is_empty() { "255.255.255.0".to_string() } else { pool.subnet_mask },
+            dns_servers: if pool.dns_servers.is_empty() { None } else { Some(pool.dns_servers) },
+        };
+        match self.db.add_dhcp_pool(&db_pool) {
+            Ok(id) => {
+                info!("Added DHCP pool {} for scope {}", id, db_pool.scope_name);
+                Ok(Response::new(AddDhcpPoolResponse { success: true, message: String::new() }))
+            }
+            Err(e) => Ok(Response::new(AddDhcpPoolResponse { success: false, message: e.to_string() })),
+        }
+    }
+
+    async fn remove_dhcp_pool(
+        &self,
+        request: Request<RemoveDhcpPoolRequest>,
+    ) -> Result<Response<RemoveDhcpPoolResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        match self.db.remove_dhcp_pool(req.pool_id) {
+            Ok(true) => {
+                info!("Removed DHCP pool {}", req.pool_id);
+                Ok(Response::new(RemoveDhcpPoolResponse { success: true, message: String::new() }))
+            }
+            Ok(false) => Ok(Response::new(RemoveDhcpPoolResponse { success: false, message: "pool not found".to_string() })),
+            Err(e) => Ok(Response::new(RemoveDhcpPoolResponse { success: false, message: e.to_string() })),
+        }
+    }
+
+    async fn list_dhcp_pools(
+        &self,
+        request: Request<ListDhcpPoolsRequest>,
+    ) -> Result<Response<ListDhcpPoolsResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        let scope_filter = if req.scope_name.is_empty() { None } else { Some(req.scope_name.as_str()) };
+        match self.db.list_dhcp_pools(scope_filter) {
+            Ok(pools) => {
+                let proto_pools = pools.into_iter().map(|p| proto::DhcpPool {
+                    id: p.id,
+                    scope_name: p.scope_name,
+                    range_start: p.range_start,
+                    range_end: p.range_end,
+                    gateway: p.gateway.unwrap_or_default(),
+                    subnet_mask: p.subnet_mask,
+                    dns_servers: p.dns_servers.unwrap_or_default(),
+                }).collect();
+                Ok(Response::new(ListDhcpPoolsResponse { pools: proto_pools }))
+            }
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+
+    // ================================================================
+    // DHCP Lease Management
+    // ================================================================
+
+    async fn list_dhcp_leases(
+        &self,
+        request: Request<ListDhcpLeasesRequest>,
+    ) -> Result<Response<ListDhcpLeasesResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        let scope_filter = if req.scope_name.is_empty() { None } else { Some(req.scope_name.as_str()) };
+        match self.db.list_leases(scope_filter) {
+            Ok(leases) => {
+                let proto_leases = leases.into_iter().map(|l| proto::DhcpLease {
+                    mac: l.mac,
+                    ip: l.ip,
+                    scope_name: l.scope_name,
+                    hostname: l.hostname.unwrap_or_default(),
+                    lease_start: l.lease_start,
+                    lease_duration: l.lease_duration,
+                    state: l.state,
+                }).collect();
+                Ok(Response::new(ListDhcpLeasesResponse { leases: proto_leases }))
+            }
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+
+    async fn delete_dhcp_lease(
+        &self,
+        request: Request<DeleteDhcpLeaseRequest>,
+    ) -> Result<Response<DeleteDhcpLeaseResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        if req.mac.is_empty() {
+            return Err(Status::invalid_argument("mac is required"));
+        }
+        match self.db.delete_lease(&req.mac) {
+            Ok(true) => {
+                info!("Deleted DHCP lease for MAC {}", req.mac);
+                Ok(Response::new(DeleteDhcpLeaseResponse { success: true, message: String::new() }))
+            }
+            Ok(false) => Ok(Response::new(DeleteDhcpLeaseResponse { success: false, message: "lease not found".to_string() })),
+            Err(e) => Ok(Response::new(DeleteDhcpLeaseResponse { success: false, message: e.to_string() })),
+        }
+    }
+
+    // ================================================================
+    // Per-Scope RBL Providers
+    // ================================================================
+
+    async fn add_scope_rbl_provider(
+        &self,
+        request: Request<AddScopeRblProviderRequest>,
+    ) -> Result<Response<AddScopeRblProviderResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        let provider = req.provider.ok_or_else(|| Status::invalid_argument("provider is required"))?;
+        let db_provider = crate::db::ScopeRblProvider {
+            scope_name: provider.scope_name,
+            zone: provider.zone,
+            enabled: provider.enabled,
+        };
+        match self.db.add_scope_rbl_provider(&db_provider) {
+            Ok(()) => {
+                info!("Added scope RBL provider {} for scope {}", db_provider.zone, db_provider.scope_name);
+                Ok(Response::new(AddScopeRblProviderResponse { success: true, message: String::new() }))
+            }
+            Err(e) => Ok(Response::new(AddScopeRblProviderResponse { success: false, message: e.to_string() })),
+        }
+    }
+
+    async fn remove_scope_rbl_provider(
+        &self,
+        request: Request<RemoveScopeRblProviderRequest>,
+    ) -> Result<Response<RemoveScopeRblProviderResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        match self.db.remove_scope_rbl_provider(&req.scope_name, &req.zone) {
+            Ok(true) => {
+                info!("Removed scope RBL provider {} from scope {}", req.zone, req.scope_name);
+                Ok(Response::new(RemoveScopeRblProviderResponse { success: true, message: String::new() }))
+            }
+            Ok(false) => Ok(Response::new(RemoveScopeRblProviderResponse { success: false, message: "provider not found".to_string() })),
+            Err(e) => Ok(Response::new(RemoveScopeRblProviderResponse { success: false, message: e.to_string() })),
+        }
+    }
+
+    async fn list_scope_rbl_providers(
+        &self,
+        request: Request<ListScopeRblProvidersRequest>,
+    ) -> Result<Response<ListScopeRblProvidersResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        match self.db.list_scope_rbl_providers(&req.scope_name) {
+            Ok(providers) => {
+                let proto_providers = providers.into_iter().map(|p| proto::ScopeRblProvider {
+                    scope_name: p.scope_name,
+                    zone: p.zone,
+                    enabled: p.enabled,
+                }).collect();
+                Ok(Response::new(ListScopeRblProvidersResponse { providers: proto_providers }))
+            }
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+
+    // ================================================================
+    // DHCP Certificate Options
+    // ================================================================
+
+    async fn set_dhcp_cert_option(
+        &self,
+        request: Request<SetDhcpCertOptionRequest>,
+    ) -> Result<Response<SetDhcpCertOptionResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        let opt = req.option.ok_or_else(|| Status::invalid_argument("option is required"))?;
+        let db_opt = crate::db::DhcpCertOption {
+            scope_name: opt.scope_name,
+            option_code: opt.option_code,
+            cert_data: opt.cert_data,
+            description: if opt.description.is_empty() { None } else { Some(opt.description) },
+        };
+        match self.db.set_dhcp_cert_option(&db_opt) {
+            Ok(()) => {
+                info!("Set DHCP cert option {} for scope {}", db_opt.option_code, db_opt.scope_name);
+                Ok(Response::new(SetDhcpCertOptionResponse { success: true, message: String::new() }))
+            }
+            Err(e) => Ok(Response::new(SetDhcpCertOptionResponse { success: false, message: e.to_string() })),
+        }
+    }
+
+    async fn remove_dhcp_cert_option(
+        &self,
+        request: Request<RemoveDhcpCertOptionRequest>,
+    ) -> Result<Response<RemoveDhcpCertOptionResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        match self.db.remove_dhcp_cert_option(&req.scope_name, req.option_code) {
+            Ok(true) => {
+                info!("Removed DHCP cert option {} from scope {}", req.option_code, req.scope_name);
+                Ok(Response::new(RemoveDhcpCertOptionResponse { success: true, message: String::new() }))
+            }
+            Ok(false) => Ok(Response::new(RemoveDhcpCertOptionResponse { success: false, message: "option not found".to_string() })),
+            Err(e) => Ok(Response::new(RemoveDhcpCertOptionResponse { success: false, message: e.to_string() })),
+        }
+    }
+
+    async fn list_dhcp_cert_options(
+        &self,
+        request: Request<ListDhcpCertOptionsRequest>,
+    ) -> Result<Response<ListDhcpCertOptionsResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        match self.db.list_dhcp_cert_options(&req.scope_name) {
+            Ok(options) => {
+                let proto_opts = options.into_iter().map(|o| proto::DhcpCertOption {
+                    scope_name: o.scope_name,
+                    option_code: o.option_code,
+                    cert_data: o.cert_data,
+                    description: o.description.unwrap_or_default(),
+                }).collect();
+                Ok(Response::new(ListDhcpCertOptionsResponse { options: proto_opts }))
+            }
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
 }
 
 #[cfg(test)]

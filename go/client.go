@@ -136,6 +136,18 @@ type AcmeStatus = pb.GetAcmeStatusResponse
 // Dns64Config represents DNS64 synthesis configuration.
 type Dns64Config = pb.Dns64Config
 
+// DhcpPool represents a DHCP address pool.
+type DhcpPool = pb.DhcpPool
+
+// DhcpLease represents a DHCP lease.
+type DhcpLease = pb.DhcpLease
+
+// ScopeRblProvider represents a per-scope RBL provider.
+type ScopeRblProvider = pb.ScopeRblProvider
+
+// DhcpCertOption represents a DHCP certificate option.
+type DhcpCertOption = pb.DhcpCertOption
+
 // Option configures a [Client] during [Dial].
 type Option func(*clientConfig)
 
@@ -1241,4 +1253,224 @@ func (c *Client) GetDns64Config(ctx context.Context) (*Dns64Config, error) {
 		return nil, fmt.Errorf("rolodex-dns: get dns64 config: %w", err)
 	}
 	return resp.Config, nil
+}
+
+// AddDhcpPool adds an IP address pool for DHCP allocation within a scope.
+//
+// Parameters:
+//   - pool: the DHCP pool to add
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/AddDhcpPool
+func (c *Client) AddDhcpPool(ctx context.Context, pool *DhcpPool) error {
+	resp, err := c.rpc.AddDhcpPool(ctx, &pb.AddDhcpPoolRequest{
+		Pool:      pool,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex-dns: add dhcp pool: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex-dns: add dhcp pool: %s", resp.Message)
+	}
+	return nil
+}
+
+// RemoveDhcpPool removes a DHCP address pool by ID.
+//
+// Parameters:
+//   - poolID: the numeric ID of the pool to remove
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/RemoveDhcpPool
+func (c *Client) RemoveDhcpPool(ctx context.Context, poolID int64) error {
+	resp, err := c.rpc.RemoveDhcpPool(ctx, &pb.RemoveDhcpPoolRequest{
+		PoolId:    poolID,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex-dns: remove dhcp pool: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex-dns: remove dhcp pool: %s", resp.Message)
+	}
+	return nil
+}
+
+// ListDhcpPools lists DHCP address pools, optionally filtered by scope.
+//
+// Parameters:
+//   - scopeName: if non-empty, only return pools for this scope.
+//     If empty, returns all pools.
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/ListDhcpPools
+func (c *Client) ListDhcpPools(ctx context.Context, scopeName string) ([]*DhcpPool, error) {
+	resp, err := c.rpc.ListDhcpPools(ctx, &pb.ListDhcpPoolsRequest{
+		ScopeName: scopeName,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex-dns: list dhcp pools: %w", err)
+	}
+	return resp.Pools, nil
+}
+
+// ListDhcpLeases lists DHCP leases, optionally filtered by scope.
+//
+// Parameters:
+//   - scopeName: if non-empty, only return leases for this scope.
+//     If empty, returns all leases.
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/ListDhcpLeases
+func (c *Client) ListDhcpLeases(ctx context.Context, scopeName string) ([]*DhcpLease, error) {
+	resp, err := c.rpc.ListDhcpLeases(ctx, &pb.ListDhcpLeasesRequest{
+		ScopeName: scopeName,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex-dns: list dhcp leases: %w", err)
+	}
+	return resp.Leases, nil
+}
+
+// DeleteDhcpLease deletes a DHCP lease by MAC address.
+//
+// Parameters:
+//   - mac: the MAC address of the lease to delete
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/DeleteDhcpLease
+func (c *Client) DeleteDhcpLease(ctx context.Context, mac string) error {
+	resp, err := c.rpc.DeleteDhcpLease(ctx, &pb.DeleteDhcpLeaseRequest{
+		Mac:       mac,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex-dns: delete dhcp lease: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex-dns: delete dhcp lease: %s", resp.Message)
+	}
+	return nil
+}
+
+// AddScopeRblProvider adds an additional RBL provider for a specific scope.
+//
+// Parameters:
+//   - scopeName: the network scope name
+//   - zone: the RBL zone (e.g. "zen.spamhaus.org")
+//   - enabled: whether the provider is enabled
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/AddScopeRblProvider
+func (c *Client) AddScopeRblProvider(ctx context.Context, scopeName, zone string, enabled bool) error {
+	resp, err := c.rpc.AddScopeRblProvider(ctx, &pb.AddScopeRblProviderRequest{
+		Provider: &pb.ScopeRblProvider{
+			ScopeName: scopeName,
+			Zone:      zone,
+			Enabled:   enabled,
+		},
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex-dns: add scope rbl provider: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex-dns: add scope rbl provider: %s", resp.Message)
+	}
+	return nil
+}
+
+// RemoveScopeRblProvider removes a scope-specific RBL provider.
+//
+// Parameters:
+//   - scopeName: the network scope name
+//   - zone: the RBL zone to remove
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/RemoveScopeRblProvider
+func (c *Client) RemoveScopeRblProvider(ctx context.Context, scopeName, zone string) error {
+	resp, err := c.rpc.RemoveScopeRblProvider(ctx, &pb.RemoveScopeRblProviderRequest{
+		ScopeName: scopeName,
+		Zone:      zone,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex-dns: remove scope rbl provider: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex-dns: remove scope rbl provider: %s", resp.Message)
+	}
+	return nil
+}
+
+// ListScopeRblProviders lists RBL providers for a specific scope.
+//
+// Parameters:
+//   - scopeName: the network scope name to list providers for
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/ListScopeRblProviders
+func (c *Client) ListScopeRblProviders(ctx context.Context, scopeName string) ([]*ScopeRblProvider, error) {
+	resp, err := c.rpc.ListScopeRblProviders(ctx, &pb.ListScopeRblProvidersRequest{
+		ScopeName: scopeName,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex-dns: list scope rbl providers: %w", err)
+	}
+	return resp.Providers, nil
+}
+
+// SetDhcpCertOption sets a certificate to be delivered via DHCP for a scope.
+//
+// Parameters:
+//   - opt: the DHCP certificate option to set
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/SetDhcpCertOption
+func (c *Client) SetDhcpCertOption(ctx context.Context, opt *DhcpCertOption) error {
+	resp, err := c.rpc.SetDhcpCertOption(ctx, &pb.SetDhcpCertOptionRequest{
+		Option:    opt,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex-dns: set dhcp cert option: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex-dns: set dhcp cert option: %s", resp.Message)
+	}
+	return nil
+}
+
+// RemoveDhcpCertOption removes a DHCP certificate option for a scope.
+//
+// Parameters:
+//   - scopeName: the network scope name
+//   - optionCode: the DHCP option code to remove
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/RemoveDhcpCertOption
+func (c *Client) RemoveDhcpCertOption(ctx context.Context, scopeName string, optionCode uint32) error {
+	resp, err := c.rpc.RemoveDhcpCertOption(ctx, &pb.RemoveDhcpCertOptionRequest{
+		ScopeName:  scopeName,
+		OptionCode: optionCode,
+		AuthToken:  c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex-dns: remove dhcp cert option: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex-dns: remove dhcp cert option: %s", resp.Message)
+	}
+	return nil
+}
+
+// ListDhcpCertOptions lists DHCP certificate options for a scope.
+//
+// Parameters:
+//   - scopeName: the network scope name to list options for
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/ListDhcpCertOptions
+func (c *Client) ListDhcpCertOptions(ctx context.Context, scopeName string) ([]*DhcpCertOption, error) {
+	resp, err := c.rpc.ListDhcpCertOptions(ctx, &pb.ListDhcpCertOptionsRequest{
+		ScopeName: scopeName,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex-dns: list dhcp cert options: %w", err)
+	}
+	return resp.Options, nil
 }

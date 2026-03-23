@@ -1264,3 +1264,188 @@ func TestIntegrationQueryLatencyStats(t *testing.T) {
 	// Empty is fine, just verify it doesn't error
 	_ = stats
 }
+
+func TestDhcpPoolCrud(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// Create a scope first
+	err := client.CreateNetworkScope(ctx, &NetworkScope{
+		Name:       "dhcp-test",
+		HomeDomain: "dhcp-test.home.",
+	})
+	if err != nil {
+		t.Fatalf("CreateNetworkScope: %v", err)
+	}
+
+	// Add a DHCP pool
+	err = client.AddDhcpPool(ctx, &DhcpPool{
+		ScopeName:  "dhcp-test",
+		RangeStart: "10.99.0.100",
+		RangeEnd:   "10.99.0.200",
+		Gateway:    "10.99.0.1",
+		SubnetMask: "255.255.255.0",
+		DnsServers: "10.99.0.1",
+	})
+	if err != nil {
+		t.Fatalf("AddDhcpPool: %v", err)
+	}
+
+	// List pools and verify
+	pools, err := client.ListDhcpPools(ctx, "dhcp-test")
+	if err != nil {
+		t.Fatalf("ListDhcpPools: %v", err)
+	}
+	if len(pools) != 1 {
+		t.Fatalf("got %d pools, want 1", len(pools))
+	}
+	if pools[0].RangeStart != "10.99.0.100" {
+		t.Errorf("range start = %q, want %q", pools[0].RangeStart, "10.99.0.100")
+	}
+	if pools[0].RangeEnd != "10.99.0.200" {
+		t.Errorf("range end = %q, want %q", pools[0].RangeEnd, "10.99.0.200")
+	}
+
+	// Remove the pool
+	err = client.RemoveDhcpPool(ctx, pools[0].Id)
+	if err != nil {
+		t.Fatalf("RemoveDhcpPool: %v", err)
+	}
+
+	// Verify empty
+	pools, err = client.ListDhcpPools(ctx, "dhcp-test")
+	if err != nil {
+		t.Fatalf("ListDhcpPools after remove: %v", err)
+	}
+	if len(pools) != 0 {
+		t.Errorf("got %d pools after removal, want 0", len(pools))
+	}
+}
+
+func TestScopeRblProviderCrud(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// Create a scope first
+	err := client.CreateNetworkScope(ctx, &NetworkScope{
+		Name:       "rbl-test",
+		HomeDomain: "rbl-test.home.",
+	})
+	if err != nil {
+		t.Fatalf("CreateNetworkScope: %v", err)
+	}
+
+	// Add a scope RBL provider
+	err = client.AddScopeRblProvider(ctx, "rbl-test", "zen.spamhaus.org", true)
+	if err != nil {
+		t.Fatalf("AddScopeRblProvider: %v", err)
+	}
+
+	// List and verify
+	providers, err := client.ListScopeRblProviders(ctx, "rbl-test")
+	if err != nil {
+		t.Fatalf("ListScopeRblProviders: %v", err)
+	}
+	if len(providers) != 1 {
+		t.Fatalf("got %d providers, want 1", len(providers))
+	}
+	if providers[0].Zone != "zen.spamhaus.org" {
+		t.Errorf("zone = %q, want %q", providers[0].Zone, "zen.spamhaus.org")
+	}
+	if !providers[0].Enabled {
+		t.Errorf("enabled = false, want true")
+	}
+
+	// Remove the provider
+	err = client.RemoveScopeRblProvider(ctx, "rbl-test", "zen.spamhaus.org")
+	if err != nil {
+		t.Fatalf("RemoveScopeRblProvider: %v", err)
+	}
+
+	// Verify empty
+	providers, err = client.ListScopeRblProviders(ctx, "rbl-test")
+	if err != nil {
+		t.Fatalf("ListScopeRblProviders after remove: %v", err)
+	}
+	if len(providers) != 0 {
+		t.Errorf("got %d providers after removal, want 0", len(providers))
+	}
+}
+
+func TestDhcpCertOptionCrud(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// Create a scope first
+	err := client.CreateNetworkScope(ctx, &NetworkScope{
+		Name:       "cert-test",
+		HomeDomain: "cert-test.home.",
+	})
+	if err != nil {
+		t.Fatalf("CreateNetworkScope: %v", err)
+	}
+
+	// Set a DHCP cert option
+	certData := []byte("test-certificate-data-bytes")
+	err = client.SetDhcpCertOption(ctx, &DhcpCertOption{
+		ScopeName:   "cert-test",
+		OptionCode:  224,
+		CertData:    certData,
+		Description: "Test CA certificate",
+	})
+	if err != nil {
+		t.Fatalf("SetDhcpCertOption: %v", err)
+	}
+
+	// List and verify
+	options, err := client.ListDhcpCertOptions(ctx, "cert-test")
+	if err != nil {
+		t.Fatalf("ListDhcpCertOptions: %v", err)
+	}
+	if len(options) != 1 {
+		t.Fatalf("got %d options, want 1", len(options))
+	}
+	if options[0].OptionCode != 224 {
+		t.Errorf("option code = %d, want %d", options[0].OptionCode, 224)
+	}
+	if string(options[0].CertData) != "test-certificate-data-bytes" {
+		t.Errorf("cert data = %q, want %q", string(options[0].CertData), "test-certificate-data-bytes")
+	}
+	if options[0].Description != "Test CA certificate" {
+		t.Errorf("description = %q, want %q", options[0].Description, "Test CA certificate")
+	}
+
+	// Remove the cert option
+	err = client.RemoveDhcpCertOption(ctx, "cert-test", 224)
+	if err != nil {
+		t.Fatalf("RemoveDhcpCertOption: %v", err)
+	}
+
+	// Verify empty
+	options, err = client.ListDhcpCertOptions(ctx, "cert-test")
+	if err != nil {
+		t.Fatalf("ListDhcpCertOptions after remove: %v", err)
+	}
+	if len(options) != 0 {
+		t.Errorf("got %d options after removal, want 0", len(options))
+	}
+}
+
+func TestDhcpLeaseCrud(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// List leases on a fresh server (should be empty)
+	leases, err := client.ListDhcpLeases(ctx, "")
+	if err != nil {
+		t.Fatalf("ListDhcpLeases: %v", err)
+	}
+	if len(leases) != 0 {
+		t.Errorf("got %d leases on fresh server, want 0", len(leases))
+	}
+
+	// Delete a non-existent lease (should not crash)
+	err = client.DeleteDhcpLease(ctx, "00:11:22:33:44:55")
+	// We accept either success or a controlled error, but it must not panic
+	_ = err
+}

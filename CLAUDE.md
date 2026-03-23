@@ -202,6 +202,41 @@ Network scopes provide per-network DNS views, isolating DNS records by network m
 
 Zones can be explicitly declared authoritative via `AddAuthoritativeZone`. Queries for names within authoritative zones are never forwarded upstream — if the specific name is not found locally, an authoritative NXDOMAIN is returned. Zones are managed via `AddAuthoritativeZone`, `RemoveAuthoritativeZone`, and `ListAuthoritativeZones`.
 
+## DHCP Server
+
+Rolodex DNS includes an integrated DHCPv4 server that provides IP address allocation (IPAM) with automatic DNS hostname registration. The DHCP service is disabled by default and enabled via the `dhcp` configuration section.
+
+### IPAM (IP Address Management)
+
+DHCP address pools are configured per network scope. Each pool defines an IP range, gateway, subnet mask, and DNS servers. There is no cross-pool aggregation: each pool is a single contiguous range, and when the pool is exhausted, allocation fails (returns `None`). MAC-to-IP bindings are persistent (sticky): once a MAC address is assigned an IP, subsequent requests from the same MAC receive the same IP.
+
+Lease states: `active` (in use), `expired` (past duration), `released` (client released), `reclaimable` (past reclaim timeout, IP available for reuse).
+
+### DNS Integration
+
+When a DHCP client provides a hostname (option 12), the server automatically registers:
+- An A record: `<hostname>.lan.<tld>.` → assigned IP (as a scoped record)
+- A PTR record: `<reversed-ip>.in-addr.arpa.` → `<hostname>.lan.<tld>.` (as a scoped record)
+
+Both records are scoped to the network scope associated with the DHCP pool. On lease release or expiry, both records are removed.
+
+The DHCP assignment is linked to the network scoping system via `JoinNetwork`, creating a split-horizon DNS overlay unique to the DHCP address. The DNS overlay passes through any records that have changed.
+
+### Per-Scope RBL
+
+Each network scope can opt into additional RBL providers not present in the global configuration. Per-scope providers are checked alongside global providers during DNS resolution for IPs associated with that scope. Managed via `AddScopeRblProvider`, `RemoveScopeRblProvider`, and `ListScopeRblProviders`.
+
+### Certificate Delivery
+
+Certificates can be delivered to DHCP clients via site-specific DHCP options (codes 224-254). Certificate data is stored per scope and included in DHCP OFFER and ACK responses. Managed via `SetDhcpCertOption`, `RemoveDhcpCertOption`, and `ListDhcpCertOptions`.
+
+### Background Lease Sweep
+
+A background task runs at a configurable interval (`sweep_interval`, default 60 seconds) to:
+- Expire active leases past their duration
+- Remove DNS records and network associations for expired leases
+- Reclaim IPs from leases past the `reclaim_timeout` (default 24 hours)
+
 ## Proxy Configuration
 
 Upstream DNS forwarding can be routed through a proxy. Supported modes:
@@ -322,6 +357,37 @@ The management API is defined in `proto/rolodex_dns.proto` under the `RolodexDns
 | `SetDns64Config` | Sets DNS64 synthesis configuration (enabled, prefix). |
 | `GetDns64Config` | Returns the current DNS64 configuration. |
 
+#### DHCP Pool Management
+
+| RPC | Description |
+|---|---|
+| `AddDhcpPool` | Adds a DHCP address pool for a scope (range, gateway, subnet mask, DNS servers). |
+| `RemoveDhcpPool` | Removes a DHCP pool by ID. |
+| `ListDhcpPools` | Lists DHCP pools, optionally filtered by scope. |
+
+#### DHCP Lease Management
+
+| RPC | Description |
+|---|---|
+| `ListDhcpLeases` | Lists DHCP leases, optionally filtered by scope. |
+| `DeleteDhcpLease` | Deletes a DHCP lease by MAC address. |
+
+#### Per-Scope RBL Providers
+
+| RPC | Description |
+|---|---|
+| `AddScopeRblProvider` | Adds an additional RBL provider for a specific scope. |
+| `RemoveScopeRblProvider` | Removes a scope-specific RBL provider. |
+| `ListScopeRblProviders` | Lists RBL providers for a specific scope. |
+
+#### DHCP Certificate Options
+
+| RPC | Description |
+|---|---|
+| `SetDhcpCertOption` | Sets a certificate to be delivered via DHCP for a scope. |
+| `RemoveDhcpCertOption` | Removes a DHCP certificate option for a scope. |
+| `ListDhcpCertOptions` | Lists DHCP certificate options for a scope. |
+
 All changes made via gRPC take effect immediately and are reflected in subsequent DNS resolution.
 
 ## CLI Client
@@ -418,6 +484,22 @@ The `rolodex-dns-cli` binary is a command-line client for the gRPC management in
 | `generate-tlsa` | Generate a DANE TLSA record. Takes `--domain`, `--port`, `--protocol` (default `tcp`), `--cert-path`, `--usage` (default 3), `--selector` (default 0), `--matching-type` (default 1). |
 | `request-acme-cert` | Request an ACME certificate. Takes `--domain` and `--provider-url` (default: Let's Encrypt). |
 | `acme-status` | Get ACME certificate status. Takes `--domain`. |
+
+#### DHCP
+
+| Command | Description |
+|---|---|
+| `add-dhcp-pool` | Add a DHCP address pool. Takes `--scope`, `--range-start`, `--range-end`, `--gateway`, `--subnet-mask` (default `255.255.255.0`), `--dns-servers`. |
+| `remove-dhcp-pool` | Remove a DHCP pool. Takes `--pool-id`. |
+| `list-dhcp-pools` | List DHCP pools. Takes optional `--scope` filter. |
+| `list-dhcp-leases` | List DHCP leases. Takes optional `--scope` filter. |
+| `delete-dhcp-lease` | Delete a DHCP lease. Takes `--mac`. |
+| `add-scope-rbl` | Add a per-scope RBL provider. Takes `--scope`, `--zone`, `--enabled` (default `true`). |
+| `remove-scope-rbl` | Remove a per-scope RBL provider. Takes `--scope`, `--zone`. |
+| `list-scope-rbl` | List per-scope RBL providers. Takes `--scope`. |
+| `set-dhcp-cert` | Set a DHCP certificate option. Takes `--scope`, `--option-code`, `--cert-path`, `--description`. |
+| `remove-dhcp-cert` | Remove a DHCP certificate option. Takes `--scope`, `--option-code`. |
+| `list-dhcp-certs` | List DHCP certificate options. Takes `--scope`. |
 
 The `list-records` and `list-scoped-records` subcommands display results in a tabular format with columns for name, type, value, TTL, and priority. The `get-rbl-config` subcommand displays the global enabled state and a table of providers.
 
@@ -524,6 +606,22 @@ An additional `WithGRPCDialOption` option allows passing custom `grpc.DialOption
 | `GetAcmeStatus(ctx, domain)` | Retrieves ACME certificate status. |
 | `SetDns64Config(ctx, config)` / `GetDns64Config(ctx)` | Configures DNS64 synthesis. |
 
+#### DHCP
+
+| Method | Description |
+|---|---|
+| `AddDhcpPool(ctx, pool)` | Adds a DHCP address pool for a scope. |
+| `RemoveDhcpPool(ctx, poolID)` | Removes a DHCP pool by ID. |
+| `ListDhcpPools(ctx, scopeName)` | Lists DHCP pools, optionally filtered by scope. |
+| `ListDhcpLeases(ctx, scopeName)` | Lists DHCP leases, optionally filtered by scope. |
+| `DeleteDhcpLease(ctx, mac)` | Deletes a DHCP lease by MAC address. |
+| `AddScopeRblProvider(ctx, scopeName, zone, enabled)` | Adds a per-scope RBL provider. |
+| `RemoveScopeRblProvider(ctx, scopeName, zone)` | Removes a per-scope RBL provider. |
+| `ListScopeRblProviders(ctx, scopeName)` | Lists per-scope RBL providers. |
+| `SetDhcpCertOption(ctx, opt)` | Sets a DHCP certificate option for a scope. |
+| `RemoveDhcpCertOption(ctx, scopeName, optionCode)` | Removes a DHCP certificate option. |
+| `ListDhcpCertOptions(ctx, scopeName)` | Lists DHCP certificate options for a scope. |
+
 | Other | Description |
 |---|---|
 | `Close()` | Releases the underlying gRPC connection. |
@@ -555,6 +653,10 @@ The client automatically includes the auth token in every RPC call. All methods 
 - `DaneRootCa` — PEM-encoded root CA certificate.
 - `AcmeStatus` — ACME certificate status (status, expiry, domain).
 - `Dns64Config` — DNS64 configuration (enabled, prefix).
+- `DhcpPool` — DHCP address pool (scope, range, gateway, subnet mask, DNS servers).
+- `DhcpLease` — DHCP lease (MAC, IP, scope, hostname, lease start/duration, state).
+- `ScopeRblProvider` — Per-scope RBL provider (scope, zone, enabled).
+- `DhcpCertOption` — DHCP certificate option (scope, option code, cert data, description).
 - `GenerateTlsaRecordOptions` — TLSA generation parameters.
 - `Option` — Functional option for configuring `Dial`.
 
@@ -597,6 +699,11 @@ Configuration is loaded from a YAML file (default path `rolodex-dns.yml`, overri
 | `dns64.enabled` | `false` | Enable DNS64 AAAA synthesis |
 | `dns64.prefix` | `64:ff9b::` | NAT64 prefix for synthesis |
 | `security.qname_case_randomization` | `true` | 0x20 encoding for cache poisoning resistance |
+| `dhcp.bind` | `0.0.0.0:67` | DHCP UDP listener address (section optional) |
+| `dhcp.default_lease_duration` | `3600` | Default DHCP lease duration in seconds |
+| `dhcp.reclaim_timeout` | `86400` | Seconds after expiry before IP is reclaimed |
+| `dhcp.sweep_interval` | `60` | Background lease sweep interval in seconds |
+| `dhcp.tld` | (required) | TLD for hostname DNS registration (e.g. `example.com`) |
 
 The `dot`, `doh`, `doq`, and `proxy` sections are optional. When omitted, the corresponding transport is not started.
 
@@ -638,7 +745,15 @@ The `make dev-release` target does the same but builds with `--release` for opti
 
 ### Rust Tests
 
-Rust tests (`cargo test`) include unit tests and integration tests covering gRPC operations, DNS resolution (UDP and TCP), split-horizon behavior, authentication enforcement, Unix socket auth bypass, database persistence, configuration serialization, EDNS handling, TTL drift calculations, and latency tracking.
+Rust tests (`cargo test`) include unit tests and integration tests covering gRPC operations, DNS resolution (UDP and TCP), split-horizon behavior, authentication enforcement, Unix socket auth bypass, database persistence, configuration serialization, EDNS handling, TTL drift calculations, latency tracking, and IPAM.
+
+### IPAM Unit Tests
+
+IPAM unit tests in `src/db.rs` cover IP address allocation logic: pool exhaustion (allocate all IPs in a range, verify `None` when full), IP reuse after lease deletion, scope isolation (same IP ranges in different scopes don't interfere), sticky MAC binding survival across lease release, single-IP pool behavior, and lease replacement for the same MAC (always reissues the same IP).
+
+### DHCP Integration Tests
+
+DHCP integration tests in `tests/dhcp_integration_test.rs` cover end-to-end DHCP flows: DISCOVER/OFFER/REQUEST/ACK, sticky bindings, pool exhaustion, lease creation with DNS registration, lease release cleanup, lease sweep with DNS removal, certificate option delivery, multiple concurrent clients, and full UDP packet round-trips.
 
 ### CLI Integration Tests
 
@@ -651,7 +766,7 @@ The Go client has two test layers:
 - **Unit tests** — Use an in-process mock gRPC server via `bufconn` to test all client methods, authentication token propagation, transport modes, error handling, and edge cases (idempotent close, lazy dial, custom dial options).
 - **Integration tests** — Gated behind the `integration` build tag. Each test starts a real Rolodex DNS server subprocess with a unique temporary directory, random ports, and isolated database. Tests cover record CRUD, wildcard filtering, forwarder configuration, RBL round-trip, cache flushing, Unix socket transport, authentication failure, default TTL behavior, concurrent clients (5 simultaneous), network scoping, DNS64, and TTL drift.
 
-The `make test` target runs the full test suite: Go integration tests, Go unit tests, and Rust tests, in that order.
+The `make test` target runs the full test suite: Go integration tests, Go unit tests, Rust integration tests (each test file explicitly: `integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`), and then all Rust tests via `cargo test`. Individual targets are available: `make go-integration-test`, `make go-test`, `make rust-integration-test`, `make rust-test`.
 
 ## Key Dependencies
 

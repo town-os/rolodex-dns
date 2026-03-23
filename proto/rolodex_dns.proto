@@ -805,6 +805,167 @@ message GetDns64ConfigResponse {
   Dns64Config config = 1;
 }
 
+// ================================================================
+// DHCP Pool Management
+// ================================================================
+
+// DhcpPool represents an IP address pool for DHCP allocation within a scope.
+message DhcpPool {
+  int64 id = 1;
+  string scope_name = 2;
+  string range_start = 3;
+  string range_end = 4;
+  string gateway = 5;
+  string subnet_mask = 6;
+  string dns_servers = 7;
+}
+
+message AddDhcpPoolRequest {
+  DhcpPool pool = 1;
+  string auth_token = 2;
+}
+
+message AddDhcpPoolResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message RemoveDhcpPoolRequest {
+  int64 pool_id = 1;
+  string auth_token = 2;
+}
+
+message RemoveDhcpPoolResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ListDhcpPoolsRequest {
+  string scope_name = 1;
+  string auth_token = 2;
+}
+
+message ListDhcpPoolsResponse {
+  repeated DhcpPool pools = 1;
+}
+
+// ================================================================
+// DHCP Lease Management
+// ================================================================
+
+// DhcpLease represents a DHCP lease binding a MAC address to an IP.
+message DhcpLease {
+  string mac = 1;
+  string ip = 2;
+  string scope_name = 3;
+  string hostname = 4;
+  int64 lease_start = 5;
+  int64 lease_duration = 6;
+  string state = 7;
+}
+
+message ListDhcpLeasesRequest {
+  string scope_name = 1;
+  string auth_token = 2;
+}
+
+message ListDhcpLeasesResponse {
+  repeated DhcpLease leases = 1;
+}
+
+message DeleteDhcpLeaseRequest {
+  string mac = 1;
+  string auth_token = 2;
+}
+
+message DeleteDhcpLeaseResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// ================================================================
+// Per-Scope RBL Providers
+// ================================================================
+
+// ScopeRblProvider represents an additional RBL provider for a specific scope.
+message ScopeRblProvider {
+  string scope_name = 1;
+  string zone = 2;
+  bool enabled = 3;
+}
+
+message AddScopeRblProviderRequest {
+  ScopeRblProvider provider = 1;
+  string auth_token = 2;
+}
+
+message AddScopeRblProviderResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message RemoveScopeRblProviderRequest {
+  string scope_name = 1;
+  string zone = 2;
+  string auth_token = 3;
+}
+
+message RemoveScopeRblProviderResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ListScopeRblProvidersRequest {
+  string scope_name = 1;
+  string auth_token = 2;
+}
+
+message ListScopeRblProvidersResponse {
+  repeated ScopeRblProvider providers = 1;
+}
+
+// ================================================================
+// DHCP Certificate Options
+// ================================================================
+
+// DhcpCertOption represents a certificate delivered via DHCP options.
+message DhcpCertOption {
+  string scope_name = 1;
+  uint32 option_code = 2;
+  bytes cert_data = 3;
+  string description = 4;
+}
+
+message SetDhcpCertOptionRequest {
+  DhcpCertOption option = 1;
+  string auth_token = 2;
+}
+
+message SetDhcpCertOptionResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message RemoveDhcpCertOptionRequest {
+  string scope_name = 1;
+  uint32 option_code = 2;
+  string auth_token = 3;
+}
+
+message RemoveDhcpCertOptionResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ListDhcpCertOptionsRequest {
+  string scope_name = 1;
+  string auth_token = 2;
+}
+
+message ListDhcpCertOptionsResponse {
+  repeated DhcpCertOption options = 1;
+}
+
 // RolodexDnsService provides the gRPC management interface for rolodex-dns.
 //
 // All methods accept an auth_token field for shared-secret authentication.
@@ -1002,4 +1163,53 @@ service RolodexDnsService {
   // GetDns64Config retrieves the DNS64 configuration.
   // Path: /rolodex_dns.RolodexDnsService/GetDns64Config
   rpc GetDns64Config(GetDns64ConfigRequest) returns (GetDns64ConfigResponse);
+
+  // ================================================================
+  // DHCP Pool Management
+  // ================================================================
+
+  // AddDhcpPool adds an IP address pool for DHCP allocation within a scope.
+  rpc AddDhcpPool(AddDhcpPoolRequest) returns (AddDhcpPoolResponse);
+
+  // RemoveDhcpPool removes a DHCP address pool by ID.
+  rpc RemoveDhcpPool(RemoveDhcpPoolRequest) returns (RemoveDhcpPoolResponse);
+
+  // ListDhcpPools lists DHCP address pools, optionally filtered by scope.
+  rpc ListDhcpPools(ListDhcpPoolsRequest) returns (ListDhcpPoolsResponse);
+
+  // ================================================================
+  // DHCP Lease Management
+  // ================================================================
+
+  // ListDhcpLeases lists DHCP leases, optionally filtered by scope.
+  rpc ListDhcpLeases(ListDhcpLeasesRequest) returns (ListDhcpLeasesResponse);
+
+  // DeleteDhcpLease deletes a DHCP lease by MAC address.
+  rpc DeleteDhcpLease(DeleteDhcpLeaseRequest) returns (DeleteDhcpLeaseResponse);
+
+  // ================================================================
+  // Per-Scope RBL Providers
+  // ================================================================
+
+  // AddScopeRblProvider adds an additional RBL provider for a specific scope.
+  rpc AddScopeRblProvider(AddScopeRblProviderRequest) returns (AddScopeRblProviderResponse);
+
+  // RemoveScopeRblProvider removes a scope-specific RBL provider.
+  rpc RemoveScopeRblProvider(RemoveScopeRblProviderRequest) returns (RemoveScopeRblProviderResponse);
+
+  // ListScopeRblProviders lists RBL providers for a specific scope.
+  rpc ListScopeRblProviders(ListScopeRblProvidersRequest) returns (ListScopeRblProvidersResponse);
+
+  // ================================================================
+  // DHCP Certificate Options
+  // ================================================================
+
+  // SetDhcpCertOption sets a certificate to be delivered via DHCP for a scope.
+  rpc SetDhcpCertOption(SetDhcpCertOptionRequest) returns (SetDhcpCertOptionResponse);
+
+  // RemoveDhcpCertOption removes a DHCP certificate option for a scope.
+  rpc RemoveDhcpCertOption(RemoveDhcpCertOptionRequest) returns (RemoveDhcpCertOptionResponse);
+
+  // ListDhcpCertOptions lists DHCP certificate options for a scope.
+  rpc ListDhcpCertOptions(ListDhcpCertOptionsRequest) returns (ListDhcpCertOptionsResponse);
 }

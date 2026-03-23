@@ -4,6 +4,7 @@ pub mod acme;
 pub mod config;
 pub mod dane;
 pub mod db;
+pub mod dhcp;
 pub mod dns_cache;
 pub mod dns_server;
 pub mod dnssec;

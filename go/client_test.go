@@ -68,6 +68,17 @@ type mockRolodexDnsService struct {
 	getAcmeStatusFn          func(ctx context.Context, req *pb.GetAcmeStatusRequest) (*pb.GetAcmeStatusResponse, error)
 	setDns64ConfigFn         func(ctx context.Context, req *pb.SetDns64ConfigRequest) (*pb.SetDns64ConfigResponse, error)
 	getDns64ConfigFn         func(ctx context.Context, req *pb.GetDns64ConfigRequest) (*pb.GetDns64ConfigResponse, error)
+	addDhcpPoolFn            func(ctx context.Context, req *pb.AddDhcpPoolRequest) (*pb.AddDhcpPoolResponse, error)
+	removeDhcpPoolFn         func(ctx context.Context, req *pb.RemoveDhcpPoolRequest) (*pb.RemoveDhcpPoolResponse, error)
+	listDhcpPoolsFn          func(ctx context.Context, req *pb.ListDhcpPoolsRequest) (*pb.ListDhcpPoolsResponse, error)
+	listDhcpLeasesFn         func(ctx context.Context, req *pb.ListDhcpLeasesRequest) (*pb.ListDhcpLeasesResponse, error)
+	deleteDhcpLeaseFn        func(ctx context.Context, req *pb.DeleteDhcpLeaseRequest) (*pb.DeleteDhcpLeaseResponse, error)
+	addScopeRblProviderFn    func(ctx context.Context, req *pb.AddScopeRblProviderRequest) (*pb.AddScopeRblProviderResponse, error)
+	removeScopeRblProviderFn func(ctx context.Context, req *pb.RemoveScopeRblProviderRequest) (*pb.RemoveScopeRblProviderResponse, error)
+	listScopeRblProvidersFn  func(ctx context.Context, req *pb.ListScopeRblProvidersRequest) (*pb.ListScopeRblProvidersResponse, error)
+	setDhcpCertOptionFn      func(ctx context.Context, req *pb.SetDhcpCertOptionRequest) (*pb.SetDhcpCertOptionResponse, error)
+	removeDhcpCertOptionFn   func(ctx context.Context, req *pb.RemoveDhcpCertOptionRequest) (*pb.RemoveDhcpCertOptionResponse, error)
+	listDhcpCertOptionsFn    func(ctx context.Context, req *pb.ListDhcpCertOptionsRequest) (*pb.ListDhcpCertOptionsResponse, error)
 }
 
 func (m *mockRolodexDnsService) AddRecord(ctx context.Context, req *pb.AddRecordRequest) (*pb.AddRecordResponse, error) {
@@ -402,6 +413,83 @@ func (m *mockRolodexDnsService) SetDns64Config(ctx context.Context, req *pb.SetD
 func (m *mockRolodexDnsService) GetDns64Config(ctx context.Context, req *pb.GetDns64ConfigRequest) (*pb.GetDns64ConfigResponse, error) {
 	if m.getDns64ConfigFn != nil {
 		return m.getDns64ConfigFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexDnsService) AddDhcpPool(ctx context.Context, req *pb.AddDhcpPoolRequest) (*pb.AddDhcpPoolResponse, error) {
+	if m.addDhcpPoolFn != nil {
+		return m.addDhcpPoolFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexDnsService) RemoveDhcpPool(ctx context.Context, req *pb.RemoveDhcpPoolRequest) (*pb.RemoveDhcpPoolResponse, error) {
+	if m.removeDhcpPoolFn != nil {
+		return m.removeDhcpPoolFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexDnsService) ListDhcpPools(ctx context.Context, req *pb.ListDhcpPoolsRequest) (*pb.ListDhcpPoolsResponse, error) {
+	if m.listDhcpPoolsFn != nil {
+		return m.listDhcpPoolsFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexDnsService) ListDhcpLeases(ctx context.Context, req *pb.ListDhcpLeasesRequest) (*pb.ListDhcpLeasesResponse, error) {
+	if m.listDhcpLeasesFn != nil {
+		return m.listDhcpLeasesFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexDnsService) DeleteDhcpLease(ctx context.Context, req *pb.DeleteDhcpLeaseRequest) (*pb.DeleteDhcpLeaseResponse, error) {
+	if m.deleteDhcpLeaseFn != nil {
+		return m.deleteDhcpLeaseFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexDnsService) AddScopeRblProvider(ctx context.Context, req *pb.AddScopeRblProviderRequest) (*pb.AddScopeRblProviderResponse, error) {
+	if m.addScopeRblProviderFn != nil {
+		return m.addScopeRblProviderFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexDnsService) RemoveScopeRblProvider(ctx context.Context, req *pb.RemoveScopeRblProviderRequest) (*pb.RemoveScopeRblProviderResponse, error) {
+	if m.removeScopeRblProviderFn != nil {
+		return m.removeScopeRblProviderFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexDnsService) ListScopeRblProviders(ctx context.Context, req *pb.ListScopeRblProvidersRequest) (*pb.ListScopeRblProvidersResponse, error) {
+	if m.listScopeRblProvidersFn != nil {
+		return m.listScopeRblProvidersFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexDnsService) SetDhcpCertOption(ctx context.Context, req *pb.SetDhcpCertOptionRequest) (*pb.SetDhcpCertOptionResponse, error) {
+	if m.setDhcpCertOptionFn != nil {
+		return m.setDhcpCertOptionFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexDnsService) RemoveDhcpCertOption(ctx context.Context, req *pb.RemoveDhcpCertOptionRequest) (*pb.RemoveDhcpCertOptionResponse, error) {
+	if m.removeDhcpCertOptionFn != nil {
+		return m.removeDhcpCertOptionFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexDnsService) ListDhcpCertOptions(ctx context.Context, req *pb.ListDhcpCertOptionsRequest) (*pb.ListDhcpCertOptionsResponse, error) {
+	if m.listDhcpCertOptionsFn != nil {
+		return m.listDhcpCertOptionsFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
@@ -2381,5 +2469,392 @@ func TestGetDns64Config(t *testing.T) {
 	}
 	if cfg.Prefix != "64:ff9b::" {
 		t.Errorf("prefix = %q, want %q", cfg.Prefix, "64:ff9b::")
+	}
+}
+
+func TestAddDhcpPool(t *testing.T) {
+	var captured *pb.AddDhcpPoolRequest
+	mock := &mockRolodexDnsService{
+		addDhcpPoolFn: func(_ context.Context, req *pb.AddDhcpPoolRequest) (*pb.AddDhcpPoolResponse, error) {
+			captured = req
+			return &pb.AddDhcpPoolResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("test-token"))
+
+	err := client.AddDhcpPool(context.Background(), &DhcpPool{
+		ScopeName:  "office",
+		RangeStart: "10.0.0.100",
+		RangeEnd:   "10.0.0.200",
+		Gateway:    "10.0.0.1",
+		SubnetMask: "255.255.255.0",
+		DnsServers: "10.0.0.1",
+	})
+	if err != nil {
+		t.Fatalf("AddDhcpPool returned error: %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("server did not receive request")
+	}
+	if captured.AuthToken != "test-token" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "test-token")
+	}
+	if captured.Pool.ScopeName != "office" {
+		t.Errorf("scope name = %q, want %q", captured.Pool.ScopeName, "office")
+	}
+	if captured.Pool.RangeStart != "10.0.0.100" {
+		t.Errorf("range start = %q, want %q", captured.Pool.RangeStart, "10.0.0.100")
+	}
+	if captured.Pool.RangeEnd != "10.0.0.200" {
+		t.Errorf("range end = %q, want %q", captured.Pool.RangeEnd, "10.0.0.200")
+	}
+	if captured.Pool.Gateway != "10.0.0.1" {
+		t.Errorf("gateway = %q, want %q", captured.Pool.Gateway, "10.0.0.1")
+	}
+	if captured.Pool.SubnetMask != "255.255.255.0" {
+		t.Errorf("subnet mask = %q, want %q", captured.Pool.SubnetMask, "255.255.255.0")
+	}
+	if captured.Pool.DnsServers != "10.0.0.1" {
+		t.Errorf("dns servers = %q, want %q", captured.Pool.DnsServers, "10.0.0.1")
+	}
+}
+
+func TestRemoveDhcpPool(t *testing.T) {
+	var captured *pb.RemoveDhcpPoolRequest
+	mock := &mockRolodexDnsService{
+		removeDhcpPoolFn: func(_ context.Context, req *pb.RemoveDhcpPoolRequest) (*pb.RemoveDhcpPoolResponse, error) {
+			captured = req
+			return &pb.RemoveDhcpPoolResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("test-token"))
+
+	err := client.RemoveDhcpPool(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("RemoveDhcpPool returned error: %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("server did not receive request")
+	}
+	if captured.PoolId != 42 {
+		t.Errorf("pool id = %d, want %d", captured.PoolId, 42)
+	}
+	if captured.AuthToken != "test-token" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "test-token")
+	}
+}
+
+func TestListDhcpPools(t *testing.T) {
+	var captured *pb.ListDhcpPoolsRequest
+	mock := &mockRolodexDnsService{
+		listDhcpPoolsFn: func(_ context.Context, req *pb.ListDhcpPoolsRequest) (*pb.ListDhcpPoolsResponse, error) {
+			captured = req
+			return &pb.ListDhcpPoolsResponse{
+				Pools: []*pb.DhcpPool{
+					{Id: 1, ScopeName: "office", RangeStart: "10.0.0.100", RangeEnd: "10.0.0.200", Gateway: "10.0.0.1", SubnetMask: "255.255.255.0"},
+					{Id: 2, ScopeName: "office", RangeStart: "10.0.1.100", RangeEnd: "10.0.1.200", Gateway: "10.0.1.1", SubnetMask: "255.255.255.0"},
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+
+	pools, err := client.ListDhcpPools(context.Background(), "office")
+	if err != nil {
+		t.Fatalf("ListDhcpPools returned error: %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("server did not receive request")
+	}
+	if captured.ScopeName != "office" {
+		t.Errorf("scope name = %q, want %q", captured.ScopeName, "office")
+	}
+	if captured.AuthToken != "tok" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tok")
+	}
+	if len(pools) != 2 {
+		t.Fatalf("got %d pools, want 2", len(pools))
+	}
+	if pools[0].RangeStart != "10.0.0.100" {
+		t.Errorf("pool[0] range start = %q, want %q", pools[0].RangeStart, "10.0.0.100")
+	}
+}
+
+func TestListDhcpLeases(t *testing.T) {
+	var captured *pb.ListDhcpLeasesRequest
+	mock := &mockRolodexDnsService{
+		listDhcpLeasesFn: func(_ context.Context, req *pb.ListDhcpLeasesRequest) (*pb.ListDhcpLeasesResponse, error) {
+			captured = req
+			return &pb.ListDhcpLeasesResponse{
+				Leases: []*pb.DhcpLease{
+					{Mac: "aa:bb:cc:dd:ee:ff", Ip: "10.0.0.101", ScopeName: "office", Hostname: "workstation1", LeaseStart: 1000, LeaseDuration: 3600, State: "active"},
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+
+	leases, err := client.ListDhcpLeases(context.Background(), "office")
+	if err != nil {
+		t.Fatalf("ListDhcpLeases returned error: %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("server did not receive request")
+	}
+	if captured.ScopeName != "office" {
+		t.Errorf("scope name = %q, want %q", captured.ScopeName, "office")
+	}
+	if len(leases) != 1 {
+		t.Fatalf("got %d leases, want 1", len(leases))
+	}
+	if leases[0].Mac != "aa:bb:cc:dd:ee:ff" {
+		t.Errorf("lease mac = %q, want %q", leases[0].Mac, "aa:bb:cc:dd:ee:ff")
+	}
+	if leases[0].Ip != "10.0.0.101" {
+		t.Errorf("lease ip = %q, want %q", leases[0].Ip, "10.0.0.101")
+	}
+	if leases[0].State != "active" {
+		t.Errorf("lease state = %q, want %q", leases[0].State, "active")
+	}
+}
+
+func TestDeleteDhcpLease(t *testing.T) {
+	var captured *pb.DeleteDhcpLeaseRequest
+	mock := &mockRolodexDnsService{
+		deleteDhcpLeaseFn: func(_ context.Context, req *pb.DeleteDhcpLeaseRequest) (*pb.DeleteDhcpLeaseResponse, error) {
+			captured = req
+			return &pb.DeleteDhcpLeaseResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("test-token"))
+
+	err := client.DeleteDhcpLease(context.Background(), "aa:bb:cc:dd:ee:ff")
+	if err != nil {
+		t.Fatalf("DeleteDhcpLease returned error: %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("server did not receive request")
+	}
+	if captured.Mac != "aa:bb:cc:dd:ee:ff" {
+		t.Errorf("mac = %q, want %q", captured.Mac, "aa:bb:cc:dd:ee:ff")
+	}
+	if captured.AuthToken != "test-token" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "test-token")
+	}
+}
+
+func TestAddScopeRblProvider(t *testing.T) {
+	var captured *pb.AddScopeRblProviderRequest
+	mock := &mockRolodexDnsService{
+		addScopeRblProviderFn: func(_ context.Context, req *pb.AddScopeRblProviderRequest) (*pb.AddScopeRblProviderResponse, error) {
+			captured = req
+			return &pb.AddScopeRblProviderResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("test-token"))
+
+	err := client.AddScopeRblProvider(context.Background(), "office", "zen.spamhaus.org", true)
+	if err != nil {
+		t.Fatalf("AddScopeRblProvider returned error: %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("server did not receive request")
+	}
+	if captured.AuthToken != "test-token" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "test-token")
+	}
+	if captured.Provider.ScopeName != "office" {
+		t.Errorf("scope name = %q, want %q", captured.Provider.ScopeName, "office")
+	}
+	if captured.Provider.Zone != "zen.spamhaus.org" {
+		t.Errorf("zone = %q, want %q", captured.Provider.Zone, "zen.spamhaus.org")
+	}
+	if !captured.Provider.Enabled {
+		t.Errorf("enabled = false, want true")
+	}
+}
+
+func TestRemoveScopeRblProvider(t *testing.T) {
+	var captured *pb.RemoveScopeRblProviderRequest
+	mock := &mockRolodexDnsService{
+		removeScopeRblProviderFn: func(_ context.Context, req *pb.RemoveScopeRblProviderRequest) (*pb.RemoveScopeRblProviderResponse, error) {
+			captured = req
+			return &pb.RemoveScopeRblProviderResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("test-token"))
+
+	err := client.RemoveScopeRblProvider(context.Background(), "office", "zen.spamhaus.org")
+	if err != nil {
+		t.Fatalf("RemoveScopeRblProvider returned error: %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("server did not receive request")
+	}
+	if captured.ScopeName != "office" {
+		t.Errorf("scope name = %q, want %q", captured.ScopeName, "office")
+	}
+	if captured.Zone != "zen.spamhaus.org" {
+		t.Errorf("zone = %q, want %q", captured.Zone, "zen.spamhaus.org")
+	}
+	if captured.AuthToken != "test-token" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "test-token")
+	}
+}
+
+func TestListScopeRblProviders(t *testing.T) {
+	var captured *pb.ListScopeRblProvidersRequest
+	mock := &mockRolodexDnsService{
+		listScopeRblProvidersFn: func(_ context.Context, req *pb.ListScopeRblProvidersRequest) (*pb.ListScopeRblProvidersResponse, error) {
+			captured = req
+			return &pb.ListScopeRblProvidersResponse{
+				Providers: []*pb.ScopeRblProvider{
+					{ScopeName: "office", Zone: "zen.spamhaus.org", Enabled: true},
+					{ScopeName: "office", Zone: "bl.spamcop.net", Enabled: false},
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+
+	providers, err := client.ListScopeRblProviders(context.Background(), "office")
+	if err != nil {
+		t.Fatalf("ListScopeRblProviders returned error: %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("server did not receive request")
+	}
+	if captured.ScopeName != "office" {
+		t.Errorf("scope name = %q, want %q", captured.ScopeName, "office")
+	}
+	if len(providers) != 2 {
+		t.Fatalf("got %d providers, want 2", len(providers))
+	}
+	if providers[0].Zone != "zen.spamhaus.org" {
+		t.Errorf("provider[0] zone = %q, want %q", providers[0].Zone, "zen.spamhaus.org")
+	}
+	if !providers[0].Enabled {
+		t.Errorf("provider[0] enabled = false, want true")
+	}
+	if providers[1].Enabled {
+		t.Errorf("provider[1] enabled = true, want false")
+	}
+}
+
+func TestSetDhcpCertOption(t *testing.T) {
+	var captured *pb.SetDhcpCertOptionRequest
+	mock := &mockRolodexDnsService{
+		setDhcpCertOptionFn: func(_ context.Context, req *pb.SetDhcpCertOptionRequest) (*pb.SetDhcpCertOptionResponse, error) {
+			captured = req
+			return &pb.SetDhcpCertOptionResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("test-token"))
+
+	certData := []byte("fake-cert-data")
+	err := client.SetDhcpCertOption(context.Background(), &DhcpCertOption{
+		ScopeName:   "office",
+		OptionCode:  224,
+		CertData:    certData,
+		Description: "Test CA cert",
+	})
+	if err != nil {
+		t.Fatalf("SetDhcpCertOption returned error: %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("server did not receive request")
+	}
+	if captured.AuthToken != "test-token" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "test-token")
+	}
+	if captured.Option.ScopeName != "office" {
+		t.Errorf("scope name = %q, want %q", captured.Option.ScopeName, "office")
+	}
+	if captured.Option.OptionCode != 224 {
+		t.Errorf("option code = %d, want %d", captured.Option.OptionCode, 224)
+	}
+	if string(captured.Option.CertData) != "fake-cert-data" {
+		t.Errorf("cert data = %q, want %q", string(captured.Option.CertData), "fake-cert-data")
+	}
+	if captured.Option.Description != "Test CA cert" {
+		t.Errorf("description = %q, want %q", captured.Option.Description, "Test CA cert")
+	}
+}
+
+func TestRemoveDhcpCertOption(t *testing.T) {
+	var captured *pb.RemoveDhcpCertOptionRequest
+	mock := &mockRolodexDnsService{
+		removeDhcpCertOptionFn: func(_ context.Context, req *pb.RemoveDhcpCertOptionRequest) (*pb.RemoveDhcpCertOptionResponse, error) {
+			captured = req
+			return &pb.RemoveDhcpCertOptionResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("test-token"))
+
+	err := client.RemoveDhcpCertOption(context.Background(), "office", 224)
+	if err != nil {
+		t.Fatalf("RemoveDhcpCertOption returned error: %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("server did not receive request")
+	}
+	if captured.ScopeName != "office" {
+		t.Errorf("scope name = %q, want %q", captured.ScopeName, "office")
+	}
+	if captured.OptionCode != 224 {
+		t.Errorf("option code = %d, want %d", captured.OptionCode, 224)
+	}
+	if captured.AuthToken != "test-token" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "test-token")
+	}
+}
+
+func TestListDhcpCertOptions(t *testing.T) {
+	var captured *pb.ListDhcpCertOptionsRequest
+	mock := &mockRolodexDnsService{
+		listDhcpCertOptionsFn: func(_ context.Context, req *pb.ListDhcpCertOptionsRequest) (*pb.ListDhcpCertOptionsResponse, error) {
+			captured = req
+			return &pb.ListDhcpCertOptionsResponse{
+				Options: []*pb.DhcpCertOption{
+					{ScopeName: "office", OptionCode: 224, CertData: []byte("cert-1"), Description: "CA cert"},
+					{ScopeName: "office", OptionCode: 225, CertData: []byte("cert-2"), Description: "Intermediate cert"},
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+
+	options, err := client.ListDhcpCertOptions(context.Background(), "office")
+	if err != nil {
+		t.Fatalf("ListDhcpCertOptions returned error: %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("server did not receive request")
+	}
+	if captured.ScopeName != "office" {
+		t.Errorf("scope name = %q, want %q", captured.ScopeName, "office")
+	}
+	if len(options) != 2 {
+		t.Fatalf("got %d options, want 2", len(options))
+	}
+	if options[0].OptionCode != 224 {
+		t.Errorf("option[0] code = %d, want %d", options[0].OptionCode, 224)
+	}
+	if options[0].Description != "CA cert" {
+		t.Errorf("option[0] description = %q, want %q", options[0].Description, "CA cert")
+	}
+	if string(options[1].CertData) != "cert-2" {
+		t.Errorf("option[1] cert data = %q, want %q", string(options[1].CertData), "cert-2")
 	}
 }

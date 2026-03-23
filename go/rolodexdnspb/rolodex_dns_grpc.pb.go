@@ -67,6 +67,17 @@ const (
 	RolodexDnsService_GetAcmeStatus_FullMethodName           = "/rolodex_dns.RolodexDnsService/GetAcmeStatus"
 	RolodexDnsService_SetDns64Config_FullMethodName          = "/rolodex_dns.RolodexDnsService/SetDns64Config"
 	RolodexDnsService_GetDns64Config_FullMethodName          = "/rolodex_dns.RolodexDnsService/GetDns64Config"
+	RolodexDnsService_AddDhcpPool_FullMethodName             = "/rolodex_dns.RolodexDnsService/AddDhcpPool"
+	RolodexDnsService_RemoveDhcpPool_FullMethodName          = "/rolodex_dns.RolodexDnsService/RemoveDhcpPool"
+	RolodexDnsService_ListDhcpPools_FullMethodName           = "/rolodex_dns.RolodexDnsService/ListDhcpPools"
+	RolodexDnsService_ListDhcpLeases_FullMethodName          = "/rolodex_dns.RolodexDnsService/ListDhcpLeases"
+	RolodexDnsService_DeleteDhcpLease_FullMethodName         = "/rolodex_dns.RolodexDnsService/DeleteDhcpLease"
+	RolodexDnsService_AddScopeRblProvider_FullMethodName     = "/rolodex_dns.RolodexDnsService/AddScopeRblProvider"
+	RolodexDnsService_RemoveScopeRblProvider_FullMethodName  = "/rolodex_dns.RolodexDnsService/RemoveScopeRblProvider"
+	RolodexDnsService_ListScopeRblProviders_FullMethodName   = "/rolodex_dns.RolodexDnsService/ListScopeRblProviders"
+	RolodexDnsService_SetDhcpCertOption_FullMethodName       = "/rolodex_dns.RolodexDnsService/SetDhcpCertOption"
+	RolodexDnsService_RemoveDhcpCertOption_FullMethodName    = "/rolodex_dns.RolodexDnsService/RemoveDhcpCertOption"
+	RolodexDnsService_ListDhcpCertOptions_FullMethodName     = "/rolodex_dns.RolodexDnsService/ListDhcpCertOptions"
 )
 
 // RolodexDnsServiceClient is the client API for RolodexDnsService service.
@@ -223,6 +234,28 @@ type RolodexDnsServiceClient interface {
 	// GetDns64Config retrieves the DNS64 configuration.
 	// Path: /rolodex_dns.RolodexDnsService/GetDns64Config
 	GetDns64Config(ctx context.Context, in *GetDns64ConfigRequest, opts ...grpc.CallOption) (*GetDns64ConfigResponse, error)
+	// AddDhcpPool adds an IP address pool for DHCP allocation within a scope.
+	AddDhcpPool(ctx context.Context, in *AddDhcpPoolRequest, opts ...grpc.CallOption) (*AddDhcpPoolResponse, error)
+	// RemoveDhcpPool removes a DHCP address pool by ID.
+	RemoveDhcpPool(ctx context.Context, in *RemoveDhcpPoolRequest, opts ...grpc.CallOption) (*RemoveDhcpPoolResponse, error)
+	// ListDhcpPools lists DHCP address pools, optionally filtered by scope.
+	ListDhcpPools(ctx context.Context, in *ListDhcpPoolsRequest, opts ...grpc.CallOption) (*ListDhcpPoolsResponse, error)
+	// ListDhcpLeases lists DHCP leases, optionally filtered by scope.
+	ListDhcpLeases(ctx context.Context, in *ListDhcpLeasesRequest, opts ...grpc.CallOption) (*ListDhcpLeasesResponse, error)
+	// DeleteDhcpLease deletes a DHCP lease by MAC address.
+	DeleteDhcpLease(ctx context.Context, in *DeleteDhcpLeaseRequest, opts ...grpc.CallOption) (*DeleteDhcpLeaseResponse, error)
+	// AddScopeRblProvider adds an additional RBL provider for a specific scope.
+	AddScopeRblProvider(ctx context.Context, in *AddScopeRblProviderRequest, opts ...grpc.CallOption) (*AddScopeRblProviderResponse, error)
+	// RemoveScopeRblProvider removes a scope-specific RBL provider.
+	RemoveScopeRblProvider(ctx context.Context, in *RemoveScopeRblProviderRequest, opts ...grpc.CallOption) (*RemoveScopeRblProviderResponse, error)
+	// ListScopeRblProviders lists RBL providers for a specific scope.
+	ListScopeRblProviders(ctx context.Context, in *ListScopeRblProvidersRequest, opts ...grpc.CallOption) (*ListScopeRblProvidersResponse, error)
+	// SetDhcpCertOption sets a certificate to be delivered via DHCP for a scope.
+	SetDhcpCertOption(ctx context.Context, in *SetDhcpCertOptionRequest, opts ...grpc.CallOption) (*SetDhcpCertOptionResponse, error)
+	// RemoveDhcpCertOption removes a DHCP certificate option for a scope.
+	RemoveDhcpCertOption(ctx context.Context, in *RemoveDhcpCertOptionRequest, opts ...grpc.CallOption) (*RemoveDhcpCertOptionResponse, error)
+	// ListDhcpCertOptions lists DHCP certificate options for a scope.
+	ListDhcpCertOptions(ctx context.Context, in *ListDhcpCertOptionsRequest, opts ...grpc.CallOption) (*ListDhcpCertOptionsResponse, error)
 }
 
 type rolodexDnsServiceClient struct {
@@ -713,6 +746,116 @@ func (c *rolodexDnsServiceClient) GetDns64Config(ctx context.Context, in *GetDns
 	return out, nil
 }
 
+func (c *rolodexDnsServiceClient) AddDhcpPool(ctx context.Context, in *AddDhcpPoolRequest, opts ...grpc.CallOption) (*AddDhcpPoolResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AddDhcpPoolResponse)
+	err := c.cc.Invoke(ctx, RolodexDnsService_AddDhcpPool_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexDnsServiceClient) RemoveDhcpPool(ctx context.Context, in *RemoveDhcpPoolRequest, opts ...grpc.CallOption) (*RemoveDhcpPoolResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveDhcpPoolResponse)
+	err := c.cc.Invoke(ctx, RolodexDnsService_RemoveDhcpPool_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexDnsServiceClient) ListDhcpPools(ctx context.Context, in *ListDhcpPoolsRequest, opts ...grpc.CallOption) (*ListDhcpPoolsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListDhcpPoolsResponse)
+	err := c.cc.Invoke(ctx, RolodexDnsService_ListDhcpPools_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexDnsServiceClient) ListDhcpLeases(ctx context.Context, in *ListDhcpLeasesRequest, opts ...grpc.CallOption) (*ListDhcpLeasesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListDhcpLeasesResponse)
+	err := c.cc.Invoke(ctx, RolodexDnsService_ListDhcpLeases_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexDnsServiceClient) DeleteDhcpLease(ctx context.Context, in *DeleteDhcpLeaseRequest, opts ...grpc.CallOption) (*DeleteDhcpLeaseResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteDhcpLeaseResponse)
+	err := c.cc.Invoke(ctx, RolodexDnsService_DeleteDhcpLease_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexDnsServiceClient) AddScopeRblProvider(ctx context.Context, in *AddScopeRblProviderRequest, opts ...grpc.CallOption) (*AddScopeRblProviderResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AddScopeRblProviderResponse)
+	err := c.cc.Invoke(ctx, RolodexDnsService_AddScopeRblProvider_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexDnsServiceClient) RemoveScopeRblProvider(ctx context.Context, in *RemoveScopeRblProviderRequest, opts ...grpc.CallOption) (*RemoveScopeRblProviderResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveScopeRblProviderResponse)
+	err := c.cc.Invoke(ctx, RolodexDnsService_RemoveScopeRblProvider_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexDnsServiceClient) ListScopeRblProviders(ctx context.Context, in *ListScopeRblProvidersRequest, opts ...grpc.CallOption) (*ListScopeRblProvidersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListScopeRblProvidersResponse)
+	err := c.cc.Invoke(ctx, RolodexDnsService_ListScopeRblProviders_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexDnsServiceClient) SetDhcpCertOption(ctx context.Context, in *SetDhcpCertOptionRequest, opts ...grpc.CallOption) (*SetDhcpCertOptionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetDhcpCertOptionResponse)
+	err := c.cc.Invoke(ctx, RolodexDnsService_SetDhcpCertOption_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexDnsServiceClient) RemoveDhcpCertOption(ctx context.Context, in *RemoveDhcpCertOptionRequest, opts ...grpc.CallOption) (*RemoveDhcpCertOptionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveDhcpCertOptionResponse)
+	err := c.cc.Invoke(ctx, RolodexDnsService_RemoveDhcpCertOption_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexDnsServiceClient) ListDhcpCertOptions(ctx context.Context, in *ListDhcpCertOptionsRequest, opts ...grpc.CallOption) (*ListDhcpCertOptionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListDhcpCertOptionsResponse)
+	err := c.cc.Invoke(ctx, RolodexDnsService_ListDhcpCertOptions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // RolodexDnsServiceServer is the server API for RolodexDnsService service.
 // All implementations must embed UnimplementedRolodexDnsServiceServer
 // for forward compatibility.
@@ -867,6 +1010,28 @@ type RolodexDnsServiceServer interface {
 	// GetDns64Config retrieves the DNS64 configuration.
 	// Path: /rolodex_dns.RolodexDnsService/GetDns64Config
 	GetDns64Config(context.Context, *GetDns64ConfigRequest) (*GetDns64ConfigResponse, error)
+	// AddDhcpPool adds an IP address pool for DHCP allocation within a scope.
+	AddDhcpPool(context.Context, *AddDhcpPoolRequest) (*AddDhcpPoolResponse, error)
+	// RemoveDhcpPool removes a DHCP address pool by ID.
+	RemoveDhcpPool(context.Context, *RemoveDhcpPoolRequest) (*RemoveDhcpPoolResponse, error)
+	// ListDhcpPools lists DHCP address pools, optionally filtered by scope.
+	ListDhcpPools(context.Context, *ListDhcpPoolsRequest) (*ListDhcpPoolsResponse, error)
+	// ListDhcpLeases lists DHCP leases, optionally filtered by scope.
+	ListDhcpLeases(context.Context, *ListDhcpLeasesRequest) (*ListDhcpLeasesResponse, error)
+	// DeleteDhcpLease deletes a DHCP lease by MAC address.
+	DeleteDhcpLease(context.Context, *DeleteDhcpLeaseRequest) (*DeleteDhcpLeaseResponse, error)
+	// AddScopeRblProvider adds an additional RBL provider for a specific scope.
+	AddScopeRblProvider(context.Context, *AddScopeRblProviderRequest) (*AddScopeRblProviderResponse, error)
+	// RemoveScopeRblProvider removes a scope-specific RBL provider.
+	RemoveScopeRblProvider(context.Context, *RemoveScopeRblProviderRequest) (*RemoveScopeRblProviderResponse, error)
+	// ListScopeRblProviders lists RBL providers for a specific scope.
+	ListScopeRblProviders(context.Context, *ListScopeRblProvidersRequest) (*ListScopeRblProvidersResponse, error)
+	// SetDhcpCertOption sets a certificate to be delivered via DHCP for a scope.
+	SetDhcpCertOption(context.Context, *SetDhcpCertOptionRequest) (*SetDhcpCertOptionResponse, error)
+	// RemoveDhcpCertOption removes a DHCP certificate option for a scope.
+	RemoveDhcpCertOption(context.Context, *RemoveDhcpCertOptionRequest) (*RemoveDhcpCertOptionResponse, error)
+	// ListDhcpCertOptions lists DHCP certificate options for a scope.
+	ListDhcpCertOptions(context.Context, *ListDhcpCertOptionsRequest) (*ListDhcpCertOptionsResponse, error)
 	mustEmbedUnimplementedRolodexDnsServiceServer()
 }
 
@@ -1020,6 +1185,39 @@ func (UnimplementedRolodexDnsServiceServer) SetDns64Config(context.Context, *Set
 }
 func (UnimplementedRolodexDnsServiceServer) GetDns64Config(context.Context, *GetDns64ConfigRequest) (*GetDns64ConfigResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetDns64Config not implemented")
+}
+func (UnimplementedRolodexDnsServiceServer) AddDhcpPool(context.Context, *AddDhcpPoolRequest) (*AddDhcpPoolResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AddDhcpPool not implemented")
+}
+func (UnimplementedRolodexDnsServiceServer) RemoveDhcpPool(context.Context, *RemoveDhcpPoolRequest) (*RemoveDhcpPoolResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveDhcpPool not implemented")
+}
+func (UnimplementedRolodexDnsServiceServer) ListDhcpPools(context.Context, *ListDhcpPoolsRequest) (*ListDhcpPoolsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListDhcpPools not implemented")
+}
+func (UnimplementedRolodexDnsServiceServer) ListDhcpLeases(context.Context, *ListDhcpLeasesRequest) (*ListDhcpLeasesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListDhcpLeases not implemented")
+}
+func (UnimplementedRolodexDnsServiceServer) DeleteDhcpLease(context.Context, *DeleteDhcpLeaseRequest) (*DeleteDhcpLeaseResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteDhcpLease not implemented")
+}
+func (UnimplementedRolodexDnsServiceServer) AddScopeRblProvider(context.Context, *AddScopeRblProviderRequest) (*AddScopeRblProviderResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AddScopeRblProvider not implemented")
+}
+func (UnimplementedRolodexDnsServiceServer) RemoveScopeRblProvider(context.Context, *RemoveScopeRblProviderRequest) (*RemoveScopeRblProviderResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveScopeRblProvider not implemented")
+}
+func (UnimplementedRolodexDnsServiceServer) ListScopeRblProviders(context.Context, *ListScopeRblProvidersRequest) (*ListScopeRblProvidersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListScopeRblProviders not implemented")
+}
+func (UnimplementedRolodexDnsServiceServer) SetDhcpCertOption(context.Context, *SetDhcpCertOptionRequest) (*SetDhcpCertOptionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetDhcpCertOption not implemented")
+}
+func (UnimplementedRolodexDnsServiceServer) RemoveDhcpCertOption(context.Context, *RemoveDhcpCertOptionRequest) (*RemoveDhcpCertOptionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveDhcpCertOption not implemented")
+}
+func (UnimplementedRolodexDnsServiceServer) ListDhcpCertOptions(context.Context, *ListDhcpCertOptionsRequest) (*ListDhcpCertOptionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListDhcpCertOptions not implemented")
 }
 func (UnimplementedRolodexDnsServiceServer) mustEmbedUnimplementedRolodexDnsServiceServer() {}
 func (UnimplementedRolodexDnsServiceServer) testEmbeddedByValue()                           {}
@@ -1906,6 +2104,204 @@ func _RolodexDnsService_GetDns64Config_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RolodexDnsService_AddDhcpPool_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddDhcpPoolRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexDnsServiceServer).AddDhcpPool(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexDnsService_AddDhcpPool_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexDnsServiceServer).AddDhcpPool(ctx, req.(*AddDhcpPoolRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexDnsService_RemoveDhcpPool_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveDhcpPoolRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexDnsServiceServer).RemoveDhcpPool(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexDnsService_RemoveDhcpPool_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexDnsServiceServer).RemoveDhcpPool(ctx, req.(*RemoveDhcpPoolRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexDnsService_ListDhcpPools_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListDhcpPoolsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexDnsServiceServer).ListDhcpPools(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexDnsService_ListDhcpPools_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexDnsServiceServer).ListDhcpPools(ctx, req.(*ListDhcpPoolsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexDnsService_ListDhcpLeases_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListDhcpLeasesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexDnsServiceServer).ListDhcpLeases(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexDnsService_ListDhcpLeases_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexDnsServiceServer).ListDhcpLeases(ctx, req.(*ListDhcpLeasesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexDnsService_DeleteDhcpLease_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteDhcpLeaseRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexDnsServiceServer).DeleteDhcpLease(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexDnsService_DeleteDhcpLease_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexDnsServiceServer).DeleteDhcpLease(ctx, req.(*DeleteDhcpLeaseRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexDnsService_AddScopeRblProvider_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddScopeRblProviderRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexDnsServiceServer).AddScopeRblProvider(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexDnsService_AddScopeRblProvider_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexDnsServiceServer).AddScopeRblProvider(ctx, req.(*AddScopeRblProviderRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexDnsService_RemoveScopeRblProvider_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveScopeRblProviderRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexDnsServiceServer).RemoveScopeRblProvider(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexDnsService_RemoveScopeRblProvider_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexDnsServiceServer).RemoveScopeRblProvider(ctx, req.(*RemoveScopeRblProviderRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexDnsService_ListScopeRblProviders_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListScopeRblProvidersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexDnsServiceServer).ListScopeRblProviders(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexDnsService_ListScopeRblProviders_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexDnsServiceServer).ListScopeRblProviders(ctx, req.(*ListScopeRblProvidersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexDnsService_SetDhcpCertOption_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetDhcpCertOptionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexDnsServiceServer).SetDhcpCertOption(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexDnsService_SetDhcpCertOption_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexDnsServiceServer).SetDhcpCertOption(ctx, req.(*SetDhcpCertOptionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexDnsService_RemoveDhcpCertOption_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveDhcpCertOptionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexDnsServiceServer).RemoveDhcpCertOption(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexDnsService_RemoveDhcpCertOption_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexDnsServiceServer).RemoveDhcpCertOption(ctx, req.(*RemoveDhcpCertOptionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexDnsService_ListDhcpCertOptions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListDhcpCertOptionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexDnsServiceServer).ListDhcpCertOptions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexDnsService_ListDhcpCertOptions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexDnsServiceServer).ListDhcpCertOptions(ctx, req.(*ListDhcpCertOptionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // RolodexDnsService_ServiceDesc is the grpc.ServiceDesc for RolodexDnsService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -2104,6 +2500,50 @@ var RolodexDnsService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetDns64Config",
 			Handler:    _RolodexDnsService_GetDns64Config_Handler,
+		},
+		{
+			MethodName: "AddDhcpPool",
+			Handler:    _RolodexDnsService_AddDhcpPool_Handler,
+		},
+		{
+			MethodName: "RemoveDhcpPool",
+			Handler:    _RolodexDnsService_RemoveDhcpPool_Handler,
+		},
+		{
+			MethodName: "ListDhcpPools",
+			Handler:    _RolodexDnsService_ListDhcpPools_Handler,
+		},
+		{
+			MethodName: "ListDhcpLeases",
+			Handler:    _RolodexDnsService_ListDhcpLeases_Handler,
+		},
+		{
+			MethodName: "DeleteDhcpLease",
+			Handler:    _RolodexDnsService_DeleteDhcpLease_Handler,
+		},
+		{
+			MethodName: "AddScopeRblProvider",
+			Handler:    _RolodexDnsService_AddScopeRblProvider_Handler,
+		},
+		{
+			MethodName: "RemoveScopeRblProvider",
+			Handler:    _RolodexDnsService_RemoveScopeRblProvider_Handler,
+		},
+		{
+			MethodName: "ListScopeRblProviders",
+			Handler:    _RolodexDnsService_ListScopeRblProviders_Handler,
+		},
+		{
+			MethodName: "SetDhcpCertOption",
+			Handler:    _RolodexDnsService_SetDhcpCertOption_Handler,
+		},
+		{
+			MethodName: "RemoveDhcpCertOption",
+			Handler:    _RolodexDnsService_RemoveDhcpCertOption_Handler,
+		},
+		{
+			MethodName: "ListDhcpCertOptions",
+			Handler:    _RolodexDnsService_ListDhcpCertOptions_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

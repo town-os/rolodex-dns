@@ -15,10 +15,19 @@ RELEASE_IMAGE      := quay.io/town/rolodex
 export PODMAN_BUILD_IMAGE RELEASE_IMAGE
 
 .PHONY: test build clean go-test go-integration-test dev dev-release install
+.PHONY: rust-test rust-integration-test
 .PHONY: image push push-rc push-release quay-login clean-containers
 
-test: go-test
+test: go-test rust-test
+
+rust-test: rust-integration-test
 	cargo test
+
+rust-integration-test: build
+	cargo test --test integration_test
+	cargo test --test new_features_test
+	cargo test --test cli_integration_test
+	cargo test --test dhcp_integration_test
 
 build:
 	cargo build

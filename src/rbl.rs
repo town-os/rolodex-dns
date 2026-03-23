@@ -198,6 +198,70 @@ impl RblChecker {
     pub async fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Relaxed)
     }
+
+    /// Checks if an IP address is listed in any enabled global RBL
+    /// or in the provided extra per-scope RBL providers.
+    pub async fn is_listed_with_extra_providers(
+        &self,
+        ip: &IpAddr,
+        extra: &[RblProvider],
+    ) -> bool {
+        // Check global providers first
+        if self.is_listed(ip).await {
+            return true;
+        }
+
+        // Check extra per-scope providers
+        for provider in extra {
+            if !provider.enabled {
+                continue;
+            }
+
+            let query = build_rbl_query(ip, &provider.zone);
+            let cache_key = format!("{}/{}", ip, provider.zone);
+
+            // Check cache
+            if let Some(entry) = self.cache.get(&cache_key) {
+                if entry.expires_at > Instant::now() {
+                    if entry.listed {
+                        debug!("Scope RBL cache hit: {} is listed in {}", ip, provider.zone);
+                        return true;
+                    }
+                    continue;
+                }
+                drop(entry);
+                self.cache.remove(&cache_key);
+            }
+
+            match self.resolver.lookup_rbl(&query).await {
+                Ok(Some(ttl)) => {
+                    debug!("Scope RBL hit: {} listed in {} (TTL: {})", ip, provider.zone, ttl);
+                    self.cache.insert(
+                        cache_key,
+                        CacheEntry {
+                            listed: true,
+                            expires_at: Instant::now() + Duration::from_secs(ttl as u64),
+                        },
+                    );
+                    return true;
+                }
+                Ok(None) => {
+                    self.cache.insert(
+                        cache_key,
+                        CacheEntry {
+                            listed: false,
+                            expires_at: Instant::now() + Duration::from_secs(300),
+                        },
+                    );
+                }
+                Err(e) => {
+                    warn!("Scope RBL lookup failed for {} in {}: {}", ip, provider.zone, e);
+                }
+            }
+        }
+
+        false
+    }
 }
 
 /// Builds an RBL DNS query for an IP address.

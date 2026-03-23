@@ -34,6 +34,9 @@ pub struct Config {
     /// Security settings.
     #[serde(default)]
     pub security: SecurityConfig,
+    /// DHCP server configuration (disabled when absent).
+    #[serde(default)]
+    pub dhcp: Option<DhcpConfig>,
 }
 
 /// DNS listener configuration.
@@ -229,6 +232,38 @@ impl Default for Dns64Config {
     }
 }
 
+/// DHCP server configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DhcpConfig {
+    /// UDP bind address for the DHCP server (default "0.0.0.0:67").
+    #[serde(default = "default_dhcp_bind")]
+    pub bind: String,
+    /// Default lease duration in seconds (default 3600 = 1 hour).
+    #[serde(default = "default_dhcp_lease_duration")]
+    pub default_lease_duration: u64,
+    /// Duration in seconds after lease expiry before IP is reclaimed (default 86400 = 24 hours).
+    #[serde(default = "default_dhcp_reclaim_timeout")]
+    pub reclaim_timeout: u64,
+    /// Interval in seconds for the background lease expiry sweep (default 60).
+    #[serde(default = "default_dhcp_sweep_interval")]
+    pub sweep_interval: u64,
+    /// TLD used for hostname DNS registration (e.g. "example.com" produces
+    /// "<hostname>.lan.example.com."). Required when DHCP is enabled.
+    pub tld: String,
+}
+
+impl Default for DhcpConfig {
+    fn default() -> Self {
+        Self {
+            bind: default_dhcp_bind(),
+            default_lease_duration: default_dhcp_lease_duration(),
+            reclaim_timeout: default_dhcp_reclaim_timeout(),
+            sweep_interval: default_dhcp_sweep_interval(),
+            tld: String::new(),
+        }
+    }
+}
+
 /// Security-related configuration options.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityConfig {
@@ -281,6 +316,22 @@ fn default_dns64_prefix() -> String {
     "64:ff9b::".to_string()
 }
 
+fn default_dhcp_bind() -> String {
+    "0.0.0.0:67".to_string()
+}
+
+fn default_dhcp_lease_duration() -> u64 {
+    3600
+}
+
+fn default_dhcp_reclaim_timeout() -> u64 {
+    86400
+}
+
+fn default_dhcp_sweep_interval() -> u64 {
+    60
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -306,6 +357,7 @@ impl Default for Config {
             ttl_drift: TtlDriftSettings::default(),
             dns64: Dns64Config::default(),
             security: SecurityConfig::default(),
+            dhcp: None,
         }
     }
 }
