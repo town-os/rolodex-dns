@@ -1,7 +1,7 @@
-/// EDNS (Extension Mechanisms for DNS) support (RFC 6891).
-///
-/// Extracts EDNS information from incoming queries and builds OPT records
-/// for responses, enabling features like larger payload sizes and DNSSEC.
+// EDNS (Extension Mechanisms for DNS) support (RFC 6891).
+//
+// Extracts EDNS information from incoming queries and builds OPT records
+// for responses, enabling features like larger payload sizes and DNSSEC.
 
 /// Context extracted from an EDNS OPT record in a DNS query.
 #[derive(Debug, Clone)]

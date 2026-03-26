@@ -1,14 +1,14 @@
 use rolodex_dns::db::{Database, DnsRecord, RecordKind};
 use rolodex_dns::dns_server::DnsServer;
+use rolodex_dns::grpc_service::RolodexDnsGrpcService;
 use rolodex_dns::grpc_service::proto::rolodex_dns_service_server::RolodexDnsService;
 use rolodex_dns::grpc_service::proto::{
-    AddRecordRequest, AddScopedRecordRequest, CreateNetworkScopeRequest,
-    DeleteNetworkScopeRequest, FlushCacheRequest, GetNetworkAssociationsRequest,
-    GetRblConfigRequest, GetSearchDomainsRequest, JoinNetworkRequest, LeaveNetworkRequest,
-    ListNetworkScopesRequest, ListRecordsRequest, ListScopedRecordsRequest, RemoveRecordRequest,
-    RemoveScopedRecordRequest, SetForwarderRequest, SetRblConfigRequest,
+    AddRecordRequest, AddScopedRecordRequest, CreateNetworkScopeRequest, DeleteNetworkScopeRequest,
+    FlushCacheRequest, GetNetworkAssociationsRequest, GetRblConfigRequest, GetSearchDomainsRequest,
+    JoinNetworkRequest, LeaveNetworkRequest, ListNetworkScopesRequest, ListRecordsRequest,
+    ListScopedRecordsRequest, RemoveRecordRequest, RemoveScopedRecordRequest, SetForwarderRequest,
+    SetRblConfigRequest,
 };
-use rolodex_dns::grpc_service::RolodexDnsGrpcService;
 use rolodex_dns::rbl::{RblChecker, RblProvider, RblResolver};
 use std::sync::Arc;
 use tonic::Request;
@@ -31,7 +31,12 @@ impl RblResolver for AlwaysListedResolver {
     }
 }
 
-fn make_test_stack() -> (Database, Arc<DnsServer>, Arc<RblChecker>, RolodexDnsGrpcService) {
+fn make_test_stack() -> (
+    Database,
+    Arc<DnsServer>,
+    Arc<RblChecker>,
+    RolodexDnsGrpcService,
+) {
     let db = Database::open_memory().unwrap();
     let rbl = Arc::new(RblChecker::with_resolver(
         false,
@@ -236,10 +241,7 @@ async fn test_rbl_integration() {
     );
 
     // Query for a reverse DNS name should be blocked
-    let query = build_dns_query(
-        "4.3.2.1.in-addr.arpa.",
-        hickory_proto::rr::RecordType::PTR,
-    );
+    let query = build_dns_query("4.3.2.1.in-addr.arpa.", hickory_proto::rr::RecordType::PTR);
     let resp_bytes = dns_server.handle_query(&query).await.unwrap();
     let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
     assert_eq!(
@@ -349,9 +351,7 @@ async fn test_split_horizon_overlay() {
         hickory_proto::op::ResponseCode::NoError
     );
     assert_eq!(resp.answers().len(), 1);
-    if let hickory_proto::rr::RData::A(hickory_proto::rr::rdata::A(ip)) =
-        resp.answers()[0].data()
-    {
+    if let hickory_proto::rr::RData::A(hickory_proto::rr::rdata::A(ip)) = resp.answers()[0].data() {
         assert_eq!(*ip, std::net::Ipv4Addr::new(10, 0, 0, 99));
     } else {
         panic!("expected A record");
@@ -685,10 +685,7 @@ fn test_config_roundtrip() {
     assert_eq!(config.grpc.tcp_bind, deserialized.grpc.tcp_bind);
     assert_eq!(config.forwarders.len(), deserialized.forwarders.len());
     assert_eq!(config.rbl.enabled, deserialized.rbl.enabled);
-    assert_eq!(
-        config.rbl.providers.len(),
-        deserialized.rbl.providers.len()
-    );
+    assert_eq!(config.rbl.providers.len(), deserialized.rbl.providers.len());
 }
 
 // ========================================================
@@ -821,7 +818,10 @@ async fn test_scoped_dns_resolution_integration() {
         .await
         .unwrap();
     let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
-    assert_eq!(resp.response_code(), hickory_proto::op::ResponseCode::NoError);
+    assert_eq!(
+        resp.response_code(),
+        hickory_proto::op::ResponseCode::NoError
+    );
     assert_eq!(resp.answers().len(), 1);
 
     // DNS query from unassociated IP should be refused
@@ -830,7 +830,10 @@ async fn test_scoped_dns_resolution_integration() {
         .await
         .unwrap();
     let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
-    assert_eq!(resp.response_code(), hickory_proto::op::ResponseCode::Refused);
+    assert_eq!(
+        resp.response_code(),
+        hickory_proto::op::ResponseCode::Refused
+    );
 }
 
 // ========================================================
@@ -888,7 +891,10 @@ async fn test_scope_isolation_integration() {
         .await
         .unwrap();
     let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
-    assert_eq!(resp.response_code(), hickory_proto::op::ResponseCode::NoError);
+    assert_eq!(
+        resp.response_code(),
+        hickory_proto::op::ResponseCode::NoError
+    );
     if let hickory_proto::rr::RData::A(hickory_proto::rr::rdata::A(ip)) = resp.answers()[0].data() {
         assert_eq!(*ip, std::net::Ipv4Addr::new(10, 0, 0, 1));
     } else {
@@ -901,7 +907,10 @@ async fn test_scope_isolation_integration() {
         .await
         .unwrap();
     let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
-    assert_eq!(resp.response_code(), hickory_proto::op::ResponseCode::NoError);
+    assert_eq!(
+        resp.response_code(),
+        hickory_proto::op::ResponseCode::NoError
+    );
     if let hickory_proto::rr::RData::A(hickory_proto::rr::rdata::A(ip)) = resp.answers()[0].data() {
         assert_eq!(*ip, std::net::Ipv4Addr::new(10, 0, 0, 2));
     } else {
@@ -974,7 +983,10 @@ async fn test_scoped_record_crud_integration() {
     service.create_network_scope(req).await.unwrap();
 
     // Add records
-    for (name, value) in &[("host1.crud.home.", "10.0.0.1"), ("host2.crud.home.", "10.0.0.2")] {
+    for (name, value) in &[
+        ("host1.crud.home.", "10.0.0.1"),
+        ("host2.crud.home.", "10.0.0.2"),
+    ] {
         let req = Request::new(AddScopedRecordRequest {
             scope_name: "crud".to_string(),
             record: Some(rolodex_dns::grpc_service::proto::DnsRecord {
@@ -1070,7 +1082,10 @@ async fn test_leave_network_integration() {
         .await
         .unwrap();
     let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
-    assert_eq!(resp.response_code(), hickory_proto::op::ResponseCode::NoError);
+    assert_eq!(
+        resp.response_code(),
+        hickory_proto::op::ResponseCode::NoError
+    );
 
     // Leave network
     let leave_req = Request::new(LeaveNetworkRequest {
@@ -1085,7 +1100,10 @@ async fn test_leave_network_integration() {
         .await
         .unwrap();
     let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
-    assert_eq!(resp.response_code(), hickory_proto::op::ResponseCode::Refused);
+    assert_eq!(
+        resp.response_code(),
+        hickory_proto::op::ResponseCode::Refused
+    );
 }
 
 // ========================================================
@@ -1134,7 +1152,10 @@ async fn test_global_records_accessible_from_scope() {
         .await
         .unwrap();
     let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
-    assert_eq!(resp.response_code(), hickory_proto::op::ResponseCode::NoError);
+    assert_eq!(
+        resp.response_code(),
+        hickory_proto::op::ResponseCode::NoError
+    );
     assert_eq!(resp.answers().len(), 1);
 }
 
@@ -1225,13 +1246,15 @@ async fn test_rbl_with_scoping() {
     db.create_network_scope(&rolodex_dns::db::NetworkScope {
         name: "rblscoped".to_string(),
         home_domain: "rblscoped.home".to_string(),
-    }).unwrap();
+    })
+    .unwrap();
 
     db.join_network(&rolodex_dns::db::NetworkAssociation {
         ip_address: "192.168.1.1".to_string(),
         scope_name: "rblscoped".to_string(),
         ttl_seconds: 3600,
-    }).unwrap();
+    })
+    .unwrap();
 
     // Reverse DNS query from scoped IP should be blocked by RBL
     let query = build_dns_query("4.3.2.1.in-addr.arpa.", hickory_proto::rr::RecordType::PTR);
@@ -1240,7 +1263,10 @@ async fn test_rbl_with_scoping() {
         .await
         .unwrap();
     let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
-    assert_eq!(resp.response_code(), hickory_proto::op::ResponseCode::NXDomain);
+    assert_eq!(
+        resp.response_code(),
+        hickory_proto::op::ResponseCode::NXDomain
+    );
 }
 
 // ========================================================
@@ -1303,7 +1329,10 @@ async fn test_scoped_managed_zone_nxdomain_integration() {
         .await
         .unwrap();
     let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
-    assert_eq!(resp.response_code(), hickory_proto::op::ResponseCode::NoError);
+    assert_eq!(
+        resp.response_code(),
+        hickory_proto::op::ResponseCode::NoError
+    );
 
     // Query unknown name under same zone should get NXDOMAIN
     let query = build_dns_query("unknown.zonenet.home.", hickory_proto::rr::RecordType::A);
@@ -1312,5 +1341,8 @@ async fn test_scoped_managed_zone_nxdomain_integration() {
         .await
         .unwrap();
     let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
-    assert_eq!(resp.response_code(), hickory_proto::op::ResponseCode::NXDomain);
+    assert_eq!(
+        resp.response_code(),
+        hickory_proto::op::ResponseCode::NXDomain
+    );
 }

@@ -1,10 +1,21 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use dashmap::{DashMap, DashSet};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// Parameters for storing a DNSSEC key.
+pub struct DnssecKeyParams<'a> {
+    pub zone: &'a str,
+    pub scope: &'a str,
+    pub algorithm: &'a str,
+    pub key_type: &'a str,
+    pub private_key: &'a [u8],
+    pub public_key: &'a [u8],
+    pub key_tag: u16,
+}
 
 /// Represents a DNS record stored in the local database.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,7 +81,7 @@ impl RecordKind {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_uppercase().as_str() {
             "A" => Some(RecordKind::A),
             "AAAA" => Some(RecordKind::AAAA),
@@ -323,8 +334,15 @@ impl Database {
         &self.conn
     }
 
+    /// Acquires the database lock.
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
+        self.conn
+            .lock()
+            .map_err(|e| anyhow!("database lock poisoned: {}", e))
+    }
+
     fn init_tables(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS dns_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -486,7 +504,7 @@ impl Database {
     /// Loads all scoped DNS records from the database into the in-memory cache.
     /// Called at boot time.
     fn load_scoped_records_into_cache(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let mut stmt = conn.prepare_cached(
             "SELECT scope_name, name, record_type, value, ttl, priority FROM scoped_dns_records",
         )?;
@@ -496,7 +514,8 @@ impl Database {
                 DnsRecord {
                     id: None,
                     name: row.get(1)?,
-                    record_type: RecordKind::from_str(&row.get::<_, String>(2)?).unwrap_or(RecordKind::A),
+                    record_type: RecordKind::parse(&row.get::<_, String>(2)?)
+                        .unwrap_or(RecordKind::A),
                     value: row.get(3)?,
                     ttl: row.get(4)?,
                     priority: row.get(5)?,
@@ -506,7 +525,8 @@ impl Database {
 
         for row in rows {
             let (scope_name, record) = row?;
-            let cache_key = scoped_record_cache_key(&scope_name, &record.name, Some(record.record_type));
+            let cache_key =
+                scoped_record_cache_key(&scope_name, &record.name, Some(record.record_type));
             self.scoped_record_cache
                 .entry(cache_key)
                 .and_modify(|entry| entry.records.push(record.clone()))
@@ -521,10 +541,10 @@ impl Database {
     /// Loads all non-expired network associations from the database into the in-memory cache.
     /// Called at boot time.
     fn load_associations_into_cache(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .context("system clock before UNIX epoch")?
             .as_secs() as i64;
 
         let mut stmt = conn.prepare_cached(
@@ -560,10 +580,11 @@ impl Database {
     /// Loads scope_count, local_rbl_cache, authoritative_zones_cache, and
     /// managed_zones_cache from the database at boot time.
     fn load_caches_at_boot(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
 
         // Scope count
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM network_scopes", [], |row| row.get(0))?;
+        let count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM network_scopes", [], |row| row.get(0))?;
         self.scope_count.store(count as usize, Ordering::Relaxed);
 
         // Local RBL entries
@@ -600,7 +621,7 @@ impl Database {
 
     /// Adds a DNS record to the database. Returns the row ID.
     pub fn add_record(&self, record: &DnsRecord) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         conn.execute(
             "INSERT INTO dns_records (name, record_type, value, ttl, priority) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
@@ -631,7 +652,7 @@ impl Database {
         record_type: Option<RecordKind>,
         value: &str,
     ) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let normalized = normalize_name(name);
 
         let count = if let Some(rt) = record_type {
@@ -663,25 +684,25 @@ impl Database {
 
     /// Looks up all records for a given name and optional type.
     pub fn lookup(&self, name: &str, record_type: Option<RecordKind>) -> Result<Vec<DnsRecord>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let normalized = normalize_name(name);
 
         let records = Self::lookup_exact(&conn, &normalized, record_type)?;
 
         // RFC 4592: If exact match fails, try wildcard (replace first label with *)
-        if records.is_empty() {
-            if let Some(wildcard_name) = make_wildcard_name(&normalized) {
-                let wildcard_records = Self::lookup_exact(&conn, &wildcard_name, record_type)?;
-                if !wildcard_records.is_empty() {
-                    // Return wildcard results with the original qname substituted
-                    return Ok(wildcard_records
-                        .into_iter()
-                        .map(|mut r| {
-                            r.name = normalized.clone();
-                            r
-                        })
-                        .collect());
-                }
+        if records.is_empty()
+            && let Some(wildcard_name) = make_wildcard_name(&normalized)
+        {
+            let wildcard_records = Self::lookup_exact(&conn, &wildcard_name, record_type)?;
+            if !wildcard_records.is_empty() {
+                // Return wildcard results with the original qname substituted
+                return Ok(wildcard_records
+                    .into_iter()
+                    .map(|mut r| {
+                        r.name = normalized.clone();
+                        r
+                    })
+                    .collect());
             }
         }
 
@@ -703,7 +724,8 @@ impl Database {
                 Ok(DnsRecord {
                     id: Some(row.get(0)?),
                     name: row.get(1)?,
-                    record_type: RecordKind::from_str(&row.get::<_, String>(2)?).unwrap_or(RecordKind::A),
+                    record_type: RecordKind::parse(&row.get::<_, String>(2)?)
+                        .unwrap_or(RecordKind::A),
                     value: row.get(3)?,
                     ttl: row.get(4)?,
                     priority: row.get(5)?,
@@ -720,7 +742,8 @@ impl Database {
                 Ok(DnsRecord {
                     id: Some(row.get(0)?),
                     name: row.get(1)?,
-                    record_type: RecordKind::from_str(&row.get::<_, String>(2)?).unwrap_or(RecordKind::A),
+                    record_type: RecordKind::parse(&row.get::<_, String>(2)?)
+                        .unwrap_or(RecordKind::A),
                     value: row.get(3)?,
                     ttl: row.get(4)?,
                     priority: row.get(5)?,
@@ -741,7 +764,7 @@ impl Database {
         name_filter: &str,
         record_type: Option<RecordKind>,
     ) -> Result<Vec<DnsRecord>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let mut records = Vec::new();
 
         let (sql, filter_params) = build_list_query(name_filter, record_type);
@@ -767,10 +790,8 @@ impl Database {
 
     /// Returns all unique TLDs/domains in the database.
     pub fn get_managed_zones(&self) -> Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare_cached(
-            "SELECT DISTINCT name FROM dns_records",
-        )?;
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare_cached("SELECT DISTINCT name FROM dns_records")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut zones = std::collections::HashSet::new();
         for row in rows {
@@ -779,10 +800,7 @@ impl Database {
             let parts: Vec<&str> = name.trim_end_matches('.').split('.').collect();
             if parts.len() >= 2 {
                 // Register the domain (last two parts) as a managed zone
-                let zone = format!(
-                    "{}.",
-                    parts[parts.len() - 2..].join(".")
-                );
+                let zone = format!("{}.", parts[parts.len() - 2..].join("."));
                 zones.insert(zone);
             } else if parts.len() == 1 && !parts[0].is_empty() {
                 // TLD-level record
@@ -802,7 +820,7 @@ impl Database {
     /// as the default search domain for DNS clients in that network.
     /// The home domain is automatically derived as `<name>.home.` if not explicitly provided.
     pub fn create_network_scope(&self, scope: &NetworkScope) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         conn.execute(
             "INSERT INTO network_scopes (name, home_domain) VALUES (?1, ?2)",
             params![scope.name, normalize_name(&scope.home_domain)],
@@ -815,7 +833,7 @@ impl Database {
     /// Deletes a network scope and all associated records and associations.
     /// Returns true if a scope was deleted, false if it didn't exist.
     pub fn delete_network_scope(&self, name: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         // Delete associated records first (due to foreign keys)
         conn.execute(
             "DELETE FROM scoped_dns_records WHERE scope_name = ?1",
@@ -825,14 +843,13 @@ impl Database {
             "DELETE FROM network_associations WHERE scope_name = ?1",
             params![name],
         )?;
-        let count = conn.execute(
-            "DELETE FROM network_scopes WHERE name = ?1",
-            params![name],
-        )?;
+        let count = conn.execute("DELETE FROM network_scopes WHERE name = ?1", params![name])?;
 
         // Clear caches for this scope
-        self.scoped_record_cache.retain(|key, _| !key.starts_with(&format!("{}:", name)));
-        self.association_cache.retain(|_, entry| entry.scope_name != name);
+        self.scoped_record_cache
+            .retain(|key, _| !key.starts_with(&format!("{}:", name)));
+        self.association_cache
+            .retain(|_, entry| entry.scope_name != name);
 
         if count > 0 {
             self.scope_count.fetch_sub(1, Ordering::Relaxed);
@@ -842,7 +859,7 @@ impl Database {
 
     /// Lists all network scopes.
     pub fn list_network_scopes(&self) -> Result<Vec<NetworkScope>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let mut stmt = conn.prepare_cached("SELECT name, home_domain FROM network_scopes")?;
         let rows = stmt.query_map([], |row| {
             Ok(NetworkScope {
@@ -859,8 +876,9 @@ impl Database {
 
     /// Gets a network scope by name.
     pub fn get_network_scope(&self, name: &str) -> Result<Option<NetworkScope>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare_cached("SELECT name, home_domain FROM network_scopes WHERE name = ?1")?;
+        let conn = self.lock()?;
+        let mut stmt =
+            conn.prepare_cached("SELECT name, home_domain FROM network_scopes WHERE name = ?1")?;
         let mut rows = stmt.query_map(params![name], |row| {
             Ok(NetworkScope {
                 name: row.get(0)?,
@@ -885,10 +903,10 @@ impl Database {
     ///
     /// If the IP is already associated with a scope, the association is updated.
     pub fn join_network(&self, assoc: &NetworkAssociation) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .context("system clock before UNIX epoch")?
             .as_secs() as i64;
 
         conn.execute(
@@ -913,7 +931,7 @@ impl Database {
     /// Removes an IP address's association with any network scope ("leaves the network").
     /// Returns true if an association was removed.
     pub fn leave_network(&self, ip_address: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let count = conn.execute(
             "DELETE FROM network_associations WHERE ip_address = ?1",
             params![ip_address],
@@ -926,8 +944,11 @@ impl Database {
     }
 
     /// Lists all network associations, optionally filtered by scope name.
-    pub fn list_network_associations(&self, scope_name: Option<&str>) -> Result<Vec<NetworkAssociation>> {
-        let conn = self.conn.lock().unwrap();
+    pub fn list_network_associations(
+        &self,
+        scope_name: Option<&str>,
+    ) -> Result<Vec<NetworkAssociation>> {
+        let conn = self.lock()?;
         let mut assocs = Vec::new();
 
         if let Some(scope) = scope_name {
@@ -1001,7 +1022,7 @@ impl Database {
     /// Adds a DNS record scoped to a specific network scope.
     /// The record is stored in SQL and also cached in memory.
     pub fn add_scoped_record(&self, scope_name: &str, record: &DnsRecord) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let normalized = normalize_name(&record.name);
         conn.execute(
             "INSERT INTO scoped_dns_records (scope_name, name, record_type, value, ttl, priority)
@@ -1047,7 +1068,7 @@ impl Database {
         record_type: Option<RecordKind>,
         value: &str,
     ) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let normalized = normalize_name(name);
 
         let count = if let Some(rt) = record_type {
@@ -1075,9 +1096,8 @@ impl Database {
         };
 
         // Invalidate cache entries for this scope and name
-        self.scoped_record_cache.retain(|key, _| {
-            !key.starts_with(&format!("{}:{}", scope_name, normalized))
-        });
+        self.scoped_record_cache
+            .retain(|key, _| !key.starts_with(&format!("{}:{}", scope_name, normalized)));
 
         Ok(count)
     }
@@ -1098,19 +1118,19 @@ impl Database {
         let records = self.lookup_scoped_exact(scope_name, &normalized, record_type);
 
         // RFC 4592: If exact match fails, try wildcard
-        if records.is_empty() {
-            if let Some(wildcard_name) = make_wildcard_name(&normalized) {
-                let wildcard_records =
-                    self.lookup_scoped_exact(scope_name, &wildcard_name, record_type);
-                if !wildcard_records.is_empty() {
-                    return wildcard_records
-                        .into_iter()
-                        .map(|mut r| {
-                            r.name = normalized.clone();
-                            r
-                        })
-                        .collect();
-                }
+        if records.is_empty()
+            && let Some(wildcard_name) = make_wildcard_name(&normalized)
+        {
+            let wildcard_records =
+                self.lookup_scoped_exact(scope_name, &wildcard_name, record_type);
+            if !wildcard_records.is_empty() {
+                return wildcard_records
+                    .into_iter()
+                    .map(|mut r| {
+                        r.name = normalized.clone();
+                        r
+                    })
+                    .collect();
             }
         }
 
@@ -1149,7 +1169,7 @@ impl Database {
         name_filter: &str,
         record_type: Option<RecordKind>,
     ) -> Result<Vec<DnsRecord>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let mut records = Vec::new();
 
         if name_filter.is_empty() && record_type.is_none() {
@@ -1160,8 +1180,7 @@ impl Database {
             for row in rows {
                 records.push(row?);
             }
-        } else if name_filter.is_empty() {
-            let rt = record_type.unwrap();
+        } else if let (true, Some(rt)) = (name_filter.is_empty(), record_type) {
             let mut stmt = conn.prepare_cached(
                 "SELECT id, name, record_type, value, ttl, priority FROM scoped_dns_records WHERE scope_name = ?1 AND record_type = ?2",
             )?;
@@ -1189,8 +1208,7 @@ impl Database {
                     records.push(row?);
                 }
             }
-        } else {
-            let rt = record_type.unwrap();
+        } else if let Some(rt) = record_type {
             if let Some(suffix) = name_filter.strip_prefix("*.") {
                 let like = format!("%{}", normalize_name(suffix));
                 let mut stmt = conn.prepare_cached(
@@ -1205,7 +1223,8 @@ impl Database {
                 let mut stmt = conn.prepare_cached(
                     "SELECT id, name, record_type, value, ttl, priority FROM scoped_dns_records WHERE scope_name = ?1 AND name = ?2 AND record_type = ?3",
                 )?;
-                let rows = stmt.query_map(params![scope_name, normalized, rt.as_str()], row_mapper)?;
+                let rows =
+                    stmt.query_map(params![scope_name, normalized, rt.as_str()], row_mapper)?;
                 for row in rows {
                     records.push(row?);
                 }
@@ -1217,10 +1236,9 @@ impl Database {
 
     /// Returns the managed zones for a specific scope (from scoped records).
     pub fn get_scoped_managed_zones(&self, scope_name: &str) -> Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare_cached(
-            "SELECT DISTINCT name FROM scoped_dns_records WHERE scope_name = ?1",
-        )?;
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare_cached("SELECT DISTINCT name FROM scoped_dns_records WHERE scope_name = ?1")?;
         let rows = stmt.query_map(params![scope_name], |row| row.get::<_, String>(0))?;
         let mut zones = std::collections::HashSet::new();
         for row in rows {
@@ -1246,10 +1264,9 @@ impl Database {
             Some(name) => name,
             None => return Ok(Vec::new()),
         };
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare_cached(
-            "SELECT home_domain FROM network_scopes WHERE name = ?1",
-        )?;
+        let conn = self.lock()?;
+        let mut stmt =
+            conn.prepare_cached("SELECT home_domain FROM network_scopes WHERE name = ?1")?;
         let mut rows = stmt.query_map(params![scope_name], |row| row.get::<_, String>(0))?;
         match rows.next() {
             Some(row) => Ok(vec![row?]),
@@ -1262,7 +1279,7 @@ impl Database {
     // ================================================================
 
     pub fn add_authoritative_zone(&self, zone: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let normalized = normalize_name(zone);
         conn.execute(
             "INSERT OR IGNORE INTO authoritative_zones (zone) VALUES (?1)",
@@ -1274,7 +1291,7 @@ impl Database {
     }
 
     pub fn remove_authoritative_zone(&self, zone: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let normalized = normalize_name(zone);
         let count = conn
             .execute(
@@ -1289,7 +1306,7 @@ impl Database {
     }
 
     pub fn list_authoritative_zones(&self) -> Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let mut stmt = conn.prepare_cached("SELECT zone FROM authoritative_zones")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut zones = Vec::new();
@@ -1301,12 +1318,18 @@ impl Database {
 
     /// Returns authoritative zones from the in-memory cache (no SQL).
     pub fn list_authoritative_zones_cached(&self) -> Vec<String> {
-        self.authoritative_zones_cache.iter().map(|r| r.key().clone()).collect()
+        self.authoritative_zones_cache
+            .iter()
+            .map(|r| r.key().clone())
+            .collect()
     }
 
     /// Returns managed zones from the in-memory cache (no SQL).
     pub fn get_managed_zones_cached(&self) -> Vec<String> {
-        self.managed_zones_cache.iter().map(|r| r.key().clone()).collect()
+        self.managed_zones_cache
+            .iter()
+            .map(|r| r.key().clone())
+            .collect()
     }
 
     pub fn is_authoritative_zone(&self, name: &str) -> bool {
@@ -1331,7 +1354,7 @@ impl Database {
     // ================================================================
 
     pub fn add_local_rbl_entry(&self, name: &str, reason: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         conn.execute(
             "INSERT OR REPLACE INTO local_rbl_entries (name, reason) VALUES (?1, ?2)",
             params![name, reason],
@@ -1342,7 +1365,7 @@ impl Database {
     }
 
     pub fn remove_local_rbl_entry(&self, name: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let count = conn
             .execute(
                 "DELETE FROM local_rbl_entries WHERE name = ?1",
@@ -1356,7 +1379,7 @@ impl Database {
     }
 
     pub fn list_local_rbl_entries(&self) -> Result<Vec<(String, String)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let mut stmt = conn.prepare_cached("SELECT name, reason FROM local_rbl_entries")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -1376,8 +1399,13 @@ impl Database {
     // Latency Stats
     // ================================================================
 
-    pub fn update_latency_stat(&self, server: &str, avg_latency_ms: f64, query_count: u64) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+    pub fn update_latency_stat(
+        &self,
+        server: &str,
+        avg_latency_ms: f64,
+        query_count: u64,
+    ) -> Result<()> {
+        let conn = self.lock()?;
         conn.execute(
             "INSERT OR REPLACE INTO query_latency_stats (server, avg_latency_ms, query_count) VALUES (?1, ?2, ?3)",
             params![server, avg_latency_ms, query_count as i64],
@@ -1387,9 +1415,10 @@ impl Database {
     }
 
     pub fn get_latency_stats(&self) -> Result<Vec<(String, f64, u64)>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt =
-            conn.prepare_cached("SELECT server, avg_latency_ms, query_count FROM query_latency_stats")?;
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT server, avg_latency_ms, query_count FROM query_latency_stats",
+        )?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -1417,10 +1446,10 @@ impl Database {
         original_ttl: u32,
         source: &str,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .context("system clock before UNIX epoch")?
             .as_secs() as i64;
         conn.execute(
             "INSERT INTO dns_cache (name, record_type, value, ttl, original_ttl, cached_at, source) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -1430,15 +1459,11 @@ impl Database {
         Ok(())
     }
 
-    pub fn cache_lookup(
-        &self,
-        name: &str,
-        record_type: Option<&str>,
-    ) -> Result<Vec<DnsRecord>> {
-        let conn = self.conn.lock().unwrap();
+    pub fn cache_lookup(&self, name: &str, record_type: Option<&str>) -> Result<Vec<DnsRecord>> {
+        let conn = self.lock()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .context("system clock before UNIX epoch")?
             .as_secs() as i64;
         let mut records = Vec::new();
 
@@ -1460,12 +1485,12 @@ impl Database {
             for row in rows {
                 let (n, rt_str, val, ttl, cached_at) = row?;
                 let elapsed = now - cached_at;
-                if elapsed < ttl as i64 {
-                    let remaining_ttl = (ttl as i64 - elapsed) as u32;
+                if elapsed < ttl {
+                    let remaining_ttl = (ttl - elapsed) as u32;
                     records.push(DnsRecord {
                         id: None,
                         name: n,
-                        record_type: RecordKind::from_str(&rt_str).unwrap_or(RecordKind::A),
+                        record_type: RecordKind::parse(&rt_str).unwrap_or(RecordKind::A),
                         value: val,
                         ttl: remaining_ttl,
                         priority: 0,
@@ -1490,12 +1515,12 @@ impl Database {
             for row in rows {
                 let (n, rt_str, val, ttl, cached_at) = row?;
                 let elapsed = now - cached_at;
-                if elapsed < ttl as i64 {
-                    let remaining_ttl = (ttl as i64 - elapsed) as u32;
+                if elapsed < ttl {
+                    let remaining_ttl = (ttl - elapsed) as u32;
                     records.push(DnsRecord {
                         id: None,
                         name: n,
-                        record_type: RecordKind::from_str(&rt_str).unwrap_or(RecordKind::A),
+                        record_type: RecordKind::parse(&rt_str).unwrap_or(RecordKind::A),
                         value: val,
                         ttl: remaining_ttl,
                         priority: 0,
@@ -1508,14 +1533,14 @@ impl Database {
     }
 
     pub fn cache_flush(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         conn.execute("DELETE FROM dns_cache", [])
             .context("failed to flush DNS cache")?;
         Ok(())
     }
 
     pub fn cache_count(&self) -> Result<u64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM dns_cache", [], |row| row.get(0))?;
         Ok(count as u64)
     }
@@ -1525,20 +1550,18 @@ impl Database {
     // ================================================================
 
     /// Stores a DNSSEC key in the database.
-    pub fn store_dnssec_key(
-        &self,
-        zone: &str,
-        scope: &str,
-        algorithm: &str,
-        key_type: &str,
-        private_key: &[u8],
-        public_key: &[u8],
-        key_tag: u16,
-    ) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
+    pub fn store_dnssec_key(&self, params: &DnssecKeyParams<'_>) -> Result<i64> {
+        let zone = params.zone;
+        let scope = params.scope;
+        let algorithm = params.algorithm;
+        let key_type = params.key_type;
+        let private_key = params.private_key;
+        let public_key = params.public_key;
+        let key_tag = params.key_tag;
+        let conn = self.lock()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .context("system clock before UNIX epoch")?
             .as_secs() as i64;
         let scope_val = if scope.is_empty() {
             None
@@ -1565,7 +1588,7 @@ impl Database {
 
     /// Lists all DNSSEC keys for a zone.
     pub fn list_dnssec_keys(&self, zone: &str) -> Result<Vec<DnssecKeyRow>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let normalized = normalize_name(zone);
         let mut stmt = conn.prepare_cached(
             "SELECT id, zone, scope_name, algorithm, key_type, private_key, public_key, key_tag, created_at, active
@@ -1594,17 +1617,14 @@ impl Database {
 
     /// Deletes a DNSSEC key by ID. Returns true if a key was deleted.
     pub fn delete_dnssec_key(&self, id: i64) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let count = conn.execute(
-            "DELETE FROM dnssec_keys WHERE id = ?1",
-            params![id],
-        )?;
+        let conn = self.lock()?;
+        let count = conn.execute("DELETE FROM dnssec_keys WHERE id = ?1", params![id])?;
         Ok(count > 0)
     }
 
     /// Gets active keys for a zone filtered by key type (KSK or ZSK).
     pub fn get_active_keys(&self, zone: &str, key_type: &str) -> Result<Vec<DnssecKeyRow>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let normalized = normalize_name(zone);
         let mut stmt = conn.prepare_cached(
             "SELECT id, zone, scope_name, algorithm, key_type, private_key, public_key, key_tag, created_at, active
@@ -1637,10 +1657,10 @@ impl Database {
 
     /// Stores a DANE root CA certificate.
     pub fn store_dane_root_ca(&self, name: &str, cert_pem: &str, key_pem: &str) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .context("system clock before UNIX epoch")?
             .as_secs() as i64;
         conn.execute(
             "INSERT INTO dane_root_cas (name, cert_pem, key_pem, created_at) VALUES (?1, ?2, ?3, ?4)",
@@ -1652,7 +1672,7 @@ impl Database {
 
     /// Gets a DANE root CA by name.
     pub fn get_dane_root_ca(&self, name: &str) -> Result<Option<(i64, String, String, String)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let mut stmt = conn.prepare_cached(
             "SELECT id, name, cert_pem, key_pem FROM dane_root_cas WHERE name = ?1",
         )?;
@@ -1683,10 +1703,10 @@ impl Database {
         chain_pem: &str,
         expires_at: i64,
     ) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .context("system clock before UNIX epoch")?
             .as_secs() as i64;
         conn.execute(
             "INSERT INTO acme_certificates (domain, cert_pem, key_pem, chain_pem, issued_at, expires_at)
@@ -1699,7 +1719,7 @@ impl Database {
 
     /// Gets the latest ACME certificate for a domain.
     pub fn get_acme_certificate(&self, domain: &str) -> Result<Option<AcmeCertRow>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let mut stmt = conn.prepare_cached(
             "SELECT id, domain, cert_pem, key_pem, chain_pem, issued_at, expires_at
              FROM acme_certificates WHERE domain = ?1 ORDER BY issued_at DESC LIMIT 1",
@@ -1727,7 +1747,7 @@ impl Database {
 
     /// Adds a DHCP address pool for a network scope. Returns the pool ID.
     pub fn add_dhcp_pool(&self, pool: &DhcpPool) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         conn.execute(
             "INSERT INTO dhcp_pools (scope_name, range_start, range_end, gateway, subnet_mask, dns_servers)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -1746,17 +1766,14 @@ impl Database {
 
     /// Removes a DHCP pool by ID. Returns whether anything was deleted.
     pub fn remove_dhcp_pool(&self, id: i64) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let count = conn.execute(
-            "DELETE FROM dhcp_pools WHERE id = ?1",
-            params![id],
-        )?;
+        let conn = self.lock()?;
+        let count = conn.execute("DELETE FROM dhcp_pools WHERE id = ?1", params![id])?;
         Ok(count > 0)
     }
 
     /// Lists DHCP pools, optionally filtered by scope name.
     pub fn list_dhcp_pools(&self, scope_name: Option<&str>) -> Result<Vec<DhcpPool>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let mut pools = Vec::new();
 
         if let Some(scope) = scope_name {
@@ -1808,7 +1825,7 @@ impl Database {
 
     /// Creates or replaces a DHCP lease.
     pub fn create_lease(&self, lease: &DhcpLease) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         conn.execute(
             "INSERT OR REPLACE INTO dhcp_leases (mac, ip, scope_name, hostname, lease_start, lease_duration, state)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -1829,10 +1846,10 @@ impl Database {
     /// Renews a lease by updating its lease_start and lease_duration.
     /// Returns whether a lease was found and updated.
     pub fn renew_lease(&self, mac: &str, lease_duration: i64) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .context("system clock before UNIX epoch")?
             .as_secs() as i64;
         let count = conn.execute(
             "UPDATE dhcp_leases SET lease_start = ?1, lease_duration = ?2 WHERE mac = ?3",
@@ -1843,7 +1860,7 @@ impl Database {
 
     /// Releases a lease by setting its state to 'released'. Returns the lease if found.
     pub fn release_lease(&self, mac: &str) -> Result<Option<DhcpLease>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let count = conn.execute(
             "UPDATE dhcp_leases SET state = 'released' WHERE mac = ?1",
             params![mac],
@@ -1864,7 +1881,7 @@ impl Database {
 
     /// Gets a lease by MAC address.
     pub fn get_lease_by_mac(&self, mac: &str) -> Result<Option<DhcpLease>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let mut stmt = conn.prepare_cached(
             "SELECT mac, ip, scope_name, hostname, lease_start, lease_duration, state
              FROM dhcp_leases WHERE mac = ?1",
@@ -1878,7 +1895,7 @@ impl Database {
 
     /// Gets a lease by IP address.
     pub fn get_lease_by_ip(&self, ip: &str) -> Result<Option<DhcpLease>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let mut stmt = conn.prepare_cached(
             "SELECT mac, ip, scope_name, hostname, lease_start, lease_duration, state
              FROM dhcp_leases WHERE ip = ?1",
@@ -1892,7 +1909,7 @@ impl Database {
 
     /// Lists DHCP leases, optionally filtered by scope name.
     pub fn list_leases(&self, scope_name: Option<&str>) -> Result<Vec<DhcpLease>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let mut leases = Vec::new();
 
         if let Some(scope) = scope_name {
@@ -1920,11 +1937,8 @@ impl Database {
 
     /// Deletes a lease by MAC address. Returns whether anything was deleted.
     pub fn delete_lease(&self, mac: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let count = conn.execute(
-            "DELETE FROM dhcp_leases WHERE mac = ?1",
-            params![mac],
-        )?;
+        let conn = self.lock()?;
+        let count = conn.execute("DELETE FROM dhcp_leases WHERE mac = ?1", params![mac])?;
         Ok(count > 0)
     }
 
@@ -1934,13 +1948,11 @@ impl Database {
     /// Otherwise iterates through the scope's pool ranges to find the first
     /// unoccupied address.
     pub fn allocate_ip(&self, scope_name: &str, mac: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
 
         // Check for sticky binding: if MAC already has a lease, return same IP
         {
-            let mut stmt = conn.prepare_cached(
-                "SELECT ip FROM dhcp_leases WHERE mac = ?1",
-            )?;
+            let mut stmt = conn.prepare_cached("SELECT ip FROM dhcp_leases WHERE mac = ?1")?;
             let mut rows = stmt.query_map(params![mac], |row| row.get::<_, String>(0))?;
             if let Some(row) = rows.next() {
                 return Ok(Some(row?));
@@ -1964,9 +1976,8 @@ impl Database {
 
         // Get all currently leased IPs in this scope
         let leased_ips: std::collections::HashSet<String> = {
-            let mut stmt = conn.prepare_cached(
-                "SELECT ip FROM dhcp_leases WHERE scope_name = ?1",
-            )?;
+            let mut stmt =
+                conn.prepare_cached("SELECT ip FROM dhcp_leases WHERE scope_name = ?1")?;
             let rows = stmt.query_map(params![scope_name], |row| row.get::<_, String>(0))?;
             let mut set = std::collections::HashSet::new();
             for row in rows {
@@ -1977,10 +1988,9 @@ impl Database {
 
         // Iterate through pools to find first available IP
         for (start_str, end_str) in &pools {
-            let start: std::net::Ipv4Addr = start_str.parse()
-                .context("invalid pool range_start IP")?;
-            let end: std::net::Ipv4Addr = end_str.parse()
-                .context("invalid pool range_end IP")?;
+            let start: std::net::Ipv4Addr =
+                start_str.parse().context("invalid pool range_start IP")?;
+            let end: std::net::Ipv4Addr = end_str.parse().context("invalid pool range_end IP")?;
 
             let mut current = start;
             loop {
@@ -2010,10 +2020,10 @@ impl Database {
     ///    (lease_start + lease_duration + reclaim_timeout) < now, deletes them,
     ///    and returns the deleted leases.
     pub fn sweep_expired_leases(&self, reclaim_timeout_secs: u64) -> Result<Vec<DhcpLease>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .context("system clock before UNIX epoch")?
             .as_secs() as i64;
 
         // Mark active leases as expired
@@ -2054,7 +2064,7 @@ impl Database {
 
     /// Adds or replaces a per-scope RBL provider.
     pub fn add_scope_rbl_provider(&self, provider: &ScopeRblProvider) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         conn.execute(
             "INSERT OR REPLACE INTO scope_rbl_providers (scope_name, zone, enabled)
              VALUES (?1, ?2, ?3)",
@@ -2066,7 +2076,7 @@ impl Database {
 
     /// Removes a per-scope RBL provider. Returns whether anything was deleted.
     pub fn remove_scope_rbl_provider(&self, scope_name: &str, zone: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let count = conn.execute(
             "DELETE FROM scope_rbl_providers WHERE scope_name = ?1 AND zone = ?2",
             params![scope_name, zone],
@@ -2076,7 +2086,7 @@ impl Database {
 
     /// Lists per-scope RBL providers for a given scope.
     pub fn list_scope_rbl_providers(&self, scope_name: &str) -> Result<Vec<ScopeRblProvider>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let mut stmt = conn.prepare_cached(
             "SELECT scope_name, zone, enabled FROM scope_rbl_providers WHERE scope_name = ?1",
         )?;
@@ -2100,7 +2110,7 @@ impl Database {
 
     /// Sets (inserts or replaces) a DHCP certificate option for a scope.
     pub fn set_dhcp_cert_option(&self, opt: &DhcpCertOption) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         conn.execute(
             "INSERT OR REPLACE INTO dhcp_cert_options (scope_name, option_code, cert_data, description)
              VALUES (?1, ?2, ?3, ?4)",
@@ -2112,7 +2122,7 @@ impl Database {
 
     /// Removes a DHCP certificate option. Returns whether anything was deleted.
     pub fn remove_dhcp_cert_option(&self, scope_name: &str, option_code: u32) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let count = conn.execute(
             "DELETE FROM dhcp_cert_options WHERE scope_name = ?1 AND option_code = ?2",
             params![scope_name, option_code],
@@ -2122,7 +2132,7 @@ impl Database {
 
     /// Lists DHCP certificate options for a scope.
     pub fn list_dhcp_cert_options(&self, scope_name: &str) -> Result<Vec<DhcpCertOption>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let mut stmt = conn.prepare_cached(
             "SELECT scope_name, option_code, cert_data, description
              FROM dhcp_cert_options WHERE scope_name = ?1",
@@ -2147,7 +2157,7 @@ fn row_mapper(row: &rusqlite::Row) -> rusqlite::Result<DnsRecord> {
     Ok(DnsRecord {
         id: Some(row.get(0)?),
         name: row.get(1)?,
-        record_type: RecordKind::from_str(&row.get::<_, String>(2)?).unwrap_or(RecordKind::A),
+        record_type: RecordKind::parse(&row.get::<_, String>(2)?).unwrap_or(RecordKind::A),
         value: row.get(3)?,
         ttl: row.get(4)?,
         priority: row.get(5)?,
@@ -2224,7 +2234,11 @@ fn build_list_query(name_filter: &str, record_type: Option<RecordKind>) -> (Stri
 }
 
 /// Generates a cache key for scoped record lookups.
-fn scoped_record_cache_key(scope_name: &str, normalized_name: &str, record_type: Option<RecordKind>) -> String {
+fn scoped_record_cache_key(
+    scope_name: &str,
+    normalized_name: &str,
+    record_type: Option<RecordKind>,
+) -> String {
     match record_type {
         Some(rt) => format!("{}:{}:{}", scope_name, normalized_name, rt.as_str()),
         None => format!("{}:{}:*", scope_name, normalized_name),
@@ -2246,11 +2260,9 @@ pub fn normalize_name(name: &str) -> String {
 /// Returns None if there's no parent domain (single-label or empty).
 pub fn make_wildcard_name(normalized: &str) -> Option<String> {
     let trimmed = normalized.trim_end_matches('.');
-    if let Some(dot_pos) = trimmed.find('.') {
-        Some(format!("*.{}.", &trimmed[dot_pos + 1..]))
-    } else {
-        None
-    }
+    trimmed
+        .find('.')
+        .map(|dot_pos| format!("*.{}.", &trimmed[dot_pos + 1..]))
 }
 
 /// Extracts the zone (last two labels + trailing dot) from a DNS name.
@@ -2534,7 +2546,7 @@ mod tests {
             RecordKind::PTR,
         ] {
             let s = kind.as_str();
-            assert_eq!(RecordKind::from_str(s), Some(*kind));
+            assert_eq!(RecordKind::parse(s), Some(*kind));
             let i = kind.to_proto_i32();
             assert_eq!(RecordKind::from_proto_i32(i), Some(*kind));
         }
@@ -2542,14 +2554,14 @@ mod tests {
 
     #[test]
     fn test_record_kind_from_str_case_insensitive() {
-        assert_eq!(RecordKind::from_str("a"), Some(RecordKind::A));
-        assert_eq!(RecordKind::from_str("aaaa"), Some(RecordKind::AAAA));
-        assert_eq!(RecordKind::from_str("cname"), Some(RecordKind::CNAME));
+        assert_eq!(RecordKind::parse("a"), Some(RecordKind::A));
+        assert_eq!(RecordKind::parse("aaaa"), Some(RecordKind::AAAA));
+        assert_eq!(RecordKind::parse("cname"), Some(RecordKind::CNAME));
     }
 
     #[test]
     fn test_record_kind_from_str_invalid() {
-        assert_eq!(RecordKind::from_str("INVALID"), None);
+        assert_eq!(RecordKind::parse("INVALID"), None);
     }
 
     #[test]
@@ -2603,21 +2615,26 @@ mod tests {
         db.create_network_scope(&scope).unwrap();
 
         // Add a scoped record
-        db.add_scoped_record("temp", &DnsRecord {
-            id: None,
-            name: "host.temp.home".to_string(),
-            record_type: RecordKind::A,
-            value: "10.0.0.1".to_string(),
-            ttl: 300,
-            priority: 0,
-        }).unwrap();
+        db.add_scoped_record(
+            "temp",
+            &DnsRecord {
+                id: None,
+                name: "host.temp.home".to_string(),
+                record_type: RecordKind::A,
+                value: "10.0.0.1".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
 
         // Add an association
         db.join_network(&NetworkAssociation {
             ip_address: "192.168.1.1".to_string(),
             scope_name: "temp".to_string(),
             ttl_seconds: 3600,
-        }).unwrap();
+        })
+        .unwrap();
 
         let deleted = db.delete_network_scope("temp").unwrap();
         assert!(deleted);
@@ -2659,13 +2676,15 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "net1".to_string(),
             home_domain: "net1.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         db.join_network(&NetworkAssociation {
             ip_address: "10.0.0.5".to_string(),
             scope_name: "net1".to_string(),
             ttl_seconds: 3600,
-        }).unwrap();
+        })
+        .unwrap();
 
         let scope = db.get_scope_for_ip("10.0.0.5");
         assert_eq!(scope, Some("net1".to_string()));
@@ -2683,13 +2702,15 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "net2".to_string(),
             home_domain: "net2.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         db.join_network(&NetworkAssociation {
             ip_address: "10.0.0.10".to_string(),
             scope_name: "net2".to_string(),
             ttl_seconds: 3600,
-        }).unwrap();
+        })
+        .unwrap();
 
         let left = db.leave_network("10.0.0.10").unwrap();
         assert!(left);
@@ -2709,22 +2730,26 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "netA".to_string(),
             home_domain: "netA.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
         db.create_network_scope(&NetworkScope {
             name: "netB".to_string(),
             home_domain: "netB.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         db.join_network(&NetworkAssociation {
             ip_address: "10.1.0.1".to_string(),
             scope_name: "netA".to_string(),
             ttl_seconds: 300,
-        }).unwrap();
+        })
+        .unwrap();
         db.join_network(&NetworkAssociation {
             ip_address: "10.2.0.1".to_string(),
             scope_name: "netB".to_string(),
             ttl_seconds: 300,
-        }).unwrap();
+        })
+        .unwrap();
 
         let all = db.list_network_associations(None).unwrap();
         assert_eq!(all.len(), 2);
@@ -2740,20 +2765,23 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "update-net".to_string(),
             home_domain: "update.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         db.join_network(&NetworkAssociation {
             ip_address: "10.5.0.1".to_string(),
             scope_name: "update-net".to_string(),
             ttl_seconds: 100,
-        }).unwrap();
+        })
+        .unwrap();
 
         // Re-join with new TTL (refresh)
         db.join_network(&NetworkAssociation {
             ip_address: "10.5.0.1".to_string(),
             scope_name: "update-net".to_string(),
             ttl_seconds: 3600,
-        }).unwrap();
+        })
+        .unwrap();
 
         let assocs = db.list_network_associations(Some("update-net")).unwrap();
         assert_eq!(assocs.len(), 1);
@@ -2770,16 +2798,21 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "scopeA".to_string(),
             home_domain: "scopeA.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
-        db.add_scoped_record("scopeA", &DnsRecord {
-            id: None,
-            name: "host1.scopeA.home".to_string(),
-            record_type: RecordKind::A,
-            value: "10.10.0.1".to_string(),
-            ttl: 300,
-            priority: 0,
-        }).unwrap();
+        db.add_scoped_record(
+            "scopeA",
+            &DnsRecord {
+                id: None,
+                name: "host1.scopeA.home".to_string(),
+                record_type: RecordKind::A,
+                value: "10.10.0.1".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
 
         let records = db.lookup_scoped("scopeA", "host1.scopeA.home", Some(RecordKind::A));
         assert_eq!(records.len(), 1);
@@ -2792,29 +2825,39 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "scope1".to_string(),
             home_domain: "scope1.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
         db.create_network_scope(&NetworkScope {
             name: "scope2".to_string(),
             home_domain: "scope2.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
-        db.add_scoped_record("scope1", &DnsRecord {
-            id: None,
-            name: "shared.internal".to_string(),
-            record_type: RecordKind::A,
-            value: "10.0.0.1".to_string(),
-            ttl: 300,
-            priority: 0,
-        }).unwrap();
+        db.add_scoped_record(
+            "scope1",
+            &DnsRecord {
+                id: None,
+                name: "shared.internal".to_string(),
+                record_type: RecordKind::A,
+                value: "10.0.0.1".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
 
-        db.add_scoped_record("scope2", &DnsRecord {
-            id: None,
-            name: "shared.internal".to_string(),
-            record_type: RecordKind::A,
-            value: "10.0.0.2".to_string(),
-            ttl: 300,
-            priority: 0,
-        }).unwrap();
+        db.add_scoped_record(
+            "scope2",
+            &DnsRecord {
+                id: None,
+                name: "shared.internal".to_string(),
+                record_type: RecordKind::A,
+                value: "10.0.0.2".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
 
         let s1_records = db.lookup_scoped("scope1", "shared.internal", Some(RecordKind::A));
         assert_eq!(s1_records.len(), 1);
@@ -2831,18 +2874,25 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "rmscope".to_string(),
             home_domain: "rmscope.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
-        db.add_scoped_record("rmscope", &DnsRecord {
-            id: None,
-            name: "remove-me.rmscope.home".to_string(),
-            record_type: RecordKind::A,
-            value: "10.0.0.1".to_string(),
-            ttl: 300,
-            priority: 0,
-        }).unwrap();
+        db.add_scoped_record(
+            "rmscope",
+            &DnsRecord {
+                id: None,
+                name: "remove-me.rmscope.home".to_string(),
+                record_type: RecordKind::A,
+                value: "10.0.0.1".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
 
-        let removed = db.remove_scoped_records("rmscope", "remove-me.rmscope.home", Some(RecordKind::A), "").unwrap();
+        let removed = db
+            .remove_scoped_records("rmscope", "remove-me.rmscope.home", Some(RecordKind::A), "")
+            .unwrap();
         assert_eq!(removed, 1);
 
         let records = db.lookup_scoped("rmscope", "remove-me.rmscope.home", Some(RecordKind::A));
@@ -2855,29 +2905,40 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "listscope".to_string(),
             home_domain: "listscope.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
-        db.add_scoped_record("listscope", &DnsRecord {
-            id: None,
-            name: "a.listscope.home".to_string(),
-            record_type: RecordKind::A,
-            value: "10.0.0.1".to_string(),
-            ttl: 300,
-            priority: 0,
-        }).unwrap();
-        db.add_scoped_record("listscope", &DnsRecord {
-            id: None,
-            name: "b.listscope.home".to_string(),
-            record_type: RecordKind::AAAA,
-            value: "::1".to_string(),
-            ttl: 300,
-            priority: 0,
-        }).unwrap();
+        db.add_scoped_record(
+            "listscope",
+            &DnsRecord {
+                id: None,
+                name: "a.listscope.home".to_string(),
+                record_type: RecordKind::A,
+                value: "10.0.0.1".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
+        db.add_scoped_record(
+            "listscope",
+            &DnsRecord {
+                id: None,
+                name: "b.listscope.home".to_string(),
+                record_type: RecordKind::AAAA,
+                value: "::1".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
 
         let all = db.list_scoped_records("listscope", "", None).unwrap();
         assert_eq!(all.len(), 2);
 
-        let a_only = db.list_scoped_records("listscope", "", Some(RecordKind::A)).unwrap();
+        let a_only = db
+            .list_scoped_records("listscope", "", Some(RecordKind::A))
+            .unwrap();
         assert_eq!(a_only.len(), 1);
     }
 
@@ -2887,13 +2948,15 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "search-net".to_string(),
             home_domain: "search.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         db.join_network(&NetworkAssociation {
             ip_address: "192.168.0.50".to_string(),
             scope_name: "search-net".to_string(),
             ttl_seconds: 3600,
-        }).unwrap();
+        })
+        .unwrap();
 
         let domains = db.get_search_domains("192.168.0.50").unwrap();
         assert_eq!(domains.len(), 1);
@@ -2910,24 +2973,33 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "alltype".to_string(),
             home_domain: "alltype.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
-        db.add_scoped_record("alltype", &DnsRecord {
-            id: None,
-            name: "multi.alltype.home".to_string(),
-            record_type: RecordKind::A,
-            value: "10.0.0.1".to_string(),
-            ttl: 300,
-            priority: 0,
-        }).unwrap();
-        db.add_scoped_record("alltype", &DnsRecord {
-            id: None,
-            name: "multi.alltype.home".to_string(),
-            record_type: RecordKind::AAAA,
-            value: "::1".to_string(),
-            ttl: 300,
-            priority: 0,
-        }).unwrap();
+        db.add_scoped_record(
+            "alltype",
+            &DnsRecord {
+                id: None,
+                name: "multi.alltype.home".to_string(),
+                record_type: RecordKind::A,
+                value: "10.0.0.1".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
+        db.add_scoped_record(
+            "alltype",
+            &DnsRecord {
+                id: None,
+                name: "multi.alltype.home".to_string(),
+                record_type: RecordKind::AAAA,
+                value: "::1".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
 
         let all = db.lookup_scoped("alltype", "multi.alltype.home", None);
         assert_eq!(all.len(), 2);
@@ -2939,17 +3011,22 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "expire-net".to_string(),
             home_domain: "expire.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Join with a very short TTL
         db.join_network(&NetworkAssociation {
             ip_address: "10.99.0.1".to_string(),
             scope_name: "expire-net".to_string(),
             ttl_seconds: 3600,
-        }).unwrap();
+        })
+        .unwrap();
 
         // Should be associated initially
-        assert_eq!(db.get_scope_for_ip("10.99.0.1"), Some("expire-net".to_string()));
+        assert_eq!(
+            db.get_scope_for_ip("10.99.0.1"),
+            Some("expire-net".to_string())
+        );
 
         // Manually expire the cache entry by setting expires_at to the past
         db.association_cache.insert(
@@ -2979,22 +3056,28 @@ mod tests {
             db.create_network_scope(&NetworkScope {
                 name: "persist-scope".to_string(),
                 home_domain: "persist.home".to_string(),
-            }).unwrap();
+            })
+            .unwrap();
 
-            db.add_scoped_record("persist-scope", &DnsRecord {
-                id: None,
-                name: "host1.persist.home".to_string(),
-                record_type: RecordKind::A,
-                value: "10.0.0.1".to_string(),
-                ttl: 300,
-                priority: 0,
-            }).unwrap();
+            db.add_scoped_record(
+                "persist-scope",
+                &DnsRecord {
+                    id: None,
+                    name: "host1.persist.home".to_string(),
+                    record_type: RecordKind::A,
+                    value: "10.0.0.1".to_string(),
+                    ttl: 300,
+                    priority: 0,
+                },
+            )
+            .unwrap();
 
             db.join_network(&NetworkAssociation {
                 ip_address: "192.168.5.1".to_string(),
                 scope_name: "persist-scope".to_string(),
                 ttl_seconds: 86400,
-            }).unwrap();
+            })
+            .unwrap();
         }
 
         // Reopen and verify caches are populated from database
@@ -3002,7 +3085,8 @@ mod tests {
             let db = Database::open(&db_path).unwrap();
 
             // Scoped records should be loaded into cache
-            let records = db.lookup_scoped("persist-scope", "host1.persist.home", Some(RecordKind::A));
+            let records =
+                db.lookup_scoped("persist-scope", "host1.persist.home", Some(RecordKind::A));
             assert_eq!(records.len(), 1);
             assert_eq!(records[0].value, "10.0.0.1");
 
@@ -3023,24 +3107,33 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "zones".to_string(),
             home_domain: "zones.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
-        db.add_scoped_record("zones", &DnsRecord {
-            id: None,
-            name: "host.zones.home".to_string(),
-            record_type: RecordKind::A,
-            value: "10.0.0.1".to_string(),
-            ttl: 300,
-            priority: 0,
-        }).unwrap();
-        db.add_scoped_record("zones", &DnsRecord {
-            id: None,
-            name: "host.other.net".to_string(),
-            record_type: RecordKind::A,
-            value: "10.0.0.2".to_string(),
-            ttl: 300,
-            priority: 0,
-        }).unwrap();
+        db.add_scoped_record(
+            "zones",
+            &DnsRecord {
+                id: None,
+                name: "host.zones.home".to_string(),
+                record_type: RecordKind::A,
+                value: "10.0.0.1".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
+        db.add_scoped_record(
+            "zones",
+            &DnsRecord {
+                id: None,
+                name: "host.other.net".to_string(),
+                record_type: RecordKind::A,
+                value: "10.0.0.2".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
 
         let zones = db.get_scoped_managed_zones("zones").unwrap();
         assert_eq!(zones.len(), 2);
@@ -3058,7 +3151,8 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "pool-scope".to_string(),
             home_domain: "pool.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         let pool = DhcpPool {
             id: 0,
@@ -3109,11 +3203,12 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "lease-scope".to_string(),
             home_domain: "lease.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system clock before UNIX epoch")
             .as_secs() as i64;
 
         let lease = DhcpLease {
@@ -3190,7 +3285,8 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "alloc-scope".to_string(),
             home_domain: "alloc.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         let pool = DhcpPool {
             id: 0,
@@ -3210,7 +3306,7 @@ mod tests {
         // Create the lease so the IP is occupied
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system clock before UNIX epoch")
             .as_secs() as i64;
         db.create_lease(&DhcpLease {
             mac: "aa:aa:aa:aa:aa:01".to_string(),
@@ -3220,7 +3316,8 @@ mod tests {
             lease_start: now,
             lease_duration: 3600,
             state: "active".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Sticky binding: same MAC should get same IP
         let ip1_again = db.allocate_ip("alloc-scope", "aa:aa:aa:aa:aa:01").unwrap();
@@ -3239,7 +3336,8 @@ mod tests {
             lease_start: now,
             lease_duration: 3600,
             state: "active".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Third MAC gets last IP
         let ip3 = db.allocate_ip("alloc-scope", "aa:aa:aa:aa:aa:03").unwrap();
@@ -3254,7 +3352,8 @@ mod tests {
             lease_start: now,
             lease_duration: 3600,
             state: "active".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Pool exhausted
         let ip4 = db.allocate_ip("alloc-scope", "aa:aa:aa:aa:aa:04").unwrap();
@@ -3271,11 +3370,12 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "sweep-scope".to_string(),
             home_domain: "sweep.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system clock before UNIX epoch")
             .as_secs() as i64;
 
         // Create an already-expired lease (started 200s ago, duration 100s)
@@ -3287,7 +3387,8 @@ mod tests {
             lease_start: now - 200,
             lease_duration: 100,
             state: "active".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Create a still-active lease
         db.create_lease(&DhcpLease {
@@ -3298,7 +3399,8 @@ mod tests {
             lease_start: now,
             lease_duration: 3600,
             state: "active".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Sweep with a short reclaim timeout (50s)
         // The expired lease started 200s ago, duration 100, so expired 100s ago.
@@ -3327,28 +3429,37 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "rbl-scope".to_string(),
             home_domain: "rbl.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Add providers
         db.add_scope_rbl_provider(&ScopeRblProvider {
             scope_name: "rbl-scope".to_string(),
             zone: "zen.spamhaus.org".to_string(),
             enabled: true,
-        }).unwrap();
+        })
+        .unwrap();
         db.add_scope_rbl_provider(&ScopeRblProvider {
             scope_name: "rbl-scope".to_string(),
             zone: "bl.spamcop.net".to_string(),
             enabled: false,
-        }).unwrap();
+        })
+        .unwrap();
 
         // List
         let providers = db.list_scope_rbl_providers("rbl-scope").unwrap();
         assert_eq!(providers.len(), 2);
 
-        let spamhaus = providers.iter().find(|p| p.zone == "zen.spamhaus.org").unwrap();
+        let spamhaus = providers
+            .iter()
+            .find(|p| p.zone == "zen.spamhaus.org")
+            .unwrap();
         assert!(spamhaus.enabled);
 
-        let spamcop = providers.iter().find(|p| p.zone == "bl.spamcop.net").unwrap();
+        let spamcop = providers
+            .iter()
+            .find(|p| p.zone == "bl.spamcop.net")
+            .unwrap();
         assert!(!spamcop.enabled);
 
         // Update (replace)
@@ -3356,16 +3467,21 @@ mod tests {
             scope_name: "rbl-scope".to_string(),
             zone: "bl.spamcop.net".to_string(),
             enabled: true,
-        }).unwrap();
+        })
+        .unwrap();
         let updated = db.list_scope_rbl_providers("rbl-scope").unwrap();
         let spamcop_updated = updated.iter().find(|p| p.zone == "bl.spamcop.net").unwrap();
         assert!(spamcop_updated.enabled);
 
         // Remove
-        let removed = db.remove_scope_rbl_provider("rbl-scope", "zen.spamhaus.org").unwrap();
+        let removed = db
+            .remove_scope_rbl_provider("rbl-scope", "zen.spamhaus.org")
+            .unwrap();
         assert!(removed);
 
-        let removed_again = db.remove_scope_rbl_provider("rbl-scope", "zen.spamhaus.org").unwrap();
+        let removed_again = db
+            .remove_scope_rbl_provider("rbl-scope", "zen.spamhaus.org")
+            .unwrap();
         assert!(!removed_again);
 
         let remaining = db.list_scope_rbl_providers("rbl-scope").unwrap();
@@ -3386,7 +3502,8 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "cert-scope".to_string(),
             home_domain: "cert.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Set option
         db.set_dhcp_cert_option(&DhcpCertOption {
@@ -3394,7 +3511,8 @@ mod tests {
             option_code: 224,
             cert_data: vec![0x30, 0x82, 0x01, 0x22],
             description: Some("Root CA cert".to_string()),
-        }).unwrap();
+        })
+        .unwrap();
 
         // List
         let options = db.list_dhcp_cert_options("cert-scope").unwrap();
@@ -3409,7 +3527,8 @@ mod tests {
             option_code: 224,
             cert_data: vec![0xFF, 0xFE],
             description: Some("Updated cert".to_string()),
-        }).unwrap();
+        })
+        .unwrap();
         let updated = db.list_dhcp_cert_options("cert-scope").unwrap();
         assert_eq!(updated.len(), 1);
         assert_eq!(updated[0].cert_data, vec![0xFF, 0xFE]);
@@ -3421,7 +3540,8 @@ mod tests {
             option_code: 225,
             cert_data: vec![0xAB],
             description: None,
-        }).unwrap();
+        })
+        .unwrap();
         let all = db.list_dhcp_cert_options("cert-scope").unwrap();
         assert_eq!(all.len(), 2);
 
@@ -3451,7 +3571,8 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "exhaust-scope".to_string(),
             home_domain: "exhaust.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Single pool with 3 IPs
         db.add_dhcp_pool(&DhcpPool {
@@ -3462,11 +3583,12 @@ mod tests {
             gateway: None,
             subnet_mask: "255.255.255.0".to_string(),
             dns_servers: None,
-        }).unwrap();
+        })
+        .unwrap();
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system clock before UNIX epoch")
             .as_secs() as i64;
 
         // Allocate all 3 IPs sequentially
@@ -3482,11 +3604,14 @@ mod tests {
                 lease_start: now,
                 lease_duration: 3600,
                 state: "active".to_string(),
-            }).unwrap();
+            })
+            .unwrap();
         }
 
         // Pool exhausted — no more IPs
-        let none = db.allocate_ip("exhaust-scope", "aa:aa:aa:aa:00:03").unwrap();
+        let none = db
+            .allocate_ip("exhaust-scope", "aa:aa:aa:aa:00:03")
+            .unwrap();
         assert!(none.is_none());
     }
 
@@ -3496,7 +3621,8 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "reuse-scope".to_string(),
             home_domain: "reuse.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         db.add_dhcp_pool(&DhcpPool {
             id: 0,
@@ -3506,11 +3632,12 @@ mod tests {
             gateway: None,
             subnet_mask: "255.255.255.0".to_string(),
             dns_servers: None,
-        }).unwrap();
+        })
+        .unwrap();
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system clock before UNIX epoch")
             .as_secs() as i64;
 
         // Allocate the only IP
@@ -3524,7 +3651,8 @@ mod tests {
             lease_start: now,
             lease_duration: 3600,
             state: "active".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Pool is full
         let none = db.allocate_ip("reuse-scope", "aa:bb:cc:00:00:02").unwrap();
@@ -3544,11 +3672,13 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "scope-a".to_string(),
             home_domain: "a.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
         db.create_network_scope(&NetworkScope {
             name: "scope-b".to_string(),
             home_domain: "b.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Same IP range in both scopes
         for scope in &["scope-a", "scope-b"] {
@@ -3560,7 +3690,8 @@ mod tests {
                 gateway: None,
                 subnet_mask: "255.255.255.0".to_string(),
                 dns_servers: None,
-            }).unwrap();
+            })
+            .unwrap();
         }
 
         // Allocate in scope-a
@@ -3569,7 +3700,7 @@ mod tests {
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system clock before UNIX epoch")
             .as_secs() as i64;
         db.create_lease(&DhcpLease {
             mac: "aa:00:00:00:00:01".to_string(),
@@ -3579,7 +3710,8 @@ mod tests {
             lease_start: now,
             lease_duration: 3600,
             state: "active".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Allocate in scope-b — should also get .10 since scopes are isolated
         let ip_b = db.allocate_ip("scope-b", "bb:00:00:00:00:01").unwrap();
@@ -3592,7 +3724,8 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "sticky-scope".to_string(),
             home_domain: "sticky.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         db.add_dhcp_pool(&DhcpPool {
             id: 0,
@@ -3602,11 +3735,12 @@ mod tests {
             gateway: None,
             subnet_mask: "255.255.255.0".to_string(),
             dns_servers: None,
-        }).unwrap();
+        })
+        .unwrap();
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system clock before UNIX epoch")
             .as_secs() as i64;
 
         // Allocate and create lease
@@ -3620,7 +3754,8 @@ mod tests {
             lease_start: now,
             lease_duration: 3600,
             state: "active".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Release the lease
         db.release_lease("cc:cc:cc:00:00:01").unwrap();
@@ -3636,7 +3771,8 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "single-scope".to_string(),
             home_domain: "single.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         db.add_dhcp_pool(&DhcpPool {
             id: 0,
@@ -3646,11 +3782,12 @@ mod tests {
             gateway: None,
             subnet_mask: "255.255.255.0".to_string(),
             dns_servers: None,
-        }).unwrap();
+        })
+        .unwrap();
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system clock before UNIX epoch")
             .as_secs() as i64;
 
         let ip = db.allocate_ip("single-scope", "dd:dd:dd:00:00:01").unwrap();
@@ -3664,7 +3801,8 @@ mod tests {
             lease_start: now,
             lease_duration: 3600,
             state: "active".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Second MAC should get nothing
         let none = db.allocate_ip("single-scope", "dd:dd:dd:00:00:02").unwrap();
@@ -3677,7 +3815,8 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "replace-scope".to_string(),
             home_domain: "replace.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         db.add_dhcp_pool(&DhcpPool {
             id: 0,
@@ -3687,11 +3826,12 @@ mod tests {
             gateway: None,
             subnet_mask: "255.255.255.0".to_string(),
             dns_servers: None,
-        }).unwrap();
+        })
+        .unwrap();
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system clock before UNIX epoch")
             .as_secs() as i64;
 
         let mac = "ee:ee:ee:00:00:01";
@@ -3709,7 +3849,8 @@ mod tests {
             lease_start: now,
             lease_duration: 3600,
             state: "active".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Release and re-create lease (simulating a renewal/rebind)
         db.release_lease(mac).unwrap();
@@ -3721,7 +3862,8 @@ mod tests {
             lease_start: now,
             lease_duration: 7200,
             state: "active".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Sticky binding: allocate_ip should still return the same IP
         let ip2 = db.allocate_ip("replace-scope", mac).unwrap();

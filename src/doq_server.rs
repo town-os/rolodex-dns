@@ -29,8 +29,8 @@ pub async fn serve_doq(
         .parse()
         .context(format!("invalid DoQ bind address: {}", bind))?;
 
-    let endpoint = quinn::Endpoint::server(quinn_config, addr)
-        .context("failed to create QUIC endpoint")?;
+    let endpoint =
+        quinn::Endpoint::server(quinn_config, addr).context("failed to create QUIC endpoint")?;
 
     info!("DoQ server listening on {}", addr);
 

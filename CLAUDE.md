@@ -11,6 +11,13 @@ Rolodex DNS is a split-horizon DNS server and forwarding resolver with remote ma
 - write tests for everything, including integration and real tests
 - use make test to validate any changes
 - integration tests should not alter the host, ever
+- tests: unless said otherwise, they perform with simulated input and produce output on the operations that would be performed. They never affect the running system.
+- running tests: use the make tasks every time.
+- tests should always include the linting checks
+- lint checks should be a rust community standard of linters, run as the `lint` make tasks
+- never use `let _ = expr;` to suppress unused variable warnings or work around the borrow checker. Fix the actual problem: use the variable, remove the parameter, or restructure the code.
+- `#![deny(dead_code)]` and `#![deny(unsafe_code)]` are set at the crate level in both lib.rs and main.rs. Never add `#[allow(dead_code)]` or `#[allow(unsafe_code)]` to bypass them — remove dead code, and use safe abstractions (e.g., nix crate) instead of unsafe.
+- do not modify the system beyond configuring hardware
 
 ## DNS Resolution
 

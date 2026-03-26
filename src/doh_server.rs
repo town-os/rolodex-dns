@@ -6,12 +6,12 @@
 use crate::dns_server::DnsServer;
 use anyhow::{Context, Result};
 use axum::{
+    Router,
     body::Bytes,
     extract::{Query, State},
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     response::IntoResponse,
     routing::get,
-    Router,
 };
 use base64::Engine;
 use std::sync::Arc;
@@ -66,10 +66,7 @@ pub async fn serve_doh(
 }
 
 /// Handles POST /dns-query with application/dns-message body.
-async fn handle_doh_post(
-    State(state): State<DohState>,
-    body: Bytes,
-) -> impl IntoResponse {
+async fn handle_doh_post(State(state): State<DohState>, body: Bytes) -> impl IntoResponse {
     let response = match state.dns_server.handle_query(&body).await {
         Ok(resp) => resp,
         Err(e) => {
@@ -101,16 +98,12 @@ async fn handle_doh_get(
 ) -> impl IntoResponse {
     let dns_param = match params.dns {
         Some(d) => d,
-        None => {
-            return (StatusCode::BAD_REQUEST, "missing 'dns' query parameter").into_response()
-        }
+        None => return (StatusCode::BAD_REQUEST, "missing 'dns' query parameter").into_response(),
     };
 
     let query_data = match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&dns_param) {
         Ok(d) => d,
-        Err(_) => {
-            return (StatusCode::BAD_REQUEST, "invalid base64url encoding").into_response()
-        }
+        Err(_) => return (StatusCode::BAD_REQUEST, "invalid base64url encoding").into_response(),
     };
 
     let response = match state.dns_server.handle_query(&query_data).await {
@@ -143,11 +136,7 @@ fn extract_min_ttl(response_bytes: &[u8]) -> u32 {
     use hickory_proto::serialize::binary::BinDecodable;
 
     if let Ok(msg) = Message::from_bytes(response_bytes) {
-        msg.answers()
-            .iter()
-            .map(|r| r.ttl())
-            .min()
-            .unwrap_or(0)
+        msg.answers().iter().map(|r| r.ttl()).min().unwrap_or(0)
     } else {
         0
     }

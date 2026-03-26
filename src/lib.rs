@@ -1,4 +1,5 @@
 #![deny(dead_code)]
+#![deny(unsafe_code)]
 
 pub mod acme;
 pub mod config;

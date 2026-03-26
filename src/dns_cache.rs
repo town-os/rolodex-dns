@@ -8,8 +8,8 @@
 /// with no upstream resolution.
 use crate::db::{Database, DnsRecord, RecordKind};
 use dashmap::DashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 /// A cached DNS record with expiration time.
@@ -60,10 +60,7 @@ impl DnsCache {
                     return entry.records.clone();
                 }
                 // Upstream records: adjust TTL based on remaining cache time
-                let remaining_secs = entry
-                    .expires_at
-                    .duration_since(now)
-                    .as_secs() as u32;
+                let remaining_secs = entry.expires_at.duration_since(now).as_secs() as u32;
                 return entry
                     .records
                     .iter()
@@ -83,7 +80,13 @@ impl DnsCache {
     }
 
     /// Inserts records into the cache.
-    pub fn insert(&self, name: &str, record_type: Option<RecordKind>, records: Vec<DnsRecord>, ttl: u32) {
+    pub fn insert(
+        &self,
+        name: &str,
+        record_type: Option<RecordKind>,
+        records: Vec<DnsRecord>,
+        ttl: u32,
+    ) {
         if records.is_empty() || ttl == 0 {
             return;
         }
@@ -106,14 +109,16 @@ impl DnsCache {
         let rt_str = record_type.map(|r| r.as_str().to_string());
         tokio::spawn(async move {
             for rec in &records {
-                let _ = db.cache_insert(
+                if let Err(e) = db.cache_insert(
                     &name,
                     rt_str.as_deref().unwrap_or(rec.record_type.as_str()),
                     &rec.value,
                     ttl,
                     ttl,
                     "upstream",
-                );
+                ) {
+                    tracing::warn!("failed to persist cache entry for {}: {}", name, e);
+                }
             }
         });
     }
@@ -124,7 +129,12 @@ impl DnsCache {
     /// (local records already live in the main DB) and uses a long cache
     /// lifetime (1 day). The record's TTL is preserved as-is for clients;
     /// eviction happens via `flush()`, not TTL expiration.
-    pub fn insert_local(&self, name: &str, record_type: Option<RecordKind>, records: Vec<DnsRecord>) {
+    pub fn insert_local(
+        &self,
+        name: &str,
+        record_type: Option<RecordKind>,
+        records: Vec<DnsRecord>,
+    ) {
         if records.is_empty() {
             return;
         }
@@ -145,7 +155,9 @@ impl DnsCache {
     /// Flushes all cached entries.
     pub fn flush(&self) {
         self.memory.clear();
-        let _ = self.db.cache_flush();
+        if let Err(e) = self.db.cache_flush() {
+            tracing::warn!("failed to flush persistent cache: {}", e);
+        }
         self.hits.store(0, Ordering::Relaxed);
         self.misses.store(0, Ordering::Relaxed);
     }
@@ -172,8 +184,7 @@ impl DnsCache {
                     })
                     .or_insert(CachedEntry {
                         records: vec![rec.clone()],
-                        expires_at: Instant::now()
-                            + std::time::Duration::from_secs(rec.ttl as u64),
+                        expires_at: Instant::now() + std::time::Duration::from_secs(rec.ttl as u64),
                         local: false,
                     });
             }

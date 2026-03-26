@@ -1,10 +1,10 @@
+use crate::db::Database;
 /// ACME client for automated certificate management (RFC 8555).
 ///
 /// Since Rolodex IS the DNS server, it can serve `_acme-challenge` TXT records
 /// natively for DNS-01 challenge validation. This enables automated certificate
 /// issuance without external DNS providers.
 use anyhow::Result;
-use crate::db::Database;
 
 /// ACME certificate status.
 #[derive(Debug, Clone)]
@@ -67,14 +67,20 @@ mod tests {
         set_acme_challenge(&db, "example.com.", "test-token-123").unwrap();
 
         let records = db
-            .lookup("_acme-challenge.example.com.", Some(crate::db::RecordKind::TXT))
+            .lookup(
+                "_acme-challenge.example.com.",
+                Some(crate::db::RecordKind::TXT),
+            )
             .unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].value, "test-token-123");
 
         clear_acme_challenge(&db, "example.com.").unwrap();
         let records = db
-            .lookup("_acme-challenge.example.com.", Some(crate::db::RecordKind::TXT))
+            .lookup(
+                "_acme-challenge.example.com.",
+                Some(crate::db::RecordKind::TXT),
+            )
             .unwrap();
         assert!(records.is_empty());
     }

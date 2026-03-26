@@ -75,10 +75,10 @@ pub fn parse_duration_secs(s: &str) -> Option<i64> {
         return None;
     }
 
-    let (sign, rest) = if s.starts_with('-') {
-        (-1i64, &s[1..])
-    } else if s.starts_with('+') {
-        (1i64, &s[1..])
+    let (sign, rest) = if let Some(stripped) = s.strip_prefix('-') {
+        (-1i64, stripped)
+    } else if let Some(stripped) = s.strip_prefix('+') {
+        (1i64, stripped)
     } else {
         (1i64, s)
     };
@@ -90,25 +90,25 @@ pub fn parse_duration_secs(s: &str) -> Option<i64> {
         // Only use fancy_duration when there are multiple duration components
         // (e.g. "1h30m") to avoid interfering with simple "5m" / "30s" parsing.
         let alpha_count = rest.chars().filter(|c| c.is_alphabetic()).count();
-        if alpha_count >= 2 {
-            if let Ok(fd) = rest.parse::<fancy_duration::FancyDuration<std::time::Duration>>() {
-                let secs = fd.duration().as_secs() as i64;
-                if secs > 0 {
-                    return Some(sign * secs);
-                }
+        if alpha_count >= 2
+            && let Ok(fd) = rest.parse::<fancy_duration::FancyDuration<std::time::Duration>>()
+        {
+            let secs = fd.duration().as_secs() as i64;
+            if secs > 0 {
+                return Some(sign * secs);
             }
         }
     }
 
     // Fallback to simple parser
-    let (num_str, unit) = if rest.ends_with('s') {
-        (&rest[..rest.len() - 1], 1i64)
-    } else if rest.ends_with('m') {
-        (&rest[..rest.len() - 1], 60i64)
-    } else if rest.ends_with('h') {
-        (&rest[..rest.len() - 1], 3600i64)
-    } else if rest.ends_with('d') {
-        (&rest[..rest.len() - 1], 86400i64)
+    let (num_str, unit) = if let Some(stripped) = rest.strip_suffix('s') {
+        (stripped, 1i64)
+    } else if let Some(stripped) = rest.strip_suffix('m') {
+        (stripped, 60i64)
+    } else if let Some(stripped) = rest.strip_suffix('h') {
+        (stripped, 3600i64)
+    } else if let Some(stripped) = rest.strip_suffix('d') {
+        (stripped, 86400i64)
     } else {
         // Assume seconds if no unit
         (rest, 1i64)

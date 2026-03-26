@@ -1,16 +1,16 @@
-use arc_swap::ArcSwap;
 use crate::db::{Database, RecordKind};
 use crate::dns_cache::DnsCache;
 use crate::rbl::RblChecker;
 use anyhow::{Context, Result};
+use arc_swap::ArcSwap;
 use hickory_proto::op::{MessageType, OpCode, ResponseCode};
 use hickory_proto::rr::rdata;
 use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordType};
 use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use rand::Rng;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::net::{TcpListener, UdpSocket};
 use tracing::{debug, error, info, warn};
 
@@ -60,7 +60,9 @@ impl DnsServer {
             dns_cache: None,
             dns64_prefix: None,
             qname_randomization: true,
-            ttl_drift_config: Arc::new(ArcSwap::from_pointee(crate::ttl_drift::TtlDriftConfig::default())),
+            ttl_drift_config: Arc::new(ArcSwap::from_pointee(
+                crate::ttl_drift::TtlDriftConfig::default(),
+            )),
             proxy_config: Arc::new(ArcSwap::from_pointee(None)),
             forward_sockets,
             forward_socket_idx: AtomicUsize::new(0),
@@ -86,7 +88,9 @@ impl DnsServer {
             dns_cache,
             dns64_prefix,
             qname_randomization,
-            ttl_drift_config: Arc::new(ArcSwap::from_pointee(crate::ttl_drift::TtlDriftConfig::default())),
+            ttl_drift_config: Arc::new(ArcSwap::from_pointee(
+                crate::ttl_drift::TtlDriftConfig::default(),
+            )),
             proxy_config: Arc::new(ArcSwap::from_pointee(None)),
             forward_sockets,
             forward_socket_idx: AtomicUsize::new(0),
@@ -138,9 +142,11 @@ impl DnsServer {
     /// Starts the UDP DNS listener.
     /// Processes queries concurrently by spawning a task per received query.
     pub async fn serve_udp(self: Arc<Self>, bind_addr: &str) -> Result<()> {
-        let socket = Arc::new(UdpSocket::bind(bind_addr)
-            .await
-            .with_context(|| format!("failed to bind UDP socket to {}", bind_addr))?);
+        let socket = Arc::new(
+            UdpSocket::bind(bind_addr)
+                .await
+                .with_context(|| format!("failed to bind UDP socket to {}", bind_addr))?,
+        );
         info!("DNS UDP server listening on {}", bind_addr);
 
         let mut buf = vec![0u8; MAX_UDP_SIZE];
@@ -260,17 +266,17 @@ impl DnsServer {
         let edns_ctx = crate::edns::EdnsContext::from_message(&message);
 
         // If EDNS version > 0, return BADVERS (RFC 6891 section 6.1.3)
-        if let Some(ref ctx) = edns_ctx {
-            if ctx.is_unsupported_version() {
-                debug!("Rejecting EDNS version {} query", ctx.version);
-                return Ok(build_response_edns(
-                    &message,
-                    ResponseCode::from(0, 16), // BADVERS
-                    vec![],
-                    false,
-                    edns_ctx.as_ref(),
-                ));
-            }
+        if let Some(ref ctx) = edns_ctx
+            && ctx.is_unsupported_version()
+        {
+            debug!("Rejecting EDNS version {} query", ctx.version);
+            return Ok(build_response_edns(
+                &message,
+                ResponseCode::from(0, 16), // BADVERS
+                vec![],
+                false,
+                edns_ctx.as_ref(),
+            ));
         }
 
         if message.message_type() != MessageType::Query {
@@ -294,7 +300,13 @@ impl DnsServer {
                 if scope.is_none() {
                     // IP is not associated with any scope - refuse resolution
                     debug!("Refusing DNS query from unassociated IP {}", ip);
-                    return Ok(build_response_edns(&message, ResponseCode::Refused, vec![], false, edns_ctx.as_ref()));
+                    return Ok(build_response_edns(
+                        &message,
+                        ResponseCode::Refused,
+                        vec![],
+                        false,
+                        edns_ctx.as_ref(),
+                    ));
                 }
                 scope
             } else {
@@ -312,11 +324,17 @@ impl DnsServer {
 
         // If we have a network scope, check scoped RBL first
         if let Some(ref scope) = scope_name {
-            if let Some(ip) = extract_ip_from_name(&qname) {
-                if self.rbl.is_listed(&ip).await || self.db.lookup_local_rbl(&ip.to_string()) {
-                    debug!("RBL block in scope {}: {} is blacklisted", scope, qname);
-                    return Ok(build_response_edns(&message, ResponseCode::NXDomain, vec![], true, edns_ctx.as_ref()));
-                }
+            if let Some(ip) = extract_ip_from_name(&qname)
+                && (self.rbl.is_listed(&ip).await || self.db.lookup_local_rbl(&ip.to_string()))
+            {
+                debug!("RBL block in scope {}: {} is blacklisted", scope, qname);
+                return Ok(build_response_edns(
+                    &message,
+                    ResponseCode::NXDomain,
+                    vec![],
+                    true,
+                    edns_ctx.as_ref(),
+                ));
             }
 
             // Try scoped records first
@@ -327,25 +345,52 @@ impl DnsServer {
                 if let Some(ref cache) = self.dns_cache {
                     let cached = cache.lookup(&scoped_cache_name, Some(kind));
                     if !cached.is_empty() {
-                        debug!("Cache hit (scoped) for {} {:?} in scope {}: {} records", qname, qtype, scope, cached.len());
-                        let dns_records = cached.iter().filter_map(|r| db_record_to_dns_record(r)).collect();
-                        return Ok(build_response_edns(&message, ResponseCode::NoError, dns_records, true, edns_ctx.as_ref()));
+                        debug!(
+                            "Cache hit (scoped) for {} {:?} in scope {}: {} records",
+                            qname,
+                            qtype,
+                            scope,
+                            cached.len()
+                        );
+                        let dns_records =
+                            cached.iter().filter_map(db_record_to_dns_record).collect();
+                        return Ok(build_response_edns(
+                            &message,
+                            ResponseCode::NoError,
+                            dns_records,
+                            true,
+                            edns_ctx.as_ref(),
+                        ));
                     }
                 }
 
                 let records = self.db.lookup_scoped(scope, &qname, Some(kind));
                 if !records.is_empty() {
-                    debug!("Scoped hit for {} {:?} in scope {}: {} records", qname, qtype, scope, records.len());
+                    debug!(
+                        "Scoped hit for {} {:?} in scope {}: {} records",
+                        qname,
+                        qtype,
+                        scope,
+                        records.len()
+                    );
                     if let Some(ref cache) = self.dns_cache {
                         cache.insert_local(&scoped_cache_name, Some(kind), records.clone());
                     }
-                    let dns_records = records.iter().filter_map(|r| db_record_to_dns_record(r)).collect();
-                    return Ok(build_response_edns(&message, ResponseCode::NoError, dns_records, true, edns_ctx.as_ref()));
+                    let dns_records = records.iter().filter_map(db_record_to_dns_record).collect();
+                    return Ok(build_response_edns(
+                        &message,
+                        ResponseCode::NoError,
+                        dns_records,
+                        true,
+                        edns_ctx.as_ref(),
+                    ));
                 }
 
                 // ANAME resolution: if querying A/AAAA and there's an ANAME, resolve it
                 if kind == RecordKind::A || kind == RecordKind::AAAA {
-                    let aname_records = self.db.lookup_scoped(scope, &qname, Some(RecordKind::ANAME));
+                    let aname_records =
+                        self.db
+                            .lookup_scoped(scope, &qname, Some(RecordKind::ANAME));
                     if !aname_records.is_empty() {
                         let target = &aname_records[0].value;
                         let target_records = self.db.lookup_scoped(scope, target, Some(kind));
@@ -358,7 +403,13 @@ impl DnsServer {
                                     Some(rec)
                                 })
                                 .collect();
-                            return Ok(build_response_edns(&message, ResponseCode::NoError, dns_records, true, edns_ctx.as_ref()));
+                            return Ok(build_response_edns(
+                                &message,
+                                ResponseCode::NoError,
+                                dns_records,
+                                true,
+                                edns_ctx.as_ref(),
+                            ));
                         }
                     }
                 }
@@ -366,10 +417,21 @@ impl DnsServer {
 
             // Check CNAME in scoped records
             if record_kind.is_some() {
-                let cname_records = self.db.lookup_scoped(scope, &qname, Some(RecordKind::CNAME));
+                let cname_records = self
+                    .db
+                    .lookup_scoped(scope, &qname, Some(RecordKind::CNAME));
                 if !cname_records.is_empty() {
-                    let dns_records = cname_records.iter().filter_map(|r| db_record_to_dns_record(r)).collect();
-                    return Ok(build_response_edns(&message, ResponseCode::NoError, dns_records, true, edns_ctx.as_ref()));
+                    let dns_records = cname_records
+                        .iter()
+                        .filter_map(db_record_to_dns_record)
+                        .collect();
+                    return Ok(build_response_edns(
+                        &message,
+                        ResponseCode::NoError,
+                        dns_records,
+                        true,
+                        edns_ctx.as_ref(),
+                    ));
                 }
             }
 
@@ -385,8 +447,17 @@ impl DnsServer {
                     if normalized_qname.ends_with(zone) || normalized_qname == *zone {
                         let zone_records = self.db.lookup_scoped(scope, zone, None);
                         if !zone_records.is_empty() {
-                            debug!("Scoped authoritative NXDOMAIN for {} (scope {} zone {} exists)", qname, scope, zone);
-                            return Ok(build_response_edns(&message, ResponseCode::NXDomain, vec![], true, edns_ctx.as_ref()));
+                            debug!(
+                                "Scoped authoritative NXDOMAIN for {} (scope {} zone {} exists)",
+                                qname, scope, zone
+                            );
+                            return Ok(build_response_edns(
+                                &message,
+                                ResponseCode::NXDomain,
+                                vec![],
+                                true,
+                                edns_ctx.as_ref(),
+                            ));
                         }
                     }
                 }
@@ -396,13 +467,18 @@ impl DnsServer {
         }
 
         // Check RBL for reverse DNS queries (global, non-scoped)
-        if scope_name.is_none() {
-            if let Some(ip) = extract_ip_from_name(&qname) {
-                if self.rbl.is_listed(&ip).await || self.db.lookup_local_rbl(&ip.to_string()) {
-                    debug!("RBL block: {} is blacklisted", qname);
-                    return Ok(build_response_edns(&message, ResponseCode::NXDomain, vec![], false, edns_ctx.as_ref()));
-                }
-            }
+        if scope_name.is_none()
+            && let Some(ip) = extract_ip_from_name(&qname)
+            && (self.rbl.is_listed(&ip).await || self.db.lookup_local_rbl(&ip.to_string()))
+        {
+            debug!("RBL block: {} is blacklisted", qname);
+            return Ok(build_response_edns(
+                &message,
+                ResponseCode::NXDomain,
+                vec![],
+                false,
+                edns_ctx.as_ref(),
+            ));
         }
 
         // Determine if this query is for an authoritative zone
@@ -415,11 +491,13 @@ impl DnsServer {
             if let Some(ref cache) = self.dns_cache {
                 let cached = cache.lookup(&qname, Some(kind));
                 if !cached.is_empty() {
-                    debug!("Cache hit (local) for {} {:?}: {} records", qname, qtype, cached.len());
-                    let dns_records = cached
-                        .iter()
-                        .filter_map(|r| db_record_to_dns_record(r))
-                        .collect();
+                    debug!(
+                        "Cache hit (local) for {} {:?}: {} records",
+                        qname,
+                        qtype,
+                        cached.len()
+                    );
+                    let dns_records = cached.iter().filter_map(db_record_to_dns_record).collect();
                     return Ok(build_response_edns(
                         &message,
                         ResponseCode::NoError,
@@ -431,20 +509,44 @@ impl DnsServer {
             }
 
             let local_records = self.db.lookup(&qname, Some(kind));
-            if let Ok(records) = local_records {
-                if !records.is_empty() {
-                    debug!(
-                        "Local hit for {} {:?}: {} records",
-                        qname,
-                        qtype,
-                        records.len()
-                    );
-                    if let Some(ref cache) = self.dns_cache {
-                        cache.insert_local(&qname, Some(kind), records.clone());
-                    }
-                    let dns_records = records
+            if let Ok(records) = local_records
+                && !records.is_empty()
+            {
+                debug!(
+                    "Local hit for {} {:?}: {} records",
+                    qname,
+                    qtype,
+                    records.len()
+                );
+                if let Some(ref cache) = self.dns_cache {
+                    cache.insert_local(&qname, Some(kind), records.clone());
+                }
+                let dns_records = records.iter().filter_map(db_record_to_dns_record).collect();
+                return Ok(build_response_edns(
+                    &message,
+                    ResponseCode::NoError,
+                    dns_records,
+                    is_authoritative,
+                    edns_ctx.as_ref(),
+                ));
+            }
+
+            // ANAME resolution: if querying A/AAAA and there's an ANAME, resolve it
+            if (kind == RecordKind::A || kind == RecordKind::AAAA)
+                && let Ok(aname_records) = self.db.lookup(&qname, Some(RecordKind::ANAME))
+                && !aname_records.is_empty()
+            {
+                let target = &aname_records[0].value;
+                if let Ok(target_records) = self.db.lookup(target, Some(kind))
+                    && !target_records.is_empty()
+                {
+                    let dns_records: Vec<Record> = target_records
                         .iter()
-                        .filter_map(|r| db_record_to_dns_record(r))
+                        .filter_map(|r| {
+                            let mut rec = db_record_to_dns_record(r)?;
+                            rec.set_name(Name::from_ascii(&qname).ok()?);
+                            Some(rec)
+                        })
                         .collect();
                     return Ok(build_response_edns(
                         &message,
@@ -453,34 +555,6 @@ impl DnsServer {
                         is_authoritative,
                         edns_ctx.as_ref(),
                     ));
-                }
-            }
-
-            // ANAME resolution: if querying A/AAAA and there's an ANAME, resolve it
-            if kind == RecordKind::A || kind == RecordKind::AAAA {
-                if let Ok(aname_records) = self.db.lookup(&qname, Some(RecordKind::ANAME)) {
-                    if !aname_records.is_empty() {
-                        let target = &aname_records[0].value;
-                        if let Ok(target_records) = self.db.lookup(target, Some(kind)) {
-                            if !target_records.is_empty() {
-                                let dns_records: Vec<Record> = target_records
-                                    .iter()
-                                    .filter_map(|r| {
-                                        let mut rec = db_record_to_dns_record(r)?;
-                                        rec.set_name(Name::from_ascii(&qname).ok()?);
-                                        Some(rec)
-                                    })
-                                    .collect();
-                                return Ok(build_response_edns(
-                                    &message,
-                                    ResponseCode::NoError,
-                                    dns_records,
-                                    is_authoritative,
-                                    edns_ctx.as_ref(),
-                                ));
-                            }
-                        }
-                    }
                 }
             }
         }
@@ -488,20 +562,17 @@ impl DnsServer {
         // Also check without type filter for CNAME chains
         if record_kind.is_some() {
             let cname_records = self.db.lookup(&qname, Some(RecordKind::CNAME));
-            if let Ok(records) = cname_records {
-                if !records.is_empty() {
-                    let dns_records = records
-                        .iter()
-                        .filter_map(|r| db_record_to_dns_record(r))
-                        .collect();
-                    return Ok(build_response_edns(
-                        &message,
-                        ResponseCode::NoError,
-                        dns_records,
-                        is_authoritative,
-                        edns_ctx.as_ref(),
-                    ));
-                }
+            if let Ok(records) = cname_records
+                && !records.is_empty()
+            {
+                let dns_records = records.iter().filter_map(db_record_to_dns_record).collect();
+                return Ok(build_response_edns(
+                    &message,
+                    ResponseCode::NoError,
+                    dns_records,
+                    is_authoritative,
+                    edns_ctx.as_ref(),
+                ));
             }
         }
 
@@ -521,20 +592,20 @@ impl DnsServer {
                     // Name is under a managed zone but not found - check if the zone
                     // itself has records. If so, this is authoritative NXDOMAIN.
                     let zone_records = self.db.lookup(zone, None);
-                    if let Ok(records) = zone_records {
-                        if !records.is_empty() {
-                            debug!(
-                                "Authoritative NXDOMAIN for {} (zone {} exists)",
-                                qname, zone
-                            );
-                            return Ok(build_response_edns(
-                                &message,
-                                ResponseCode::NXDomain,
-                                vec![],
-                                true,
-                                edns_ctx.as_ref(),
-                            ));
-                        }
+                    if let Ok(records) = zone_records
+                        && !records.is_empty()
+                    {
+                        debug!(
+                            "Authoritative NXDOMAIN for {} (zone {} exists)",
+                            qname, zone
+                        );
+                        return Ok(build_response_edns(
+                            &message,
+                            ResponseCode::NXDomain,
+                            vec![],
+                            true,
+                            edns_ctx.as_ref(),
+                        ));
                     }
                 }
             }
@@ -565,11 +636,13 @@ impl DnsServer {
         if let Some(ref cache) = self.dns_cache {
             let cached = cache.lookup(&qname, record_kind);
             if !cached.is_empty() {
-                debug!("Cache hit for {} {:?}: {} records", qname, qtype, cached.len());
-                let dns_records = cached
-                    .iter()
-                    .filter_map(|r| db_record_to_dns_record(r))
-                    .collect();
+                debug!(
+                    "Cache hit for {} {:?}: {} records",
+                    qname,
+                    qtype,
+                    cached.len()
+                );
+                let dns_records = cached.iter().filter_map(db_record_to_dns_record).collect();
                 return Ok(build_response_edns(
                     &message,
                     ResponseCode::NoError,
@@ -585,52 +658,53 @@ impl DnsServer {
 
         // DNS64 synthesis: if AAAA query returned no answers and dns64_prefix is set,
         // re-query for A and synthesize AAAA records by embedding IPv4 in the prefix
-        if let Ok(ref response_bytes) = forward_result {
-            if qtype == RecordType::AAAA {
-                if let Some(prefix) = self.dns64_prefix {
-                    if let Ok(fwd_msg) = hickory_proto::op::Message::from_bytes(response_bytes) {
-                        let has_aaaa = fwd_msg.answers().iter().any(|a| a.record_type() == RecordType::AAAA);
-                        if !has_aaaa {
-                            // Build an A query for the same name
-                            let a_query = build_query_for_type(&qname, RecordType::A, message.id());
-                            if let Ok(a_response_bytes) = self.forward_query(&a_query).await {
-                                if let Ok(a_msg) = hickory_proto::op::Message::from_bytes(&a_response_bytes) {
-                                    let synthesized: Vec<Record> = a_msg
-                                        .answers()
-                                        .iter()
-                                        .filter_map(|a_rec| {
-                                            if let RData::A(rdata::A(ipv4)) = a_rec.data() {
-                                                let synth_ipv6 = synthesize_dns64_address(&prefix, ipv4);
-                                                let name = a_rec.name().clone();
-                                                let mut rec = Record::from_rdata(
-                                                    name,
-                                                    a_rec.ttl(),
-                                                    RData::AAAA(rdata::AAAA(synth_ipv6)),
-                                                );
-                                                rec.set_dns_class(DNSClass::IN);
-                                                Some(rec)
-                                            } else {
-                                                None
-                                            }
-                                        })
-                                        .collect();
-                                    if !synthesized.is_empty() {
-                                        debug!(
-                                            "DNS64 synthesized {} AAAA records for {}",
-                                            synthesized.len(),
-                                            qname
-                                        );
-                                        return Ok(build_response_edns(
-                                            &message,
-                                            ResponseCode::NoError,
-                                            synthesized,
-                                            false,
-                                            edns_ctx.as_ref(),
-                                        ));
-                                    }
-                                }
+        if let Ok(ref response_bytes) = forward_result
+            && qtype == RecordType::AAAA
+            && let Some(prefix) = self.dns64_prefix
+            && let Ok(fwd_msg) = hickory_proto::op::Message::from_bytes(response_bytes)
+        {
+            let has_aaaa = fwd_msg
+                .answers()
+                .iter()
+                .any(|a| a.record_type() == RecordType::AAAA);
+            if !has_aaaa {
+                // Build an A query for the same name
+                let a_query = build_query_for_type(&qname, RecordType::A, message.id());
+                if let Ok(a_response_bytes) = self.forward_query(&a_query).await
+                    && let Ok(a_msg) = hickory_proto::op::Message::from_bytes(&a_response_bytes)
+                {
+                    let synthesized: Vec<Record> = a_msg
+                        .answers()
+                        .iter()
+                        .filter_map(|a_rec| {
+                            if let RData::A(rdata::A(ipv4)) = a_rec.data() {
+                                let synth_ipv6 = synthesize_dns64_address(&prefix, ipv4);
+                                let name = a_rec.name().clone();
+                                let mut rec = Record::from_rdata(
+                                    name,
+                                    a_rec.ttl(),
+                                    RData::AAAA(rdata::AAAA(synth_ipv6)),
+                                );
+                                rec.set_dns_class(DNSClass::IN);
+                                Some(rec)
+                            } else {
+                                None
                             }
-                        }
+                        })
+                        .collect();
+                    if !synthesized.is_empty() {
+                        debug!(
+                            "DNS64 synthesized {} AAAA records for {}",
+                            synthesized.len(),
+                            qname
+                        );
+                        return Ok(build_response_edns(
+                            &message,
+                            ResponseCode::NoError,
+                            synthesized,
+                            false,
+                            edns_ctx.as_ref(),
+                        ));
                     }
                 }
             }
@@ -652,36 +726,36 @@ impl DnsServer {
         // Walk up from qname, checking each parent for DNAME
         for i in 1..parts.len() {
             let parent = format!("{}.", parts[i..].join("."));
-            if let Ok(dname_records) = self.db.lookup(&parent, Some(RecordKind::DNAME)) {
-                if !dname_records.is_empty() {
-                    let dname_target = &dname_records[0].value;
-                    // Synthesize CNAME: replace parent suffix with dname target
-                    let prefix = parts[..i].join(".");
-                    let synth_target = format!("{}.{}", prefix, dname_target.trim_end_matches('.'));
-                    let synth_cname = crate::db::DnsRecord {
-                        id: None,
-                        name: normalized.clone(),
-                        record_type: RecordKind::CNAME,
-                        value: crate::db::normalize_name(&synth_target),
-                        ttl: dname_records[0].ttl,
-                        priority: 0,
-                    };
-                    let mut dns_records = Vec::new();
-                    // Add the DNAME record
-                    if let Some(dr) = db_record_to_dns_record(&dname_records[0]) {
-                        dns_records.push(dr);
-                    }
-                    // Add the synthesized CNAME
-                    if let Some(cr) = db_record_to_dns_record(&synth_cname) {
-                        dns_records.push(cr);
-                    }
-                    return Some(build_response_ex(
-                        message,
-                        ResponseCode::NoError,
-                        dns_records,
-                        true,
-                    ));
+            if let Ok(dname_records) = self.db.lookup(&parent, Some(RecordKind::DNAME))
+                && !dname_records.is_empty()
+            {
+                let dname_target = &dname_records[0].value;
+                // Synthesize CNAME: replace parent suffix with dname target
+                let prefix = parts[..i].join(".");
+                let synth_target = format!("{}.{}", prefix, dname_target.trim_end_matches('.'));
+                let synth_cname = crate::db::DnsRecord {
+                    id: None,
+                    name: normalized.clone(),
+                    record_type: RecordKind::CNAME,
+                    value: crate::db::normalize_name(&synth_target),
+                    ttl: dname_records[0].ttl,
+                    priority: 0,
+                };
+                let mut dns_records = Vec::new();
+                // Add the DNAME record
+                if let Some(dr) = db_record_to_dns_record(&dname_records[0]) {
+                    dns_records.push(dr);
                 }
+                // Add the synthesized CNAME
+                if let Some(cr) = db_record_to_dns_record(&synth_cname) {
+                    dns_records.push(cr);
+                }
+                return Some(build_response_ex(
+                    message,
+                    ResponseCode::NoError,
+                    dns_records,
+                    true,
+                ));
             }
         }
         None
@@ -699,7 +773,9 @@ impl DnsServer {
         let parts: Vec<&str> = normalized.trim_end_matches('.').split('.').collect();
         for i in 1..parts.len() {
             let parent = format!("{}.", parts[i..].join("."));
-            let dname_records = self.db.lookup_scoped(scope, &parent, Some(RecordKind::DNAME));
+            let dname_records = self
+                .db
+                .lookup_scoped(scope, &parent, Some(RecordKind::DNAME));
             if !dname_records.is_empty() {
                 let dname_target = &dname_records[0].value;
                 let prefix = parts[..i].join(".");
@@ -751,26 +827,22 @@ impl DnsServer {
             match result {
                 Ok(response) => {
                     // Parse upstream response and insert into cache asynchronously
-                    if let Some(ref cache) = self.dns_cache {
-                        if let Ok(upstream_msg) = hickory_proto::op::Message::from_bytes(&response) {
-                            if upstream_msg.response_code() == ResponseCode::NoError
-                                && !upstream_msg.answers().is_empty()
-                            {
-                                let answers = upstream_msg.answers();
-                                // Use the first answer's name and type as cache key
-                                if let Some(first) = answers.first() {
-                                    let name = first.name().to_string();
-                                    let rtype = first.record_type();
-                                    let kind = map_query_type_to_kind(rtype);
-                                    let ttl = answers.iter().map(|a| a.ttl()).min().unwrap_or(300);
-                                    let cache_records: Vec<crate::db::DnsRecord> = answers
-                                        .iter()
-                                        .filter_map(|a| dns_record_to_db_record(a))
-                                        .collect();
-                                    if !cache_records.is_empty() {
-                                        cache.insert(&name, kind, cache_records, ttl);
-                                    }
-                                }
+                    if let Some(ref cache) = self.dns_cache
+                        && let Ok(upstream_msg) = hickory_proto::op::Message::from_bytes(&response)
+                        && upstream_msg.response_code() == ResponseCode::NoError
+                        && !upstream_msg.answers().is_empty()
+                    {
+                        let answers = upstream_msg.answers();
+                        // Use the first answer's name and type as cache key
+                        if let Some(first) = answers.first() {
+                            let name = first.name().to_string();
+                            let rtype = first.record_type();
+                            let kind = map_query_type_to_kind(rtype);
+                            let ttl = answers.iter().map(|a| a.ttl()).min().unwrap_or(300);
+                            let cache_records: Vec<crate::db::DnsRecord> =
+                                answers.iter().filter_map(dns_record_to_db_record).collect();
+                            if !cache_records.is_empty() {
+                                cache.insert(&name, kind, cache_records, ttl);
                             }
                         }
                     }
@@ -794,12 +866,16 @@ impl DnsServer {
         if socket_guard.is_none() {
             *socket_guard = Some(UdpSocket::bind("0.0.0.0:0").await?);
         }
-        let socket = socket_guard.as_ref().unwrap();
+        let socket = socket_guard
+            .as_ref()
+            .context("forward socket not initialized after bind")?;
 
         // Apply QNAME case randomization (0x20 encoding) if enabled
         let (send_data, randomized_name) = if self.qname_randomization {
             match randomize_qname_case(query_data) {
-                Some((modified, original_qname, rand_name)) => (modified, Some((original_qname, rand_name))),
+                Some((modified, original_qname, rand_name)) => {
+                    (modified, Some((original_qname, rand_name)))
+                }
                 None => (query_data.to_vec(), None),
             }
         } else {
@@ -820,17 +896,16 @@ impl DnsServer {
         drop(socket_guard);
 
         // Verify QNAME case in response matches what we sent (0x20 check)
-        if let Some((ref original_qname, ref sent_randomized)) = randomized_name {
-            if let Ok(response_msg) = hickory_proto::op::Message::from_bytes(&buf) {
-                if let Some(resp_q) = response_msg.queries().first() {
-                    let resp_qname = resp_q.name().to_string();
-                    if resp_qname != *sent_randomized {
-                        warn!(
-                            "QNAME case mismatch from {}: sent '{}', got '{}' (original: '{}')",
-                            target, sent_randomized, resp_qname, original_qname
-                        );
-                    }
-                }
+        if let Some((ref original_qname, ref sent_randomized)) = randomized_name
+            && let Ok(response_msg) = hickory_proto::op::Message::from_bytes(&buf)
+            && let Some(resp_q) = response_msg.queries().first()
+        {
+            let resp_qname = resp_q.name().to_string();
+            if resp_qname != *sent_randomized {
+                warn!(
+                    "QNAME case mismatch from {}: sent '{}', got '{}' (original: '{}')",
+                    target, sent_randomized, resp_qname, original_qname
+                );
             }
         }
 
@@ -1017,8 +1092,12 @@ fn db_record_to_dns_record(db_rec: &crate::db::DnsRecord) -> Option<Record> {
                 return None;
             }
         }
-        RecordKind::DNSKEY | RecordKind::DS | RecordKind::RRSIG | RecordKind::NSEC
-        | RecordKind::NSEC3 | RecordKind::NSEC3PARAM => {
+        RecordKind::DNSKEY
+        | RecordKind::DS
+        | RecordKind::RRSIG
+        | RecordKind::NSEC
+        | RecordKind::NSEC3
+        | RecordKind::NSEC3PARAM => {
             // DNSSEC records: stored as opaque TXT for now, proper wire format
             // will be handled by the DNSSEC module when signing
             RData::TXT(rdata::TXT::new(vec![db_rec.value.clone()]))
@@ -1207,9 +1286,17 @@ fn dns_record_to_db_record(record: &Record) -> Option<crate::db::DnsRecord> {
         RData::A(rdata::A(ip)) => (RecordKind::A, ip.to_string(), 0u32),
         RData::AAAA(rdata::AAAA(ip)) => (RecordKind::AAAA, ip.to_string(), 0u32),
         RData::CNAME(rdata::CNAME(target)) => (RecordKind::CNAME, target.to_string(), 0u32),
-        RData::MX(mx) => (RecordKind::MX, mx.exchange().to_string(), mx.preference() as u32),
+        RData::MX(mx) => (
+            RecordKind::MX,
+            mx.exchange().to_string(),
+            mx.preference() as u32,
+        ),
         RData::TXT(txt) => {
-            let value = txt.iter().map(|s| String::from_utf8_lossy(s).to_string()).collect::<Vec<_>>().join("");
+            let value = txt
+                .iter()
+                .map(|s| String::from_utf8_lossy(s).to_string())
+                .collect::<Vec<_>>()
+                .join("");
             (RecordKind::TXT, value, 0u32)
         }
         RData::NS(rdata::NS(target)) => (RecordKind::NS, target.to_string(), 0u32),
@@ -1516,8 +1603,7 @@ mod tests {
 
     #[test]
     fn test_extract_ip_from_name_ipv6() {
-        let name =
-            "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa.";
+        let name = "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa.";
         let ip = extract_ip_from_name(name);
         assert_eq!(ip, Some(IpAddr::V6(Ipv6Addr::LOCALHOST)));
     }
@@ -1629,30 +1715,36 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "testnet".to_string(),
             home_domain: "testnet.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
-        db.add_scoped_record("testnet", &DnsRecord {
-            id: None,
-            name: "server.testnet.home.".to_string(),
-            record_type: RecordKind::A,
-            value: "10.0.0.1".to_string(),
-            ttl: 300,
-            priority: 0,
-        }).unwrap();
+        db.add_scoped_record(
+            "testnet",
+            &DnsRecord {
+                id: None,
+                name: "server.testnet.home.".to_string(),
+                record_type: RecordKind::A,
+                value: "10.0.0.1".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
 
         // Associate an IP with the scope
         db.join_network(&NetworkAssociation {
             ip_address: "192.168.1.50".to_string(),
             scope_name: "testnet".to_string(),
             ttl_seconds: 3600,
-        }).unwrap();
+        })
+        .unwrap();
 
         let server = make_test_server(db);
         let query = build_query("server.testnet.home.", RecordType::A);
-        let response_bytes = server.handle_query_from(
-            &query,
-            "192.168.1.50".parse().unwrap(),
-        ).await.unwrap();
+        let response_bytes = server
+            .handle_query_from(&query, "192.168.1.50".parse().unwrap())
+            .await
+            .unwrap();
         let response = Message::from_bytes(&response_bytes).unwrap();
 
         assert_eq!(response.response_code(), ResponseCode::NoError);
@@ -1672,14 +1764,15 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "private".to_string(),
             home_domain: "private.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         let server = make_test_server(db);
         let query = build_query("anything.com.", RecordType::A);
-        let response_bytes = server.handle_query_from(
-            &query,
-            "192.168.1.99".parse().unwrap(),
-        ).await.unwrap();
+        let response_bytes = server
+            .handle_query_from(&query, "192.168.1.99".parse().unwrap())
+            .await
+            .unwrap();
         let response = Message::from_bytes(&response_bytes).unwrap();
 
         assert_eq!(response.response_code(), ResponseCode::Refused);
@@ -1695,14 +1788,15 @@ mod tests {
             value: "1.2.3.4".to_string(),
             ttl: 300,
             priority: 0,
-        }).unwrap();
+        })
+        .unwrap();
 
         let server = make_test_server(db);
         let query = build_query("open.test.", RecordType::A);
-        let response_bytes = server.handle_query_from(
-            &query,
-            "192.168.1.1".parse().unwrap(),
-        ).await.unwrap();
+        let response_bytes = server
+            .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+            .await
+            .unwrap();
         let response = Message::from_bytes(&response_bytes).unwrap();
 
         assert_eq!(response.response_code(), ResponseCode::NoError);
@@ -1717,47 +1811,62 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "scope_a".to_string(),
             home_domain: "a.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
         db.create_network_scope(&NetworkScope {
             name: "scope_b".to_string(),
             home_domain: "b.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Same name, different values per scope
-        db.add_scoped_record("scope_a", &DnsRecord {
-            id: None,
-            name: "shared.internal.".to_string(),
-            record_type: RecordKind::A,
-            value: "10.0.0.1".to_string(),
-            ttl: 300,
-            priority: 0,
-        }).unwrap();
-        db.add_scoped_record("scope_b", &DnsRecord {
-            id: None,
-            name: "shared.internal.".to_string(),
-            record_type: RecordKind::A,
-            value: "10.0.0.2".to_string(),
-            ttl: 300,
-            priority: 0,
-        }).unwrap();
+        db.add_scoped_record(
+            "scope_a",
+            &DnsRecord {
+                id: None,
+                name: "shared.internal.".to_string(),
+                record_type: RecordKind::A,
+                value: "10.0.0.1".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
+        db.add_scoped_record(
+            "scope_b",
+            &DnsRecord {
+                id: None,
+                name: "shared.internal.".to_string(),
+                record_type: RecordKind::A,
+                value: "10.0.0.2".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
 
         // Associate IPs
         db.join_network(&NetworkAssociation {
             ip_address: "192.168.1.1".to_string(),
             scope_name: "scope_a".to_string(),
             ttl_seconds: 3600,
-        }).unwrap();
+        })
+        .unwrap();
         db.join_network(&NetworkAssociation {
             ip_address: "192.168.2.1".to_string(),
             scope_name: "scope_b".to_string(),
             ttl_seconds: 3600,
-        }).unwrap();
+        })
+        .unwrap();
 
         let server = make_test_server(db);
         let query = build_query("shared.internal.", RecordType::A);
 
         // Query from scope_a IP
-        let resp_bytes = server.handle_query_from(&query, "192.168.1.1".parse().unwrap()).await.unwrap();
+        let resp_bytes = server
+            .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+            .await
+            .unwrap();
         let resp = Message::from_bytes(&resp_bytes).unwrap();
         assert_eq!(resp.response_code(), ResponseCode::NoError);
         if let RData::A(rdata::A(ip)) = resp.answers()[0].data() {
@@ -1765,7 +1874,10 @@ mod tests {
         }
 
         // Query from scope_b IP
-        let resp_bytes = server.handle_query_from(&query, "192.168.2.1".parse().unwrap()).await.unwrap();
+        let resp_bytes = server
+            .handle_query_from(&query, "192.168.2.1".parse().unwrap())
+            .await
+            .unwrap();
         let resp = Message::from_bytes(&resp_bytes).unwrap();
         assert_eq!(resp.response_code(), ResponseCode::NoError);
         if let RData::A(rdata::A(ip)) = resp.answers()[0].data() {
@@ -1780,19 +1892,21 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "rblscope".to_string(),
             home_domain: "rblscope.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
         db.join_network(&NetworkAssociation {
             ip_address: "192.168.1.1".to_string(),
             scope_name: "rblscope".to_string(),
             ttl_seconds: 3600,
-        }).unwrap();
+        })
+        .unwrap();
 
         let server = make_test_server_with_rbl(db, true);
         let query = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
-        let resp_bytes = server.handle_query_from(
-            &query,
-            "192.168.1.1".parse().unwrap(),
-        ).await.unwrap();
+        let resp_bytes = server
+            .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+            .await
+            .unwrap();
         let resp = Message::from_bytes(&resp_bytes).unwrap();
         assert_eq!(resp.response_code(), ResponseCode::NXDomain);
     }
@@ -1804,29 +1918,35 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "cnamescope".to_string(),
             home_domain: "cnamescope.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
-        db.add_scoped_record("cnamescope", &DnsRecord {
-            id: None,
-            name: "alias.cnamescope.home.".to_string(),
-            record_type: RecordKind::CNAME,
-            value: "real.cnamescope.home.".to_string(),
-            ttl: 300,
-            priority: 0,
-        }).unwrap();
+        db.add_scoped_record(
+            "cnamescope",
+            &DnsRecord {
+                id: None,
+                name: "alias.cnamescope.home.".to_string(),
+                record_type: RecordKind::CNAME,
+                value: "real.cnamescope.home.".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
 
         db.join_network(&NetworkAssociation {
             ip_address: "192.168.1.1".to_string(),
             scope_name: "cnamescope".to_string(),
             ttl_seconds: 3600,
-        }).unwrap();
+        })
+        .unwrap();
 
         let server = make_test_server(db);
         let query = build_query("alias.cnamescope.home.", RecordType::A);
-        let resp_bytes = server.handle_query_from(
-            &query,
-            "192.168.1.1".parse().unwrap(),
-        ).await.unwrap();
+        let resp_bytes = server
+            .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+            .await
+            .unwrap();
         let resp = Message::from_bytes(&resp_bytes).unwrap();
 
         assert_eq!(resp.response_code(), ResponseCode::NoError);
@@ -1840,51 +1960,61 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "zonescope".to_string(),
             home_domain: "zonescope.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Add a record at the zone level to make it authoritative
-        db.add_scoped_record("zonescope", &DnsRecord {
-            id: None,
-            name: "zonescope.home.".to_string(),
-            record_type: RecordKind::A,
-            value: "10.0.0.1".to_string(),
-            ttl: 300,
-            priority: 0,
-        }).unwrap();
+        db.add_scoped_record(
+            "zonescope",
+            &DnsRecord {
+                id: None,
+                name: "zonescope.home.".to_string(),
+                record_type: RecordKind::A,
+                value: "10.0.0.1".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
 
         // Also add a record under the zone
-        db.add_scoped_record("zonescope", &DnsRecord {
-            id: None,
-            name: "existing.zonescope.home.".to_string(),
-            record_type: RecordKind::A,
-            value: "10.0.0.2".to_string(),
-            ttl: 300,
-            priority: 0,
-        }).unwrap();
+        db.add_scoped_record(
+            "zonescope",
+            &DnsRecord {
+                id: None,
+                name: "existing.zonescope.home.".to_string(),
+                record_type: RecordKind::A,
+                value: "10.0.0.2".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
 
         db.join_network(&NetworkAssociation {
             ip_address: "192.168.1.1".to_string(),
             scope_name: "zonescope".to_string(),
             ttl_seconds: 3600,
-        }).unwrap();
+        })
+        .unwrap();
 
         let server = make_test_server(db);
 
         // Query for a known name should succeed
         let query = build_query("existing.zonescope.home.", RecordType::A);
-        let resp_bytes = server.handle_query_from(
-            &query,
-            "192.168.1.1".parse().unwrap(),
-        ).await.unwrap();
+        let resp_bytes = server
+            .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+            .await
+            .unwrap();
         let resp = Message::from_bytes(&resp_bytes).unwrap();
         assert_eq!(resp.response_code(), ResponseCode::NoError);
 
         // Query for a non-existent name under the scoped managed zone
         let query = build_query("nonexistent.zonescope.home.", RecordType::A);
-        let resp_bytes = server.handle_query_from(
-            &query,
-            "192.168.1.1".parse().unwrap(),
-        ).await.unwrap();
+        let resp_bytes = server
+            .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+            .await
+            .unwrap();
         let resp = Message::from_bytes(&resp_bytes).unwrap();
 
         // Should get authoritative NXDOMAIN since the zone exists but name doesn't
@@ -1898,31 +2028,37 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "expirenet".to_string(),
             home_domain: "expirenet.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
-        db.add_scoped_record("expirenet", &DnsRecord {
-            id: None,
-            name: "host.expirenet.home.".to_string(),
-            record_type: RecordKind::A,
-            value: "10.0.0.1".to_string(),
-            ttl: 300,
-            priority: 0,
-        }).unwrap();
+        db.add_scoped_record(
+            "expirenet",
+            &DnsRecord {
+                id: None,
+                name: "host.expirenet.home.".to_string(),
+                record_type: RecordKind::A,
+                value: "10.0.0.1".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
 
         db.join_network(&NetworkAssociation {
             ip_address: "192.168.1.1".to_string(),
             scope_name: "expirenet".to_string(),
             ttl_seconds: 3600,
-        }).unwrap();
+        })
+        .unwrap();
 
         let server = make_test_server(db.clone());
 
         // Should resolve while association is active
         let query = build_query("host.expirenet.home.", RecordType::A);
-        let resp_bytes = server.handle_query_from(
-            &query,
-            "192.168.1.1".parse().unwrap(),
-        ).await.unwrap();
+        let resp_bytes = server
+            .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+            .await
+            .unwrap();
         let resp = Message::from_bytes(&resp_bytes).unwrap();
         assert_eq!(resp.response_code(), ResponseCode::NoError);
         assert_eq!(resp.answers().len(), 1);
@@ -1931,10 +2067,10 @@ mod tests {
         db.expire_association("192.168.1.1");
 
         // Should get REFUSED after association expires
-        let resp_bytes = server.handle_query_from(
-            &query,
-            "192.168.1.1".parse().unwrap(),
-        ).await.unwrap();
+        let resp_bytes = server
+            .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+            .await
+            .unwrap();
         let resp = Message::from_bytes(&resp_bytes).unwrap();
         assert_eq!(resp.response_code(), ResponseCode::Refused);
     }
@@ -1946,7 +2082,8 @@ mod tests {
         db.create_network_scope(&NetworkScope {
             name: "fallthrough".to_string(),
             home_domain: "fallthrough.home".to_string(),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Add a global record (not scoped)
         db.add_record(&DnsRecord {
@@ -1956,20 +2093,22 @@ mod tests {
             value: "1.2.3.4".to_string(),
             ttl: 300,
             priority: 0,
-        }).unwrap();
+        })
+        .unwrap();
 
         db.join_network(&NetworkAssociation {
             ip_address: "192.168.1.1".to_string(),
             scope_name: "fallthrough".to_string(),
             ttl_seconds: 3600,
-        }).unwrap();
+        })
+        .unwrap();
 
         let server = make_test_server(db);
         let query = build_query("global.test.", RecordType::A);
-        let resp_bytes = server.handle_query_from(
-            &query,
-            "192.168.1.1".parse().unwrap(),
-        ).await.unwrap();
+        let resp_bytes = server
+            .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+            .await
+            .unwrap();
         let resp = Message::from_bytes(&resp_bytes).unwrap();
 
         // Should still resolve global records even when in a scope

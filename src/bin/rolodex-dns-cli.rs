@@ -15,21 +15,18 @@ use tower::service_fn;
 #[command(name = "rolodex-dns-cli")]
 #[command(version)]
 #[command(about = "CLI client for managing a Rolodex DNS server via gRPC")]
-#[command(long_about = "CLI client for managing a Rolodex split-horizon DNS server.\n\n\
+#[command(
+    long_about = "CLI client for managing a Rolodex split-horizon DNS server.\n\n\
     Connects to the Rolodex gRPC management interface over TCP or Unix socket \
     to manage DNS records, upstream forwarders, and RBL configuration.\n\n\
     TCP connections require authentication via --auth-token when the server \
-    has a shared secret configured. Unix socket connections bypass authentication.")]
+    has a shared secret configured. Unix socket connections bypass authentication."
+)]
 struct Cli {
     /// gRPC server address for TCP connections (host:port format).
     /// Ignored when --unix-socket is specified.
     /// Calls: http://<address> via gRPC TCP transport
-    #[arg(
-        short = 'a',
-        long,
-        default_value = "127.0.0.1:50051",
-        global = true
-    )]
+    #[arg(short = 'a', long, default_value = "127.0.0.1:50051", global = true)]
     address: String,
 
     /// Path to Unix domain socket for gRPC connections.
@@ -526,7 +523,6 @@ enum Commands {
     // ================================================================
     // DHCP Pool Management
     // ================================================================
-
     /// Add a DHCP address pool for a scope.
     #[command(name = "add-dhcp-pool")]
     AddDhcpPool {
@@ -629,7 +625,6 @@ enum Commands {
     },
 
     // ================================================================
-
     /// Generate a DNSSEC key pair for a zone.
     /// gRPC path: /rolodex_dns.RolodexDnsService/GenerateDnssecKey
     #[command(name = "generate-dnssec-key")]
@@ -698,7 +693,11 @@ enum Commands {
         #[arg(short, long)]
         domain: String,
         /// ACME provider URL (e.g. Let's Encrypt)
-        #[arg(short, long, default_value = "https://acme-v02.api.letsencrypt.org/directory")]
+        #[arg(
+            short,
+            long,
+            default_value = "https://acme-v02.api.letsencrypt.org/directory"
+        )]
         provider_url: String,
     },
 
@@ -795,10 +794,7 @@ async fn main() -> Result<()> {
                 .context("remove-record RPC failed")?;
             let resp = response.into_inner();
             if resp.success {
-                println!(
-                    "Removed {} record(s) for {}",
-                    resp.removed_count, name
-                );
+                println!("Removed {} record(s) for {}", resp.removed_count, name);
             } else {
                 anyhow::bail!("Failed to remove records: {}", resp.message);
             }
@@ -819,8 +815,8 @@ async fn main() -> Result<()> {
                 println!("No records found.");
             } else {
                 println!(
-                    "{:<40} {:<8} {:<40} {:<6} {}",
-                    "NAME", "TYPE", "VALUE", "TTL", "PRIORITY"
+                    "{:<40} {:<8} {:<40} {:<6} PRIORITY",
+                    "NAME", "TYPE", "VALUE", "TTL"
                 );
                 println!("{}", "-".repeat(100));
                 for r in &records {
@@ -901,7 +897,7 @@ async fn main() -> Result<()> {
                 println!("No RBL providers configured.");
             } else {
                 println!("\nProviders:");
-                println!("{:<40} {}", "ZONE", "ENABLED");
+                println!("{:<40} ENABLED", "ZONE");
                 println!("{}", "-".repeat(50));
                 for p in &config.providers {
                     println!("{:<40} {}", p.zone, p.enabled);
@@ -970,7 +966,7 @@ async fn main() -> Result<()> {
             if scopes.is_empty() {
                 println!("No network scopes configured.");
             } else {
-                println!("{:<30} {}", "NAME", "HOME DOMAIN");
+                println!("{:<30} HOME DOMAIN", "NAME");
                 println!("{}", "-".repeat(60));
                 for s in &scopes {
                     println!("{:<30} {}", s.name, s.home_domain);
@@ -1025,10 +1021,13 @@ async fn main() -> Result<()> {
             if assocs.is_empty() {
                 println!("No network associations found.");
             } else {
-                println!("{:<20} {:<20} {}", "IP ADDRESS", "SCOPE", "TTL");
+                println!("{:<20} {:<20} TTL", "IP ADDRESS", "SCOPE");
                 println!("{}", "-".repeat(50));
                 for a in &assocs {
-                    println!("{:<20} {:<20} {}", a.ip_address, a.scope_name, a.ttl_seconds);
+                    println!(
+                        "{:<20} {:<20} {}",
+                        a.ip_address, a.scope_name, a.ttl_seconds
+                    );
                 }
                 println!("\n{} association(s) found.", assocs.len());
             }
@@ -1119,8 +1118,8 @@ async fn main() -> Result<()> {
                 println!("No scoped records found in '{}'.", scope);
             } else {
                 println!(
-                    "{:<40} {:<8} {:<40} {:<6} {}",
-                    "NAME", "TYPE", "VALUE", "TTL", "PRIORITY"
+                    "{:<40} {:<8} {:<40} {:<6} PRIORITY",
+                    "NAME", "TYPE", "VALUE", "TTL"
                 );
                 println!("{}", "-".repeat(100));
                 for r in &records {
@@ -1282,7 +1281,7 @@ async fn main() -> Result<()> {
             if entries.is_empty() {
                 println!("No local RBL entries configured.");
             } else {
-                println!("{:<40} {}", "NAME", "REASON");
+                println!("{:<40} REASON", "NAME");
                 println!("{}", "-".repeat(60));
                 for e in &entries {
                     println!("{:<40} {}", e.name, e.reason);
@@ -1291,7 +1290,11 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::SetTtlDrift { mode, adjustment, log_multiplier } => {
+        Commands::SetTtlDrift {
+            mode,
+            adjustment,
+            log_multiplier,
+        } => {
             let response = client
                 .set_ttl_drift_config(SetTtlDriftConfigRequest {
                     config: Some(TtlDriftConfig {
@@ -1340,10 +1343,13 @@ async fn main() -> Result<()> {
             if stats.is_empty() {
                 println!("No latency statistics available.");
             } else {
-                println!("{:<30} {:<15} {}", "SERVER", "AVG LATENCY MS", "QUERY COUNT");
+                println!("{:<30} {:<15} QUERY COUNT", "SERVER", "AVG LATENCY MS");
                 println!("{}", "-".repeat(60));
                 for s in &stats {
-                    println!("{:<30} {:<15.2} {}", s.server, s.avg_latency_ms, s.query_count);
+                    println!(
+                        "{:<30} {:<15.2} {}",
+                        s.server, s.avg_latency_ms, s.query_count
+                    );
                 }
             }
         }
@@ -1361,7 +1367,10 @@ async fn main() -> Result<()> {
                 .context("set-dns64 RPC failed")?;
             let resp = response.into_inner();
             if resp.success {
-                println!("DNS64 config updated: enabled={}, prefix={}", enabled, prefix);
+                println!(
+                    "DNS64 config updated: enabled={}, prefix={}",
+                    enabled, prefix
+                );
             } else {
                 anyhow::bail!("Failed to set DNS64 config: {}", resp.message);
             }
@@ -1387,8 +1396,14 @@ async fn main() -> Result<()> {
         // ================================================================
         // DHCP / Scope RBL / Cert CLI handlers
         // ================================================================
-
-        Commands::AddDhcpPool { scope, range_start, range_end, gateway, subnet_mask, dns_servers } => {
+        Commands::AddDhcpPool {
+            scope,
+            range_start,
+            range_end,
+            gateway,
+            subnet_mask,
+            dns_servers,
+        } => {
             let response = client
                 .add_dhcp_pool(AddDhcpPoolRequest {
                     pool: Some(DhcpPool {
@@ -1440,10 +1455,16 @@ async fn main() -> Result<()> {
             if resp.pools.is_empty() {
                 println!("No DHCP pools configured.");
             } else {
-                println!("{:<6} {:<15} {:<18} {:<18} {:<18} {:<18}", "ID", "SCOPE", "RANGE START", "RANGE END", "GATEWAY", "SUBNET MASK");
+                println!(
+                    "{:<6} {:<15} {:<18} {:<18} {:<18} {:<18}",
+                    "ID", "SCOPE", "RANGE START", "RANGE END", "GATEWAY", "SUBNET MASK"
+                );
                 println!("{}", "-".repeat(93));
                 for p in resp.pools {
-                    println!("{:<6} {:<15} {:<18} {:<18} {:<18} {:<18}", p.id, p.scope_name, p.range_start, p.range_end, p.gateway, p.subnet_mask);
+                    println!(
+                        "{:<6} {:<15} {:<18} {:<18} {:<18} {:<18}",
+                        p.id, p.scope_name, p.range_start, p.range_end, p.gateway, p.subnet_mask
+                    );
                 }
             }
         }
@@ -1460,10 +1481,16 @@ async fn main() -> Result<()> {
             if resp.leases.is_empty() {
                 println!("No DHCP leases.");
             } else {
-                println!("{:<20} {:<18} {:<15} {:<20} {:<10}", "MAC", "IP", "SCOPE", "HOSTNAME", "STATE");
+                println!(
+                    "{:<20} {:<18} {:<15} {:<20} {:<10}",
+                    "MAC", "IP", "SCOPE", "HOSTNAME", "STATE"
+                );
                 println!("{}", "-".repeat(83));
                 for l in resp.leases {
-                    println!("{:<20} {:<18} {:<15} {:<20} {:<10}", l.mac, l.ip, l.scope_name, l.hostname, l.state);
+                    println!(
+                        "{:<20} {:<18} {:<15} {:<20} {:<10}",
+                        l.mac, l.ip, l.scope_name, l.hostname, l.state
+                    );
                 }
             }
         }
@@ -1484,7 +1511,11 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::AddScopeRbl { scope, zone, enabled } => {
+        Commands::AddScopeRbl {
+            scope,
+            zone,
+            enabled,
+        } => {
             let response = client
                 .add_scope_rbl_provider(AddScopeRblProviderRequest {
                     provider: Some(ScopeRblProvider {
@@ -1541,7 +1572,12 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::SetDhcpCert { scope, option_code, cert_path, description } => {
+        Commands::SetDhcpCert {
+            scope,
+            option_code,
+            cert_path,
+            description,
+        } => {
             let cert_data = std::fs::read(&cert_path)
                 .with_context(|| format!("failed to read cert file: {}", cert_path))?;
             let response = client
@@ -1575,7 +1611,10 @@ async fn main() -> Result<()> {
                 .context("remove-dhcp-cert RPC failed")?;
             let resp = response.into_inner();
             if resp.success {
-                println!("Removed DHCP cert option {} from scope {}", option_code, scope);
+                println!(
+                    "Removed DHCP cert option {} from scope {}",
+                    option_code, scope
+                );
             } else {
                 anyhow::bail!("Failed: {}", resp.message);
             }
@@ -1596,12 +1635,21 @@ async fn main() -> Result<()> {
                 println!("{:<12} {:<12} {:<40}", "OPTION CODE", "SIZE", "DESCRIPTION");
                 println!("{}", "-".repeat(64));
                 for o in resp.options {
-                    println!("{:<12} {:<12} {:<40}", o.option_code, o.cert_data.len(), o.description);
+                    println!(
+                        "{:<12} {:<12} {:<40}",
+                        o.option_code,
+                        o.cert_data.len(),
+                        o.description
+                    );
                 }
             }
         }
 
-        Commands::GenerateDnssecKey { zone, algorithm, key_type } => {
+        Commands::GenerateDnssecKey {
+            zone,
+            algorithm,
+            key_type,
+        } => {
             let response = client
                 .generate_dnssec_key(GenerateDnssecKeyRequest {
                     zone: zone.clone(),
@@ -1637,10 +1685,16 @@ async fn main() -> Result<()> {
             if keys.is_empty() {
                 println!("No DNSSEC keys found for {}.", zone);
             } else {
-                println!("{:<10} {:<15} {:<6} {:<10}", "ID", "ALGORITHM", "TYPE", "KEY TAG");
+                println!(
+                    "{:<10} {:<15} {:<6} {:<10}",
+                    "ID", "ALGORITHM", "TYPE", "KEY TAG"
+                );
                 println!("{}", "-".repeat(50));
                 for k in &keys {
-                    println!("{:<10} {:<15} {:<6} {:<10}", k.id, k.algorithm, k.key_type, k.key_tag);
+                    println!(
+                        "{:<10} {:<15} {:<6} {:<10}",
+                        k.id, k.algorithm, k.key_type, k.key_tag
+                    );
                 }
                 println!("\n{} key(s) found.", keys.len());
             }
@@ -1662,7 +1716,15 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::GenerateTlsa { domain, port, protocol, cert_path, usage, selector, matching_type } => {
+        Commands::GenerateTlsa {
+            domain,
+            port,
+            protocol,
+            cert_path,
+            usage,
+            selector,
+            matching_type,
+        } => {
             let cert_pem = std::fs::read_to_string(&cert_path)
                 .context(format!("failed to read certificate file: {}", cert_path))?;
             let response = client
@@ -1687,7 +1749,10 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::RequestAcmeCert { domain, provider_url } => {
+        Commands::RequestAcmeCert {
+            domain,
+            provider_url,
+        } => {
             let response = client
                 .request_acme_cert(RequestAcmeCertRequest {
                     domain: domain.clone(),

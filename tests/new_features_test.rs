@@ -72,7 +72,12 @@ fn build_dns_query(name: &str, qtype: RecordType) -> Vec<u8> {
 }
 
 /// Build a DNS query with an EDNS OPT record attached.
-fn build_dns_query_with_edns(name: &str, qtype: RecordType, max_payload: u16, dnssec_ok: bool) -> Vec<u8> {
+fn build_dns_query_with_edns(
+    name: &str,
+    qtype: RecordType,
+    max_payload: u16,
+    dnssec_ok: bool,
+) -> Vec<u8> {
     let mut msg = Message::new();
     msg.set_id(rand::random::<u16>());
     msg.set_message_type(MessageType::Query);
@@ -127,7 +132,10 @@ async fn test_edns_opt_record_echoed_in_response() {
 
     // Verify the response contains an OPT record (EDNS)
     let edns = response.extensions().as_ref();
-    assert!(edns.is_some(), "Response should contain an OPT record when query included EDNS");
+    assert!(
+        edns.is_some(),
+        "Response should contain an OPT record when query included EDNS"
+    );
     let edns = edns.unwrap();
     assert_eq!(edns.version(), 0);
     // Server mirrors DNSSEC OK bit
@@ -438,8 +446,7 @@ async fn test_dname_synthesized_cname() {
         .answers()
         .iter()
         .filter(|a| {
-            a.record_type() == RecordType::CNAME
-                && a.name().to_string() == "host.old.example.com."
+            a.record_type() == RecordType::CNAME && a.name().to_string() == "host.old.example.com."
         })
         .collect();
     assert!(
@@ -748,7 +755,7 @@ async fn test_tlsa_record_resolution() {
 
     // TLSA format: "usage selector matching_type hex_cert_data"
     // usage=3 (DANE-EE), selector=1 (SPKI), matching=1 (SHA-256)
-    let fake_hash = "a" .repeat(64); // 32-byte SHA-256 digest in hex
+    let fake_hash = "a".repeat(64); // 32-byte SHA-256 digest in hex
     db.add_record(&DnsRecord {
         id: None,
         name: "_443._tcp.example.com.".to_string(),
@@ -962,12 +969,8 @@ async fn test_edns_with_authoritative_nxdomain() {
     let server = make_server(db);
 
     // Send an EDNS query for a missing name in an authoritative zone
-    let query = build_dns_query_with_edns(
-        "missing.edns-auth.example.com.",
-        RecordType::A,
-        4096,
-        false,
-    );
+    let query =
+        build_dns_query_with_edns("missing.edns-auth.example.com.", RecordType::A, 4096, false);
     let response_bytes = server.handle_query(&query).await.unwrap();
     let response = Message::from_bytes(&response_bytes).unwrap();
 
@@ -1014,7 +1017,10 @@ async fn test_wildcard_with_edns() {
 
     // EDNS should be in the response
     let edns = response.extensions().as_ref();
-    assert!(edns.is_some(), "Wildcard response should include OPT record");
+    assert!(
+        edns.is_some(),
+        "Wildcard response should include OPT record"
+    );
 }
 
 // ========================================================
@@ -1174,7 +1180,10 @@ async fn test_non_authoritative_zone_no_aa_bit() {
     let response_bytes = server.handle_query(&query).await.unwrap();
     let response = Message::from_bytes(&response_bytes).unwrap();
 
-    assert_eq!(response.response_code(), hickory_proto::op::ResponseCode::NoError);
+    assert_eq!(
+        response.response_code(),
+        hickory_proto::op::ResponseCode::NoError
+    );
     assert_eq!(response.answers().len(), 1);
     // The response should have the AA bit set because we have local records (implicit authoritative)
     // This is by design - Rolodex treats zones with local records as implicitly authoritative
@@ -1199,8 +1208,14 @@ async fn test_authoritative_default_for_local() {
     let response_bytes = server.handle_query(&query).await.unwrap();
     let response = Message::from_bytes(&response_bytes).unwrap();
 
-    assert_eq!(response.response_code(), hickory_proto::op::ResponseCode::NoError);
-    assert!(response.authoritative(), "Local records should make zone implicitly authoritative");
+    assert_eq!(
+        response.response_code(),
+        hickory_proto::op::ResponseCode::NoError
+    );
+    assert!(
+        response.authoritative(),
+        "Local records should make zone implicitly authoritative"
+    );
 }
 
 // ========================================================
@@ -1239,9 +1254,14 @@ async fn test_doh_post_handler() {
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), 200);
 
-    let body = axum::body::to_bytes(response.into_body(), 65535).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), 65535)
+        .await
+        .unwrap();
     let msg = Message::from_bytes(&body).unwrap();
-    assert_eq!(msg.response_code(), hickory_proto::op::ResponseCode::NoError);
+    assert_eq!(
+        msg.response_code(),
+        hickory_proto::op::ResponseCode::NoError
+    );
     assert_eq!(msg.answers().len(), 1);
 }
 
@@ -1278,7 +1298,9 @@ async fn test_doh_get_handler_base64url() {
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), 200);
 
-    let body = axum::body::to_bytes(response.into_body(), 65535).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), 65535)
+        .await
+        .unwrap();
     let msg = Message::from_bytes(&body).unwrap();
     assert_eq!(msg.answers().len(), 1);
 }
@@ -1352,8 +1374,16 @@ async fn test_doh_cache_control_header() {
         .unwrap();
 
     let response = app.oneshot(request).await.unwrap();
-    let cc = response.headers().get("cache-control").unwrap().to_str().unwrap();
-    assert!(cc.contains("max-age="), "Cache-Control should contain max-age");
+    let cc = response
+        .headers()
+        .get("cache-control")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(
+        cc.contains("max-age="),
+        "Cache-Control should contain max-age"
+    );
 }
 
 // ========================================================
@@ -1368,8 +1398,8 @@ fn test_proxy_config_parsing() {
         auth: None,
         mode: ProxyMode::Connect,
     };
-    assert!(matches!(ProxyMode::from_str("connect"), ProxyMode::Connect));
-    assert!(matches!(ProxyMode::from_str("doh"), ProxyMode::Doh));
+    assert!(matches!(ProxyMode::parse("connect"), ProxyMode::Connect));
+    assert!(matches!(ProxyMode::parse("doh"), ProxyMode::Doh));
 }
 
 // ========================================================
@@ -1392,13 +1422,23 @@ async fn test_cache_prevents_upstream() {
     cache.insert("cached-only.test.", Some(RecordKind::A), records, 600);
 
     // Server with cache, no forwarders
-    let server = Arc::new(DnsServer::new_with_options(db, make_rbl(), vec![], Some(cache), None, false));
+    let server = Arc::new(DnsServer::new_with_options(
+        db,
+        make_rbl(),
+        vec![],
+        Some(cache),
+        None,
+        false,
+    ));
 
     let query = build_dns_query("cached-only.test.", RecordType::A);
     let response_bytes = server.handle_query(&query).await.unwrap();
     let response = Message::from_bytes(&response_bytes).unwrap();
 
-    assert_eq!(response.response_code(), hickory_proto::op::ResponseCode::NoError);
+    assert_eq!(
+        response.response_code(),
+        hickory_proto::op::ResponseCode::NoError
+    );
     assert_eq!(response.answers().len(), 1);
 }
 
@@ -1410,7 +1450,8 @@ async fn test_cache_boot_load_from_disk() {
     // won't load at boot via this path. Verify that cache_insert + cache_lookup
     // for the same name works, which is the core caching flow.
     let db = Database::open_memory().unwrap();
-    db.cache_insert("boot.test.", "A", "5.5.5.5", 3600, 3600, "upstream").unwrap();
+    db.cache_insert("boot.test.", "A", "5.5.5.5", 3600, 3600, "upstream")
+        .unwrap();
 
     // Verify the entry was inserted in the DB
     let db_result = db.cache_lookup("boot.test.", Some("A")).unwrap();
@@ -1480,14 +1521,18 @@ fn test_ttl_drift_logarithmic_integration() {
 #[tokio::test]
 async fn test_grpc_generate_dnssec_key_ed25519() {
     let service = make_grpc_service();
-    let resp = service.generate_dnssec_key(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::GenerateDnssecKeyRequest {
-            zone: "example.com.".to_string(),
-            algorithm: "ed25519".to_string(),
-            key_type: "ZSK".to_string(),
-            auth_token: String::new(),
-        },
-    )).await.unwrap().into_inner();
+    let resp = service
+        .generate_dnssec_key(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::GenerateDnssecKeyRequest {
+                zone: "example.com.".to_string(),
+                algorithm: "ed25519".to_string(),
+                key_type: "ZSK".to_string(),
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
 
     assert!(resp.success);
     let key = resp.key.unwrap();
@@ -1499,14 +1544,18 @@ async fn test_grpc_generate_dnssec_key_ed25519() {
 #[tokio::test]
 async fn test_grpc_generate_dnssec_key_ecdsa() {
     let service = make_grpc_service();
-    let resp = service.generate_dnssec_key(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::GenerateDnssecKeyRequest {
-            zone: "example.com.".to_string(),
-            algorithm: "ecdsa-p256".to_string(),
-            key_type: "ZSK".to_string(),
-            auth_token: String::new(),
-        },
-    )).await.unwrap().into_inner();
+    let resp = service
+        .generate_dnssec_key(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::GenerateDnssecKeyRequest {
+                zone: "example.com.".to_string(),
+                algorithm: "ecdsa-p256".to_string(),
+                key_type: "ZSK".to_string(),
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
 
     assert!(resp.success);
     let key = resp.key.unwrap();
@@ -1518,30 +1567,40 @@ async fn test_grpc_list_dnssec_keys() {
     let service = make_grpc_service();
 
     // Generate two keys
-    service.generate_dnssec_key(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::GenerateDnssecKeyRequest {
-            zone: "list.example.com.".to_string(),
-            algorithm: "ed25519".to_string(),
-            key_type: "ZSK".to_string(),
-            auth_token: String::new(),
-        },
-    )).await.unwrap();
+    service
+        .generate_dnssec_key(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::GenerateDnssecKeyRequest {
+                zone: "list.example.com.".to_string(),
+                algorithm: "ed25519".to_string(),
+                key_type: "ZSK".to_string(),
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap();
 
-    service.generate_dnssec_key(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::GenerateDnssecKeyRequest {
-            zone: "list.example.com.".to_string(),
-            algorithm: "ed25519".to_string(),
-            key_type: "KSK".to_string(),
-            auth_token: String::new(),
-        },
-    )).await.unwrap();
+    service
+        .generate_dnssec_key(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::GenerateDnssecKeyRequest {
+                zone: "list.example.com.".to_string(),
+                algorithm: "ed25519".to_string(),
+                key_type: "KSK".to_string(),
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap();
 
-    let resp = service.list_dnssec_keys(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::ListDnssecKeysRequest {
-            zone: "list.example.com.".to_string(),
-            auth_token: String::new(),
-        },
-    )).await.unwrap().into_inner();
+    let resp = service
+        .list_dnssec_keys(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::ListDnssecKeysRequest {
+                zone: "list.example.com.".to_string(),
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
 
     assert_eq!(resp.keys.len(), 2);
 }
@@ -1550,33 +1609,45 @@ async fn test_grpc_list_dnssec_keys() {
 async fn test_grpc_delete_dnssec_key() {
     let service = make_grpc_service();
 
-    let gen_resp = service.generate_dnssec_key(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::GenerateDnssecKeyRequest {
-            zone: "del.example.com.".to_string(),
-            algorithm: "ed25519".to_string(),
-            key_type: "ZSK".to_string(),
-            auth_token: String::new(),
-        },
-    )).await.unwrap().into_inner();
+    let gen_resp = service
+        .generate_dnssec_key(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::GenerateDnssecKeyRequest {
+                zone: "del.example.com.".to_string(),
+                algorithm: "ed25519".to_string(),
+                key_type: "ZSK".to_string(),
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
 
     let key_id = gen_resp.key.unwrap().id;
 
-    let del_resp = service.delete_dnssec_key(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::DeleteDnssecKeyRequest {
-            key_id,
-            auth_token: String::new(),
-        },
-    )).await.unwrap().into_inner();
+    let del_resp = service
+        .delete_dnssec_key(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::DeleteDnssecKeyRequest {
+                key_id,
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
 
     assert!(del_resp.success);
 
     // Verify it's gone
-    let list_resp = service.list_dnssec_keys(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::ListDnssecKeysRequest {
-            zone: "del.example.com.".to_string(),
-            auth_token: String::new(),
-        },
-    )).await.unwrap().into_inner();
+    let list_resp = service
+        .list_dnssec_keys(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::ListDnssecKeysRequest {
+                zone: "del.example.com.".to_string(),
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
 
     assert!(list_resp.keys.is_empty());
 }
@@ -1585,21 +1656,28 @@ async fn test_grpc_delete_dnssec_key() {
 async fn test_grpc_get_ds_records() {
     let service = make_grpc_service();
 
-    service.generate_dnssec_key(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::GenerateDnssecKeyRequest {
-            zone: "ds.example.com.".to_string(),
-            algorithm: "ed25519".to_string(),
-            key_type: "KSK".to_string(),
-            auth_token: String::new(),
-        },
-    )).await.unwrap();
+    service
+        .generate_dnssec_key(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::GenerateDnssecKeyRequest {
+                zone: "ds.example.com.".to_string(),
+                algorithm: "ed25519".to_string(),
+                key_type: "KSK".to_string(),
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap();
 
-    let resp = service.get_ds_records(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::GetDsRecordsRequest {
-            zone: "ds.example.com.".to_string(),
-            auth_token: String::new(),
-        },
-    )).await.unwrap().into_inner();
+    let resp = service
+        .get_ds_records(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::GetDsRecordsRequest {
+                zone: "ds.example.com.".to_string(),
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
 
     assert_eq!(resp.ds_records.len(), 1);
     assert!(!resp.ds_records[0].is_empty());
@@ -1610,21 +1688,28 @@ async fn test_grpc_sign_zone() {
     let service = make_grpc_service();
 
     // Generate a key first
-    service.generate_dnssec_key(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::GenerateDnssecKeyRequest {
-            zone: "sign.example.com.".to_string(),
-            algorithm: "ed25519".to_string(),
-            key_type: "ZSK".to_string(),
-            auth_token: String::new(),
-        },
-    )).await.unwrap();
+    service
+        .generate_dnssec_key(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::GenerateDnssecKeyRequest {
+                zone: "sign.example.com.".to_string(),
+                algorithm: "ed25519".to_string(),
+                key_type: "ZSK".to_string(),
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap();
 
-    let resp = service.sign_zone(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::SignZoneRequest {
-            zone: "sign.example.com.".to_string(),
-            auth_token: String::new(),
-        },
-    )).await.unwrap().into_inner();
+    let resp = service
+        .sign_zone(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::SignZoneRequest {
+                zone: "sign.example.com.".to_string(),
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
 
     assert!(resp.success);
 }
@@ -1638,25 +1723,33 @@ async fn test_grpc_generate_tlsa_record() {
     let service = make_grpc_service();
 
     // First generate a CA to get a cert PEM
-    let ca_resp = service.generate_dane_root_ca(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::GenerateDaneRootCaRequest {
-            name: "Test CA".to_string(),
-            auth_token: String::new(),
-        },
-    )).await.unwrap().into_inner();
+    let ca_resp = service
+        .generate_dane_root_ca(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::GenerateDaneRootCaRequest {
+                name: "Test CA".to_string(),
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
 
-    let resp = service.generate_tlsa_record(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::GenerateTlsaRecordRequest {
-            domain: "example.com.".to_string(),
-            port: 443,
-            protocol: "tcp".to_string(),
-            usage: 3,
-            selector: 0,
-            matching_type: 1,
-            cert_pem: ca_resp.cert_pem,
-            auth_token: String::new(),
-        },
-    )).await.unwrap().into_inner();
+    let resp = service
+        .generate_tlsa_record(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::GenerateTlsaRecordRequest {
+                domain: "example.com.".to_string(),
+                port: 443,
+                protocol: "tcp".to_string(),
+                usage: 3,
+                selector: 0,
+                matching_type: 1,
+                cert_pem: ca_resp.cert_pem,
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
 
     assert!(resp.success);
     assert!(resp.tlsa_record.starts_with("3 0 1 "));
@@ -1667,32 +1760,43 @@ async fn test_grpc_list_tlsa_records() {
     let service = make_grpc_service();
 
     // Generate a CA and TLSA record
-    let ca_resp = service.generate_dane_root_ca(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::GenerateDaneRootCaRequest {
-            name: "TLSA List CA".to_string(),
-            auth_token: String::new(),
-        },
-    )).await.unwrap().into_inner();
+    let ca_resp = service
+        .generate_dane_root_ca(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::GenerateDaneRootCaRequest {
+                name: "TLSA List CA".to_string(),
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
 
-    service.generate_tlsa_record(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::GenerateTlsaRecordRequest {
-            domain: "tlsalist.example.com.".to_string(),
-            port: 443,
-            protocol: "tcp".to_string(),
-            usage: 3,
-            selector: 0,
-            matching_type: 1,
-            cert_pem: ca_resp.cert_pem,
-            auth_token: String::new(),
-        },
-    )).await.unwrap();
+    service
+        .generate_tlsa_record(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::GenerateTlsaRecordRequest {
+                domain: "tlsalist.example.com.".to_string(),
+                port: 443,
+                protocol: "tcp".to_string(),
+                usage: 3,
+                selector: 0,
+                matching_type: 1,
+                cert_pem: ca_resp.cert_pem,
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap();
 
-    let resp = service.list_tlsa_records(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::ListTlsaRecordsRequest {
-            domain: "tlsalist.example.com.".to_string(),
-            auth_token: String::new(),
-        },
-    )).await.unwrap().into_inner();
+    let resp = service
+        .list_tlsa_records(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::ListTlsaRecordsRequest {
+                domain: "tlsalist.example.com.".to_string(),
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
 
     assert!(!resp.records.is_empty());
 }
@@ -1700,12 +1804,16 @@ async fn test_grpc_list_tlsa_records() {
 #[tokio::test]
 async fn test_grpc_generate_dane_root_ca() {
     let service = make_grpc_service();
-    let resp = service.generate_dane_root_ca(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::GenerateDaneRootCaRequest {
-            name: "My Root CA".to_string(),
-            auth_token: String::new(),
-        },
-    )).await.unwrap().into_inner();
+    let resp = service
+        .generate_dane_root_ca(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::GenerateDaneRootCaRequest {
+                name: "My Root CA".to_string(),
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
 
     assert!(resp.success);
     assert!(resp.cert_pem.contains("BEGIN CERTIFICATE"));
@@ -1716,23 +1824,31 @@ async fn test_grpc_acme_challenge_dns() {
     let service = make_grpc_service();
 
     // Request an ACME cert (provisions DNS-01 challenge)
-    let resp = service.request_acme_cert(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::RequestAcmeCertRequest {
-            domain: "acme.example.com.".to_string(),
-            provider_url: "https://acme.test/directory".to_string(),
-            auth_token: String::new(),
-        },
-    )).await.unwrap().into_inner();
+    let resp = service
+        .request_acme_cert(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::RequestAcmeCertRequest {
+                domain: "acme.example.com.".to_string(),
+                provider_url: "https://acme.test/directory".to_string(),
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
 
     assert!(resp.success);
 
     // Check status is pending
-    let status = service.get_acme_status(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::GetAcmeStatusRequest {
-            domain: "acme.example.com.".to_string(),
-            auth_token: String::new(),
-        },
-    )).await.unwrap().into_inner();
+    let status = service
+        .get_acme_status(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::GetAcmeStatusRequest {
+                domain: "acme.example.com.".to_string(),
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
 
     assert_eq!(status.status, "pending");
 }
@@ -1756,7 +1872,9 @@ fn test_qname_randomization_changes_case() {
 fn test_qname_randomization_preserves_non_alpha() {
     // Verify the basic DNS query structure is preserved
     let query = build_dns_query("123.example.com.", RecordType::A);
-    if let Some((modified, _original, _randomized)) = rolodex_dns::dns_server::randomize_qname_case(&query) {
+    if let Some((modified, _original, _randomized)) =
+        rolodex_dns::dns_server::randomize_qname_case(&query)
+    {
         let msg = Message::from_bytes(&modified).unwrap();
         let qname = msg.queries()[0].name().to_string().to_lowercase();
         assert_eq!(qname, "123.example.com.");
@@ -1778,7 +1896,10 @@ async fn test_empty_query_returns_formerr() {
     let response_bytes = server.handle_query(&query).await.unwrap();
     let response = Message::from_bytes(&response_bytes).unwrap();
 
-    assert_eq!(response.response_code(), hickory_proto::op::ResponseCode::FormErr);
+    assert_eq!(
+        response.response_code(),
+        hickory_proto::op::ResponseCode::FormErr
+    );
 }
 
 #[tokio::test]
@@ -1800,7 +1921,10 @@ async fn test_non_query_opcode_notimp() {
     let response_bytes = server.handle_query(&query_bytes).await.unwrap();
     let response = Message::from_bytes(&response_bytes).unwrap();
 
-    assert_eq!(response.response_code(), hickory_proto::op::ResponseCode::NotImp);
+    assert_eq!(
+        response.response_code(),
+        hickory_proto::op::ResponseCode::NotImp
+    );
 }
 
 #[tokio::test]
@@ -1827,7 +1951,10 @@ async fn test_rbl_blocks_ipv4_reverse() {
     let response_bytes = server.handle_query(&query).await.unwrap();
     let response = Message::from_bytes(&response_bytes).unwrap();
 
-    assert_eq!(response.response_code(), hickory_proto::op::ResponseCode::NXDomain);
+    assert_eq!(
+        response.response_code(),
+        hickory_proto::op::ResponseCode::NXDomain
+    );
 }
 
 #[tokio::test]
@@ -1851,7 +1978,10 @@ async fn test_rbl_no_false_positives() {
     let response_bytes = server.handle_query(&query).await.unwrap();
     let response = Message::from_bytes(&response_bytes).unwrap();
 
-    assert_eq!(response.response_code(), hickory_proto::op::ResponseCode::NoError);
+    assert_eq!(
+        response.response_code(),
+        hickory_proto::op::ResponseCode::NoError
+    );
     assert_eq!(response.answers().len(), 1);
 }
 
@@ -1944,7 +2074,9 @@ async fn test_rfc7553_uri_record_storage_and_lookup() {
     })
     .unwrap();
 
-    let results = db.lookup("_http._tcp.uri.example.com.", Some(RecordKind::URI)).unwrap();
+    let results = db
+        .lookup("_http._tcp.uri.example.com.", Some(RecordKind::URI))
+        .unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0].value.contains("https://example.com/"));
 }
@@ -1968,7 +2100,10 @@ async fn test_rfc4255_sshfp_record_resolution() {
     let response_bytes = server.handle_query(&query).await.unwrap();
     let response = Message::from_bytes(&response_bytes).unwrap();
 
-    assert_eq!(response.response_code(), hickory_proto::op::ResponseCode::NoError);
+    assert_eq!(
+        response.response_code(),
+        hickory_proto::op::ResponseCode::NoError
+    );
     assert_eq!(response.answers().len(), 1);
     assert_eq!(response.answers()[0].record_type(), RecordType::SSHFP);
 }
@@ -1995,10 +2130,18 @@ async fn test_rfc6672_dname_multi_level_child() {
     let response = Message::from_bytes(&response_bytes).unwrap();
 
     // Should synthesize CNAME: deep.sub.old.example.com -> deep.sub.new.example.com
-    let synth: Vec<_> = response.answers().iter()
-        .filter(|a| a.record_type() == RecordType::CNAME && a.name().to_string() == "deep.sub.old.example.com.")
+    let synth: Vec<_> = response
+        .answers()
+        .iter()
+        .filter(|a| {
+            a.record_type() == RecordType::CNAME
+                && a.name().to_string() == "deep.sub.old.example.com."
+        })
         .collect();
-    assert!(!synth.is_empty(), "Multi-level DNAME should synthesize CNAME");
+    assert!(
+        !synth.is_empty(),
+        "Multi-level DNAME should synthesize CNAME"
+    );
 }
 
 #[tokio::test]
@@ -2021,7 +2164,9 @@ async fn test_rfc6672_dname_does_not_apply_to_owner() {
     let response_bytes = server.handle_query(&query).await.unwrap();
     let response = Message::from_bytes(&response_bytes).unwrap();
 
-    let a_answers: Vec<_> = response.answers().iter()
+    let a_answers: Vec<_> = response
+        .answers()
+        .iter()
         .filter(|a| a.record_type() == RecordType::A)
         .collect();
     assert!(a_answers.is_empty(), "DNAME should not apply to owner name");
@@ -2072,7 +2217,8 @@ async fn test_rfc5782_rbl_query_format() {
 #[tokio::test]
 async fn test_rfc5782_local_rbl_blocks_resolution() {
     let db = Database::open_memory().unwrap();
-    db.add_local_rbl_entry("10.0.0.1", "blocked for testing").unwrap();
+    db.add_local_rbl_entry("10.0.0.1", "blocked for testing")
+        .unwrap();
 
     // Verify lookup
     assert!(db.lookup_local_rbl("10.0.0.1"));
@@ -2154,7 +2300,10 @@ async fn test_edns_do_bit_mirroring() {
     let response_bytes = server.handle_query(&query).await.unwrap();
     let response = Message::from_bytes(&response_bytes).unwrap();
     let edns = response.extensions().as_ref().unwrap();
-    assert!(!edns.flags().dnssec_ok, "DO bit should not be set when not requested");
+    assert!(
+        !edns.flags().dnssec_ok,
+        "DO bit should not be set when not requested"
+    );
 }
 
 // ========================================================
@@ -2180,7 +2329,10 @@ async fn test_wildcard_matches_subdomains() {
     let response = Message::from_bytes(&response_bytes).unwrap();
 
     assert_eq!(response.answers().len(), 1);
-    assert_eq!(response.answers()[0].name().to_string(), "foo.wc3.example.com.");
+    assert_eq!(
+        response.answers()[0].name().to_string(),
+        "foo.wc3.example.com."
+    );
 }
 
 #[tokio::test]
@@ -2210,8 +2362,14 @@ async fn test_wildcard_exact_priority() {
     let response_bytes = server.handle_query(&query).await.unwrap();
     let response = Message::from_bytes(&response_bytes).unwrap();
 
-    if let hickory_proto::rr::RData::A(hickory_proto::rr::rdata::A(ip)) = response.answers()[0].data() {
-        assert_eq!(*ip, std::net::Ipv4Addr::new(10, 0, 0, 2), "Exact record should take priority");
+    if let hickory_proto::rr::RData::A(hickory_proto::rr::rdata::A(ip)) =
+        response.answers()[0].data()
+    {
+        assert_eq!(
+            *ip,
+            std::net::Ipv4Addr::new(10, 0, 0, 2),
+            "Exact record should take priority"
+        );
     } else {
         panic!("expected A record");
     }
@@ -2271,9 +2429,14 @@ async fn test_aname_zone_apex_resolution() {
     let response_bytes = server.handle_query(&query).await.unwrap();
     let response = Message::from_bytes(&response_bytes).unwrap();
 
-    assert_eq!(response.response_code(), hickory_proto::op::ResponseCode::NoError);
+    assert_eq!(
+        response.response_code(),
+        hickory_proto::op::ResponseCode::NoError
+    );
     assert_eq!(response.answers().len(), 1);
-    if let hickory_proto::rr::RData::A(hickory_proto::rr::rdata::A(ip)) = response.answers()[0].data() {
+    if let hickory_proto::rr::RData::A(hickory_proto::rr::rdata::A(ip)) =
+        response.answers()[0].data()
+    {
         assert_eq!(*ip, std::net::Ipv4Addr::new(203, 0, 113, 100));
     } else {
         panic!("expected A record");
@@ -2307,7 +2470,10 @@ async fn test_aname_preserves_query_name() {
     let response_bytes = server.handle_query(&query).await.unwrap();
     let response = Message::from_bytes(&response_bytes).unwrap();
 
-    assert_eq!(response.answers()[0].name().to_string(), "apex3.example.com.");
+    assert_eq!(
+        response.answers()[0].name().to_string(),
+        "apex3.example.com."
+    );
 }
 
 // ========================================================
@@ -2319,7 +2485,8 @@ async fn test_local_rbl_add_remove_list() {
     let db = Database::open_memory().unwrap();
 
     db.add_local_rbl_entry("bad.example.com", "spam").unwrap();
-    db.add_local_rbl_entry("evil.example.com", "malware").unwrap();
+    db.add_local_rbl_entry("evil.example.com", "malware")
+        .unwrap();
 
     let entries = db.list_local_rbl_entries().unwrap();
     assert_eq!(entries.len(), 2);
@@ -2343,7 +2510,10 @@ async fn test_local_rbl_blocks_dns_query() {
     let response_bytes = server.handle_query(&query).await.unwrap();
     let response = Message::from_bytes(&response_bytes).unwrap();
 
-    assert_eq!(response.response_code(), hickory_proto::op::ResponseCode::NXDomain);
+    assert_eq!(
+        response.response_code(),
+        hickory_proto::op::ResponseCode::NXDomain
+    );
 }
 
 // ========================================================
@@ -2399,7 +2569,10 @@ async fn test_cache_flush_clears_both() {
     cache.flush();
 
     let mem_result = cache.lookup("flushboth.test.", Some(RecordKind::A));
-    assert!(mem_result.is_empty(), "Memory should be cleared after flush");
+    assert!(
+        mem_result.is_empty(),
+        "Memory should be cleared after flush"
+    );
 
     let db_result = db.cache_lookup("flushboth.test.", Some("A")).unwrap();
     assert!(db_result.is_empty(), "Disk should be cleared after flush");
@@ -2414,22 +2587,29 @@ async fn test_grpc_set_get_ttl_drift_config() {
     let service = make_grpc_service();
 
     // Set fixed mode
-    service.set_ttl_drift_config(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::SetTtlDriftConfigRequest {
-            config: Some(rolodex_dns::grpc_service::proto::TtlDriftConfig {
-                mode: "fixed".to_string(),
-                fixed_adjustment: "30s".to_string(),
-                log_multiplier: 0.0,
-            }),
-            auth_token: String::new(),
-        },
-    )).await.unwrap();
+    service
+        .set_ttl_drift_config(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::SetTtlDriftConfigRequest {
+                config: Some(rolodex_dns::grpc_service::proto::TtlDriftConfig {
+                    mode: "fixed".to_string(),
+                    fixed_adjustment: "30s".to_string(),
+                    log_multiplier: 0.0,
+                }),
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap();
 
-    let resp = service.get_ttl_drift_config(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::GetTtlDriftConfigRequest {
-            auth_token: String::new(),
-        },
-    )).await.unwrap().into_inner();
+    let resp = service
+        .get_ttl_drift_config(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::GetTtlDriftConfigRequest {
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
 
     let config = resp.config.unwrap();
     assert_eq!(config.mode, "fixed");
@@ -2440,21 +2620,28 @@ async fn test_grpc_set_get_ttl_drift_config() {
 async fn test_grpc_set_get_dns64_config() {
     let service = make_grpc_service();
 
-    service.set_dns64_config(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::SetDns64ConfigRequest {
-            config: Some(rolodex_dns::grpc_service::proto::Dns64Config {
-                enabled: true,
-                prefix: "64:ff9b::".to_string(),
-            }),
-            auth_token: String::new(),
-        },
-    )).await.unwrap();
+    service
+        .set_dns64_config(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::SetDns64ConfigRequest {
+                config: Some(rolodex_dns::grpc_service::proto::Dns64Config {
+                    enabled: true,
+                    prefix: "64:ff9b::".to_string(),
+                }),
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap();
 
-    let resp = service.get_dns64_config(tonic::Request::new(
-        rolodex_dns::grpc_service::proto::GetDns64ConfigRequest {
-            auth_token: String::new(),
-        },
-    )).await.unwrap().into_inner();
+    let resp = service
+        .get_dns64_config(tonic::Request::new(
+            rolodex_dns::grpc_service::proto::GetDns64ConfigRequest {
+                auth_token: String::new(),
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
 
     assert!(resp.config.is_some());
 }

@@ -1,11 +1,14 @@
+#![deny(dead_code)]
+#![deny(unsafe_code)]
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use rolodex_dns::config::Config;
 use rolodex_dns::db::Database;
 use rolodex_dns::dns_cache::DnsCache;
 use rolodex_dns::dns_server::DnsServer;
-use rolodex_dns::grpc_service::proto::rolodex_dns_service_server::RolodexDnsServiceServer;
 use rolodex_dns::grpc_service::RolodexDnsGrpcService;
+use rolodex_dns::grpc_service::proto::rolodex_dns_service_server::RolodexDnsServiceServer;
 use rolodex_dns::rbl::{RblChecker, RblProvider};
 use std::net::{Ipv6Addr, SocketAddr};
 use std::sync::Arc;
@@ -25,18 +28,17 @@ struct Cli {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
+    let directive = "rolodex_dns=info"
+        .parse()
+        .context("failed to parse tracing directive")?;
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("rolodex_dns=info".parse().unwrap()),
-        )
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive(directive))
         .init();
 
     let cli = Cli::parse();
 
     let config = if std::path::Path::new(&cli.config).exists() {
-        let content =
-            std::fs::read_to_string(&cli.config).context("failed to read config file")?;
+        let content = std::fs::read_to_string(&cli.config).context("failed to read config file")?;
         serde_yaml_ng::from_str(&content).context("failed to parse config file")?
     } else {
         info!("No config file found, using defaults");
@@ -64,7 +66,10 @@ async fn main() -> Result<()> {
 
     // Initialize DNS cache (load_from_disk happens automatically in new())
     let dns_cache = Arc::new(DnsCache::new(db.clone()));
-    info!("DNS cache loaded ({} entries)", dns_cache.stats().total_entries);
+    info!(
+        "DNS cache loaded ({} entries)",
+        dns_cache.stats().total_entries
+    );
 
     // Parse DNS64 prefix if enabled
     let dns64_prefix = if config.dns64.enabled {
@@ -92,12 +97,16 @@ async fn main() -> Result<()> {
     ));
 
     // Apply proxy configuration if set
-    if let Some(ref proxy_cfg) = config.proxy {
-        if !proxy_cfg.url.is_empty() {
-            let runtime_proxy = rolodex_dns::doh_proxy::ProxyConfig::from(proxy_cfg);
-            info!("Proxy configured: {} (mode: {})", proxy_cfg.url, runtime_proxy.mode.as_str());
-            dns_server.set_proxy_config(Some(runtime_proxy));
-        }
+    if let Some(ref proxy_cfg) = config.proxy
+        && !proxy_cfg.url.is_empty()
+    {
+        let runtime_proxy = rolodex_dns::doh_proxy::ProxyConfig::from(proxy_cfg);
+        info!(
+            "Proxy configured: {} (mode: {})",
+            proxy_cfg.url,
+            runtime_proxy.mode.as_str()
+        );
+        dns_server.set_proxy_config(Some(runtime_proxy));
     }
 
     // Spawn DNS UDP server
@@ -149,7 +158,8 @@ async fn main() -> Result<()> {
             key_path: doh_config.tls.key_path.clone(),
             auto_self_signed: doh_config.tls.auto_self_signed,
         };
-        match rolodex_dns::tls::TlsManager::new(tls_cfg, vec![b"h2".to_vec(), b"http/1.1".to_vec()]) {
+        match rolodex_dns::tls::TlsManager::new(tls_cfg, vec![b"h2".to_vec(), b"http/1.1".to_vec()])
+        {
             Ok(tls_mgr) => {
                 let doh_bind = doh_config.bind.clone();
                 let doh_dns = Arc::clone(&dns_server);
@@ -199,7 +209,11 @@ async fn main() -> Result<()> {
             config.grpc.shared_secret.clone(),
             false,
         );
-        let addr: SocketAddr = config.grpc.tcp_bind.parse().context("invalid gRPC TCP bind address")?;
+        let addr: SocketAddr = config
+            .grpc
+            .tcp_bind
+            .parse()
+            .context("invalid gRPC TCP bind address")?;
         info!("gRPC TCP server listening on {}", addr);
         tokio::spawn(async move {
             if let Err(e) = Server::builder()
@@ -216,7 +230,11 @@ async fn main() -> Result<()> {
     if !config.grpc.unix_socket.is_empty() {
         let socket_path = config.grpc.unix_socket.clone();
         // Remove stale socket file if it exists
-        let _ = std::fs::remove_file(&socket_path);
+        if let Err(e) = std::fs::remove_file(&socket_path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            error!("failed to remove stale socket {}: {}", socket_path, e);
+        }
 
         let uds = UnixListener::bind(&socket_path).context("failed to bind Unix socket")?;
         let uds_stream = tokio_stream::wrappers::UnixListenerStream::new(uds);
@@ -245,7 +263,6 @@ async fn main() -> Result<()> {
         let dhcp_server = Arc::new(rolodex_dns::dhcp::DhcpServer::new(
             db.clone(),
             Arc::clone(&dns_server),
-            rbl.clone(),
             dhcp_config,
         ));
         let dhcp_bind = dhcp_config.bind.clone();

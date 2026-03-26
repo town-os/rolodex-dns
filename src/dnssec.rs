@@ -25,7 +25,7 @@ pub enum DnssecAlgorithm {
 }
 
 impl DnssecAlgorithm {
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "rsa-sha256" | "rsasha256" | "8" => Some(Self::RsaSha256),
             "ecdsa-p256" | "ecdsap256sha256" | "13" => Some(Self::EcdsaP256Sha256),
@@ -55,7 +55,7 @@ pub enum KeyType {
 }
 
 impl KeyType {
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_uppercase().as_str() {
             "ZSK" => Some(Self::ZSK),
             "KSK" => Some(Self::KSK),
@@ -180,18 +180,15 @@ mod tests {
     #[test]
     fn test_algorithm_from_str() {
         assert_eq!(
-            DnssecAlgorithm::from_str("ed25519"),
+            DnssecAlgorithm::parse("ed25519"),
             Some(DnssecAlgorithm::Ed25519)
         );
+        assert_eq!(DnssecAlgorithm::parse("15"), Some(DnssecAlgorithm::Ed25519));
         assert_eq!(
-            DnssecAlgorithm::from_str("15"),
-            Some(DnssecAlgorithm::Ed25519)
-        );
-        assert_eq!(
-            DnssecAlgorithm::from_str("ecdsa-p256"),
+            DnssecAlgorithm::parse("ecdsa-p256"),
             Some(DnssecAlgorithm::EcdsaP256Sha256)
         );
-        assert!(DnssecAlgorithm::from_str("unknown").is_none());
+        assert!(DnssecAlgorithm::parse("unknown").is_none());
     }
 
     #[test]

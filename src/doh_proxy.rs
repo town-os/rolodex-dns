@@ -30,7 +30,7 @@ pub enum ProxyMode {
 }
 
 impl ProxyMode {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "socks5" => ProxyMode::Socks5,
             "doh" => ProxyMode::Doh,
@@ -52,7 +52,7 @@ impl From<&crate::config::ProxyConfig> for ProxyConfig {
         ProxyConfig {
             url: cfg.url.clone(),
             auth: cfg.auth.clone(),
-            mode: ProxyMode::from_str(&cfg.mode),
+            mode: ProxyMode::parse(&cfg.mode),
         }
     }
 }
@@ -97,15 +97,10 @@ pub async fn forward_via_connect_proxy(
         .context("failed to connect to proxy")?;
 
     // Send CONNECT request
-    let mut connect_req = format!(
-        "CONNECT {} HTTP/1.1\r\nHost: {}\r\n",
-        upstream, upstream
-    );
+    let mut connect_req = format!("CONNECT {} HTTP/1.1\r\nHost: {}\r\n", upstream, upstream);
     if let Some(auth) = proxy_auth {
-        let encoded = base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            auth.as_bytes(),
-        );
+        let encoded =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, auth.as_bytes());
         connect_req.push_str(&format!("Proxy-Authorization: Basic {}\r\n", encoded));
     }
     connect_req.push_str("\r\n");
@@ -155,7 +150,10 @@ pub async fn forward_via_socks5_proxy(
     stream.read_exact(&mut method_resp).await?;
 
     if method_resp[0] != 0x05 {
-        anyhow::bail!("SOCKS5: invalid version in greeting response: {}", method_resp[0]);
+        anyhow::bail!(
+            "SOCKS5: invalid version in greeting response: {}",
+            method_resp[0]
+        );
     }
 
     match method_resp[1] {
@@ -252,7 +250,10 @@ pub async fn forward_via_socks5_proxy(
             stream.read_exact(&mut skip).await?;
         }
         _ => {
-            anyhow::bail!("SOCKS5: unknown address type in response: {}", resp_header[3]);
+            anyhow::bail!(
+                "SOCKS5: unknown address type in response: {}",
+                resp_header[3]
+            );
         }
     }
 
@@ -281,13 +282,13 @@ pub async fn forward_via_doh_proxy(
 
     let mut request = format!(
         "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/dns-message\r\nContent-Length: {}\r\nAccept: application/dns-message\r\n",
-        doh_url, upstream, body.len()
+        doh_url,
+        upstream,
+        body.len()
     );
     if let Some(auth) = proxy_auth {
-        let encoded = base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            auth.as_bytes(),
-        );
+        let encoded =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, auth.as_bytes());
         request.push_str(&format!("Proxy-Authorization: Basic {}\r\n", encoded));
     }
     request.push_str("Connection: close\r\n\r\n");
@@ -362,10 +363,7 @@ mod tests {
 
     #[test]
     fn test_parse_proxy_addr() {
-        assert_eq!(
-            parse_proxy_addr("http://proxy:8080").unwrap(),
-            "proxy:8080"
-        );
+        assert_eq!(parse_proxy_addr("http://proxy:8080").unwrap(), "proxy:8080");
         assert_eq!(
             parse_proxy_addr("https://proxy:3128").unwrap(),
             "proxy:3128"
@@ -374,19 +372,16 @@ mod tests {
             parse_proxy_addr("socks5://127.0.0.1:1080").unwrap(),
             "127.0.0.1:1080"
         );
-        assert_eq!(
-            parse_proxy_addr("proxy.local").unwrap(),
-            "proxy.local:8080"
-        );
+        assert_eq!(parse_proxy_addr("proxy.local").unwrap(), "proxy.local:8080");
     }
 
     #[test]
     fn test_proxy_mode_from_str() {
-        assert!(matches!(ProxyMode::from_str("connect"), ProxyMode::Connect));
-        assert!(matches!(ProxyMode::from_str("socks5"), ProxyMode::Socks5));
-        assert!(matches!(ProxyMode::from_str("doh"), ProxyMode::Doh));
-        assert!(matches!(ProxyMode::from_str("SOCKS5"), ProxyMode::Socks5));
-        assert!(matches!(ProxyMode::from_str("unknown"), ProxyMode::Connect));
+        assert!(matches!(ProxyMode::parse("connect"), ProxyMode::Connect));
+        assert!(matches!(ProxyMode::parse("socks5"), ProxyMode::Socks5));
+        assert!(matches!(ProxyMode::parse("doh"), ProxyMode::Doh));
+        assert!(matches!(ProxyMode::parse("SOCKS5"), ProxyMode::Socks5));
+        assert!(matches!(ProxyMode::parse("unknown"), ProxyMode::Connect));
     }
 
     #[test]

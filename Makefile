@@ -14,11 +14,15 @@ PODMAN_BUILD_IMAGE := rolodex-dns-build-$(INSTANCE_ID)
 RELEASE_IMAGE      := quay.io/town/rolodex
 export PODMAN_BUILD_IMAGE RELEASE_IMAGE
 
-.PHONY: test build clean go-test go-integration-test dev dev-release install
+.PHONY: test build clean go-test go-integration-test dev dev-release install lint
 .PHONY: rust-test rust-integration-test
 .PHONY: image push push-rc push-release quay-login clean-containers
 
-test: go-test rust-test
+lint:
+	cargo fmt -- --check
+	cargo clippy -- -D warnings
+
+test: lint go-test rust-test
 
 rust-test: rust-integration-test
 	cargo test

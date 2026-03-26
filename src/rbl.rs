@@ -1,8 +1,8 @@
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
@@ -36,6 +36,12 @@ pub trait RblResolver: Send + Sync {
 /// Default RBL resolver using hickory-resolver.
 pub struct HickoryRblResolver {
     resolver: hickory_resolver::TokioResolver,
+}
+
+impl Default for HickoryRblResolver {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HickoryRblResolver {
@@ -201,11 +207,7 @@ impl RblChecker {
 
     /// Checks if an IP address is listed in any enabled global RBL
     /// or in the provided extra per-scope RBL providers.
-    pub async fn is_listed_with_extra_providers(
-        &self,
-        ip: &IpAddr,
-        extra: &[RblProvider],
-    ) -> bool {
+    pub async fn is_listed_with_extra_providers(&self, ip: &IpAddr, extra: &[RblProvider]) -> bool {
         // Check global providers first
         if self.is_listed(ip).await {
             return true;
@@ -235,7 +237,10 @@ impl RblChecker {
 
             match self.resolver.lookup_rbl(&query).await {
                 Ok(Some(ttl)) => {
-                    debug!("Scope RBL hit: {} listed in {} (TTL: {})", ip, provider.zone, ttl);
+                    debug!(
+                        "Scope RBL hit: {} listed in {} (TTL: {})",
+                        ip, provider.zone, ttl
+                    );
                     self.cache.insert(
                         cache_key,
                         CacheEntry {
@@ -255,7 +260,10 @@ impl RblChecker {
                     );
                 }
                 Err(e) => {
-                    warn!("Scope RBL lookup failed for {} in {}: {}", ip, provider.zone, e);
+                    warn!(
+                        "Scope RBL lookup failed for {} in {}: {}",
+                        ip, provider.zone, e
+                    );
                 }
             }
         }
@@ -348,11 +356,7 @@ mod tests {
     #[async_trait::async_trait]
     impl RblResolver for MockResolver {
         async fn lookup_rbl(&self, _query: &str) -> Result<Option<u32>, anyhow::Error> {
-            if self.listed {
-                Ok(Some(300))
-            } else {
-                Ok(None)
-            }
+            if self.listed { Ok(Some(300)) } else { Ok(None) }
         }
     }
 
@@ -378,13 +382,8 @@ mod tests {
     #[async_trait::async_trait]
     impl RblResolver for CountingResolver {
         async fn lookup_rbl(&self, _query: &str) -> Result<Option<u32>, anyhow::Error> {
-            self.count
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            if self.listed {
-                Ok(Some(300))
-            } else {
-                Ok(None)
-            }
+            self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.listed { Ok(Some(300)) } else { Ok(None) }
         }
     }
 
@@ -476,11 +475,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rbl_set_config() {
-        let checker = RblChecker::with_resolver(
-            false,
-            vec![],
-            Arc::new(MockResolver::new(true)),
-        );
+        let checker = RblChecker::with_resolver(false, vec![], Arc::new(MockResolver::new(true)));
 
         let (enabled, providers) = checker.get_config().await;
         assert!(!enabled);

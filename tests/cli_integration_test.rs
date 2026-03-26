@@ -1,10 +1,10 @@
-use assert_cmd::cargo;
 use assert_cmd::Command;
+use assert_cmd::cargo;
 use predicates::prelude::*;
 use rolodex_dns::db::Database;
 use rolodex_dns::dns_server::DnsServer;
-use rolodex_dns::grpc_service::proto::rolodex_dns_service_server::RolodexDnsServiceServer;
 use rolodex_dns::grpc_service::RolodexDnsGrpcService;
+use rolodex_dns::grpc_service::proto::rolodex_dns_service_server::RolodexDnsServiceServer;
 use rolodex_dns::rbl::{RblChecker, RblResolver};
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -129,19 +129,21 @@ async fn run_cmd(mut cmd: Command) -> assert_cmd::assert::Assert {
 async fn test_cli_add_record_tcp() {
     let server = TestServer::start("test-secret").await;
 
-    run_cmd(
-        {
-            let mut cmd = server.cli_tcp();
-            cmd.args([
-                "add-record",
-                "-n", "cli-test.example.com.",
-                "-r", "a",
-                "-v", "10.0.0.1",
-                "--ttl", "600",
-            ]);
-            cmd
-        },
-    )
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args([
+            "add-record",
+            "-n",
+            "cli-test.example.com.",
+            "-r",
+            "a",
+            "-v",
+            "10.0.0.1",
+            "--ttl",
+            "600",
+        ]);
+        cmd
+    })
     .await
     .success()
     .stdout(predicate::str::contains("Added record"));
@@ -158,9 +160,12 @@ async fn test_cli_add_and_list_records_tcp() {
         let mut cmd = server.cli_tcp();
         cmd.args([
             "add-record",
-            "-n", "list-test.example.com.",
-            "-r", "a",
-            "-v", "10.0.0.1",
+            "-n",
+            "list-test.example.com.",
+            "-r",
+            "a",
+            "-v",
+            "10.0.0.1",
         ]);
         cmd
     })
@@ -191,9 +196,12 @@ async fn test_cli_add_and_remove_record_tcp() {
         let mut cmd = server.cli_tcp();
         cmd.args([
             "add-record",
-            "-n", "remove-test.example.com.",
-            "-r", "a",
-            "-v", "10.0.0.2",
+            "-n",
+            "remove-test.example.com.",
+            "-r",
+            "a",
+            "-v",
+            "10.0.0.2",
         ]);
         cmd
     })
@@ -232,9 +240,12 @@ async fn test_cli_remove_record_with_type_filter_tcp() {
         let mut cmd = server.cli_tcp();
         cmd.args([
             "add-record",
-            "-n", "multi.example.com.",
-            "-r", "a",
-            "-v", "10.0.0.1",
+            "-n",
+            "multi.example.com.",
+            "-r",
+            "a",
+            "-v",
+            "10.0.0.1",
         ]);
         cmd
     })
@@ -245,9 +256,12 @@ async fn test_cli_remove_record_with_type_filter_tcp() {
         let mut cmd = server.cli_tcp();
         cmd.args([
             "add-record",
-            "-n", "multi.example.com.",
-            "-r", "aaaa",
-            "-v", "::1",
+            "-n",
+            "multi.example.com.",
+            "-r",
+            "aaaa",
+            "-v",
+            "::1",
         ]);
         cmd
     })
@@ -317,9 +331,12 @@ async fn test_cli_list_records_with_type_filter_tcp() {
         let mut cmd = server.cli_tcp();
         cmd.args([
             "add-record",
-            "-n", "typed.example.com.",
-            "-r", "a",
-            "-v", "10.0.0.1",
+            "-n",
+            "typed.example.com.",
+            "-r",
+            "a",
+            "-v",
+            "10.0.0.1",
         ]);
         cmd
     })
@@ -330,9 +347,12 @@ async fn test_cli_list_records_with_type_filter_tcp() {
         let mut cmd = server.cli_tcp();
         cmd.args([
             "add-record",
-            "-n", "typed.example.com.",
-            "-r", "aaaa",
-            "-v", "::1",
+            "-n",
+            "typed.example.com.",
+            "-r",
+            "aaaa",
+            "-v",
+            "::1",
         ]);
         cmd
     })
@@ -381,13 +401,17 @@ async fn test_cli_set_and_get_rbl_config_tcp() {
         cmd.args([
             "set-rbl-config",
             "-e",
-            "-p", "zen.spamhaus.org:true", "bl.spamcop.net:false",
+            "-p",
+            "zen.spamhaus.org:true",
+            "bl.spamcop.net:false",
         ]);
         cmd
     })
     .await
     .success()
-    .stdout(predicate::str::contains("RBL config updated (enabled: true)"));
+    .stdout(predicate::str::contains(
+        "RBL config updated (enabled: true)",
+    ));
 
     // Get RBL config
     run_cmd({
@@ -466,11 +490,16 @@ async fn test_cli_add_record_unix() {
         let mut cmd = server.cli_unix();
         cmd.args([
             "add-record",
-            "-n", "unix-test.example.com.",
-            "-r", "a",
-            "-v", "10.0.0.5",
-            "--ttl", "900",
-            "-p", "0",
+            "-n",
+            "unix-test.example.com.",
+            "-r",
+            "a",
+            "-v",
+            "10.0.0.5",
+            "--ttl",
+            "900",
+            "-p",
+            "0",
         ]);
         cmd
     })
@@ -490,9 +519,12 @@ async fn test_cli_add_and_list_records_unix() {
         let mut cmd = server.cli_unix();
         cmd.args([
             "add-record",
-            "-n", "unix-list.example.com.",
-            "-r", "txt",
-            "-v", "hello world",
+            "-n",
+            "unix-list.example.com.",
+            "-r",
+            "txt",
+            "-v",
+            "hello world",
         ]);
         cmd
     })
@@ -541,9 +573,12 @@ async fn test_cli_full_crud_unix() {
         let mut cmd = server.cli_unix();
         cmd.args([
             "add-record",
-            "-n", "crud.example.com.",
-            "-r", "a",
-            "-v", "192.168.1.1",
+            "-n",
+            "crud.example.com.",
+            "-r",
+            "a",
+            "-v",
+            "192.168.1.1",
         ]);
         cmd
     })
@@ -566,8 +601,10 @@ async fn test_cli_full_crud_unix() {
         let mut cmd = server.cli_unix();
         cmd.args([
             "remove-record",
-            "-n", "crud.example.com.",
-            "-v", "192.168.1.1",
+            "-n",
+            "crud.example.com.",
+            "-v",
+            "192.168.1.1",
         ]);
         cmd
     })
@@ -659,10 +696,14 @@ async fn test_cli_add_mx_record() {
         let mut cmd = server.cli_tcp();
         cmd.args([
             "add-record",
-            "-n", "example.com.",
-            "-r", "mx",
-            "-v", "mail.example.com.",
-            "-p", "10",
+            "-n",
+            "example.com.",
+            "-r",
+            "mx",
+            "-v",
+            "mail.example.com.",
+            "-p",
+            "10",
         ]);
         cmd
     })
@@ -694,9 +735,12 @@ async fn test_cli_add_cname_record() {
         let mut cmd = server.cli_tcp();
         cmd.args([
             "add-record",
-            "-n", "www.example.com.",
-            "-r", "cname",
-            "-v", "example.com.",
+            "-n",
+            "www.example.com.",
+            "-r",
+            "cname",
+            "-v",
+            "example.com.",
         ]);
         cmd
     })
@@ -715,10 +759,14 @@ async fn test_cli_add_srv_record() {
         let mut cmd = server.cli_tcp();
         cmd.args([
             "add-record",
-            "-n", "_sip._tcp.example.com.",
-            "-r", "srv",
-            "-v", "5 5060 sip.example.com.",
-            "-p", "10",
+            "-n",
+            "_sip._tcp.example.com.",
+            "-r",
+            "srv",
+            "-v",
+            "5 5060 sip.example.com.",
+            "-p",
+            "10",
         ]);
         cmd
     })
@@ -737,9 +785,12 @@ async fn test_cli_add_ns_record() {
         let mut cmd = server.cli_tcp();
         cmd.args([
             "add-record",
-            "-n", "example.com.",
-            "-r", "ns",
-            "-v", "ns1.example.com.",
+            "-n",
+            "example.com.",
+            "-r",
+            "ns",
+            "-v",
+            "ns1.example.com.",
         ]);
         cmd
     })
@@ -758,9 +809,12 @@ async fn test_cli_add_ptr_record() {
         let mut cmd = server.cli_tcp();
         cmd.args([
             "add-record",
-            "-n", "1.168.192.in-addr.arpa.",
-            "-r", "ptr",
-            "-v", "host.example.com.",
+            "-n",
+            "1.168.192.in-addr.arpa.",
+            "-r",
+            "ptr",
+            "-v",
+            "host.example.com.",
         ]);
         cmd
     })
@@ -781,7 +835,9 @@ fn test_cli_help_output() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("CLI client for managing a Rolodex"))
+        .stdout(predicate::str::contains(
+            "CLI client for managing a Rolodex",
+        ))
         .stdout(predicate::str::contains("add-record"))
         .stdout(predicate::str::contains("remove-record"))
         .stdout(predicate::str::contains("list-records"))
@@ -861,7 +917,9 @@ async fn test_cli_set_rbl_config_disabled() {
     })
     .await
     .success()
-    .stdout(predicate::str::contains("RBL config updated (enabled: false)"));
+    .stdout(predicate::str::contains(
+        "RBL config updated (enabled: false)",
+    ));
 
     server.shutdown();
 }

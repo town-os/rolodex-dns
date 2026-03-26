@@ -19,7 +19,7 @@ pub fn generate_tlsa_record(
     let cert_der = pem_to_der(cert_pem)?;
 
     let data = match selector {
-        0 => cert_der.clone(),  // Full certificate
+        0 => cert_der.clone(),         // Full certificate
         1 => extract_spki(&cert_der)?, // Subject Public Key Info
         _ => anyhow::bail!("unsupported TLSA selector: {}", selector),
     };
@@ -48,8 +48,7 @@ pub fn tlsa_dns_name(domain: &str, port: u16, protocol: &str) -> String {
 
 /// Generates a self-signed root CA certificate for DANE.
 pub fn generate_dane_root_ca(name: &str) -> Result<(String, String)> {
-    let mut params = rcgen::CertificateParams::new(vec![])
-        .context("failed to create CA params")?;
+    let mut params = rcgen::CertificateParams::new(vec![]).context("failed to create CA params")?;
     params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
     params.distinguished_name = rcgen::DistinguishedName::new();
     params

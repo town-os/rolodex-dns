@@ -41,7 +41,7 @@ fn make_test_dhcp_server() -> (Database, Arc<DnsServer>, DhcpServer) {
     ));
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
     let config = make_dhcp_config();
-    let dhcp = DhcpServer::new(db.clone(), dns_server.clone(), rbl, &config);
+    let dhcp = DhcpServer::new(db.clone(), dns_server.clone(), &config);
     (db, dns_server, dhcp)
 }
 
@@ -81,11 +81,9 @@ fn build_request(mac: &[u8; 6], ip: Ipv4Addr, hostname: Option<&str>) -> Message
     msg.set_chaddr(mac);
     msg.opts_mut()
         .insert(DhcpOption::MessageType(MessageType::Request));
-    msg.opts_mut()
-        .insert(DhcpOption::RequestedIpAddress(ip));
+    msg.opts_mut().insert(DhcpOption::RequestedIpAddress(ip));
     if let Some(h) = hostname {
-        msg.opts_mut()
-            .insert(DhcpOption::Hostname(h.to_string()));
+        msg.opts_mut().insert(DhcpOption::Hostname(h.to_string()));
     }
     msg
 }
@@ -108,7 +106,9 @@ fn test_dhcp_discover_allocates_ip() {
 
     let mac = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x01];
     let discover = build_discover(&mac);
-    let offer = dhcp.handle_discover(&discover, "aa:bb:cc:dd:ee:01").unwrap();
+    let offer = dhcp
+        .handle_discover(&discover, "aa:bb:cc:dd:ee:01")
+        .unwrap();
 
     assert!(offer.is_some(), "Expected OFFER reply");
     let offer = offer.unwrap();
@@ -119,7 +119,10 @@ fn test_dhcp_discover_allocates_ip() {
     let offered_ip: u32 = offer.yiaddr().into();
     let start: u32 = "192.168.1.100".parse::<Ipv4Addr>().unwrap().into();
     let end: u32 = "192.168.1.110".parse::<Ipv4Addr>().unwrap().into();
-    assert!(offered_ip >= start && offered_ip <= end, "Offered IP out of range");
+    assert!(
+        offered_ip >= start && offered_ip <= end,
+        "Offered IP out of range"
+    );
 
     // Verify DHCP options
     assert!(offer.opts().get(OptionCode::SubnetMask).is_some());
@@ -133,7 +136,9 @@ fn test_dhcp_discover_no_pools_returns_none() {
     // No pools configured
     let mac = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x01];
     let discover = build_discover(&mac);
-    let offer = dhcp.handle_discover(&discover, "aa:bb:cc:dd:ee:01").unwrap();
+    let offer = dhcp
+        .handle_discover(&discover, "aa:bb:cc:dd:ee:01")
+        .unwrap();
     assert!(offer.is_none());
 }
 
@@ -146,7 +151,10 @@ fn test_dhcp_request_creates_lease_and_dns() {
     let mac_str = "aa:bb:cc:dd:ee:02";
 
     // DISCOVER
-    let offer = dhcp.handle_discover(&build_discover(&mac), mac_str).unwrap().unwrap();
+    let offer = dhcp
+        .handle_discover(&build_discover(&mac), mac_str)
+        .unwrap()
+        .unwrap();
     let offered_ip = offer.yiaddr();
 
     // REQUEST with hostname
@@ -195,7 +203,10 @@ async fn test_dhcp_release_cleans_up() {
     let mac_str = "aa:bb:cc:dd:ee:03";
 
     // DISCOVER + REQUEST
-    let offer = dhcp.handle_discover(&build_discover(&mac), mac_str).unwrap().unwrap();
+    let offer = dhcp
+        .handle_discover(&build_discover(&mac), mac_str)
+        .unwrap()
+        .unwrap();
     let offered_ip = offer.yiaddr();
     let request = build_request(&mac, offered_ip, Some("releasehost"));
     dhcp.handle_request(&request, mac_str).unwrap();
@@ -212,7 +223,10 @@ async fn test_dhcp_release_cleans_up() {
     let records = db
         .list_scoped_records("testnet", "releasehost.lan.example.com.", None)
         .unwrap();
-    assert!(records.is_empty(), "A record should be removed after release");
+    assert!(
+        records.is_empty(),
+        "A record should be removed after release"
+    );
 
     // Verify network association removed
     let scope = db.get_scope_for_ip(&offered_ip.to_string());
@@ -228,7 +242,10 @@ fn test_dhcp_sticky_binding() {
     let mac_str = "aa:bb:cc:dd:ee:04";
 
     // First allocation
-    let offer1 = dhcp.handle_discover(&build_discover(&mac), mac_str).unwrap().unwrap();
+    let offer1 = dhcp
+        .handle_discover(&build_discover(&mac), mac_str)
+        .unwrap()
+        .unwrap();
     let ip1 = offer1.yiaddr();
 
     // REQUEST to create lease
@@ -236,7 +253,10 @@ fn test_dhcp_sticky_binding() {
     dhcp.handle_request(&request, mac_str).unwrap();
 
     // Second DISCOVER with same MAC — should get same IP
-    let offer2 = dhcp.handle_discover(&build_discover(&mac), mac_str).unwrap().unwrap();
+    let offer2 = dhcp
+        .handle_discover(&build_discover(&mac), mac_str)
+        .unwrap()
+        .unwrap();
     let ip2 = offer2.yiaddr();
 
     assert_eq!(ip1, ip2, "Sticky binding: same MAC should get same IP");
@@ -298,19 +318,27 @@ fn test_dhcp_pool_exhaustion() {
     let mac2 = [0x01, 0x02, 0x03, 0x04, 0x05, 0x02];
     let mac3 = [0x01, 0x02, 0x03, 0x04, 0x05, 0x03];
 
-    let offer1 = dhcp.handle_discover(&build_discover(&mac1), "01:02:03:04:05:01").unwrap();
+    let offer1 = dhcp
+        .handle_discover(&build_discover(&mac1), "01:02:03:04:05:01")
+        .unwrap();
     assert!(offer1.is_some());
     // REQUEST to lock in the allocation
     let ip1 = offer1.unwrap().yiaddr();
-    dhcp.handle_request(&build_request(&mac1, ip1, None), "01:02:03:04:05:01").unwrap();
+    dhcp.handle_request(&build_request(&mac1, ip1, None), "01:02:03:04:05:01")
+        .unwrap();
 
-    let offer2 = dhcp.handle_discover(&build_discover(&mac2), "01:02:03:04:05:02").unwrap();
+    let offer2 = dhcp
+        .handle_discover(&build_discover(&mac2), "01:02:03:04:05:02")
+        .unwrap();
     assert!(offer2.is_some());
     let ip2 = offer2.unwrap().yiaddr();
-    dhcp.handle_request(&build_request(&mac2, ip2, None), "01:02:03:04:05:02").unwrap();
+    dhcp.handle_request(&build_request(&mac2, ip2, None), "01:02:03:04:05:02")
+        .unwrap();
 
     // Third should fail
-    let offer3 = dhcp.handle_discover(&build_discover(&mac3), "01:02:03:04:05:03").unwrap();
+    let offer3 = dhcp
+        .handle_discover(&build_discover(&mac3), "01:02:03:04:05:03")
+        .unwrap();
     assert!(offer3.is_none(), "Pool exhausted — should return None");
 }
 
@@ -337,7 +365,10 @@ fn test_dhcp_cert_option_delivery() {
 
     // Verify cert option is present in OFFER
     let cert_opt = offer.opts().get(OptionCode::from(224u8));
-    assert!(cert_opt.is_some(), "Certificate option 224 should be in OFFER");
+    assert!(
+        cert_opt.is_some(),
+        "Certificate option 224 should be in OFFER"
+    );
 }
 
 #[test]
@@ -349,7 +380,10 @@ fn test_dhcp_lease_sweep_removes_dns() {
     let mac_str = "aa:bb:cc:dd:ee:06";
 
     // DISCOVER + REQUEST
-    let offer = dhcp.handle_discover(&build_discover(&mac), mac_str).unwrap().unwrap();
+    let offer = dhcp
+        .handle_discover(&build_discover(&mac), mac_str)
+        .unwrap()
+        .unwrap();
     let offered_ip = offer.yiaddr();
     let request = build_request(&mac, offered_ip, Some("sweephost"));
     dhcp.handle_request(&request, mac_str).unwrap();
@@ -378,7 +412,10 @@ fn test_dhcp_lease_sweep_removes_dns() {
     let records = db
         .list_scoped_records("testnet", "sweephost.lan.example.com.", None)
         .unwrap();
-    assert!(records.is_empty(), "DNS records should be removed after sweep");
+    assert!(
+        records.is_empty(),
+        "DNS records should be removed after sweep"
+    );
 }
 
 #[tokio::test]
@@ -392,7 +429,7 @@ async fn test_dhcp_udp_full_flow() {
         ));
         let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
         let config = make_dhcp_config();
-        let dhcp = DhcpServer::new(db.clone(), dns_server.clone(), rbl, &config);
+        let dhcp = DhcpServer::new(db.clone(), dns_server.clone(), &config);
         (db, dns_server, dhcp)
     };
 
@@ -400,18 +437,8 @@ async fn test_dhcp_udp_full_flow() {
     setup_scope_and_pool(&db);
 
     // Re-create DHCP server for the spawned task
-    let rbl2 = Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(NeverListedResolver),
-    ));
     let config = make_dhcp_config();
-    let dhcp_server = Arc::new(DhcpServer::new(
-        db.clone(),
-        dns_server.clone(),
-        rbl2,
-        &config,
-    ));
+    let dhcp_server = Arc::new(DhcpServer::new(db.clone(), dns_server.clone(), &config));
 
     // Bind DHCP to a random high port
     let server_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -433,12 +460,13 @@ async fn test_dhcp_udp_full_flow() {
                     let data = &buf[..len];
                     if let Ok(msg) = Message::decode(&mut Decoder::new(data)) {
                         // Extract message type
-                        let msg_type = msg.opts().get(OptionCode::MessageType).and_then(|opt| {
-                            match opt {
-                                DhcpOption::MessageType(mt) => Some(*mt),
-                                _ => None,
-                            }
-                        });
+                        let msg_type =
+                            msg.opts()
+                                .get(OptionCode::MessageType)
+                                .and_then(|opt| match opt {
+                                    DhcpOption::MessageType(mt) => Some(*mt),
+                                    _ => None,
+                                });
                         let mac = rolodex_dns::dhcp::format_mac(msg.chaddr());
 
                         let reply = match msg_type {

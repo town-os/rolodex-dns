@@ -5,7 +5,6 @@
 /// via DHCP options, and per-scope RBL integration.
 use crate::db::{Database, DhcpLease, DhcpPool, DnsRecord, NetworkAssociation, RecordKind};
 use crate::dns_server::DnsServer;
-use crate::rbl::RblChecker;
 use anyhow::{Context, Result};
 use dhcproto::v4::{self, DhcpOption, Message, MessageType, Opcode, OptionCode};
 use dhcproto::{Decodable, Decoder, Encodable, Encoder};
@@ -39,8 +38,6 @@ impl From<&crate::config::DhcpConfig> for DhcpRuntimeConfig {
 pub struct DhcpServer {
     db: Database,
     dns_server: Arc<DnsServer>,
-    #[allow(dead_code)]
-    rbl: Arc<RblChecker>,
     config: DhcpRuntimeConfig,
 }
 
@@ -48,13 +45,11 @@ impl DhcpServer {
     pub fn new(
         db: Database,
         dns_server: Arc<DnsServer>,
-        rbl: Arc<RblChecker>,
         config: &crate::config::DhcpConfig,
     ) -> Self {
         Self {
             db,
             dns_server,
-            rbl,
             config: DhcpRuntimeConfig::from(config),
         }
     }
@@ -164,11 +159,7 @@ impl DhcpServer {
     }
 
     /// Handles a DHCP DISCOVER message. Returns an OFFER reply or None.
-    pub fn handle_discover(
-        &self,
-        msg: &Message,
-        mac: &str,
-    ) -> Result<Option<Message>> {
+    pub fn handle_discover(&self, msg: &Message, mac: &str) -> Result<Option<Message>> {
         debug!("DHCP DISCOVER from {}", mac);
 
         let pools = self.db.list_dhcp_pools(None)?;
@@ -209,10 +200,12 @@ impl DhcpServer {
         // Add certificate options if configured
         if let Ok(cert_opts) = self.db.list_dhcp_cert_options(&scope_name) {
             for opt in cert_opts {
-                reply.opts_mut().insert(DhcpOption::Unknown(v4::UnknownOption::new(
-                    OptionCode::from(opt.option_code as u8),
-                    opt.cert_data,
-                )));
+                reply
+                    .opts_mut()
+                    .insert(DhcpOption::Unknown(v4::UnknownOption::new(
+                        OptionCode::from(opt.option_code as u8),
+                        opt.cert_data,
+                    )));
             }
         }
 
@@ -221,11 +214,7 @@ impl DhcpServer {
     }
 
     /// Handles a DHCP REQUEST message. Returns an ACK reply or None.
-    pub fn handle_request(
-        &self,
-        msg: &Message,
-        mac: &str,
-    ) -> Result<Option<Message>> {
+    pub fn handle_request(&self, msg: &Message, mac: &str) -> Result<Option<Message>> {
         debug!("DHCP REQUEST from {}", mac);
 
         let requested_ip = msg
@@ -265,7 +254,7 @@ impl DhcpServer {
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .context("system clock before UNIX epoch")?
             .as_secs() as i64;
 
         let lease_duration = self.config.default_lease_duration as i64;
@@ -305,10 +294,12 @@ impl DhcpServer {
 
         if let Ok(cert_opts) = self.db.list_dhcp_cert_options(&scope_name) {
             for opt in cert_opts {
-                reply.opts_mut().insert(DhcpOption::Unknown(v4::UnknownOption::new(
-                    OptionCode::from(opt.option_code as u8),
-                    opt.cert_data,
-                )));
+                reply
+                    .opts_mut()
+                    .insert(DhcpOption::Unknown(v4::UnknownOption::new(
+                        OptionCode::from(opt.option_code as u8),
+                        opt.cert_data,
+                    )));
             }
         }
 
@@ -329,7 +320,9 @@ impl DhcpServer {
             }
 
             // Leave network scope
-            let _ = self.db.leave_network(&lease.ip);
+            if let Err(e) = self.db.leave_network(&lease.ip) {
+                warn!("failed to leave network for {}: {}", lease.ip, e);
+            }
             self.dns_server.flush_cache();
 
             info!(
@@ -396,18 +389,16 @@ impl DhcpServer {
     }
 
     /// Removes DNS records for a DHCP hostname.
-    fn unregister_dns_hostname(
-        &self,
-        hostname: &str,
-        ip: &str,
-        scope_name: &str,
-    ) -> Result<()> {
+    fn unregister_dns_hostname(&self, hostname: &str, ip: &str, scope_name: &str) -> Result<()> {
         let fqdn = format!("{}.lan.{}.", hostname, self.config.tld);
 
         // Remove A record
-        let _ = self
+        if let Err(e) = self
             .db
-            .remove_scoped_records(scope_name, &fqdn, Some(RecordKind::A), "");
+            .remove_scoped_records(scope_name, &fqdn, Some(RecordKind::A), "")
+        {
+            warn!("failed to remove A record for {}: {}", fqdn, e);
+        }
 
         // Remove PTR record
         if let Ok(addr) = ip.parse::<Ipv4Addr>() {
@@ -416,9 +407,12 @@ impl DhcpServer {
                 "{}.{}.{}.{}.in-addr.arpa.",
                 octets[3], octets[2], octets[1], octets[0]
             );
-            let _ = self
-                .db
-                .remove_scoped_records(scope_name, &ptr_name, Some(RecordKind::PTR), "");
+            if let Err(e) =
+                self.db
+                    .remove_scoped_records(scope_name, &ptr_name, Some(RecordKind::PTR), "")
+            {
+                warn!("failed to remove PTR record for {}: {}", ptr_name, e);
+            }
         }
 
         self.dns_server.flush_cache();
@@ -427,10 +421,14 @@ impl DhcpServer {
 
     /// Cleans up DNS and network associations for an expired lease.
     pub fn cleanup_lease(&self, lease: &DhcpLease) {
-        if let Some(ref host) = lease.hostname {
-            let _ = self.unregister_dns_hostname(host, &lease.ip, &lease.scope_name);
+        if let Some(ref host) = lease.hostname
+            && let Err(e) = self.unregister_dns_hostname(host, &lease.ip, &lease.scope_name)
+        {
+            warn!("failed to unregister DNS for {}: {}", host, e);
         }
-        let _ = self.db.leave_network(&lease.ip);
+        if let Err(e) = self.db.leave_network(&lease.ip) {
+            warn!("failed to leave network for {}: {}", lease.ip, e);
+        }
         self.dns_server.flush_cache();
     }
 }
@@ -472,9 +470,7 @@ fn build_reply(request: &Message, msg_type: MessageType, offered_ip: Ipv4Addr) -
     reply.set_giaddr(request.giaddr());
     reply.set_chaddr(request.chaddr());
 
-    reply
-        .opts_mut()
-        .insert(DhcpOption::MessageType(msg_type));
+    reply.opts_mut().insert(DhcpOption::MessageType(msg_type));
 
     // Server identifier — use the offered IP's network as a rough server ID
     // In production, this should be the server's actual IP
@@ -489,18 +485,14 @@ fn build_reply(request: &Message, msg_type: MessageType, offered_ip: Ipv4Addr) -
 fn add_pool_options(reply: &mut Message, pool: &DhcpPool, lease_duration: u64) {
     // Subnet mask
     if let Ok(mask) = pool.subnet_mask.parse::<Ipv4Addr>() {
-        reply
-            .opts_mut()
-            .insert(DhcpOption::SubnetMask(mask));
+        reply.opts_mut().insert(DhcpOption::SubnetMask(mask));
     }
 
     // Gateway/router
-    if let Some(ref gw) = pool.gateway {
-        if let Ok(gw_ip) = gw.parse::<Ipv4Addr>() {
-            reply
-                .opts_mut()
-                .insert(DhcpOption::Router(vec![gw_ip]));
-        }
+    if let Some(ref gw) = pool.gateway
+        && let Ok(gw_ip) = gw.parse::<Ipv4Addr>()
+    {
+        reply.opts_mut().insert(DhcpOption::Router(vec![gw_ip]));
     }
 
     // DNS servers
@@ -599,7 +591,11 @@ mod tests {
 
         let mut request = Message::default();
         request.set_opcode(Opcode::BootRequest);
-        let mut reply = build_reply(&request, MessageType::Offer, Ipv4Addr::new(192, 168, 1, 100));
+        let mut reply = build_reply(
+            &request,
+            MessageType::Offer,
+            Ipv4Addr::new(192, 168, 1, 100),
+        );
         add_pool_options(&mut reply, &pool, 3600);
 
         // Verify options are set

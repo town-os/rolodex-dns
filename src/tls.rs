@@ -77,15 +77,14 @@ impl TlsManager {
         rustls::crypto::ring::default_provider()
             .install_default()
             .ok();
-        let (certs, key) = if let (Some(cert_path), Some(key_path)) =
-            (&config.cert_path, &config.key_path)
-        {
-            load_certs_from_pem(cert_path, key_path)?
-        } else if config.auto_self_signed {
-            generate_self_signed()?
-        } else {
-            anyhow::bail!("no TLS certificate configured and auto_self_signed is disabled");
-        };
+        let (certs, key) =
+            if let (Some(cert_path), Some(key_path)) = (&config.cert_path, &config.key_path) {
+                load_certs_from_pem(cert_path, key_path)?
+            } else if config.auto_self_signed {
+                generate_self_signed()?
+            } else {
+                anyhow::bail!("no TLS certificate configured and auto_self_signed is disabled");
+            };
 
         let mut server_config = rustls::ServerConfig::builder()
             .with_no_client_auth()
@@ -102,7 +101,10 @@ impl TlsManager {
 pub fn load_certs_from_pem(
     cert_path: &str,
     key_path: &str,
-) -> Result<(Vec<rustls::pki_types::CertificateDer<'static>>, rustls::pki_types::PrivateKeyDer<'static>)> {
+) -> Result<(
+    Vec<rustls::pki_types::CertificateDer<'static>>,
+    rustls::pki_types::PrivateKeyDer<'static>,
+)> {
     let cert_data = std::fs::read(cert_path)
         .context(format!("failed to read certificate file: {}", cert_path))?;
     let key_data =
@@ -120,7 +122,10 @@ pub fn load_certs_from_pem(
 }
 
 /// Generates a self-signed certificate using rcgen.
-pub fn generate_self_signed() -> Result<(Vec<rustls::pki_types::CertificateDer<'static>>, rustls::pki_types::PrivateKeyDer<'static>)> {
+pub fn generate_self_signed() -> Result<(
+    Vec<rustls::pki_types::CertificateDer<'static>>,
+    rustls::pki_types::PrivateKeyDer<'static>,
+)> {
     let mut params = rcgen::CertificateParams::new(vec!["localhost".to_string()])
         .context("failed to create cert params")?;
     params
@@ -128,9 +133,11 @@ pub fn generate_self_signed() -> Result<(Vec<rustls::pki_types::CertificateDer<'
         .push(rcgen::SanType::IpAddress(std::net::IpAddr::V4(
             std::net::Ipv4Addr::new(127, 0, 0, 1),
         )));
-    params.subject_alt_names.push(rcgen::SanType::IpAddress(
-        std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
-    ));
+    params
+        .subject_alt_names
+        .push(rcgen::SanType::IpAddress(std::net::IpAddr::V6(
+            std::net::Ipv6Addr::LOCALHOST,
+        )));
 
     let key_pair = rcgen::KeyPair::generate().context("failed to generate key pair")?;
     let cert = params
@@ -179,6 +186,9 @@ mod tests {
 
     #[test]
     fn test_certs_exist_false() {
-        assert!(!certs_exist("/nonexistent/cert.pem", "/nonexistent/key.pem"));
+        assert!(!certs_exist(
+            "/nonexistent/cert.pem",
+            "/nonexistent/key.pem"
+        ));
     }
 }

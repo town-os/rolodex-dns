@@ -89,7 +89,10 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         match self.db.add_record(&db_record) {
             Ok(_) => {
                 self.dns_server.flush_cache();
-                info!("Added record: {} {:?} {}", record.name, record_type, record.value);
+                info!(
+                    "Added record: {} {:?} {}",
+                    record.name, record_type, record.value
+                );
                 Ok(Response::new(AddRecordResponse {
                     success: true,
                     message: String::new(),
@@ -171,9 +174,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
 
         let mut addrs = Vec::new();
         for f in &req.forwarders {
-            let addr: SocketAddr = f
-                .parse()
-                .map_err(|e| Status::invalid_argument(format!("invalid forwarder address '{}': {}", f, e)))?;
+            let addr: SocketAddr = f.parse().map_err(|e| {
+                Status::invalid_argument(format!("invalid forwarder address '{}': {}", f, e))
+            })?;
             addrs.push(addr);
         }
 
@@ -358,7 +361,11 @@ impl RolodexDnsService for RolodexDnsGrpcService {
             return Err(Status::invalid_argument("scope_name is required"));
         }
 
-        let ttl = if req.ttl_seconds == 0 { 300 } else { req.ttl_seconds };
+        let ttl = if req.ttl_seconds == 0 {
+            300
+        } else {
+            req.ttl_seconds
+        };
 
         let assoc = NetworkAssociation {
             ip_address: req.ip_address.clone(),
@@ -368,7 +375,10 @@ impl RolodexDnsService for RolodexDnsGrpcService {
 
         match self.db.join_network(&assoc) {
             Ok(_) => {
-                info!("IP {} joined network scope {} (TTL: {}s)", req.ip_address, req.scope_name, ttl);
+                info!(
+                    "IP {} joined network scope {} (TTL: {}s)",
+                    req.ip_address, req.scope_name, ttl
+                );
                 Ok(Response::new(JoinNetworkResponse {
                     success: true,
                     message: String::new(),
@@ -438,7 +448,10 @@ impl RolodexDnsService for RolodexDnsGrpcService {
                     associations: proto_assocs,
                 }))
             }
-            Err(e) => Err(Status::internal(format!("failed to list associations: {}", e))),
+            Err(e) => Err(Status::internal(format!(
+                "failed to list associations: {}",
+                e
+            ))),
         }
     }
 
@@ -474,7 +487,10 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         match self.db.add_scoped_record(&req.scope_name, &db_record) {
             Ok(_) => {
                 self.dns_server.flush_cache();
-                info!("Added scoped record in {}: {} {:?} {}", req.scope_name, record.name, record_type, record.value);
+                info!(
+                    "Added scoped record in {}: {} {:?} {}",
+                    req.scope_name, record.name, record_type, record.value
+                );
                 Ok(Response::new(AddScopedRecordResponse {
                     success: true,
                     message: String::new(),
@@ -500,10 +516,16 @@ impl RolodexDnsService for RolodexDnsGrpcService {
 
         let record_type = RecordKind::from_proto_i32(req.record_type);
 
-        match self.db.remove_scoped_records(&req.scope_name, &req.name, record_type, &req.value) {
+        match self
+            .db
+            .remove_scoped_records(&req.scope_name, &req.name, record_type, &req.value)
+        {
             Ok(count) => {
                 self.dns_server.flush_cache();
-                info!("Removed {} scoped records from {} for {}", count, req.scope_name, req.name);
+                info!(
+                    "Removed {} scoped records from {} for {}",
+                    count, req.scope_name, req.name
+                );
                 Ok(Response::new(RemoveScopedRecordResponse {
                     success: true,
                     removed_count: count as u32,
@@ -535,7 +557,10 @@ impl RolodexDnsService for RolodexDnsGrpcService {
             None
         };
 
-        match self.db.list_scoped_records(&req.scope_name, &req.name_filter, record_type) {
+        match self
+            .db
+            .list_scoped_records(&req.scope_name, &req.name_filter, record_type)
+        {
             Ok(records) => {
                 let proto_records = records
                     .iter()
@@ -551,7 +576,10 @@ impl RolodexDnsService for RolodexDnsGrpcService {
                     records: proto_records,
                 }))
             }
-            Err(e) => Err(Status::internal(format!("failed to list scoped records: {}", e))),
+            Err(e) => Err(Status::internal(format!(
+                "failed to list scoped records: {}",
+                e
+            ))),
         }
     }
 
@@ -570,7 +598,10 @@ impl RolodexDnsService for RolodexDnsGrpcService {
             Ok(domains) => Ok(Response::new(GetSearchDomainsResponse {
                 search_domains: domains,
             })),
-            Err(e) => Err(Status::internal(format!("failed to get search domains: {}", e))),
+            Err(e) => Err(Status::internal(format!(
+                "failed to get search domains: {}",
+                e
+            ))),
         }
     }
 
@@ -643,7 +674,10 @@ impl RolodexDnsService for RolodexDnsGrpcService {
 
         match self.db.list_authoritative_zones() {
             Ok(zones) => Ok(Response::new(ListAuthoritativeZonesResponse { zones })),
-            Err(e) => Err(Status::internal(format!("failed to list authoritative zones: {}", e))),
+            Err(e) => Err(Status::internal(format!(
+                "failed to list authoritative zones: {}",
+                e
+            ))),
         }
     }
 
@@ -705,14 +739,18 @@ impl RolodexDnsService for RolodexDnsGrpcService {
                 "fixed" => {
                     let secs = crate::ttl_drift::parse_duration_secs(&config.fixed_adjustment)
                         .unwrap_or(0);
-                    TtlDriftMode::Fixed { adjustment_secs: secs }
+                    TtlDriftMode::Fixed {
+                        adjustment_secs: secs,
+                    }
                 }
                 "logarithmic" => TtlDriftMode::Logarithmic {
                     multiplier: config.log_multiplier,
                 },
                 _ => TtlDriftMode::Disabled,
             };
-            self.dns_server.set_ttl_drift_config(TtlDriftCfg { mode }).await;
+            self.dns_server
+                .set_ttl_drift_config(TtlDriftCfg { mode })
+                .await;
             info!("TTL drift config set: {:?}", config);
         }
 
@@ -770,7 +808,10 @@ impl RolodexDnsService for RolodexDnsGrpcService {
                     stats: proto_stats,
                 }))
             }
-            Err(e) => Err(Status::internal(format!("failed to get latency stats: {}", e))),
+            Err(e) => Err(Status::internal(format!(
+                "failed to get latency stats: {}",
+                e
+            ))),
         }
     }
 
@@ -858,7 +899,10 @@ impl RolodexDnsService for RolodexDnsGrpcService {
                     entries: proto_entries,
                 }))
             }
-            Err(e) => Err(Status::internal(format!("failed to list local RBL entries: {}", e))),
+            Err(e) => Err(Status::internal(format!(
+                "failed to list local RBL entries: {}",
+                e
+            ))),
         }
     }
 
@@ -939,12 +983,14 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
 
-        let proxy = req.config.map(|cfg| {
-            crate::doh_proxy::ProxyConfig {
-                url: cfg.url,
-                auth: if cfg.auth.is_empty() { None } else { Some(cfg.auth) },
-                mode: crate::doh_proxy::ProxyMode::from_str(&cfg.mode),
-            }
+        let proxy = req.config.map(|cfg| crate::doh_proxy::ProxyConfig {
+            url: cfg.url,
+            auth: if cfg.auth.is_empty() {
+                None
+            } else {
+                Some(cfg.auth)
+            },
+            mode: crate::doh_proxy::ProxyMode::parse(&cfg.mode),
         });
 
         self.dns_server.set_proxy_config(proxy);
@@ -963,13 +1009,14 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
 
-        let config = self.dns_server.get_proxy_config().map(|p| {
-            proto::ProxyConfig {
+        let config = self
+            .dns_server
+            .get_proxy_config()
+            .map(|p| proto::ProxyConfig {
                 url: p.url,
                 auth: p.auth.unwrap_or_default(),
                 mode: p.mode.as_str().to_string(),
-            }
-        });
+            });
 
         Ok(Response::new(GetProxyConfigResponse { config }))
     }
@@ -985,10 +1032,12 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
 
-        let algorithm = crate::dnssec::DnssecAlgorithm::from_str(&req.algorithm)
-            .ok_or_else(|| Status::invalid_argument(format!("unsupported algorithm: {}", req.algorithm)))?;
-        let key_type = crate::dnssec::KeyType::from_str(&req.key_type)
-            .ok_or_else(|| Status::invalid_argument(format!("invalid key type: {}", req.key_type)))?;
+        let algorithm = crate::dnssec::DnssecAlgorithm::parse(&req.algorithm).ok_or_else(|| {
+            Status::invalid_argument(format!("unsupported algorithm: {}", req.algorithm))
+        })?;
+        let key_type = crate::dnssec::KeyType::parse(&req.key_type).ok_or_else(|| {
+            Status::invalid_argument(format!("invalid key type: {}", req.key_type))
+        })?;
 
         let key_pair = match algorithm {
             crate::dnssec::DnssecAlgorithm::Ed25519 => {
@@ -1006,17 +1055,25 @@ impl RolodexDnsService for RolodexDnsGrpcService {
             }
         };
 
-        let id = self.db.store_dnssec_key(
-            &req.zone,
-            "",
-            algorithm.as_str(),
-            key_type.as_str(),
-            &key_pair.private_key,
-            &key_pair.public_key,
-            key_pair.key_tag,
-        ).map_err(|e| Status::internal(format!("failed to store key: {}", e)))?;
+        let id = self
+            .db
+            .store_dnssec_key(&crate::db::DnssecKeyParams {
+                zone: &req.zone,
+                scope: "",
+                algorithm: algorithm.as_str(),
+                key_type: key_type.as_str(),
+                private_key: &key_pair.private_key,
+                public_key: &key_pair.public_key,
+                key_tag: key_pair.key_tag,
+            })
+            .map_err(|e| Status::internal(format!("failed to store key: {}", e)))?;
 
-        info!("Generated DNSSEC {} key for zone {} (tag={})", key_type.as_str(), req.zone, key_pair.key_tag);
+        info!(
+            "Generated DNSSEC {} key for zone {} (tag={})",
+            key_type.as_str(),
+            req.zone,
+            key_pair.key_tag
+        );
 
         Ok(Response::new(GenerateDnssecKeyResponse {
             success: true,
@@ -1045,20 +1102,25 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
 
-        let keys = self.db.list_dnssec_keys(&req.zone)
+        let keys = self
+            .db
+            .list_dnssec_keys(&req.zone)
             .map_err(|e| Status::internal(format!("failed to list keys: {}", e)))?;
 
-        let proto_keys = keys.iter().map(|k| DnssecKey {
-            id: k.id,
-            zone: k.zone.clone(),
-            scope_name: k.scope_name.clone(),
-            algorithm: k.algorithm.clone(),
-            key_type: k.key_type.clone(),
-            key_tag: k.key_tag as u32,
-            created_at: k.created_at,
-            expires_at: 0,
-            active: k.active,
-        }).collect();
+        let proto_keys = keys
+            .iter()
+            .map(|k| DnssecKey {
+                id: k.id,
+                zone: k.zone.clone(),
+                scope_name: k.scope_name.clone(),
+                algorithm: k.algorithm.clone(),
+                key_type: k.key_type.clone(),
+                key_tag: k.key_tag as u32,
+                created_at: k.created_at,
+                expires_at: 0,
+                active: k.active,
+            })
+            .collect();
 
         Ok(Response::new(ListDnssecKeysResponse { keys: proto_keys }))
     }
@@ -1070,7 +1132,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
 
-        let deleted = self.db.delete_dnssec_key(req.key_id)
+        let deleted = self
+            .db
+            .delete_dnssec_key(req.key_id)
             .map_err(|e| Status::internal(format!("failed to delete key: {}", e)))?;
 
         if deleted {
@@ -1079,7 +1143,11 @@ impl RolodexDnsService for RolodexDnsGrpcService {
 
         Ok(Response::new(DeleteDnssecKeyResponse {
             success: deleted,
-            message: if deleted { String::new() } else { "key not found".to_string() },
+            message: if deleted {
+                String::new()
+            } else {
+                "key not found".to_string()
+            },
         }))
     }
 
@@ -1090,16 +1158,21 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
 
-        let keys = self.db.get_active_keys(&req.zone, "KSK")
+        let keys = self
+            .db
+            .get_active_keys(&req.zone, "KSK")
             .map_err(|e| Status::internal(format!("failed to get keys: {}", e)))?;
 
-        let ds_records: Vec<String> = keys.iter().map(|k| {
-            let algo = crate::dnssec::DnssecAlgorithm::from_str(&k.algorithm)
-                .unwrap_or(crate::dnssec::DnssecAlgorithm::Ed25519);
-            let kt = crate::dnssec::KeyType::from_str(&k.key_type)
-                .unwrap_or(crate::dnssec::KeyType::KSK);
-            crate::dnssec::compute_ds_sha256(&k.zone, k.key_tag, algo, &k.public_key, kt)
-        }).collect();
+        let ds_records: Vec<String> = keys
+            .iter()
+            .map(|k| {
+                let algo = crate::dnssec::DnssecAlgorithm::parse(&k.algorithm)
+                    .unwrap_or(crate::dnssec::DnssecAlgorithm::Ed25519);
+                let kt = crate::dnssec::KeyType::parse(&k.key_type)
+                    .unwrap_or(crate::dnssec::KeyType::KSK);
+                crate::dnssec::compute_ds_sha256(&k.zone, k.key_tag, algo, &k.public_key, kt)
+            })
+            .collect();
 
         Ok(Response::new(GetDsRecordsResponse { ds_records }))
     }
@@ -1112,7 +1185,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         self.check_auth(&req.auth_token)?;
 
         // Get all active keys for this zone
-        let all_keys = self.db.list_dnssec_keys(&req.zone)
+        let all_keys = self
+            .db
+            .list_dnssec_keys(&req.zone)
             .map_err(|e| Status::internal(format!("failed to list keys: {}", e)))?;
 
         if all_keys.is_empty() {
@@ -1127,29 +1202,37 @@ impl RolodexDnsService for RolodexDnsGrpcService {
             if !key.active {
                 continue;
             }
-            let algo = crate::dnssec::DnssecAlgorithm::from_str(&key.algorithm)
+            let algo = crate::dnssec::DnssecAlgorithm::parse(&key.algorithm)
                 .unwrap_or(crate::dnssec::DnssecAlgorithm::Ed25519);
-            let kt = crate::dnssec::KeyType::from_str(&key.key_type)
-                .unwrap_or(crate::dnssec::KeyType::ZSK);
+            let kt =
+                crate::dnssec::KeyType::parse(&key.key_type).unwrap_or(crate::dnssec::KeyType::ZSK);
 
             // DNSKEY RDATA: flags protocol algorithm public_key_base64
             let flags = kt.flags();
-            let pub_b64 = base64::Engine::encode(
-                &base64::engine::general_purpose::STANDARD,
-                &key.public_key,
-            );
+            let pub_b64 =
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &key.public_key);
             let dnskey_value = format!("{} 3 {} {}", flags, algo as u8, pub_b64);
 
             // Remove old DNSKEY records for this zone and re-add
-            let _ = self.db.remove_records(&req.zone, Some(RecordKind::DNSKEY), &dnskey_value);
-            self.db.add_record(&crate::db::DnsRecord {
-                id: None,
-                name: req.zone.clone(),
-                record_type: RecordKind::DNSKEY,
-                value: dnskey_value,
-                ttl: 3600,
-                priority: 0,
-            }).map_err(|e| Status::internal(format!("failed to store DNSKEY: {}", e)))?;
+            if let Err(e) =
+                self.db
+                    .remove_records(&req.zone, Some(RecordKind::DNSKEY), &dnskey_value)
+            {
+                return Err(Status::internal(format!(
+                    "failed to remove old DNSKEY: {}",
+                    e
+                )));
+            }
+            self.db
+                .add_record(&crate::db::DnsRecord {
+                    id: None,
+                    name: req.zone.clone(),
+                    record_type: RecordKind::DNSKEY,
+                    value: dnskey_value,
+                    ttl: 3600,
+                    priority: 0,
+                })
+                .map_err(|e| Status::internal(format!("failed to store DNSKEY: {}", e)))?;
         }
 
         info!("Signed zone {} ({} keys)", req.zone, all_keys.len());
@@ -1176,18 +1259,21 @@ impl RolodexDnsService for RolodexDnsGrpcService {
             req.usage as u8,
             req.selector as u8,
             req.matching_type as u8,
-        ).map_err(|e| Status::internal(format!("TLSA generation failed: {}", e)))?;
+        )
+        .map_err(|e| Status::internal(format!("TLSA generation failed: {}", e)))?;
 
         // Store as a TLSA DNS record
         let dns_name = crate::dane::tlsa_dns_name(&req.domain, req.port as u16, &req.protocol);
-        self.db.add_record(&DnsRecord {
-            id: None,
-            name: dns_name,
-            record_type: RecordKind::TLSA,
-            value: tlsa_value.clone(),
-            ttl: 3600,
-            priority: 0,
-        }).map_err(|e| Status::internal(format!("failed to store TLSA record: {}", e)))?;
+        self.db
+            .add_record(&DnsRecord {
+                id: None,
+                name: dns_name,
+                record_type: RecordKind::TLSA,
+                value: tlsa_value.clone(),
+                ttl: 3600,
+                priority: 0,
+            })
+            .map_err(|e| Status::internal(format!("failed to store TLSA record: {}", e)))?;
 
         info!("Generated TLSA record for {}", req.domain);
 
@@ -1207,18 +1293,25 @@ impl RolodexDnsService for RolodexDnsGrpcService {
 
         // Query for TLSA records matching _*._*.{domain} pattern
         let filter = format!("*.{}", req.domain);
-        let records = self.db.list_records(&filter, Some(RecordKind::TLSA))
+        let records = self
+            .db
+            .list_records(&filter, Some(RecordKind::TLSA))
             .map_err(|e| Status::internal(format!("failed to list TLSA records: {}", e)))?;
 
-        let proto_records = records.iter().map(|r| proto::DnsRecord {
-            name: r.name.clone(),
-            record_type: r.record_type.to_proto_i32(),
-            value: r.value.clone(),
-            ttl: r.ttl,
-            priority: r.priority,
-        }).collect();
+        let proto_records = records
+            .iter()
+            .map(|r| proto::DnsRecord {
+                name: r.name.clone(),
+                record_type: r.record_type.to_proto_i32(),
+                value: r.value.clone(),
+                ttl: r.ttl,
+                priority: r.priority,
+            })
+            .collect();
 
-        Ok(Response::new(ListTlsaRecordsResponse { records: proto_records }))
+        Ok(Response::new(ListTlsaRecordsResponse {
+            records: proto_records,
+        }))
     }
 
     async fn generate_dane_root_ca(
@@ -1231,7 +1324,8 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         let (cert_pem, key_pem) = crate::dane::generate_dane_root_ca(&req.name)
             .map_err(|e| Status::internal(format!("CA generation failed: {}", e)))?;
 
-        self.db.store_dane_root_ca(&req.name, &cert_pem, &key_pem)
+        self.db
+            .store_dane_root_ca(&req.name, &cert_pem, &key_pem)
             .map_err(|e| Status::internal(format!("failed to store CA: {}", e)))?;
 
         info!("Generated DANE root CA: {}", req.name);
@@ -1257,7 +1351,10 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         crate::acme::set_acme_challenge(&self.db, &req.domain, &token)
             .map_err(|e| Status::internal(format!("failed to set ACME challenge: {}", e)))?;
 
-        info!("Set ACME challenge for domain {} (provider: {})", req.domain, req.provider_url);
+        info!(
+            "Set ACME challenge for domain {} (provider: {})",
+            req.domain, req.provider_url
+        );
 
         Ok(Response::new(RequestAcmeCertResponse {
             success: true,
@@ -1292,7 +1389,8 @@ impl RolodexDnsService for RolodexDnsGrpcService {
             }
             Ok(None) => {
                 // Check if there's a pending challenge
-                let challenge_name = format!("_acme-challenge.{}", req.domain.trim_end_matches('.'));
+                let challenge_name =
+                    format!("_acme-challenge.{}", req.domain.trim_end_matches('.'));
                 let challenges = self.db.lookup(&challenge_name, Some(RecordKind::TXT));
                 let status = if challenges.map(|r| !r.is_empty()).unwrap_or(false) {
                     "pending"
@@ -1305,7 +1403,10 @@ impl RolodexDnsService for RolodexDnsGrpcService {
                     domain: req.domain,
                 }))
             }
-            Err(e) => Err(Status::internal(format!("failed to get ACME status: {}", e))),
+            Err(e) => Err(Status::internal(format!(
+                "failed to get ACME status: {}",
+                e
+            ))),
         }
     }
 
@@ -1350,22 +1451,42 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<AddDhcpPoolResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
-        let pool = req.pool.ok_or_else(|| Status::invalid_argument("pool is required"))?;
+        let pool = req
+            .pool
+            .ok_or_else(|| Status::invalid_argument("pool is required"))?;
         let db_pool = crate::db::DhcpPool {
             id: 0,
             scope_name: pool.scope_name,
             range_start: pool.range_start,
             range_end: pool.range_end,
-            gateway: if pool.gateway.is_empty() { None } else { Some(pool.gateway) },
-            subnet_mask: if pool.subnet_mask.is_empty() { "255.255.255.0".to_string() } else { pool.subnet_mask },
-            dns_servers: if pool.dns_servers.is_empty() { None } else { Some(pool.dns_servers) },
+            gateway: if pool.gateway.is_empty() {
+                None
+            } else {
+                Some(pool.gateway)
+            },
+            subnet_mask: if pool.subnet_mask.is_empty() {
+                "255.255.255.0".to_string()
+            } else {
+                pool.subnet_mask
+            },
+            dns_servers: if pool.dns_servers.is_empty() {
+                None
+            } else {
+                Some(pool.dns_servers)
+            },
         };
         match self.db.add_dhcp_pool(&db_pool) {
             Ok(id) => {
                 info!("Added DHCP pool {} for scope {}", id, db_pool.scope_name);
-                Ok(Response::new(AddDhcpPoolResponse { success: true, message: String::new() }))
+                Ok(Response::new(AddDhcpPoolResponse {
+                    success: true,
+                    message: String::new(),
+                }))
             }
-            Err(e) => Ok(Response::new(AddDhcpPoolResponse { success: false, message: e.to_string() })),
+            Err(e) => Ok(Response::new(AddDhcpPoolResponse {
+                success: false,
+                message: e.to_string(),
+            })),
         }
     }
 
@@ -1378,10 +1499,19 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         match self.db.remove_dhcp_pool(req.pool_id) {
             Ok(true) => {
                 info!("Removed DHCP pool {}", req.pool_id);
-                Ok(Response::new(RemoveDhcpPoolResponse { success: true, message: String::new() }))
+                Ok(Response::new(RemoveDhcpPoolResponse {
+                    success: true,
+                    message: String::new(),
+                }))
             }
-            Ok(false) => Ok(Response::new(RemoveDhcpPoolResponse { success: false, message: "pool not found".to_string() })),
-            Err(e) => Ok(Response::new(RemoveDhcpPoolResponse { success: false, message: e.to_string() })),
+            Ok(false) => Ok(Response::new(RemoveDhcpPoolResponse {
+                success: false,
+                message: "pool not found".to_string(),
+            })),
+            Err(e) => Ok(Response::new(RemoveDhcpPoolResponse {
+                success: false,
+                message: e.to_string(),
+            })),
         }
     }
 
@@ -1391,18 +1521,25 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<ListDhcpPoolsResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
-        let scope_filter = if req.scope_name.is_empty() { None } else { Some(req.scope_name.as_str()) };
+        let scope_filter = if req.scope_name.is_empty() {
+            None
+        } else {
+            Some(req.scope_name.as_str())
+        };
         match self.db.list_dhcp_pools(scope_filter) {
             Ok(pools) => {
-                let proto_pools = pools.into_iter().map(|p| proto::DhcpPool {
-                    id: p.id,
-                    scope_name: p.scope_name,
-                    range_start: p.range_start,
-                    range_end: p.range_end,
-                    gateway: p.gateway.unwrap_or_default(),
-                    subnet_mask: p.subnet_mask,
-                    dns_servers: p.dns_servers.unwrap_or_default(),
-                }).collect();
+                let proto_pools = pools
+                    .into_iter()
+                    .map(|p| proto::DhcpPool {
+                        id: p.id,
+                        scope_name: p.scope_name,
+                        range_start: p.range_start,
+                        range_end: p.range_end,
+                        gateway: p.gateway.unwrap_or_default(),
+                        subnet_mask: p.subnet_mask,
+                        dns_servers: p.dns_servers.unwrap_or_default(),
+                    })
+                    .collect();
                 Ok(Response::new(ListDhcpPoolsResponse { pools: proto_pools }))
             }
             Err(e) => Err(Status::internal(e.to_string())),
@@ -1419,19 +1556,28 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<ListDhcpLeasesResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
-        let scope_filter = if req.scope_name.is_empty() { None } else { Some(req.scope_name.as_str()) };
+        let scope_filter = if req.scope_name.is_empty() {
+            None
+        } else {
+            Some(req.scope_name.as_str())
+        };
         match self.db.list_leases(scope_filter) {
             Ok(leases) => {
-                let proto_leases = leases.into_iter().map(|l| proto::DhcpLease {
-                    mac: l.mac,
-                    ip: l.ip,
-                    scope_name: l.scope_name,
-                    hostname: l.hostname.unwrap_or_default(),
-                    lease_start: l.lease_start,
-                    lease_duration: l.lease_duration,
-                    state: l.state,
-                }).collect();
-                Ok(Response::new(ListDhcpLeasesResponse { leases: proto_leases }))
+                let proto_leases = leases
+                    .into_iter()
+                    .map(|l| proto::DhcpLease {
+                        mac: l.mac,
+                        ip: l.ip,
+                        scope_name: l.scope_name,
+                        hostname: l.hostname.unwrap_or_default(),
+                        lease_start: l.lease_start,
+                        lease_duration: l.lease_duration,
+                        state: l.state,
+                    })
+                    .collect();
+                Ok(Response::new(ListDhcpLeasesResponse {
+                    leases: proto_leases,
+                }))
             }
             Err(e) => Err(Status::internal(e.to_string())),
         }
@@ -1449,10 +1595,19 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         match self.db.delete_lease(&req.mac) {
             Ok(true) => {
                 info!("Deleted DHCP lease for MAC {}", req.mac);
-                Ok(Response::new(DeleteDhcpLeaseResponse { success: true, message: String::new() }))
+                Ok(Response::new(DeleteDhcpLeaseResponse {
+                    success: true,
+                    message: String::new(),
+                }))
             }
-            Ok(false) => Ok(Response::new(DeleteDhcpLeaseResponse { success: false, message: "lease not found".to_string() })),
-            Err(e) => Ok(Response::new(DeleteDhcpLeaseResponse { success: false, message: e.to_string() })),
+            Ok(false) => Ok(Response::new(DeleteDhcpLeaseResponse {
+                success: false,
+                message: "lease not found".to_string(),
+            })),
+            Err(e) => Ok(Response::new(DeleteDhcpLeaseResponse {
+                success: false,
+                message: e.to_string(),
+            })),
         }
     }
 
@@ -1466,7 +1621,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<AddScopeRblProviderResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
-        let provider = req.provider.ok_or_else(|| Status::invalid_argument("provider is required"))?;
+        let provider = req
+            .provider
+            .ok_or_else(|| Status::invalid_argument("provider is required"))?;
         let db_provider = crate::db::ScopeRblProvider {
             scope_name: provider.scope_name,
             zone: provider.zone,
@@ -1474,10 +1631,19 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         };
         match self.db.add_scope_rbl_provider(&db_provider) {
             Ok(()) => {
-                info!("Added scope RBL provider {} for scope {}", db_provider.zone, db_provider.scope_name);
-                Ok(Response::new(AddScopeRblProviderResponse { success: true, message: String::new() }))
+                info!(
+                    "Added scope RBL provider {} for scope {}",
+                    db_provider.zone, db_provider.scope_name
+                );
+                Ok(Response::new(AddScopeRblProviderResponse {
+                    success: true,
+                    message: String::new(),
+                }))
             }
-            Err(e) => Ok(Response::new(AddScopeRblProviderResponse { success: false, message: e.to_string() })),
+            Err(e) => Ok(Response::new(AddScopeRblProviderResponse {
+                success: false,
+                message: e.to_string(),
+            })),
         }
     }
 
@@ -1487,13 +1653,28 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<RemoveScopeRblProviderResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
-        match self.db.remove_scope_rbl_provider(&req.scope_name, &req.zone) {
+        match self
+            .db
+            .remove_scope_rbl_provider(&req.scope_name, &req.zone)
+        {
             Ok(true) => {
-                info!("Removed scope RBL provider {} from scope {}", req.zone, req.scope_name);
-                Ok(Response::new(RemoveScopeRblProviderResponse { success: true, message: String::new() }))
+                info!(
+                    "Removed scope RBL provider {} from scope {}",
+                    req.zone, req.scope_name
+                );
+                Ok(Response::new(RemoveScopeRblProviderResponse {
+                    success: true,
+                    message: String::new(),
+                }))
             }
-            Ok(false) => Ok(Response::new(RemoveScopeRblProviderResponse { success: false, message: "provider not found".to_string() })),
-            Err(e) => Ok(Response::new(RemoveScopeRblProviderResponse { success: false, message: e.to_string() })),
+            Ok(false) => Ok(Response::new(RemoveScopeRblProviderResponse {
+                success: false,
+                message: "provider not found".to_string(),
+            })),
+            Err(e) => Ok(Response::new(RemoveScopeRblProviderResponse {
+                success: false,
+                message: e.to_string(),
+            })),
         }
     }
 
@@ -1505,12 +1686,17 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         self.check_auth(&req.auth_token)?;
         match self.db.list_scope_rbl_providers(&req.scope_name) {
             Ok(providers) => {
-                let proto_providers = providers.into_iter().map(|p| proto::ScopeRblProvider {
-                    scope_name: p.scope_name,
-                    zone: p.zone,
-                    enabled: p.enabled,
-                }).collect();
-                Ok(Response::new(ListScopeRblProvidersResponse { providers: proto_providers }))
+                let proto_providers = providers
+                    .into_iter()
+                    .map(|p| proto::ScopeRblProvider {
+                        scope_name: p.scope_name,
+                        zone: p.zone,
+                        enabled: p.enabled,
+                    })
+                    .collect();
+                Ok(Response::new(ListScopeRblProvidersResponse {
+                    providers: proto_providers,
+                }))
             }
             Err(e) => Err(Status::internal(e.to_string())),
         }
@@ -1526,19 +1712,34 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<SetDhcpCertOptionResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
-        let opt = req.option.ok_or_else(|| Status::invalid_argument("option is required"))?;
+        let opt = req
+            .option
+            .ok_or_else(|| Status::invalid_argument("option is required"))?;
         let db_opt = crate::db::DhcpCertOption {
             scope_name: opt.scope_name,
             option_code: opt.option_code,
             cert_data: opt.cert_data,
-            description: if opt.description.is_empty() { None } else { Some(opt.description) },
+            description: if opt.description.is_empty() {
+                None
+            } else {
+                Some(opt.description)
+            },
         };
         match self.db.set_dhcp_cert_option(&db_opt) {
             Ok(()) => {
-                info!("Set DHCP cert option {} for scope {}", db_opt.option_code, db_opt.scope_name);
-                Ok(Response::new(SetDhcpCertOptionResponse { success: true, message: String::new() }))
+                info!(
+                    "Set DHCP cert option {} for scope {}",
+                    db_opt.option_code, db_opt.scope_name
+                );
+                Ok(Response::new(SetDhcpCertOptionResponse {
+                    success: true,
+                    message: String::new(),
+                }))
             }
-            Err(e) => Ok(Response::new(SetDhcpCertOptionResponse { success: false, message: e.to_string() })),
+            Err(e) => Ok(Response::new(SetDhcpCertOptionResponse {
+                success: false,
+                message: e.to_string(),
+            })),
         }
     }
 
@@ -1548,13 +1749,28 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<RemoveDhcpCertOptionResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
-        match self.db.remove_dhcp_cert_option(&req.scope_name, req.option_code) {
+        match self
+            .db
+            .remove_dhcp_cert_option(&req.scope_name, req.option_code)
+        {
             Ok(true) => {
-                info!("Removed DHCP cert option {} from scope {}", req.option_code, req.scope_name);
-                Ok(Response::new(RemoveDhcpCertOptionResponse { success: true, message: String::new() }))
+                info!(
+                    "Removed DHCP cert option {} from scope {}",
+                    req.option_code, req.scope_name
+                );
+                Ok(Response::new(RemoveDhcpCertOptionResponse {
+                    success: true,
+                    message: String::new(),
+                }))
             }
-            Ok(false) => Ok(Response::new(RemoveDhcpCertOptionResponse { success: false, message: "option not found".to_string() })),
-            Err(e) => Ok(Response::new(RemoveDhcpCertOptionResponse { success: false, message: e.to_string() })),
+            Ok(false) => Ok(Response::new(RemoveDhcpCertOptionResponse {
+                success: false,
+                message: "option not found".to_string(),
+            })),
+            Err(e) => Ok(Response::new(RemoveDhcpCertOptionResponse {
+                success: false,
+                message: e.to_string(),
+            })),
         }
     }
 
@@ -1566,13 +1782,18 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         self.check_auth(&req.auth_token)?;
         match self.db.list_dhcp_cert_options(&req.scope_name) {
             Ok(options) => {
-                let proto_opts = options.into_iter().map(|o| proto::DhcpCertOption {
-                    scope_name: o.scope_name,
-                    option_code: o.option_code,
-                    cert_data: o.cert_data,
-                    description: o.description.unwrap_or_default(),
-                }).collect();
-                Ok(Response::new(ListDhcpCertOptionsResponse { options: proto_opts }))
+                let proto_opts = options
+                    .into_iter()
+                    .map(|o| proto::DhcpCertOption {
+                        scope_name: o.scope_name,
+                        option_code: o.option_code,
+                        cert_data: o.cert_data,
+                        description: o.description.unwrap_or_default(),
+                    })
+                    .collect();
+                Ok(Response::new(ListDhcpCertOptionsResponse {
+                    options: proto_opts,
+                }))
             }
             Err(e) => Err(Status::internal(e.to_string())),
         }
