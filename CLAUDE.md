@@ -2,6 +2,16 @@
 
 Rolodex DNS is a split-horizon DNS server and forwarding resolver with remote management via gRPC. It is written in Rust and licensed under AGPL-3.0-only.
 
+## Rules
+
+- ensure deny(dead_code) and deny(unsafe) are at the top and honored
+- handle all std::result::Result in an appropriate way
+- do not use unwrap
+- do not use unsafe code
+- write tests for everything, including integration and real tests
+- use make test to validate any changes
+- integration tests should not alter the host, ever
+
 ## DNS Resolution
 
 Rolodex DNS serves DNS queries over UDP, TCP, DNS-over-TLS (DoT), DNS-over-HTTPS (DoH), and DNS-over-QUIC (DoQ) on configurable bind addresses (default `0.0.0.0:53` for UDP/TCP). TCP and DoT use the standard 2-byte length prefix framing. Maximum UDP message size is 4096 bytes; maximum TCP message size is 65535 bytes.
@@ -125,6 +135,7 @@ Rolodex DNS supports DNSSEC zone signing with the following algorithms (stronges
 ### Key Management
 
 Two key types are supported:
+
 - **ZSK** (Zone Signing Key, flag 256) — signs zone data records.
 - **KSK** (Key Signing Key, flag 257) — signs the DNSKEY RRset.
 
@@ -215,6 +226,7 @@ Lease states: `active` (in use), `expired` (past duration), `released` (client r
 ### DNS Integration
 
 When a DHCP client provides a hostname (option 12), the server automatically registers:
+
 - An A record: `<hostname>.lan.<tld>.` → assigned IP (as a scoped record)
 - A PTR record: `<reversed-ip>.in-addr.arpa.` → `<hostname>.lan.<tld>.` (as a scoped record)
 
@@ -233,6 +245,7 @@ Certificates can be delivered to DHCP clients via site-specific DHCP options (co
 ### Background Lease Sweep
 
 A background task runs at a configurable interval (`sweep_interval`, default 60 seconds) to:
+
 - Expire active leases past their duration
 - Remove DNS records and network associations for expired leases
 - Reclaim IPs from leases past the `reclaim_timeout` (default 24 hours)
@@ -260,133 +273,133 @@ The management API is defined in `proto/rolodex_dns.proto` under the `RolodexDns
 
 #### Record Management
 
-| RPC | Description |
-|---|---|
-| `AddRecord` | Adds a DNS record to the local database. TTL defaults to 300 if set to 0. |
-| `RemoveRecord` | Removes records by name, with optional type and value filters. Returns the count of records removed. |
-| `ListRecords` | Queries the local database with optional name filter (supports `*.` wildcard prefix for subdomain matching) and optional record type filter. |
+| RPC            | Description                                                                                                                                  |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AddRecord`    | Adds a DNS record to the local database. TTL defaults to 300 if set to 0.                                                                    |
+| `RemoveRecord` | Removes records by name, with optional type and value filters. Returns the count of records removed.                                         |
+| `ListRecords`  | Queries the local database with optional name filter (supports `*.` wildcard prefix for subdomain matching) and optional record type filter. |
 
 #### Network Scoping
 
-| RPC | Description |
-|---|---|
-| `CreateNetworkScope` | Creates a new network scope with a reserved `.home` domain. |
-| `DeleteNetworkScope` | Deletes a scope and all its records and associations. |
-| `ListNetworkScopes` | Retrieves all configured network scopes. |
-| `JoinNetwork` | Associates a client IP with a scope (TTL-based, default 300s). |
-| `LeaveNetwork` | Removes an IP's association with its scope. |
+| RPC                      | Description                                                       |
+| ------------------------ | ----------------------------------------------------------------- |
+| `CreateNetworkScope`     | Creates a new network scope with a reserved `.home` domain.       |
+| `DeleteNetworkScope`     | Deletes a scope and all its records and associations.             |
+| `ListNetworkScopes`      | Retrieves all configured network scopes.                          |
+| `JoinNetwork`            | Associates a client IP with a scope (TTL-based, default 300s).    |
+| `LeaveNetwork`           | Removes an IP's association with its scope.                       |
 | `GetNetworkAssociations` | Retrieves IP-to-scope associations, optionally filtered by scope. |
-| `AddScopedRecord` | Adds a DNS record within a specific network scope. |
-| `RemoveScopedRecord` | Removes DNS records from a specific scope. |
-| `ListScopedRecords` | Queries DNS records within a scope with optional filters. |
-| `GetSearchDomains` | Retrieves the search domains for a client IP address. |
+| `AddScopedRecord`        | Adds a DNS record within a specific network scope.                |
+| `RemoveScopedRecord`     | Removes DNS records from a specific scope.                        |
+| `ListScopedRecords`      | Queries DNS records within a scope with optional filters.         |
+| `GetSearchDomains`       | Retrieves the search domains for a client IP address.             |
 
 #### Authoritative Zones
 
-| RPC | Description |
-|---|---|
-| `AddAuthoritativeZone` | Declares a zone as authoritative (prevents upstream forwarding). |
-| `RemoveAuthoritativeZone` | Removes a zone from the authoritative list. |
-| `ListAuthoritativeZones` | Retrieves all authoritative zone names. |
+| RPC                       | Description                                                      |
+| ------------------------- | ---------------------------------------------------------------- |
+| `AddAuthoritativeZone`    | Declares a zone as authoritative (prevents upstream forwarding). |
+| `RemoveAuthoritativeZone` | Removes a zone from the authoritative list.                      |
+| `ListAuthoritativeZones`  | Retrieves all authoritative zone names.                          |
 
 #### Forwarding & RBL
 
-| RPC | Description |
-|---|---|
-| `SetForwarders` | Replaces the upstream DNS forwarder list at runtime without restart. |
-| `SetRblConfig` | Replaces the RBL configuration (global enable flag and provider list) at runtime. |
-| `GetRblConfig` | Returns the current RBL configuration. |
-| `FlushCache` | Clears the RBL result cache. |
-| `AddLocalRblEntry` | Adds a local RBL blocklist entry (name/IP and reason). |
-| `RemoveLocalRblEntry` | Removes a local RBL entry by name. |
-| `ListLocalRblEntries` | Retrieves all local RBL entries. |
+| RPC                   | Description                                                                       |
+| --------------------- | --------------------------------------------------------------------------------- |
+| `SetForwarders`       | Replaces the upstream DNS forwarder list at runtime without restart.              |
+| `SetRblConfig`        | Replaces the RBL configuration (global enable flag and provider list) at runtime. |
+| `GetRblConfig`        | Returns the current RBL configuration.                                            |
+| `FlushCache`          | Clears the RBL result cache.                                                      |
+| `AddLocalRblEntry`    | Adds a local RBL blocklist entry (name/IP and reason).                            |
+| `RemoveLocalRblEntry` | Removes a local RBL entry by name.                                                |
+| `ListLocalRblEntries` | Retrieves all local RBL entries.                                                  |
 
 #### DNS Cache
 
-| RPC | Description |
-|---|---|
+| RPC             | Description                                                     |
+| --------------- | --------------------------------------------------------------- |
 | `GetCacheStats` | Returns cache statistics: total entries, hit count, miss count. |
-| `FlushDnsCache` | Clears the DNS response cache. |
+| `FlushDnsCache` | Clears the DNS response cache.                                  |
 
 #### TTL Drift & Latency
 
-| RPC | Description |
-|---|---|
-| `SetTtlDriftConfig` | Sets the TTL drift mode, fixed adjustment, and log multiplier. |
-| `GetTtlDriftConfig` | Returns the current TTL drift configuration. |
+| RPC                    | Description                                                                                  |
+| ---------------------- | -------------------------------------------------------------------------------------------- |
+| `SetTtlDriftConfig`    | Sets the TTL drift mode, fixed adjustment, and log multiplier.                               |
+| `GetTtlDriftConfig`    | Returns the current TTL drift configuration.                                                 |
 | `GetQueryLatencyStats` | Returns per-server upstream query latency statistics (server, average latency, query count). |
 
 #### Encrypted Transport Configuration
 
-| RPC | Description |
-|---|---|
-| `SetDotConfig` / `GetDotConfig` | Configures DNS-over-TLS (bind address, TLS settings). |
-| `SetDohConfig` / `GetDohConfig` | Configures DNS-over-HTTPS (bind address, TLS settings). |
-| `SetDoqConfig` / `GetDoqConfig` | Configures DNS-over-QUIC (bind address, TLS settings). |
-| `SetProxyConfig` / `GetProxyConfig` | Configures upstream proxy transport (URL, auth, mode). |
+| RPC                                 | Description                                             |
+| ----------------------------------- | ------------------------------------------------------- |
+| `SetDotConfig` / `GetDotConfig`     | Configures DNS-over-TLS (bind address, TLS settings).   |
+| `SetDohConfig` / `GetDohConfig`     | Configures DNS-over-HTTPS (bind address, TLS settings). |
+| `SetDoqConfig` / `GetDoqConfig`     | Configures DNS-over-QUIC (bind address, TLS settings).  |
+| `SetProxyConfig` / `GetProxyConfig` | Configures upstream proxy transport (URL, auth, mode).  |
 
 #### DNSSEC
 
-| RPC | Description |
-|---|---|
+| RPC                 | Description                                                    |
+| ------------------- | -------------------------------------------------------------- |
 | `GenerateDnssecKey` | Generates a DNSSEC key pair for a zone (algorithm + key type). |
-| `ListDnssecKeys` | Retrieves DNSSEC keys for a zone. |
-| `DeleteDnssecKey` | Deletes a DNSSEC key by ID. |
-| `GetDsRecords` | Retrieves DS records for parent-zone delegation. |
-| `SignZone` | Signs a zone with its DNSSEC keys. |
+| `ListDnssecKeys`    | Retrieves DNSSEC keys for a zone.                              |
+| `DeleteDnssecKey`   | Deletes a DNSSEC key by ID.                                    |
+| `GetDsRecords`      | Retrieves DS records for parent-zone delegation.               |
+| `SignZone`          | Signs a zone with its DNSSEC keys.                             |
 
 #### DANE & TLSA
 
-| RPC | Description |
-|---|---|
+| RPC                  | Description                                                                                              |
+| -------------------- | -------------------------------------------------------------------------------------------------------- |
 | `GenerateTlsaRecord` | Generates a TLSA record from a PEM certificate (domain, port, protocol, usage, selector, matching type). |
-| `ListTlsaRecords` | Retrieves TLSA records for a domain. |
-| `GenerateDaneRootCa` | Generates a self-signed root CA certificate for DANE. |
+| `ListTlsaRecords`    | Retrieves TLSA records for a domain.                                                                     |
+| `GenerateDaneRootCa` | Generates a self-signed root CA certificate for DANE.                                                    |
 
 #### ACME
 
-| RPC | Description |
-|---|---|
+| RPC               | Description                                                              |
+| ----------------- | ------------------------------------------------------------------------ |
 | `RequestAcmeCert` | Requests a certificate via ACME DNS-01 challenge (domain, provider URL). |
-| `GetAcmeStatus` | Retrieves ACME certificate status (status, expiry, domain). |
+| `GetAcmeStatus`   | Retrieves ACME certificate status (status, expiry, domain).              |
 
 #### DNS64
 
-| RPC | Description |
-|---|---|
+| RPC              | Description                                           |
+| ---------------- | ----------------------------------------------------- |
 | `SetDns64Config` | Sets DNS64 synthesis configuration (enabled, prefix). |
-| `GetDns64Config` | Returns the current DNS64 configuration. |
+| `GetDns64Config` | Returns the current DNS64 configuration.              |
 
 #### DHCP Pool Management
 
-| RPC | Description |
-|---|---|
-| `AddDhcpPool` | Adds a DHCP address pool for a scope (range, gateway, subnet mask, DNS servers). |
-| `RemoveDhcpPool` | Removes a DHCP pool by ID. |
-| `ListDhcpPools` | Lists DHCP pools, optionally filtered by scope. |
+| RPC              | Description                                                                      |
+| ---------------- | -------------------------------------------------------------------------------- |
+| `AddDhcpPool`    | Adds a DHCP address pool for a scope (range, gateway, subnet mask, DNS servers). |
+| `RemoveDhcpPool` | Removes a DHCP pool by ID.                                                       |
+| `ListDhcpPools`  | Lists DHCP pools, optionally filtered by scope.                                  |
 
 #### DHCP Lease Management
 
-| RPC | Description |
-|---|---|
-| `ListDhcpLeases` | Lists DHCP leases, optionally filtered by scope. |
-| `DeleteDhcpLease` | Deletes a DHCP lease by MAC address. |
+| RPC               | Description                                      |
+| ----------------- | ------------------------------------------------ |
+| `ListDhcpLeases`  | Lists DHCP leases, optionally filtered by scope. |
+| `DeleteDhcpLease` | Deletes a DHCP lease by MAC address.             |
 
 #### Per-Scope RBL Providers
 
-| RPC | Description |
-|---|---|
-| `AddScopeRblProvider` | Adds an additional RBL provider for a specific scope. |
-| `RemoveScopeRblProvider` | Removes a scope-specific RBL provider. |
-| `ListScopeRblProviders` | Lists RBL providers for a specific scope. |
+| RPC                      | Description                                           |
+| ------------------------ | ----------------------------------------------------- |
+| `AddScopeRblProvider`    | Adds an additional RBL provider for a specific scope. |
+| `RemoveScopeRblProvider` | Removes a scope-specific RBL provider.                |
+| `ListScopeRblProviders`  | Lists RBL providers for a specific scope.             |
 
 #### DHCP Certificate Options
 
-| RPC | Description |
-|---|---|
-| `SetDhcpCertOption` | Sets a certificate to be delivered via DHCP for a scope. |
-| `RemoveDhcpCertOption` | Removes a DHCP certificate option for a scope. |
-| `ListDhcpCertOptions` | Lists DHCP certificate options for a scope. |
+| RPC                    | Description                                              |
+| ---------------------- | -------------------------------------------------------- |
+| `SetDhcpCertOption`    | Sets a certificate to be delivered via DHCP for a scope. |
+| `RemoveDhcpCertOption` | Removes a DHCP certificate option for a scope.           |
+| `ListDhcpCertOptions`  | Lists DHCP certificate options for a scope.              |
 
 All changes made via gRPC take effect immediately and are reflected in subsequent DNS resolution.
 
@@ -396,110 +409,110 @@ The `rolodex-dns-cli` binary is a command-line client for the gRPC management in
 
 ### Global Options
 
-| Option | Short | Default | Description |
-|---|---|---|---|
-| `--address` | `-a` | `127.0.0.1:50051` | gRPC server address (host:port). Ignored when `--unix-socket` is specified. |
-| `--unix-socket` | `-u` | — | Path to Unix domain socket. Overrides `--address`. |
-| `--auth-token` | `-t` | (empty) | Authentication token for TCP connections. Ignored for Unix socket. |
+| Option          | Short | Default           | Description                                                                 |
+| --------------- | ----- | ----------------- | --------------------------------------------------------------------------- |
+| `--address`     | `-a`  | `127.0.0.1:50051` | gRPC server address (host:port). Ignored when `--unix-socket` is specified. |
+| `--unix-socket` | `-u`  | —                 | Path to Unix domain socket. Overrides `--address`.                          |
+| `--auth-token`  | `-t`  | (empty)           | Authentication token for TCP connections. Ignored for Unix socket.          |
 
 ### Subcommands
 
 #### Record Management
 
-| Command | Description |
-|---|---|
-| `add-record` | Add a DNS record. Takes `--name` (required), `--record-type` (default `a`), `--value` (required), `--ttl` (default 300), and `--priority` (default 0, used for MX/SRV). |
-| `remove-record` | Remove DNS record(s). Takes `--name` (required), with optional `--record-type` and `--value` filters. |
-| `list-records` | List DNS records. Takes optional `--name` (supports `*.` wildcard prefix) and `--record-type` filters. |
+| Command         | Description                                                                                                                                                             |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `add-record`    | Add a DNS record. Takes `--name` (required), `--record-type` (default `a`), `--value` (required), `--ttl` (default 300), and `--priority` (default 0, used for MX/SRV). |
+| `remove-record` | Remove DNS record(s). Takes `--name` (required), with optional `--record-type` and `--value` filters.                                                                   |
+| `list-records`  | List DNS records. Takes optional `--name` (supports `*.` wildcard prefix) and `--record-type` filters.                                                                  |
 
 #### Network Scoping
 
-| Command | Description |
-|---|---|
-| `create-scope` | Create a network scope. Takes `--name` (required) and optional `--home-domain`. |
-| `delete-scope` | Delete a network scope and all its records/associations. Takes `--name`. |
-| `list-scopes` | List all network scopes. |
-| `join-network` | Associate an IP with a scope. Takes `--ip`, `--scope`, and optional `--ttl` (default 300). |
-| `leave-network` | Remove an IP's scope association. Takes `--ip`. |
-| `list-associations` | List IP-to-scope associations. Takes optional `--scope` filter. |
-| `add-scoped-record` | Add a DNS record to a scope. Takes `--scope`, `--name`, `--record-type`, `--value`, `--ttl`, `--priority`. |
-| `remove-scoped-record` | Remove records from a scope. Takes `--scope`, `--name`, optional `--record-type` and `--value`. |
-| `list-scoped-records` | List records in a scope. Takes `--scope`, optional `--name` and `--record-type`. |
-| `get-search-domains` | Get search domains for an IP. Takes `--ip`. |
+| Command                | Description                                                                                                |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `create-scope`         | Create a network scope. Takes `--name` (required) and optional `--home-domain`.                            |
+| `delete-scope`         | Delete a network scope and all its records/associations. Takes `--name`.                                   |
+| `list-scopes`          | List all network scopes.                                                                                   |
+| `join-network`         | Associate an IP with a scope. Takes `--ip`, `--scope`, and optional `--ttl` (default 300).                 |
+| `leave-network`        | Remove an IP's scope association. Takes `--ip`.                                                            |
+| `list-associations`    | List IP-to-scope associations. Takes optional `--scope` filter.                                            |
+| `add-scoped-record`    | Add a DNS record to a scope. Takes `--scope`, `--name`, `--record-type`, `--value`, `--ttl`, `--priority`. |
+| `remove-scoped-record` | Remove records from a scope. Takes `--scope`, `--name`, optional `--record-type` and `--value`.            |
+| `list-scoped-records`  | List records in a scope. Takes `--scope`, optional `--name` and `--record-type`.                           |
+| `get-search-domains`   | Get search domains for an IP. Takes `--ip`.                                                                |
 
 #### Authoritative Zones
 
-| Command | Description |
-|---|---|
-| `add-auth-zone` | Declare a zone as authoritative. Takes `--zone`. |
-| `remove-auth-zone` | Remove an authoritative zone. Takes `--zone`. |
-| `list-auth-zones` | List all authoritative zones. |
+| Command            | Description                                      |
+| ------------------ | ------------------------------------------------ |
+| `add-auth-zone`    | Declare a zone as authoritative. Takes `--zone`. |
+| `remove-auth-zone` | Remove an authoritative zone. Takes `--zone`.    |
+| `list-auth-zones`  | List all authoritative zones.                    |
 
 #### Forwarding & RBL
 
-| Command | Description |
-|---|---|
-| `set-forwarders` | Set upstream DNS forwarders. Takes `--forwarders` (one or more `host:port` addresses). |
-| `set-rbl-config` | Configure RBL settings. Takes `--enabled` flag and optional `--providers` in `zone:enabled` format. |
-| `get-rbl-config` | Display current RBL configuration. |
-| `flush-cache` | Clear the RBL result cache. |
-| `add-local-rbl` | Add a local RBL entry. Takes `--name` and optional `--reason`. |
-| `remove-local-rbl` | Remove a local RBL entry. Takes `--name`. |
-| `list-local-rbl` | List all local RBL entries. |
+| Command            | Description                                                                                         |
+| ------------------ | --------------------------------------------------------------------------------------------------- |
+| `set-forwarders`   | Set upstream DNS forwarders. Takes `--forwarders` (one or more `host:port` addresses).              |
+| `set-rbl-config`   | Configure RBL settings. Takes `--enabled` flag and optional `--providers` in `zone:enabled` format. |
+| `get-rbl-config`   | Display current RBL configuration.                                                                  |
+| `flush-cache`      | Clear the RBL result cache.                                                                         |
+| `add-local-rbl`    | Add a local RBL entry. Takes `--name` and optional `--reason`.                                      |
+| `remove-local-rbl` | Remove a local RBL entry. Takes `--name`.                                                           |
+| `list-local-rbl`   | List all local RBL entries.                                                                         |
 
 #### DNS Cache
 
-| Command | Description |
-|---|---|
-| `flush-dns-cache` | Clear the DNS response cache. |
-| `cache-stats` | Display DNS cache statistics (entries, hits, misses). |
+| Command           | Description                                           |
+| ----------------- | ----------------------------------------------------- |
+| `flush-dns-cache` | Clear the DNS response cache.                         |
+| `cache-stats`     | Display DNS cache statistics (entries, hits, misses). |
 
 #### TTL Drift & Latency
 
-| Command | Description |
-|---|---|
+| Command         | Description                                                                                                                            |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `set-ttl-drift` | Set TTL drift config. Takes `--mode` (`disabled`/`fixed`/`logarithmic`), `--adjustment` (e.g., `"+5m"`, `"-30s"`), `--log-multiplier`. |
-| `get-ttl-drift` | Display current TTL drift configuration. |
-| `latency-stats` | Display per-server upstream query latency statistics. |
+| `get-ttl-drift` | Display current TTL drift configuration.                                                                                               |
+| `latency-stats` | Display per-server upstream query latency statistics.                                                                                  |
 
 #### DNS64
 
-| Command | Description |
-|---|---|
+| Command     | Description                                                               |
+| ----------- | ------------------------------------------------------------------------- |
 | `set-dns64` | Set DNS64 config. Takes `--enabled` and `--prefix` (default `64:ff9b::`). |
-| `get-dns64` | Display current DNS64 configuration. |
+| `get-dns64` | Display current DNS64 configuration.                                      |
 
 #### DNSSEC
 
-| Command | Description |
-|---|---|
+| Command               | Description                                                                                                  |
+| --------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `generate-dnssec-key` | Generate a DNSSEC key pair. Takes `--zone`, `--algorithm` (default `ed25519`), `--key-type` (default `ZSK`). |
-| `list-dnssec-keys` | List DNSSEC keys for a zone. Takes `--zone`. |
-| `sign-zone` | Sign a zone with DNSSEC. Takes `--zone`. |
+| `list-dnssec-keys`    | List DNSSEC keys for a zone. Takes `--zone`.                                                                 |
+| `sign-zone`           | Sign a zone with DNSSEC. Takes `--zone`.                                                                     |
 
 #### DANE & ACME
 
-| Command | Description |
-|---|---|
-| `generate-tlsa` | Generate a DANE TLSA record. Takes `--domain`, `--port`, `--protocol` (default `tcp`), `--cert-path`, `--usage` (default 3), `--selector` (default 0), `--matching-type` (default 1). |
-| `request-acme-cert` | Request an ACME certificate. Takes `--domain` and `--provider-url` (default: Let's Encrypt). |
-| `acme-status` | Get ACME certificate status. Takes `--domain`. |
+| Command             | Description                                                                                                                                                                           |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `generate-tlsa`     | Generate a DANE TLSA record. Takes `--domain`, `--port`, `--protocol` (default `tcp`), `--cert-path`, `--usage` (default 3), `--selector` (default 0), `--matching-type` (default 1). |
+| `request-acme-cert` | Request an ACME certificate. Takes `--domain` and `--provider-url` (default: Let's Encrypt).                                                                                          |
+| `acme-status`       | Get ACME certificate status. Takes `--domain`.                                                                                                                                        |
 
 #### DHCP
 
-| Command | Description |
-|---|---|
-| `add-dhcp-pool` | Add a DHCP address pool. Takes `--scope`, `--range-start`, `--range-end`, `--gateway`, `--subnet-mask` (default `255.255.255.0`), `--dns-servers`. |
-| `remove-dhcp-pool` | Remove a DHCP pool. Takes `--pool-id`. |
-| `list-dhcp-pools` | List DHCP pools. Takes optional `--scope` filter. |
-| `list-dhcp-leases` | List DHCP leases. Takes optional `--scope` filter. |
-| `delete-dhcp-lease` | Delete a DHCP lease. Takes `--mac`. |
-| `add-scope-rbl` | Add a per-scope RBL provider. Takes `--scope`, `--zone`, `--enabled` (default `true`). |
-| `remove-scope-rbl` | Remove a per-scope RBL provider. Takes `--scope`, `--zone`. |
-| `list-scope-rbl` | List per-scope RBL providers. Takes `--scope`. |
-| `set-dhcp-cert` | Set a DHCP certificate option. Takes `--scope`, `--option-code`, `--cert-path`, `--description`. |
-| `remove-dhcp-cert` | Remove a DHCP certificate option. Takes `--scope`, `--option-code`. |
-| `list-dhcp-certs` | List DHCP certificate options. Takes `--scope`. |
+| Command             | Description                                                                                                                                        |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `add-dhcp-pool`     | Add a DHCP address pool. Takes `--scope`, `--range-start`, `--range-end`, `--gateway`, `--subnet-mask` (default `255.255.255.0`), `--dns-servers`. |
+| `remove-dhcp-pool`  | Remove a DHCP pool. Takes `--pool-id`.                                                                                                             |
+| `list-dhcp-pools`   | List DHCP pools. Takes optional `--scope` filter.                                                                                                  |
+| `list-dhcp-leases`  | List DHCP leases. Takes optional `--scope` filter.                                                                                                 |
+| `delete-dhcp-lease` | Delete a DHCP lease. Takes `--mac`.                                                                                                                |
+| `add-scope-rbl`     | Add a per-scope RBL provider. Takes `--scope`, `--zone`, `--enabled` (default `true`).                                                             |
+| `remove-scope-rbl`  | Remove a per-scope RBL provider. Takes `--scope`, `--zone`.                                                                                        |
+| `list-scope-rbl`    | List per-scope RBL providers. Takes `--scope`.                                                                                                     |
+| `set-dhcp-cert`     | Set a DHCP certificate option. Takes `--scope`, `--option-code`, `--cert-path`, `--description`.                                                   |
+| `remove-dhcp-cert`  | Remove a DHCP certificate option. Takes `--scope`, `--option-code`.                                                                                |
+| `list-dhcp-certs`   | List DHCP certificate options. Takes `--scope`.                                                                                                    |
 
 The `list-records` and `list-scoped-records` subcommands display results in a tabular format with columns for name, type, value, TTL, and priority. The `get-rbl-config` subcommand displays the global enabled state and a table of providers.
 
@@ -520,110 +533,110 @@ An additional `WithGRPCDialOption` option allows passing custom `grpc.DialOption
 
 #### Record Management
 
-| Method | Description |
-|---|---|
-| `AddRecord(ctx, record)` | Adds a DNS record. |
+| Method                          | Description                                                                                                  |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `AddRecord(ctx, record)`        | Adds a DNS record.                                                                                           |
 | `RemoveRecord(ctx, name, opts)` | Removes records by name with optional `RemoveRecordOptions` (type and value filters). Returns removed count. |
-| `ListRecords(ctx, opts)` | Queries records with optional `ListRecordsOptions` (name filter with `*.` wildcard support, type filter). |
+| `ListRecords(ctx, opts)`        | Queries records with optional `ListRecordsOptions` (name filter with `*.` wildcard support, type filter).    |
 
 #### Network Scoping
 
-| Method | Description |
-|---|---|
-| `CreateNetworkScope(ctx, scope)` | Creates a network scope. |
-| `DeleteNetworkScope(ctx, name)` | Deletes a scope and all its records/associations. |
-| `ListNetworkScopes(ctx)` | Retrieves all scopes. |
-| `JoinNetwork(ctx, ipAddress, scopeName, ttlSeconds)` | Associates an IP with a scope. |
-| `LeaveNetwork(ctx, ipAddress)` | Removes an IP's scope association. |
-| `GetNetworkAssociations(ctx, scopeName)` | Retrieves IP-to-scope associations. |
-| `AddScopedRecord(ctx, scopeName, record)` | Adds a record within a scope. |
-| `RemoveScopedRecord(ctx, scopeName, name, opts)` | Removes records from a scope. |
-| `ListScopedRecords(ctx, scopeName, opts)` | Queries records within a scope. |
-| `GetSearchDomains(ctx, ipAddress)` | Returns search domains for an IP. |
+| Method                                               | Description                                       |
+| ---------------------------------------------------- | ------------------------------------------------- |
+| `CreateNetworkScope(ctx, scope)`                     | Creates a network scope.                          |
+| `DeleteNetworkScope(ctx, name)`                      | Deletes a scope and all its records/associations. |
+| `ListNetworkScopes(ctx)`                             | Retrieves all scopes.                             |
+| `JoinNetwork(ctx, ipAddress, scopeName, ttlSeconds)` | Associates an IP with a scope.                    |
+| `LeaveNetwork(ctx, ipAddress)`                       | Removes an IP's scope association.                |
+| `GetNetworkAssociations(ctx, scopeName)`             | Retrieves IP-to-scope associations.               |
+| `AddScopedRecord(ctx, scopeName, record)`            | Adds a record within a scope.                     |
+| `RemoveScopedRecord(ctx, scopeName, name, opts)`     | Removes records from a scope.                     |
+| `ListScopedRecords(ctx, scopeName, opts)`            | Queries records within a scope.                   |
+| `GetSearchDomains(ctx, ipAddress)`                   | Returns search domains for an IP.                 |
 
 #### Authoritative Zones
 
-| Method | Description |
-|---|---|
-| `AddAuthoritativeZone(ctx, zone)` | Declares a zone as authoritative. |
-| `RemoveAuthoritativeZone(ctx, zone)` | Removes an authoritative zone. |
-| `ListAuthoritativeZones(ctx)` | Retrieves all authoritative zone names. |
+| Method                               | Description                             |
+| ------------------------------------ | --------------------------------------- |
+| `AddAuthoritativeZone(ctx, zone)`    | Declares a zone as authoritative.       |
+| `RemoveAuthoritativeZone(ctx, zone)` | Removes an authoritative zone.          |
+| `ListAuthoritativeZones(ctx)`        | Retrieves all authoritative zone names. |
 
 #### Forwarding & RBL
 
-| Method | Description |
-|---|---|
-| `SetForwarders(ctx, forwarders)` | Replaces the upstream forwarder list. |
-| `SetRblConfig(ctx, enabled, providers)` | Replaces the RBL configuration. |
-| `GetRblConfig(ctx)` | Returns an `RblStatus` with the current RBL configuration. |
-| `FlushCache(ctx)` | Clears the RBL result cache. |
-| `AddLocalRblEntry(ctx, entry)` | Adds a local RBL entry. |
-| `RemoveLocalRblEntry(ctx, name)` | Removes a local RBL entry. |
-| `ListLocalRblEntries(ctx)` | Retrieves all local RBL entries. |
+| Method                                  | Description                                                |
+| --------------------------------------- | ---------------------------------------------------------- |
+| `SetForwarders(ctx, forwarders)`        | Replaces the upstream forwarder list.                      |
+| `SetRblConfig(ctx, enabled, providers)` | Replaces the RBL configuration.                            |
+| `GetRblConfig(ctx)`                     | Returns an `RblStatus` with the current RBL configuration. |
+| `FlushCache(ctx)`                       | Clears the RBL result cache.                               |
+| `AddLocalRblEntry(ctx, entry)`          | Adds a local RBL entry.                                    |
+| `RemoveLocalRblEntry(ctx, name)`        | Removes a local RBL entry.                                 |
+| `ListLocalRblEntries(ctx)`              | Retrieves all local RBL entries.                           |
 
 #### DNS Cache
 
-| Method | Description |
-|---|---|
-| `GetCacheStats(ctx)` | Returns cache statistics. |
+| Method               | Description                    |
+| -------------------- | ------------------------------ |
+| `GetCacheStats(ctx)` | Returns cache statistics.      |
 | `FlushDnsCache(ctx)` | Clears the DNS response cache. |
 
 #### TTL Drift & Latency
 
-| Method | Description |
-|---|---|
-| `SetTtlDriftConfig(ctx, config)` | Sets TTL drift configuration. |
-| `GetTtlDriftConfig(ctx)` | Returns TTL drift configuration. |
-| `GetQueryLatencyStats(ctx)` | Returns per-server latency statistics. |
+| Method                           | Description                            |
+| -------------------------------- | -------------------------------------- |
+| `SetTtlDriftConfig(ctx, config)` | Sets TTL drift configuration.          |
+| `GetTtlDriftConfig(ctx)`         | Returns TTL drift configuration.       |
+| `GetQueryLatencyStats(ctx)`      | Returns per-server latency statistics. |
 
 #### Encrypted Transport Configuration
 
-| Method | Description |
-|---|---|
-| `SetDotConfig(ctx, config)` / `GetDotConfig(ctx)` | Configures DNS-over-TLS. |
-| `SetDohConfig(ctx, config)` / `GetDohConfig(ctx)` | Configures DNS-over-HTTPS. |
-| `SetDoqConfig(ctx, config)` / `GetDoqConfig(ctx)` | Configures DNS-over-QUIC. |
+| Method                                                | Description                 |
+| ----------------------------------------------------- | --------------------------- |
+| `SetDotConfig(ctx, config)` / `GetDotConfig(ctx)`     | Configures DNS-over-TLS.    |
+| `SetDohConfig(ctx, config)` / `GetDohConfig(ctx)`     | Configures DNS-over-HTTPS.  |
+| `SetDoqConfig(ctx, config)` / `GetDoqConfig(ctx)`     | Configures DNS-over-QUIC.   |
 | `SetProxyConfig(ctx, config)` / `GetProxyConfig(ctx)` | Configures proxy transport. |
 
 #### DNSSEC
 
-| Method | Description |
-|---|---|
-| `GenerateDnssecKey(ctx, zone, algorithm, keyType)` | Generates a DNSSEC key pair. |
-| `ListDnssecKeys(ctx, zone)` | Lists DNSSEC keys for a zone. |
-| `DeleteDnssecKey(ctx, keyID)` | Deletes a DNSSEC key by ID. |
-| `GetDsRecords(ctx, zone)` | Retrieves DS records for delegation. |
-| `SignZone(ctx, zone)` | Signs a zone with its DNSSEC keys. |
+| Method                                             | Description                          |
+| -------------------------------------------------- | ------------------------------------ |
+| `GenerateDnssecKey(ctx, zone, algorithm, keyType)` | Generates a DNSSEC key pair.         |
+| `ListDnssecKeys(ctx, zone)`                        | Lists DNSSEC keys for a zone.        |
+| `DeleteDnssecKey(ctx, keyID)`                      | Deletes a DNSSEC key by ID.          |
+| `GetDsRecords(ctx, zone)`                          | Retrieves DS records for delegation. |
+| `SignZone(ctx, zone)`                              | Signs a zone with its DNSSEC keys.   |
 
 #### DANE, ACME & DNS64
 
-| Method | Description |
-|---|---|
-| `GenerateTlsaRecord(ctx, opts)` | Generates a TLSA record from a certificate. |
-| `ListTlsaRecords(ctx, domain)` | Retrieves TLSA records for a domain. |
-| `GenerateDaneRootCa(ctx, name)` | Generates a DANE root CA certificate. |
-| `RequestAcmeCert(ctx, domain, providerURL)` | Requests an ACME certificate via DNS-01. |
-| `GetAcmeStatus(ctx, domain)` | Retrieves ACME certificate status. |
-| `SetDns64Config(ctx, config)` / `GetDns64Config(ctx)` | Configures DNS64 synthesis. |
+| Method                                                | Description                                 |
+| ----------------------------------------------------- | ------------------------------------------- |
+| `GenerateTlsaRecord(ctx, opts)`                       | Generates a TLSA record from a certificate. |
+| `ListTlsaRecords(ctx, domain)`                        | Retrieves TLSA records for a domain.        |
+| `GenerateDaneRootCa(ctx, name)`                       | Generates a DANE root CA certificate.       |
+| `RequestAcmeCert(ctx, domain, providerURL)`           | Requests an ACME certificate via DNS-01.    |
+| `GetAcmeStatus(ctx, domain)`                          | Retrieves ACME certificate status.          |
+| `SetDns64Config(ctx, config)` / `GetDns64Config(ctx)` | Configures DNS64 synthesis.                 |
 
 #### DHCP
 
-| Method | Description |
-|---|---|
-| `AddDhcpPool(ctx, pool)` | Adds a DHCP address pool for a scope. |
-| `RemoveDhcpPool(ctx, poolID)` | Removes a DHCP pool by ID. |
-| `ListDhcpPools(ctx, scopeName)` | Lists DHCP pools, optionally filtered by scope. |
-| `ListDhcpLeases(ctx, scopeName)` | Lists DHCP leases, optionally filtered by scope. |
-| `DeleteDhcpLease(ctx, mac)` | Deletes a DHCP lease by MAC address. |
-| `AddScopeRblProvider(ctx, scopeName, zone, enabled)` | Adds a per-scope RBL provider. |
-| `RemoveScopeRblProvider(ctx, scopeName, zone)` | Removes a per-scope RBL provider. |
-| `ListScopeRblProviders(ctx, scopeName)` | Lists per-scope RBL providers. |
-| `SetDhcpCertOption(ctx, opt)` | Sets a DHCP certificate option for a scope. |
-| `RemoveDhcpCertOption(ctx, scopeName, optionCode)` | Removes a DHCP certificate option. |
-| `ListDhcpCertOptions(ctx, scopeName)` | Lists DHCP certificate options for a scope. |
+| Method                                               | Description                                      |
+| ---------------------------------------------------- | ------------------------------------------------ |
+| `AddDhcpPool(ctx, pool)`                             | Adds a DHCP address pool for a scope.            |
+| `RemoveDhcpPool(ctx, poolID)`                        | Removes a DHCP pool by ID.                       |
+| `ListDhcpPools(ctx, scopeName)`                      | Lists DHCP pools, optionally filtered by scope.  |
+| `ListDhcpLeases(ctx, scopeName)`                     | Lists DHCP leases, optionally filtered by scope. |
+| `DeleteDhcpLease(ctx, mac)`                          | Deletes a DHCP lease by MAC address.             |
+| `AddScopeRblProvider(ctx, scopeName, zone, enabled)` | Adds a per-scope RBL provider.                   |
+| `RemoveScopeRblProvider(ctx, scopeName, zone)`       | Removes a per-scope RBL provider.                |
+| `ListScopeRblProviders(ctx, scopeName)`              | Lists per-scope RBL providers.                   |
+| `SetDhcpCertOption(ctx, opt)`                        | Sets a DHCP certificate option for a scope.      |
+| `RemoveDhcpCertOption(ctx, scopeName, optionCode)`   | Removes a DHCP certificate option.               |
+| `ListDhcpCertOptions(ctx, scopeName)`                | Lists DHCP certificate options for a scope.      |
 
-| Other | Description |
-|---|---|
+| Other     | Description                              |
+| --------- | ---------------------------------------- |
 | `Close()` | Releases the underlying gRPC connection. |
 
 The client automatically includes the auth token in every RPC call. All methods accept `context.Context` for cancellation and deadlines.
@@ -670,40 +683,40 @@ Configuration is loaded from a YAML file (default path `rolodex-dns.yml`, overri
 
 ### Configuration Fields
 
-| Field | Default | Description |
-|---|---|---|
-| `dns.udp_bind` | `0.0.0.0:53` | DNS UDP listener address |
-| `dns.tcp_bind` | `0.0.0.0:53` | DNS TCP listener address |
-| `grpc.tcp_bind` | `127.0.0.1:50051` | gRPC TCP listener address (empty to disable) |
-| `grpc.unix_socket` | `/var/run/rolodex-dns.sock` | gRPC Unix socket path (empty to disable) |
-| `grpc.shared_secret` | (empty) | Shared secret for TCP gRPC auth |
-| `forwarders` | `["8.8.8.8:53", "8.8.4.4:53"]` | Upstream DNS resolvers |
-| `database_path` | `rolodex-dns.db` | SQLite database file path |
-| `rbl.enabled` | `false` | Global RBL enable flag |
-| `rbl.providers` | 5 default zones (see above) | RBL provider list |
-| `dot.bind` | `0.0.0.0:853` | DoT listener address (section optional) |
-| `dot.tls.cert_path` | (none) | TLS certificate path |
-| `dot.tls.key_path` | (none) | TLS private key path |
-| `dot.tls.auto_self_signed` | `true` | Auto-generate self-signed certificate |
-| `doh.bind` | `0.0.0.0:443` | DoH listener address (section optional) |
-| `doh.tls.*` | (same as DoT) | TLS settings for DoH |
-| `doh.enable_h3` | `false` | Enable HTTP/3 (QUIC) transport for DoH |
-| `doq.bind` | `0.0.0.0:8853` | DoQ listener address (section optional) |
-| `doq.tls.*` | (same as DoT) | TLS settings for DoQ |
-| `proxy.url` | (empty) | Proxy URL (e.g., `socks5://127.0.0.1:1080`) |
-| `proxy.auth` | (none) | Proxy authentication (`user:pass`) |
-| `proxy.mode` | `connect` | Proxy mode (`connect`, `socks5`, or `doh`) |
-| `ttl_drift.mode` | `disabled` | TTL drift mode (`disabled`, `fixed`, `logarithmic`) |
-| `ttl_drift.fixed_adjustment` | `0s` | Fixed TTL adjustment duration |
-| `ttl_drift.log_multiplier` | `0.1` | Logarithmic drift sensitivity |
-| `dns64.enabled` | `false` | Enable DNS64 AAAA synthesis |
-| `dns64.prefix` | `64:ff9b::` | NAT64 prefix for synthesis |
-| `security.qname_case_randomization` | `true` | 0x20 encoding for cache poisoning resistance |
-| `dhcp.bind` | `0.0.0.0:67` | DHCP UDP listener address (section optional) |
-| `dhcp.default_lease_duration` | `3600` | Default DHCP lease duration in seconds |
-| `dhcp.reclaim_timeout` | `86400` | Seconds after expiry before IP is reclaimed |
-| `dhcp.sweep_interval` | `60` | Background lease sweep interval in seconds |
-| `dhcp.tld` | (required) | TLD for hostname DNS registration (e.g. `example.com`) |
+| Field                               | Default                        | Description                                            |
+| ----------------------------------- | ------------------------------ | ------------------------------------------------------ |
+| `dns.udp_bind`                      | `0.0.0.0:53`                   | DNS UDP listener address                               |
+| `dns.tcp_bind`                      | `0.0.0.0:53`                   | DNS TCP listener address                               |
+| `grpc.tcp_bind`                     | `127.0.0.1:50051`              | gRPC TCP listener address (empty to disable)           |
+| `grpc.unix_socket`                  | `/var/run/rolodex-dns.sock`    | gRPC Unix socket path (empty to disable)               |
+| `grpc.shared_secret`                | (empty)                        | Shared secret for TCP gRPC auth                        |
+| `forwarders`                        | `["8.8.8.8:53", "8.8.4.4:53"]` | Upstream DNS resolvers                                 |
+| `database_path`                     | `rolodex-dns.db`               | SQLite database file path                              |
+| `rbl.enabled`                       | `false`                        | Global RBL enable flag                                 |
+| `rbl.providers`                     | 5 default zones (see above)    | RBL provider list                                      |
+| `dot.bind`                          | `0.0.0.0:853`                  | DoT listener address (section optional)                |
+| `dot.tls.cert_path`                 | (none)                         | TLS certificate path                                   |
+| `dot.tls.key_path`                  | (none)                         | TLS private key path                                   |
+| `dot.tls.auto_self_signed`          | `true`                         | Auto-generate self-signed certificate                  |
+| `doh.bind`                          | `0.0.0.0:443`                  | DoH listener address (section optional)                |
+| `doh.tls.*`                         | (same as DoT)                  | TLS settings for DoH                                   |
+| `doh.enable_h3`                     | `false`                        | Enable HTTP/3 (QUIC) transport for DoH                 |
+| `doq.bind`                          | `0.0.0.0:8853`                 | DoQ listener address (section optional)                |
+| `doq.tls.*`                         | (same as DoT)                  | TLS settings for DoQ                                   |
+| `proxy.url`                         | (empty)                        | Proxy URL (e.g., `socks5://127.0.0.1:1080`)            |
+| `proxy.auth`                        | (none)                         | Proxy authentication (`user:pass`)                     |
+| `proxy.mode`                        | `connect`                      | Proxy mode (`connect`, `socks5`, or `doh`)             |
+| `ttl_drift.mode`                    | `disabled`                     | TTL drift mode (`disabled`, `fixed`, `logarithmic`)    |
+| `ttl_drift.fixed_adjustment`        | `0s`                           | Fixed TTL adjustment duration                          |
+| `ttl_drift.log_multiplier`          | `0.1`                          | Logarithmic drift sensitivity                          |
+| `dns64.enabled`                     | `false`                        | Enable DNS64 AAAA synthesis                            |
+| `dns64.prefix`                      | `64:ff9b::`                    | NAT64 prefix for synthesis                             |
+| `security.qname_case_randomization` | `true`                         | 0x20 encoding for cache poisoning resistance           |
+| `dhcp.bind`                         | `0.0.0.0:67`                   | DHCP UDP listener address (section optional)           |
+| `dhcp.default_lease_duration`       | `3600`                         | Default DHCP lease duration in seconds                 |
+| `dhcp.reclaim_timeout`              | `86400`                        | Seconds after expiry before IP is reclaimed            |
+| `dhcp.sweep_interval`               | `60`                           | Background lease sweep interval in seconds             |
+| `dhcp.tld`                          | (required)                     | TLD for hostname DNS registration (e.g. `example.com`) |
 
 The `dot`, `doh`, `doq`, and `proxy` sections are optional. When omitted, the corresponding transport is not started.
 
@@ -711,20 +724,20 @@ The `dot`, `doh`, `doq`, and `proxy` sections are optional. When omitted, the co
 
 The project uses a top-level Makefile with the following targets:
 
-| Target | Description |
-|---|---|
-| `build` | Compile the Rust project in debug mode (`cargo build`). Produces the `rolodex-dns` server and `rolodex-dns-cli` client binaries. |
-| `test` | Run all tests: Go integration tests, Go unit tests, and Rust tests (`cargo test`). |
-| `clean` | Clean build artifacts (`cargo clean`). |
-| `go-test` | Run Go unit tests (depends on `go-integration-test`). |
+| Target                | Description                                                                                                                                                |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `build`               | Compile the Rust project in debug mode (`cargo build`). Produces the `rolodex-dns` server and `rolodex-dns-cli` client binaries.                           |
+| `test`                | Run all tests: Go integration tests, Go unit tests, and Rust tests (`cargo test`).                                                                         |
+| `clean`               | Clean build artifacts (`cargo clean`).                                                                                                                     |
+| `go-test`             | Run Go unit tests (depends on `go-integration-test`).                                                                                                      |
 | `go-integration-test` | Build the Rust binaries, then run Go integration tests with the `integration` build tag, passing the compiled server binary path via `ROLODEX_DNS_BINARY`. |
-| `install` | Install the Rust binaries to the Cargo bin directory (`cargo install --path .`). |
-| `dev` | Build the Rust project in debug mode, then start a development server using `dev.yml`. |
-| `dev-release` | Build the Rust project in release mode, then start a development server using `dev.yml`. |
-| `image` | Build a container image using `make/build.sh release`. |
-| `push` / `push-rc` | Build and push a release candidate container image to `gitea.com/town-os/rolodex-dns`. |
-| `push-release` | Build and push a release container image. |
-| `clean-containers` | Remove locally built container images. |
+| `install`             | Install the Rust binaries to the Cargo bin directory (`cargo install --path .`).                                                                           |
+| `dev`                 | Build the Rust project in debug mode, then start a development server using `dev.yml`.                                                                     |
+| `dev-release`         | Build the Rust project in release mode, then start a development server using `dev.yml`.                                                                   |
+| `image`               | Build a container image using `make/build.sh release`.                                                                                                     |
+| `push` / `push-rc`    | Build and push a release candidate container image to `gitea.com/town-os/rolodex-dns`.                                                                     |
+| `push-release`        | Build and push a release container image.                                                                                                                  |
+| `clean-containers`    | Remove locally built container images.                                                                                                                     |
 
 The Makefile is designed to be extended for non-cargo scenarios. Protocol buffer bindings are generated at build time via `build.rs` using `tonic-prost-build`. Container images are built with Podman using unique instance IDs derived from the working directory path.
 
