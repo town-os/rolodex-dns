@@ -14,21 +14,20 @@ case "$1" in
     step "Building release image"
     ${SUDO} podman build --pull=never \
       --build-arg "BUILD_IMAGE=${PODMAN_BUILD_IMAGE}" \
-      -t "${RELEASE_IMAGE}" -f Containerfile .
+      -t "${RELEASE_IMAGE}:${IMAGE_TAG:-latest}" -f Containerfile .
     ;;
   push-rc)
     step "Pushing release candidate"
+    SRC="${RELEASE_IMAGE}:${IMAGE_TAG:-latest}"
     if [ -n "${IMAGE_TAG}" ]; then
-      substep "Tagging ${RELEASE_IMAGE}:${IMAGE_TAG}"
-      ${SUDO} podman tag "${RELEASE_IMAGE}" "${RELEASE_IMAGE}:${IMAGE_TAG}"
-      substep "Pushing ${RELEASE_IMAGE}:${IMAGE_TAG}"
-      ${SUDO} podman push "${RELEASE_IMAGE}:${IMAGE_TAG}"
+      substep "Pushing ${SRC}"
+      ${SUDO} podman push "${SRC}"
     else
       DATE_TAG="rc.$(date +%Y%m%d)"
       substep "Tagging ${RELEASE_IMAGE}:${DATE_TAG}"
-      ${SUDO} podman tag "${RELEASE_IMAGE}" "${RELEASE_IMAGE}:${DATE_TAG}"
+      ${SUDO} podman tag "${SRC}" "${RELEASE_IMAGE}:${DATE_TAG}"
       substep "Tagging ${RELEASE_IMAGE}:rc.latest"
-      ${SUDO} podman tag "${RELEASE_IMAGE}" "${RELEASE_IMAGE}:rc.latest"
+      ${SUDO} podman tag "${SRC}" "${RELEASE_IMAGE}:rc.latest"
       substep "Pushing ${RELEASE_IMAGE}:${DATE_TAG}"
       ${SUDO} podman push "${RELEASE_IMAGE}:${DATE_TAG}"
       substep "Pushing ${RELEASE_IMAGE}:rc.latest"
@@ -37,17 +36,16 @@ case "$1" in
     ;;
   push-release)
     step "Pushing release"
+    SRC="${RELEASE_IMAGE}:${IMAGE_TAG:-latest}"
     if [ -n "${IMAGE_TAG}" ]; then
-      substep "Tagging ${RELEASE_IMAGE}:${IMAGE_TAG}"
-      ${SUDO} podman tag "${RELEASE_IMAGE}" "${RELEASE_IMAGE}:${IMAGE_TAG}"
-      substep "Pushing ${RELEASE_IMAGE}:${IMAGE_TAG}"
-      ${SUDO} podman push "${RELEASE_IMAGE}:${IMAGE_TAG}"
+      substep "Pushing ${SRC}"
+      ${SUDO} podman push "${SRC}"
     else
       DATE_TAG="release.$(date +%Y%m%d)"
       substep "Tagging ${RELEASE_IMAGE}:${DATE_TAG}"
-      ${SUDO} podman tag "${RELEASE_IMAGE}" "${RELEASE_IMAGE}:${DATE_TAG}"
+      ${SUDO} podman tag "${SRC}" "${RELEASE_IMAGE}:${DATE_TAG}"
       substep "Tagging ${RELEASE_IMAGE}:latest"
-      ${SUDO} podman tag "${RELEASE_IMAGE}" "${RELEASE_IMAGE}:latest"
+      ${SUDO} podman tag "${SRC}" "${RELEASE_IMAGE}:latest"
       substep "Pushing ${RELEASE_IMAGE}:${DATE_TAG}"
       ${SUDO} podman push "${RELEASE_IMAGE}:${DATE_TAG}"
       substep "Pushing ${RELEASE_IMAGE}:latest"
