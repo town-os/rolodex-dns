@@ -646,6 +646,7 @@ fn bench_tcp_round_trip(c: &mut Criterion) {
                     Ok(r) => r,
                     Err(_) => break,
                 };
+                let _ = stream.set_nodelay(true);
                 let s = Arc::clone(&srv);
                 tokio::spawn(async move {
                     let (mut reader, mut writer) = stream.into_split();
@@ -683,6 +684,7 @@ fn bench_tcp_round_trip(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 let mut stream = tokio::net::TcpStream::connect(server_addr).await.unwrap();
+                stream.set_nodelay(true).unwrap();
                 let len = (query.len() as u16).to_be_bytes();
                 stream.write_all(&len).await.unwrap();
                 stream.write_all(black_box(&query)).await.unwrap();
@@ -728,6 +730,7 @@ fn bench_tcp_round_trip_reuse_conn(c: &mut Criterion) {
                     Ok(r) => r,
                     Err(_) => break,
                 };
+                let _ = stream.set_nodelay(true);
                 let s = Arc::clone(&srv);
                 tokio::spawn(async move {
                     let (mut reader, mut writer) = stream.into_split();
@@ -755,8 +758,9 @@ fn bench_tcp_round_trip_reuse_conn(c: &mut Criterion) {
             }
         });
 
-        // Pre-establish the connection
+        // Pre-establish the connection with TCP_NODELAY to avoid Nagle buffering
         let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream.set_nodelay(true).unwrap();
         (addr, stream)
     });
 
