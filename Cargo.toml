@@ -1,6 +1,6 @@
 [package]
 name = "rolodex-dns"
-version = "0.1.0"
+version = "0.2.0-alpha"
 edition = "2024"
 authors = ["Erik Hollensbe <git@hollensbe.org>"]
 description = "A split-horizon DNS server and forwarding resolver with gRPC management"
