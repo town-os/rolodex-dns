@@ -18,27 +18,41 @@ case "$1" in
     ;;
   push-rc)
     step "Pushing release candidate"
-    RC_TAG="${IMAGE_TAG:-rc.$(date +%Y%m%d)}"
-    substep "Tagging ${RELEASE_IMAGE}:${RC_TAG}"
-    ${SUDO} podman tag "${RELEASE_IMAGE}" "${RELEASE_IMAGE}:${RC_TAG}"
-    substep "Tagging ${RELEASE_IMAGE}:rc.latest"
-    ${SUDO} podman tag "${RELEASE_IMAGE}" "${RELEASE_IMAGE}:rc.latest"
-    substep "Pushing ${RELEASE_IMAGE}:${RC_TAG}"
-    ${SUDO} podman push "${RELEASE_IMAGE}:${RC_TAG}"
-    substep "Pushing ${RELEASE_IMAGE}:rc.latest"
-    ${SUDO} podman push "${RELEASE_IMAGE}:rc.latest"
+    if [ -n "${IMAGE_TAG}" ]; then
+      substep "Tagging ${RELEASE_IMAGE}:${IMAGE_TAG}"
+      ${SUDO} podman tag "${RELEASE_IMAGE}" "${RELEASE_IMAGE}:${IMAGE_TAG}"
+      substep "Pushing ${RELEASE_IMAGE}:${IMAGE_TAG}"
+      ${SUDO} podman push "${RELEASE_IMAGE}:${IMAGE_TAG}"
+    else
+      DATE_TAG="rc.$(date +%Y%m%d)"
+      substep "Tagging ${RELEASE_IMAGE}:${DATE_TAG}"
+      ${SUDO} podman tag "${RELEASE_IMAGE}" "${RELEASE_IMAGE}:${DATE_TAG}"
+      substep "Tagging ${RELEASE_IMAGE}:rc.latest"
+      ${SUDO} podman tag "${RELEASE_IMAGE}" "${RELEASE_IMAGE}:rc.latest"
+      substep "Pushing ${RELEASE_IMAGE}:${DATE_TAG}"
+      ${SUDO} podman push "${RELEASE_IMAGE}:${DATE_TAG}"
+      substep "Pushing ${RELEASE_IMAGE}:rc.latest"
+      ${SUDO} podman push "${RELEASE_IMAGE}:rc.latest"
+    fi
     ;;
   push-release)
     step "Pushing release"
-    REL_TAG="${IMAGE_TAG:-release.$(date +%Y%m%d)}"
-    substep "Tagging ${RELEASE_IMAGE}:${REL_TAG}"
-    ${SUDO} podman tag "${RELEASE_IMAGE}" "${RELEASE_IMAGE}:${REL_TAG}"
-    substep "Tagging ${RELEASE_IMAGE}:latest"
-    ${SUDO} podman tag "${RELEASE_IMAGE}" "${RELEASE_IMAGE}:latest"
-    substep "Pushing ${RELEASE_IMAGE}:${REL_TAG}"
-    ${SUDO} podman push "${RELEASE_IMAGE}:${REL_TAG}"
-    substep "Pushing ${RELEASE_IMAGE}:latest"
-    ${SUDO} podman push "${RELEASE_IMAGE}:latest"
+    if [ -n "${IMAGE_TAG}" ]; then
+      substep "Tagging ${RELEASE_IMAGE}:${IMAGE_TAG}"
+      ${SUDO} podman tag "${RELEASE_IMAGE}" "${RELEASE_IMAGE}:${IMAGE_TAG}"
+      substep "Pushing ${RELEASE_IMAGE}:${IMAGE_TAG}"
+      ${SUDO} podman push "${RELEASE_IMAGE}:${IMAGE_TAG}"
+    else
+      DATE_TAG="release.$(date +%Y%m%d)"
+      substep "Tagging ${RELEASE_IMAGE}:${DATE_TAG}"
+      ${SUDO} podman tag "${RELEASE_IMAGE}" "${RELEASE_IMAGE}:${DATE_TAG}"
+      substep "Tagging ${RELEASE_IMAGE}:latest"
+      ${SUDO} podman tag "${RELEASE_IMAGE}" "${RELEASE_IMAGE}:latest"
+      substep "Pushing ${RELEASE_IMAGE}:${DATE_TAG}"
+      ${SUDO} podman push "${RELEASE_IMAGE}:${DATE_TAG}"
+      substep "Pushing ${RELEASE_IMAGE}:latest"
+      ${SUDO} podman push "${RELEASE_IMAGE}:latest"
+    fi
     ;;
   quay-login)
     registry_login quay.io QUAY_USERNAME QUAY_PASSWORD
