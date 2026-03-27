@@ -872,3 +872,9 @@ Criterion benchmarks in `benches/dns_perf.rs` cover the performance-critical pat
 - `is_authoritative_zone_hit` / `_miss` — Combined zone check
 - `cache_lookup_local_hit` / `cache_lookup_upstream_hit` / `cache_lookup_miss` — DNS cache lookups
 - `cache_insert_local` — DNS cache insertion
+- `handle_query_local_hit` / `handle_query_local_nxdomain` — End-to-end query pipeline (parse → resolve → serialize)
+- `handle_query_cached_hit` — Query pipeline with DNS cache enabled (cache hit path)
+- `handle_query_A` / `_AAAA` / `_TXT` / `_MX` — Query pipeline across record types
+- `handle_query_scoped_hit` — Query pipeline with network scoping (split-horizon)
+- `udp_round_trip` / `udp_round_trip_reuse_socket` — Full UDP socket round-trip (new vs reused client socket)
+- `tcp_round_trip_new_conn` / `tcp_round_trip_reuse_conn` — Full TCP round-trip with 2-byte length framing (new vs reused connection)
