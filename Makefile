@@ -12,7 +12,10 @@ PODMAN_BUILD_IMAGE := rolodex-dns-build-$(INSTANCE_ID)
 # The source repo may live elsewhere (e.g. gitea.com/town-os/rolodex-dns)
 # but the published container image is always quay.io/town/rolodex.
 RELEASE_IMAGE      := quay.io/town/rolodex
-export PODMAN_BUILD_IMAGE RELEASE_IMAGE IMAGE_TAG
+export PODMAN_BUILD_IMAGE RELEASE_IMAGE
+ifdef IMAGE_TAG
+export IMAGE_TAG
+endif
 
 .PHONY: test build clean go-test go-integration-test dev dev-release install lint bench
 .PHONY: rust-test rust-integration-test
