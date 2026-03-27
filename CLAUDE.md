@@ -734,7 +734,9 @@ The project uses a top-level Makefile with the following targets:
 | Target                | Description                                                                                                                                                |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `build`               | Compile the Rust project in debug mode (`cargo build`). Produces the `rolodex-dns` server and `rolodex-dns-cli` client binaries.                           |
-| `test`                | Run all tests: Go integration tests, Go unit tests, and Rust tests (`cargo test`).                                                                         |
+| `test`                | Run all tests: lint, Go integration tests, Go unit tests, and Rust tests (`cargo test`).                                                                   |
+| `lint`                | Run `cargo fmt -- --check` and `cargo clippy -- -D warnings`.                                                                                             |
+| `bench`               | Run criterion benchmarks (`cargo bench --bench dns_perf`). Benchmarks cover QNAME randomization, cache key generation, DB lookups, zone matching, and cache operations. |
 | `clean`               | Clean build artifacts (`cargo clean`).                                                                                                                     |
 | `go-test`             | Run Go unit tests (depends on `go-integration-test`).                                                                                                      |
 | `go-integration-test` | Build the Rust binaries, then run Go integration tests with the `integration` build tag, passing the compiled server binary path via `ROLODEX_DNS_BINARY`. |
@@ -766,6 +768,17 @@ The `make dev-release` target does the same but builds with `--release` for opti
 ### Rust Tests
 
 Rust tests (`cargo test`) include unit tests and integration tests covering gRPC operations, DNS resolution (UDP and TCP), split-horizon behavior, authentication enforcement, Unix socket auth bypass, database persistence, configuration serialization, EDNS handling, TTL drift calculations, latency tracking, and IPAM.
+
+### Performance Unit Tests
+
+Performance-related unit tests cover the optimized hot-path code:
+
+- **QNAME randomization** (`src/dns_server.rs`): Tests for `extract_qname` (simple names, subdomains, single labels, root label, truncated input, empty input) and `randomize_qname_case` (structure preservation, alpha-only changes, round-trip name consistency, short input rejection).
+- **Batched DB lookups** (`src/db.rs`): Tests for `lookup_with_fallbacks` covering exact hit, wildcard fallback with qname substitution, CNAME fallback, ANAME fallback, all-at-once mixed results, complete miss, and exact-over-CNAME priority.
+- **Zone matching** (`src/db.rs`): Tests for `matches_zone_suffix` (exact match, subdomain, deep subdomain, no match, empty cache, TLD-level), `find_managed_zone` (match and miss), `find_authoritative_zone` (match, exact, miss).
+- **Cache key generation** (`src/dns_cache.rs`): Tests for `cache_key` with specific types, wildcard type, various record types, and consistency.
+- **Arc-based cache** (`src/dns_cache.rs`): Tests for local insert with no TTL decay, empty-vec no-op, and multiple records under same key.
+- **DoH connection pool** (`src/doh_proxy.rs`): Tests for pool cap enforcement (max 8), new connection creation, and pooled connection reuse.
 
 ### IPAM Unit Tests
 
@@ -813,6 +826,10 @@ The `make test` target runs the full test suite: Go integration tests, Go unit t
 - **rand** — QNAME case randomization
 - **anyhow** / **thiserror** — Error handling
 
+### Dev / Benchmarks
+
+- **criterion** — Micro-benchmarking framework for performance regression testing
+
 ### Go
 
 - **google.golang.org/grpc** — gRPC framework
@@ -829,3 +846,29 @@ Upstream DNS forwarding uses a pool of 8 UDP sockets, allowing concurrent forwar
 The in-memory DNS cache is automatically flushed when records are mutated via gRPC (add, remove, or scoped variants) to ensure consistency between the database and cached responses. Local database records are cached with a `local` flag that prevents TTL decay and SQLite persistence, since they are authoritative.
 
 TTL drift configuration uses `ArcSwap` for lock-free reads, matching the pattern used for forwarder configuration.
+
+### Performance Optimizations
+
+The DNS hot path uses several optimizations to minimize allocations and lock contention:
+
+- **QNAME case randomization** operates directly on DNS wire-format bytes (toggling the 0x20 bit on ASCII alpha bytes) instead of parsing, cloning, rebuilding, and re-serializing the entire DNS message. This avoids ~6 allocations per forwarded query.
+- **Batched DB lookups** (`lookup_with_fallbacks`) combine exact, wildcard, CNAME, and ANAME lookups into a single SQL `UNION ALL` query, reducing lock acquisitions from 4+ to 1 per query.
+- **Zone matching** uses O(labels) suffix-based `DashSet` lookups (`find_managed_zone`, `find_authoritative_zone`) instead of O(zones) linear iteration with `ends_with()`.
+- **DNS cache** stores records as `Arc<Vec<DnsRecord>>` to eliminate cloning on cache insertion and local cache hits. Cache keys use pre-sized `String::with_capacity` without redundant `to_lowercase()` (names are already normalized).
+- **Batched cache persistence** uses a bounded `mpsc` channel (capacity 1024) with a single background worker that drains up to 64 writes at a time, replacing per-insert `tokio::spawn`.
+- **UDP buffer reuse** allocates the receive buffer once outside the loop and clones only `len` bytes (via `Vec::with_capacity` + `extend_from_slice`) instead of always copying the full 4096-byte buffer.
+- **DoH proxy connection pooling** reuses TCP connections via a per-proxy-address `DashMap` pool (max 8 connections per address) with HTTP/1.1 keep-alive instead of `Connection: close`.
+
+### Benchmarks
+
+Criterion benchmarks in `benches/dns_perf.rs` cover the performance-critical paths. Run with `make bench`. Benchmarked operations:
+
+- `qname_randomize` / `qname_randomize_long_name` — Wire-format QNAME case randomization
+- `cache_key_with_type` / `cache_key_wildcard` — Cache key generation
+- `lookup_with_fallbacks_exact_hit` / `_miss` / `_wildcard` — Batched UNION ALL DB lookups
+- `lookup_original_exact_hit` / `_miss` — Original single-query DB lookups (for comparison)
+- `find_managed_zone_hit` / `_miss` — O(labels) zone matching
+- `find_authoritative_zone_hit` / `_miss` — O(labels) authoritative zone matching
+- `is_authoritative_zone_hit` / `_miss` — Combined zone check
+- `cache_lookup_local_hit` / `cache_lookup_upstream_hit` / `cache_lookup_miss` — DNS cache lookups
+- `cache_insert_local` — DNS cache insertion

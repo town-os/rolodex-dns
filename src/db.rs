@@ -28,6 +28,15 @@ pub struct DnsRecord {
     pub priority: u32,
 }
 
+/// Result of a combined lookup with fallback chain (exact, wildcard, CNAME, ANAME).
+#[derive(Debug, Default)]
+pub struct LookupResult {
+    pub exact: Vec<DnsRecord>,
+    pub wildcard: Vec<DnsRecord>,
+    pub cname: Vec<DnsRecord>,
+    pub aname: Vec<DnsRecord>,
+}
+
 /// Supported DNS record types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RecordKind {
@@ -757,6 +766,83 @@ impl Database {
         Ok(records)
     }
 
+    /// Looks up records with fallback chain in a single SQL query.
+    ///
+    /// Combines exact match, wildcard, CNAME, and ANAME lookups into one
+    /// UNION ALL query, reducing lock acquisitions from 4+ to 1. Results are
+    /// tagged with a source discriminator so callers can apply priority order:
+    /// exact > wildcard > CNAME > ANAME.
+    pub fn lookup_with_fallbacks(
+        &self,
+        name: &str,
+        record_type: RecordKind,
+    ) -> Result<LookupResult> {
+        let conn = self.lock()?;
+        let normalized = normalize_name(name);
+        let wildcard_name = make_wildcard_name(&normalized).unwrap_or_default();
+        let rt_str = record_type.as_str();
+
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, name, record_type, value, ttl, priority, 'exact' as source \
+               FROM dns_records WHERE name = ?1 AND record_type = ?2 \
+             UNION ALL \
+             SELECT id, name, record_type, value, ttl, priority, 'wildcard' as source \
+               FROM dns_records WHERE name = ?3 AND record_type = ?2 \
+             UNION ALL \
+             SELECT id, name, record_type, value, ttl, priority, 'cname' as source \
+               FROM dns_records WHERE name = ?1 AND record_type = 'CNAME' \
+             UNION ALL \
+             SELECT id, name, record_type, value, ttl, priority, 'aname' as source \
+               FROM dns_records WHERE name = ?1 AND record_type = 'ANAME'",
+        )?;
+
+        let rows = stmt.query_map(params![normalized, rt_str, wildcard_name], |row| {
+            let source: String = row.get(6)?;
+            Ok((
+                DnsRecord {
+                    id: Some(row.get(0)?),
+                    name: row.get(1)?,
+                    record_type: RecordKind::parse(&row.get::<_, String>(2)?)
+                        .unwrap_or(RecordKind::A),
+                    value: row.get(3)?,
+                    ttl: row.get(4)?,
+                    priority: row.get(5)?,
+                },
+                source,
+            ))
+        })?;
+
+        let mut exact = Vec::new();
+        let mut wildcard = Vec::new();
+        let mut cname = Vec::new();
+        let mut aname = Vec::new();
+
+        for row in rows {
+            let (record, source) = row?;
+            match source.as_str() {
+                "exact" => exact.push(record),
+                "wildcard" => wildcard.push(record),
+                "cname" => cname.push(record),
+                "aname" => aname.push(record),
+                _ => {}
+            }
+        }
+
+        // Fixup wildcard records: substitute the original qname
+        if !wildcard.is_empty() {
+            for r in &mut wildcard {
+                r.name = normalized.clone();
+            }
+        }
+
+        Ok(LookupResult {
+            exact,
+            wildcard,
+            cname,
+            aname,
+        })
+    }
+
     /// Lists all records, optionally filtered by name pattern and type.
     /// The name filter supports a wildcard prefix "*." to match all subdomains.
     pub fn list_records(
@@ -1334,19 +1420,82 @@ impl Database {
 
     pub fn is_authoritative_zone(&self, name: &str) -> bool {
         let normalized = normalize_name(name);
-        // Check explicit authoritative zones (from cache)
-        for zone in self.authoritative_zones_cache.iter() {
-            if normalized.ends_with(zone.key().as_str()) || normalized == *zone.key() {
-                return true;
-            }
+        // Check all suffix zones of the name against the caches (O(labels) instead of O(zones))
+        self.matches_zone_suffix(&normalized, &self.authoritative_zones_cache)
+            || self.matches_zone_suffix(&normalized, &self.managed_zones_cache)
+    }
+
+    /// Checks if any suffix of a DNS name matches an entry in the zone set.
+    /// Walks up from the full name (e.g. "sub.example.com.") checking each
+    /// parent zone ("example.com.", "com.") against the set.
+    pub fn matches_zone_suffix(&self, normalized: &str, zones: &DashSet<String>) -> bool {
+        if zones.contains(normalized) {
+            return true;
         }
-        // Also check managed zones (from cache)
-        for zone in self.managed_zones_cache.iter() {
-            if normalized.ends_with(zone.key().as_str()) || normalized == *zone.key() {
+        let trimmed = normalized.trim_end_matches('.');
+        let mut start = 0;
+        while let Some(dot_pos) = trimmed[start..].find('.') {
+            let suffix_start = start + dot_pos + 1;
+            if suffix_start >= trimmed.len() {
+                break;
+            }
+            let mut suffix = String::with_capacity(trimmed.len() - suffix_start + 1);
+            suffix.push_str(&trimmed[suffix_start..]);
+            suffix.push('.');
+            if zones.contains(&suffix) {
                 return true;
             }
+            start = suffix_start;
         }
         false
+    }
+
+    /// Returns the matching managed zone for a qname, if any.
+    pub fn find_managed_zone(&self, name: &str) -> Option<String> {
+        let normalized = normalize_name(name);
+        if self.managed_zones_cache.contains(&normalized) {
+            return Some(normalized);
+        }
+        let trimmed = normalized.trim_end_matches('.');
+        let mut start = 0;
+        while let Some(dot_pos) = trimmed[start..].find('.') {
+            let suffix_start = start + dot_pos + 1;
+            if suffix_start >= trimmed.len() {
+                break;
+            }
+            let mut suffix = String::with_capacity(trimmed.len() - suffix_start + 1);
+            suffix.push_str(&trimmed[suffix_start..]);
+            suffix.push('.');
+            if self.managed_zones_cache.contains(&suffix) {
+                return Some(suffix);
+            }
+            start = suffix_start;
+        }
+        None
+    }
+
+    /// Returns the matching authoritative zone for a qname, if any.
+    pub fn find_authoritative_zone(&self, name: &str) -> Option<String> {
+        let normalized = normalize_name(name);
+        if self.authoritative_zones_cache.contains(&normalized) {
+            return Some(normalized);
+        }
+        let trimmed = normalized.trim_end_matches('.');
+        let mut start = 0;
+        while let Some(dot_pos) = trimmed[start..].find('.') {
+            let suffix_start = start + dot_pos + 1;
+            if suffix_start >= trimmed.len() {
+                break;
+            }
+            let mut suffix = String::with_capacity(trimmed.len() - suffix_start + 1);
+            suffix.push_str(&trimmed[suffix_start..]);
+            suffix.push('.');
+            if self.authoritative_zones_cache.contains(&suffix) {
+                return Some(suffix);
+            }
+            start = suffix_start;
+        }
+        None
     }
 
     // ================================================================
@@ -3875,5 +4024,264 @@ mod tests {
         assert_eq!(all[0].ip, "10.0.0.50");
         assert_eq!(all[0].hostname, Some("host2".to_string()));
         assert_eq!(all[0].lease_duration, 7200);
+    }
+
+    // ================================================================
+    // lookup_with_fallbacks tests
+    // ================================================================
+
+    #[test]
+    fn test_lookup_with_fallbacks_exact() {
+        let db = test_db();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "host.example.com.".to_string(),
+            record_type: RecordKind::A,
+            value: "1.2.3.4".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        let result = db
+            .lookup_with_fallbacks("host.example.com.", RecordKind::A)
+            .unwrap();
+        assert_eq!(result.exact.len(), 1);
+        assert_eq!(result.exact[0].value, "1.2.3.4");
+        assert!(result.wildcard.is_empty());
+        assert!(result.cname.is_empty());
+        assert!(result.aname.is_empty());
+    }
+
+    #[test]
+    fn test_lookup_with_fallbacks_wildcard() {
+        let db = test_db();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "*.example.com.".to_string(),
+            record_type: RecordKind::A,
+            value: "10.0.0.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        let result = db
+            .lookup_with_fallbacks("sub.example.com.", RecordKind::A)
+            .unwrap();
+        assert!(result.exact.is_empty());
+        assert_eq!(result.wildcard.len(), 1);
+        assert_eq!(result.wildcard[0].value, "10.0.0.1");
+        // Wildcard should have qname substituted
+        assert_eq!(result.wildcard[0].name, "sub.example.com.");
+    }
+
+    #[test]
+    fn test_lookup_with_fallbacks_cname() {
+        let db = test_db();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "alias.example.com.".to_string(),
+            record_type: RecordKind::CNAME,
+            value: "target.example.com.".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        let result = db
+            .lookup_with_fallbacks("alias.example.com.", RecordKind::A)
+            .unwrap();
+        assert!(result.exact.is_empty());
+        assert!(result.wildcard.is_empty());
+        assert_eq!(result.cname.len(), 1);
+        assert_eq!(result.cname[0].value, "target.example.com.");
+    }
+
+    #[test]
+    fn test_lookup_with_fallbacks_aname() {
+        let db = test_db();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "aname.example.com.".to_string(),
+            record_type: RecordKind::ANAME,
+            value: "target.example.com.".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        let result = db
+            .lookup_with_fallbacks("aname.example.com.", RecordKind::A)
+            .unwrap();
+        assert!(result.exact.is_empty());
+        assert!(result.wildcard.is_empty());
+        assert!(result.cname.is_empty());
+        assert_eq!(result.aname.len(), 1);
+        assert_eq!(result.aname[0].value, "target.example.com.");
+    }
+
+    #[test]
+    fn test_lookup_with_fallbacks_all_at_once() {
+        let db = test_db();
+        // Add exact, CNAME, and ANAME for the same name
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "multi.example.com.".to_string(),
+            record_type: RecordKind::A,
+            value: "1.1.1.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "multi.example.com.".to_string(),
+            record_type: RecordKind::CNAME,
+            value: "cname-target.".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "multi.example.com.".to_string(),
+            record_type: RecordKind::ANAME,
+            value: "aname-target.".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        let result = db
+            .lookup_with_fallbacks("multi.example.com.", RecordKind::A)
+            .unwrap();
+        assert_eq!(result.exact.len(), 1);
+        assert_eq!(result.cname.len(), 1);
+        assert_eq!(result.aname.len(), 1);
+    }
+
+    #[test]
+    fn test_lookup_with_fallbacks_miss() {
+        let db = test_db();
+        let result = db
+            .lookup_with_fallbacks("nonexistent.example.com.", RecordKind::A)
+            .unwrap();
+        assert!(result.exact.is_empty());
+        assert!(result.wildcard.is_empty());
+        assert!(result.cname.is_empty());
+        assert!(result.aname.is_empty());
+    }
+
+    // ================================================================
+    // matches_zone_suffix tests
+    // ================================================================
+
+    #[test]
+    fn test_matches_zone_suffix_exact() {
+        let db = test_db();
+        db.add_authoritative_zone("example.com.").unwrap();
+        assert!(db.matches_zone_suffix("example.com.", &db.authoritative_zones_cache));
+    }
+
+    #[test]
+    fn test_matches_zone_suffix_subdomain() {
+        let db = test_db();
+        db.add_authoritative_zone("example.com.").unwrap();
+        assert!(db.matches_zone_suffix("sub.example.com.", &db.authoritative_zones_cache));
+        assert!(db.matches_zone_suffix("deep.sub.example.com.", &db.authoritative_zones_cache));
+    }
+
+    #[test]
+    fn test_matches_zone_suffix_no_match() {
+        let db = test_db();
+        db.add_authoritative_zone("example.com.").unwrap();
+        assert!(!db.matches_zone_suffix("other.org.", &db.authoritative_zones_cache));
+        assert!(!db.matches_zone_suffix("notexample.com.", &db.authoritative_zones_cache));
+    }
+
+    #[test]
+    fn test_matches_zone_suffix_empty_cache() {
+        let db = test_db();
+        assert!(!db.matches_zone_suffix("anything.com.", &db.authoritative_zones_cache));
+    }
+
+    #[test]
+    fn test_matches_zone_suffix_tld() {
+        let db = test_db();
+        db.add_authoritative_zone("com.").unwrap();
+        assert!(db.matches_zone_suffix("example.com.", &db.authoritative_zones_cache));
+        assert!(db.matches_zone_suffix("sub.example.com.", &db.authoritative_zones_cache));
+    }
+
+    // ================================================================
+    // find_managed_zone tests
+    // ================================================================
+
+    #[test]
+    fn test_find_managed_zone_match() {
+        let db = test_db();
+        // Adding a record populates managed_zones_cache
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "host.example.com.".to_string(),
+            record_type: RecordKind::A,
+            value: "1.2.3.4".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        assert_eq!(
+            db.find_managed_zone("sub.example.com."),
+            Some("example.com.".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_managed_zone_no_match() {
+        let db = test_db();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "host.example.com.".to_string(),
+            record_type: RecordKind::A,
+            value: "1.2.3.4".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        assert_eq!(db.find_managed_zone("other.org."), None);
+    }
+
+    // ================================================================
+    // find_authoritative_zone tests
+    // ================================================================
+
+    #[test]
+    fn test_find_authoritative_zone_match() {
+        let db = test_db();
+        db.add_authoritative_zone("auth.org.").unwrap();
+        assert_eq!(
+            db.find_authoritative_zone("sub.auth.org."),
+            Some("auth.org.".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_authoritative_zone_exact() {
+        let db = test_db();
+        db.add_authoritative_zone("auth.org.").unwrap();
+        assert_eq!(
+            db.find_authoritative_zone("auth.org."),
+            Some("auth.org.".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_authoritative_zone_no_match() {
+        let db = test_db();
+        db.add_authoritative_zone("auth.org.").unwrap();
+        assert_eq!(db.find_authoritative_zone("other.com."), None);
     }
 }

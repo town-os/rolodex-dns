@@ -5,6 +5,7 @@
 /// - **SOCKS5 proxy**: TCP tunnel to upstream DNS server through SOCKS5 (RFC 1928)
 /// - **DoH proxy**: Forward DoH requests through an HTTP proxy
 use anyhow::{Context, Result};
+use dashmap::DashMap;
 use std::net::SocketAddr;
 
 /// Proxy configuration.
@@ -261,7 +262,40 @@ pub async fn forward_via_socks5_proxy(
     tunnel_dns_query(&mut stream, query_data).await
 }
 
+/// Pool of reusable TCP connections to the DoH proxy, keyed by proxy address.
+static DOH_POOL: std::sync::LazyLock<DashMap<String, Vec<tokio::net::TcpStream>>> =
+    std::sync::LazyLock::new(DashMap::new);
+
+/// Takes a connection from the pool or creates a new one.
+async fn get_doh_connection(proxy_addr: &str) -> Result<tokio::net::TcpStream> {
+    if let Some(mut entry) = DOH_POOL.get_mut(proxy_addr) {
+        while let Some(stream) = entry.pop() {
+            // Verify connection is still alive with a zero-length peek
+            let mut probe = [0u8; 1];
+            match stream.try_read(&mut probe) {
+                // Connection was closed by peer
+                Err(ref e) if e.kind() == std::io::ErrorKind::ConnectionReset => continue,
+                // WouldBlock means it's still open (no data waiting, which is expected)
+                _ => return Ok(stream),
+            }
+        }
+    }
+    tokio::net::TcpStream::connect(proxy_addr)
+        .await
+        .context("failed to connect to DoH proxy")
+}
+
+/// Returns a connection to the pool for reuse.
+fn return_doh_connection(proxy_addr: &str, stream: tokio::net::TcpStream) {
+    let mut entry = DOH_POOL.entry(proxy_addr.to_string()).or_default();
+    // Cap pool size per proxy address
+    if entry.len() < 8 {
+        entry.push(stream);
+    }
+}
+
 /// Forwards a DNS query as a DoH request through an HTTP proxy.
+/// Reuses TCP connections via a per-proxy-address connection pool.
 pub async fn forward_via_doh_proxy(
     query_data: &[u8],
     upstream: &SocketAddr,
@@ -269,13 +303,10 @@ pub async fn forward_via_doh_proxy(
     proxy_auth: Option<&str>,
 ) -> Result<Vec<u8>> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpStream;
 
     let proxy_addr = parse_proxy_addr(proxy_url)?;
 
-    let mut stream = TcpStream::connect(&proxy_addr)
-        .await
-        .context("failed to connect to DoH proxy")?;
+    let mut stream = get_doh_connection(&proxy_addr).await?;
 
     let doh_url = format!("https://{}/dns-query", upstream);
     let body = query_data;
@@ -291,22 +322,27 @@ pub async fn forward_via_doh_proxy(
             base64::Engine::encode(&base64::engine::general_purpose::STANDARD, auth.as_bytes());
         request.push_str(&format!("Proxy-Authorization: Basic {}\r\n", encoded));
     }
-    request.push_str("Connection: close\r\n\r\n");
+    request.push_str("\r\n");
 
     stream.write_all(request.as_bytes()).await?;
     stream.write_all(body).await?;
 
-    // Read full HTTP response
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response).await?;
+    // Read HTTP response headers to find Content-Length
+    let mut header_buf = Vec::with_capacity(512);
+    let mut byte = [0u8; 1];
+    loop {
+        stream.read_exact(&mut byte).await?;
+        header_buf.push(byte[0]);
+        if header_buf.len() >= 4 && &header_buf[header_buf.len() - 4..] == b"\r\n\r\n" {
+            break;
+        }
+        if header_buf.len() > 8192 {
+            anyhow::bail!("DoH proxy: response headers too large");
+        }
+    }
 
-    // Parse HTTP response: find the body after \r\n\r\n
-    let response_str = String::from_utf8_lossy(&response);
-    let header_end = response_str
-        .find("\r\n\r\n")
-        .context("DoH proxy: malformed HTTP response")?;
-
-    let status_line = response_str
+    let header_str = String::from_utf8_lossy(&header_buf);
+    let status_line = header_str
         .lines()
         .next()
         .context("DoH proxy: empty response")?;
@@ -314,12 +350,24 @@ pub async fn forward_via_doh_proxy(
         anyhow::bail!("DoH proxy request failed: {}", status_line);
     }
 
-    let body_start = header_end + 4;
-    if body_start >= response.len() {
-        anyhow::bail!("DoH proxy: empty response body");
-    }
+    // Parse Content-Length from headers
+    let content_length: usize = header_str
+        .lines()
+        .find_map(|line| {
+            let lower = line.to_lowercase();
+            lower
+                .strip_prefix("content-length:")
+                .and_then(|v| v.trim().parse().ok())
+        })
+        .context("DoH proxy: missing Content-Length header")?;
 
-    Ok(response[body_start..].to_vec())
+    let mut body_buf = vec![0u8; content_length];
+    stream.read_exact(&mut body_buf).await?;
+
+    // Return connection to pool for reuse
+    return_doh_connection(&proxy_addr, stream);
+
+    Ok(body_buf)
 }
 
 /// Sends a DNS query over an established TCP tunnel using 2-byte length prefix framing
@@ -402,5 +450,81 @@ mod tests {
         assert_eq!(runtime.url, "socks5://127.0.0.1:1080");
         assert_eq!(runtime.auth.as_deref(), Some("user:pass"));
         assert_eq!(runtime.mode, ProxyMode::Socks5);
+    }
+
+    #[test]
+    fn test_return_doh_connection_caps_pool_size() {
+        // Clear any existing pool state
+        DOH_POOL.clear();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+
+            // Create and return 10 connections (exceeds pool cap of 8)
+            for _ in 0..10 {
+                let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+                // Accept on the server side to complete the connection
+                let _ = listener.accept().await.unwrap();
+                return_doh_connection(&addr.to_string(), stream);
+            }
+
+            // Pool should be capped at 8
+            let entry = DOH_POOL.get(&addr.to_string()).unwrap();
+            assert!(entry.len() <= 8, "pool size {} exceeds cap", entry.len());
+        });
+
+        DOH_POOL.clear();
+    }
+
+    #[tokio::test]
+    async fn test_get_doh_connection_creates_new() {
+        DOH_POOL.clear();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Spawn accept task
+        let accept_handle = tokio::spawn(async move {
+            let _ = listener.accept().await.unwrap();
+        });
+
+        let conn = get_doh_connection(&addr.to_string()).await;
+        assert!(conn.is_ok(), "should create new connection");
+
+        accept_handle.await.unwrap();
+        DOH_POOL.clear();
+    }
+
+    #[tokio::test]
+    async fn test_get_doh_connection_reuses_pooled() {
+        DOH_POOL.clear();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let addr_str = addr.to_string();
+
+        // Create a connection and put it in the pool
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let _ = listener.accept().await.unwrap();
+        return_doh_connection(&addr_str, stream);
+
+        // Pool should have 1 connection
+        assert_eq!(DOH_POOL.get(&addr_str).unwrap().len(), 1);
+
+        // get_doh_connection should take from pool (not create new)
+        let conn = get_doh_connection(&addr_str).await;
+        assert!(conn.is_ok());
+
+        // Pool should now be empty
+        let pool_size = DOH_POOL.get(&addr_str).map_or(0, |e| e.len());
+        assert_eq!(pool_size, 0, "pool should be empty after taking connection");
+
+        DOH_POOL.clear();
     }
 }

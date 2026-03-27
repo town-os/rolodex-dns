@@ -159,7 +159,8 @@ impl DnsServer {
                 }
             };
 
-            let data = buf[..len].to_vec();
+            let mut data = Vec::with_capacity(len);
+            data.extend_from_slice(&buf[..len]);
             let server = Arc::clone(&self);
             let socket = Arc::clone(&socket);
             tokio::spawn(async move {
@@ -341,7 +342,12 @@ impl DnsServer {
             let record_kind = map_query_type_to_kind(qtype);
             if let Some(kind) = record_kind {
                 // Check cache before hitting the database
-                let scoped_cache_name = format!("@{}/{}", scope, qname);
+                let mut scoped_cache_name =
+                    String::with_capacity(1 + scope.len() + 1 + qname.len());
+                scoped_cache_name.push('@');
+                scoped_cache_name.push_str(scope);
+                scoped_cache_name.push('/');
+                scoped_cache_name.push_str(&qname);
                 if let Some(ref cache) = self.dns_cache {
                     let cached = cache.lookup(&scoped_cache_name, Some(kind));
                     if !cached.is_empty() {
@@ -485,6 +491,8 @@ impl DnsServer {
         let is_authoritative = self.db.is_authoritative_zone(&qname);
 
         // Try local database first (split-horizon: local records take priority)
+        // Uses a single UNION ALL query to fetch exact, wildcard, CNAME, and ANAME
+        // results in one lock acquisition instead of 4+ separate queries.
         let record_kind = map_query_type_to_kind(qtype);
         if let Some(kind) = record_kind {
             // Check cache before hitting the database
@@ -508,45 +516,66 @@ impl DnsServer {
                 }
             }
 
-            let local_records = self.db.lookup(&qname, Some(kind));
-            if let Ok(records) = local_records
-                && !records.is_empty()
-            {
-                debug!(
-                    "Local hit for {} {:?}: {} records",
-                    qname,
-                    qtype,
-                    records.len()
-                );
-                if let Some(ref cache) = self.dns_cache {
-                    cache.insert_local(&qname, Some(kind), records.clone());
-                }
-                let dns_records = records.iter().filter_map(db_record_to_dns_record).collect();
-                return Ok(build_response_edns(
-                    &message,
-                    ResponseCode::NoError,
-                    dns_records,
-                    is_authoritative,
-                    edns_ctx.as_ref(),
-                ));
-            }
+            if let Ok(result) = self.db.lookup_with_fallbacks(&qname, kind) {
+                // Priority: exact > wildcard > CNAME > ANAME
+                let records = if !result.exact.is_empty() {
+                    result.exact
+                } else if !result.wildcard.is_empty() {
+                    result.wildcard
+                } else {
+                    Vec::new()
+                };
 
-            // ANAME resolution: if querying A/AAAA and there's an ANAME, resolve it
-            if (kind == RecordKind::A || kind == RecordKind::AAAA)
-                && let Ok(aname_records) = self.db.lookup(&qname, Some(RecordKind::ANAME))
-                && !aname_records.is_empty()
-            {
-                let target = &aname_records[0].value;
-                if let Ok(target_records) = self.db.lookup(target, Some(kind))
-                    && !target_records.is_empty()
-                {
-                    let dns_records: Vec<Record> = target_records
+                if !records.is_empty() {
+                    debug!(
+                        "Local hit for {} {:?}: {} records",
+                        qname,
+                        qtype,
+                        records.len()
+                    );
+                    if let Some(ref cache) = self.dns_cache {
+                        cache.insert_local(&qname, Some(kind), records.clone());
+                    }
+                    let dns_records = records.iter().filter_map(db_record_to_dns_record).collect();
+                    return Ok(build_response_edns(
+                        &message,
+                        ResponseCode::NoError,
+                        dns_records,
+                        is_authoritative,
+                        edns_ctx.as_ref(),
+                    ));
+                }
+
+                // ANAME resolution: if querying A/AAAA and there's an ANAME, resolve it
+                if (kind == RecordKind::A || kind == RecordKind::AAAA) && !result.aname.is_empty() {
+                    let target = &result.aname[0].value;
+                    if let Ok(target_records) = self.db.lookup(target, Some(kind))
+                        && !target_records.is_empty()
+                    {
+                        let dns_records: Vec<Record> = target_records
+                            .iter()
+                            .filter_map(|r| {
+                                let mut rec = db_record_to_dns_record(r)?;
+                                rec.set_name(Name::from_ascii(&qname).ok()?);
+                                Some(rec)
+                            })
+                            .collect();
+                        return Ok(build_response_edns(
+                            &message,
+                            ResponseCode::NoError,
+                            dns_records,
+                            is_authoritative,
+                            edns_ctx.as_ref(),
+                        ));
+                    }
+                }
+
+                // CNAME chain
+                if !result.cname.is_empty() {
+                    let dns_records = result
+                        .cname
                         .iter()
-                        .filter_map(|r| {
-                            let mut rec = db_record_to_dns_record(r)?;
-                            rec.set_name(Name::from_ascii(&qname).ok()?);
-                            Some(rec)
-                        })
+                        .filter_map(db_record_to_dns_record)
                         .collect();
                     return Ok(build_response_edns(
                         &message,
@@ -559,77 +588,44 @@ impl DnsServer {
             }
         }
 
-        // Also check without type filter for CNAME chains
-        if record_kind.is_some() {
-            let cname_records = self.db.lookup(&qname, Some(RecordKind::CNAME));
-            if let Ok(records) = cname_records
-                && !records.is_empty()
-            {
-                let dns_records = records.iter().filter_map(db_record_to_dns_record).collect();
-                return Ok(build_response_edns(
-                    &message,
-                    ResponseCode::NoError,
-                    dns_records,
-                    is_authoritative,
-                    edns_ctx.as_ref(),
-                ));
-            }
-        }
-
         // Check DNAME (walk up labels checking for DNAME records, synthesize CNAME)
         if let Some(dname_result) = self.check_dname_global(&qname, qtype, &message) {
             return Ok(dname_result);
         }
 
-        // Check if this name falls under a managed zone
-        // If the zone exists in our DB but the specific name doesn't,
-        // still return NXDOMAIN from local (split-horizon behavior)
-        {
-            let zones = self.db.get_managed_zones_cached();
-            let normalized_qname = crate::db::normalize_name(&qname);
-            for zone in &zones {
-                if normalized_qname.ends_with(zone.as_str()) || normalized_qname == *zone {
-                    // Name is under a managed zone but not found - check if the zone
-                    // itself has records. If so, this is authoritative NXDOMAIN.
-                    let zone_records = self.db.lookup(zone, None);
-                    if let Ok(records) = zone_records
-                        && !records.is_empty()
-                    {
-                        debug!(
-                            "Authoritative NXDOMAIN for {} (zone {} exists)",
-                            qname, zone
-                        );
-                        return Ok(build_response_edns(
-                            &message,
-                            ResponseCode::NXDomain,
-                            vec![],
-                            true,
-                            edns_ctx.as_ref(),
-                        ));
-                    }
-                }
+        // Check if this name falls under a managed zone (O(labels) via DashSet lookup)
+        if let Some(zone) = self.db.find_managed_zone(&qname) {
+            let zone_records = self.db.lookup(&zone, None);
+            if let Ok(records) = zone_records
+                && !records.is_empty()
+            {
+                debug!(
+                    "Authoritative NXDOMAIN for {} (zone {} exists)",
+                    qname, zone
+                );
+                return Ok(build_response_edns(
+                    &message,
+                    ResponseCode::NXDomain,
+                    vec![],
+                    true,
+                    edns_ctx.as_ref(),
+                ));
             }
         }
 
-        // Check explicit authoritative zones too
-        {
-            let auth_zones = self.db.list_authoritative_zones_cached();
-            let normalized_qname = crate::db::normalize_name(&qname);
-            for zone in &auth_zones {
-                if normalized_qname.ends_with(zone.as_str()) || normalized_qname == *zone {
-                    debug!(
-                        "Authoritative NXDOMAIN for {} (authoritative zone {})",
-                        qname, zone
-                    );
-                    return Ok(build_response_edns(
-                        &message,
-                        ResponseCode::NXDomain,
-                        vec![],
-                        true,
-                        edns_ctx.as_ref(),
-                    ));
-                }
-            }
+        // Check explicit authoritative zones (O(labels) via DashSet lookup)
+        if let Some(zone) = self.db.find_authoritative_zone(&qname) {
+            debug!(
+                "Authoritative NXDOMAIN for {} (authoritative zone {})",
+                qname, zone
+            );
+            return Ok(build_response_edns(
+                &message,
+                ResponseCode::NXDomain,
+                vec![],
+                true,
+                edns_ctx.as_ref(),
+            ));
         }
 
         // Check DNS cache before forwarding upstream
@@ -1227,55 +1223,73 @@ fn synthesize_dns64_address(prefix: &Ipv6Addr, ipv4: &Ipv4Addr) -> Ipv6Addr {
     Ipv6Addr::from(octets)
 }
 
+/// Extracts a DNS QNAME from wire-format label encoding into a dotted string.
+fn extract_qname(data: &[u8]) -> Option<String> {
+    let mut name = String::with_capacity(64);
+    let mut pos = 0;
+    loop {
+        if pos >= data.len() {
+            return None;
+        }
+        let label_len = data[pos] as usize;
+        if label_len == 0 {
+            break;
+        }
+        if pos + 1 + label_len > data.len() {
+            return None;
+        }
+        if !name.is_empty() {
+            name.push('.');
+        }
+        for i in 1..=label_len {
+            name.push(data[pos + i] as char);
+        }
+        pos += label_len + 1;
+    }
+    name.push('.');
+    Some(name)
+}
+
 /// Randomizes the case of the QNAME in a DNS query for 0x20 encoding.
 /// Returns (modified_bytes, original_qname, randomized_qname), or None if parsing fails.
+///
+/// Operates directly on DNS wire-format bytes for efficiency: the QNAME starts
+/// at byte offset 12 (after the 12-byte DNS header) and uses label encoding
+/// (length byte followed by ASCII label bytes). Case is toggled in-place by
+/// flipping the 0x20 bit on ASCII alphabetic bytes.
 pub fn randomize_qname_case(query_data: &[u8]) -> Option<(Vec<u8>, String, String)> {
-    let message = hickory_proto::op::Message::from_bytes(query_data).ok()?;
-    let question = message.queries().first()?;
-    let original_qname = question.name().to_string();
-
-    // Rebuild the message with randomized case
-    let modified = message.clone();
-    let mut rng = rand::rng();
-
-    let randomized_name = original_qname
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphabetic() {
-                if rng.random_bool(0.5) {
-                    c.to_ascii_uppercase()
-                } else {
-                    c.to_ascii_lowercase()
-                }
-            } else {
-                c
-            }
-        })
-        .collect::<String>();
-
-    if let Ok(name) = Name::from_ascii(&randomized_name) {
-        // Replace the query with randomized case
-        let queries: Vec<_> = modified.queries().to_vec();
-        // Clear and re-add queries with randomized name
-        let mut new_msg = hickory_proto::op::Message::new();
-        new_msg.set_id(modified.id());
-        new_msg.set_message_type(modified.message_type());
-        new_msg.set_op_code(modified.op_code());
-        new_msg.set_recursion_desired(modified.recursion_desired());
-        // Copy EDNS if present
-        if let Some(edns) = modified.extensions().as_ref() {
-            new_msg.set_edns(edns.clone());
-        }
-        for q in &queries {
-            let mut new_q = q.clone();
-            new_q.set_name(name.clone());
-            new_msg.add_query(new_q);
-        }
-        let bytes = new_msg.to_bytes().ok()?;
-        Some((bytes, original_qname, randomized_name))
-    } else {
-        None
+    // DNS header is 12 bytes; need at least header + 1 byte for QNAME
+    if query_data.len() < 13 {
+        return None;
     }
+
+    let original_name = extract_qname(&query_data[12..])?;
+    let mut modified = Vec::with_capacity(query_data.len());
+    modified.extend_from_slice(query_data);
+
+    let mut rng = rand::rng();
+    let mut pos = 12;
+    loop {
+        if pos >= modified.len() {
+            return None;
+        }
+        let label_len = modified[pos] as usize;
+        if label_len == 0 {
+            break;
+        }
+        if pos + 1 + label_len > modified.len() {
+            return None;
+        }
+        for i in 1..=label_len {
+            if modified[pos + i].is_ascii_alphabetic() && rng.random_bool(0.5) {
+                modified[pos + i] ^= 0x20;
+            }
+        }
+        pos += label_len + 1;
+    }
+
+    let randomized_name = extract_qname(&modified[12..])?;
+    Some((modified, original_name, randomized_name))
 }
 
 /// Converts a hickory DNS Record to a database DnsRecord (for cache insertion).
@@ -2114,5 +2128,240 @@ mod tests {
         // Should still resolve global records even when in a scope
         assert_eq!(resp.response_code(), ResponseCode::NoError);
         assert_eq!(resp.answers().len(), 1);
+    }
+
+    // ================================================================
+    // extract_qname tests
+    // ================================================================
+
+    #[test]
+    fn test_extract_qname_simple() {
+        // "example.com." in wire format: \x07example\x03com\x00
+        let data = b"\x07example\x03com\x00";
+        assert_eq!(extract_qname(data).unwrap(), "example.com.");
+    }
+
+    #[test]
+    fn test_extract_qname_subdomain() {
+        // "sub.example.com." in wire format
+        let data = b"\x03sub\x07example\x03com\x00";
+        assert_eq!(extract_qname(data).unwrap(), "sub.example.com.");
+    }
+
+    #[test]
+    fn test_extract_qname_single_label() {
+        let data = b"\x03com\x00";
+        assert_eq!(extract_qname(data).unwrap(), "com.");
+    }
+
+    #[test]
+    fn test_extract_qname_empty() {
+        // Root label only
+        let data = b"\x00";
+        assert_eq!(extract_qname(data).unwrap(), ".");
+    }
+
+    #[test]
+    fn test_extract_qname_truncated() {
+        // Label says 7 bytes but only 3 follow
+        let data = b"\x07exa";
+        assert!(extract_qname(data).is_none());
+    }
+
+    #[test]
+    fn test_extract_qname_empty_input() {
+        assert!(extract_qname(b"").is_none());
+    }
+
+    // ================================================================
+    // randomize_qname_case tests
+    // ================================================================
+
+    #[test]
+    fn test_randomize_qname_case_preserves_structure() {
+        let query = build_query("example.com.", RecordType::A);
+        let result = randomize_qname_case(&query);
+        assert!(result.is_some());
+        let (modified, original, _randomized) = result.unwrap();
+
+        // Original name should be correct
+        assert_eq!(original.to_lowercase(), "example.com.");
+
+        // Modified bytes should be valid DNS and same length
+        assert_eq!(modified.len(), query.len());
+
+        // Should parse as a valid DNS message
+        let msg = Message::from_bytes(&modified).unwrap();
+        assert_eq!(msg.id(), 1234);
+        assert_eq!(msg.queries().len(), 1);
+    }
+
+    #[test]
+    fn test_randomize_qname_case_only_changes_alpha() {
+        let query = build_query("test-123.example.com.", RecordType::A);
+        // Run many times to exercise randomness
+        for _ in 0..20 {
+            if let Some((modified, _, _)) = randomize_qname_case(&query) {
+                // DNS header (12 bytes) should be identical
+                assert_eq!(&modified[..12], &query[..12]);
+
+                // Non-alpha bytes in labels should be unchanged
+                // Walk labels and check digits/hyphens
+                let mut pos = 12;
+                while pos < modified.len() {
+                    let label_len = modified[pos] as usize;
+                    if label_len == 0 {
+                        break;
+                    }
+                    // Label length byte unchanged
+                    assert_eq!(modified[pos], query[pos]);
+                    for i in 1..=label_len {
+                        let orig = query[pos + i];
+                        let modif = modified[pos + i];
+                        if !orig.is_ascii_alphabetic() {
+                            // Non-alpha bytes must be unchanged
+                            assert_eq!(modif, orig);
+                        } else {
+                            // Alpha bytes should differ only by case bit
+                            assert_eq!(modif.to_ascii_lowercase(), orig.to_ascii_lowercase());
+                        }
+                    }
+                    pos += label_len + 1;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_randomize_qname_case_too_short() {
+        assert!(randomize_qname_case(b"").is_none());
+        assert!(randomize_qname_case(b"short").is_none());
+        assert!(randomize_qname_case(&[0u8; 12]).is_none());
+    }
+
+    #[test]
+    fn test_randomize_qname_case_round_trip_names() {
+        let query = build_query("My.DnS.Name.", RecordType::AAAA);
+        let (_, original, randomized) = randomize_qname_case(&query).unwrap();
+        // Both should normalize to the same lowercase name
+        assert_eq!(original.to_lowercase(), randomized.to_lowercase());
+    }
+
+    // ================================================================
+    // lookup_with_fallbacks integration tests
+    // ================================================================
+
+    #[tokio::test]
+    async fn test_lookup_with_fallbacks_exact_hit() {
+        let db = Database::open_memory().unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "exact.example.com.".to_string(),
+            record_type: RecordKind::A,
+            value: "1.2.3.4".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        let server = make_test_server(db);
+        let query = build_query("exact.example.com.", RecordType::A);
+        let resp_bytes = server.handle_query(&query).await.unwrap();
+        let resp = Message::from_bytes(&resp_bytes).unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert_eq!(resp.answers().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_lookup_with_fallbacks_cname_fallback() {
+        let db = Database::open_memory().unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "alias.example.com.".to_string(),
+            record_type: RecordKind::CNAME,
+            value: "target.example.com.".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        let server = make_test_server(db);
+        let query = build_query("alias.example.com.", RecordType::A);
+        let resp_bytes = server.handle_query(&query).await.unwrap();
+        let resp = Message::from_bytes(&resp_bytes).unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert_eq!(resp.answers().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_lookup_with_fallbacks_aname_resolution() {
+        let db = Database::open_memory().unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "aname.example.com.".to_string(),
+            record_type: RecordKind::ANAME,
+            value: "target.example.com.".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "target.example.com.".to_string(),
+            record_type: RecordKind::A,
+            value: "10.0.0.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        let server = make_test_server(db);
+        let query = build_query("aname.example.com.", RecordType::A);
+        let resp_bytes = server.handle_query(&query).await.unwrap();
+        let resp = Message::from_bytes(&resp_bytes).unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert_eq!(resp.answers().len(), 1);
+        if let RData::A(rdata::A(ip)) = resp.answers()[0].data() {
+            assert_eq!(*ip, Ipv4Addr::new(10, 0, 0, 1));
+        } else {
+            panic!("expected A record");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_lookup_with_fallbacks_exact_over_cname() {
+        let db = Database::open_memory().unwrap();
+        // Both exact A and CNAME exist - exact should win
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "both.example.com.".to_string(),
+            record_type: RecordKind::A,
+            value: "1.1.1.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "both.example.com.".to_string(),
+            record_type: RecordKind::CNAME,
+            value: "other.example.com.".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        let server = make_test_server(db);
+        let query = build_query("both.example.com.", RecordType::A);
+        let resp_bytes = server.handle_query(&query).await.unwrap();
+        let resp = Message::from_bytes(&resp_bytes).unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert_eq!(resp.answers().len(), 1);
+        // Should get the A record, not the CNAME
+        if let RData::A(rdata::A(ip)) = resp.answers()[0].data() {
+            assert_eq!(*ip, Ipv4Addr::new(1, 1, 1, 1));
+        } else {
+            panic!("expected A record, not CNAME");
+        }
     }
 }

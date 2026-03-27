@@ -92,3 +92,8 @@ tokio-test = "0.4"
 mockall = "0.13"
 assert_cmd = "2"
 predicates = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "dns_perf"
+harness = false

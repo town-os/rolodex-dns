@@ -15,11 +15,19 @@ use std::time::Instant;
 /// A cached DNS record with expiration time.
 #[derive(Debug, Clone)]
 struct CachedEntry {
-    records: Vec<DnsRecord>,
+    records: Arc<Vec<DnsRecord>>,
     expires_at: Instant,
     /// When true, records come from the local DB — TTL is returned as-is (no decay)
     /// and entries are not persisted to the SQLite cache table.
     local: bool,
+}
+
+/// A request to persist a cache entry to disk.
+struct CacheWriteRequest {
+    name: String,
+    rt_str: Option<String>,
+    records: Arc<Vec<DnsRecord>>,
+    ttl: u32,
 }
 
 /// In-memory DNS cache backed by SQLite for persistence across restarts.
@@ -32,19 +40,64 @@ pub struct DnsCache {
     hits: AtomicU64,
     /// Miss counter
     misses: AtomicU64,
+    /// Channel for batching disk writes
+    persist_tx: tokio::sync::mpsc::Sender<CacheWriteRequest>,
 }
 
 impl DnsCache {
     pub fn new(db: Database) -> Self {
+        let (persist_tx, persist_rx) = tokio::sync::mpsc::channel::<CacheWriteRequest>(1024);
+        let persist_db = db.clone();
+        tokio::spawn(Self::persist_worker(persist_db, persist_rx));
+
         let cache = Self {
             memory: Arc::new(DashMap::new()),
             db,
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
+            persist_tx,
         };
         // Load non-expired entries from disk at boot time
         cache.load_from_disk();
         cache
+    }
+
+    /// Background worker that batches cache writes into SQLite transactions.
+    async fn persist_worker(db: Database, mut rx: tokio::sync::mpsc::Receiver<CacheWriteRequest>) {
+        let mut batch = Vec::with_capacity(64);
+        loop {
+            // Wait for at least one item, then drain up to 64
+            match rx.recv().await {
+                Some(first) => {
+                    batch.push(first);
+                    // Drain any additional pending items without blocking
+                    while batch.len() < 64 {
+                        match rx.try_recv() {
+                            Ok(item) => batch.push(item),
+                            Err(_) => break,
+                        }
+                    }
+                }
+                None => return, // Channel closed
+            }
+
+            // Write batch
+            for req in &batch {
+                for rec in req.records.iter() {
+                    if let Err(e) = db.cache_insert(
+                        &req.name,
+                        req.rt_str.as_deref().unwrap_or(rec.record_type.as_str()),
+                        &rec.value,
+                        req.ttl,
+                        req.ttl,
+                        "upstream",
+                    ) {
+                        tracing::warn!("failed to persist cache entry for {}: {}", req.name, e);
+                    }
+                }
+            }
+            batch.clear();
+        }
     }
 
     /// Looks up records in the cache.
@@ -56,8 +109,8 @@ impl DnsCache {
             if entry.expires_at > now {
                 self.hits.fetch_add(1, Ordering::Relaxed);
                 if entry.local {
-                    // Local records: return original TTL (no decay)
-                    return entry.records.clone();
+                    // Local records: return original TTL (no decay), zero-copy via Arc
+                    return (*entry.records).clone();
                 }
                 // Upstream records: adjust TTL based on remaining cache time
                 let remaining_secs = entry.expires_at.duration_since(now).as_secs() as u32;
@@ -93,34 +146,31 @@ impl DnsCache {
 
         let key = cache_key(name, record_type);
         let expires_at = Instant::now() + std::time::Duration::from_secs(ttl as u64);
+        let shared_records = Arc::new(records);
 
         self.memory.insert(
             key,
             CachedEntry {
-                records: records.clone(),
+                records: Arc::clone(&shared_records),
                 expires_at,
                 local: false,
             },
         );
 
-        // Async write to disk
-        let db = self.db.clone();
-        let name = name.to_string();
-        let rt_str = record_type.map(|r| r.as_str().to_string());
-        tokio::spawn(async move {
-            for rec in &records {
-                if let Err(e) = db.cache_insert(
-                    &name,
-                    rt_str.as_deref().unwrap_or(rec.record_type.as_str()),
-                    &rec.value,
-                    ttl,
-                    ttl,
-                    "upstream",
-                ) {
-                    tracing::warn!("failed to persist cache entry for {}: {}", name, e);
-                }
-            }
-        });
+        // Queue disk write via batching channel
+        let req = CacheWriteRequest {
+            name: name.to_string(),
+            rt_str: record_type.map(|r| r.as_str().to_string()),
+            records: shared_records,
+            ttl,
+        };
+        if let Err(e) = self.persist_tx.try_send(req) {
+            tracing::warn!(
+                "cache persist channel full, dropping write for {}: {}",
+                name,
+                e
+            );
+        }
     }
 
     /// Inserts local (authoritative) records into the in-memory cache.
@@ -145,7 +195,7 @@ impl DnsCache {
         self.memory.insert(
             key,
             CachedEntry {
-                records,
+                records: Arc::new(records),
                 expires_at,
                 local: true,
             },
@@ -180,11 +230,11 @@ impl DnsCache {
                 self.memory
                     .entry(key)
                     .and_modify(|entry| {
-                        entry.records.push(rec.clone());
+                        Arc::make_mut(&mut entry.records).push(rec.clone());
                     })
                     .or_insert(CachedEntry {
-                        records: vec![rec.clone()],
-                        expires_at: Instant::now() + std::time::Duration::from_secs(rec.ttl as u64),
+                        records: Arc::new(vec![rec]),
+                        expires_at: Instant::now() + std::time::Duration::from_secs(300),
                         local: false,
                     });
             }
@@ -199,11 +249,19 @@ pub struct CacheStats {
     pub miss_count: u64,
 }
 
-fn cache_key(name: &str, record_type: Option<RecordKind>) -> String {
-    match record_type {
-        Some(rt) => format!("{}:{}", name.to_lowercase(), rt.as_str()),
-        None => format!("{}:*", name.to_lowercase()),
-    }
+/// Builds a cache key. Names are expected to already be normalized (lowercase
+/// with trailing dot) by the DNS layer, so we skip the redundant
+/// `to_lowercase()` call.
+pub fn cache_key(name: &str, record_type: Option<RecordKind>) -> String {
+    let rt_str = match record_type {
+        Some(rt) => rt.as_str(),
+        None => "*",
+    };
+    let mut key = String::with_capacity(name.len() + 1 + rt_str.len());
+    key.push_str(name);
+    key.push(':');
+    key.push_str(rt_str);
+    key
 }
 
 #[cfg(test)]
@@ -278,5 +336,96 @@ mod tests {
 
         let result = cache.lookup("expire.com.", Some(RecordKind::A));
         assert!(result.is_empty());
+    }
+
+    // ================================================================
+    // cache_key tests
+    // ================================================================
+
+    #[test]
+    fn test_cache_key_with_type() {
+        let key = cache_key("example.com.", Some(RecordKind::A));
+        assert_eq!(key, "example.com.:A");
+    }
+
+    #[test]
+    fn test_cache_key_without_type() {
+        let key = cache_key("example.com.", None);
+        assert_eq!(key, "example.com.:*");
+    }
+
+    #[test]
+    fn test_cache_key_various_types() {
+        assert_eq!(cache_key("x.", Some(RecordKind::AAAA)), "x.:AAAA");
+        assert_eq!(cache_key("x.", Some(RecordKind::CNAME)), "x.:CNAME");
+        assert_eq!(cache_key("x.", Some(RecordKind::MX)), "x.:MX");
+    }
+
+    #[test]
+    fn test_cache_key_consistency() {
+        // Same inputs should produce same key
+        let k1 = cache_key("test.com.", Some(RecordKind::A));
+        let k2 = cache_key("test.com.", Some(RecordKind::A));
+        assert_eq!(k1, k2);
+    }
+
+    // ================================================================
+    // Arc-based insert/lookup tests
+    // ================================================================
+
+    #[tokio::test]
+    async fn test_cache_insert_local_no_ttl_decay() {
+        let cache = test_cache();
+        let records = vec![DnsRecord {
+            id: None,
+            name: "local.com.".to_string(),
+            record_type: RecordKind::A,
+            value: "10.0.0.1".to_string(),
+            ttl: 3600,
+            priority: 0,
+        }];
+        cache.insert_local("local.com.", Some(RecordKind::A), records);
+
+        let result = cache.lookup("local.com.", Some(RecordKind::A));
+        assert_eq!(result.len(), 1);
+        // Local records should preserve original TTL (no decay)
+        assert_eq!(result[0].ttl, 3600);
+    }
+
+    #[tokio::test]
+    async fn test_cache_insert_empty_vec_is_noop() {
+        let cache = test_cache();
+        cache.insert("empty.com.", Some(RecordKind::A), vec![], 300);
+        assert_eq!(cache.stats().total_entries, 0);
+
+        cache.insert_local("empty.com.", Some(RecordKind::A), vec![]);
+        assert_eq!(cache.stats().total_entries, 0);
+    }
+
+    #[tokio::test]
+    async fn test_cache_multiple_records_same_key() {
+        let cache = test_cache();
+        let records = vec![
+            DnsRecord {
+                id: None,
+                name: "multi.com.".to_string(),
+                record_type: RecordKind::A,
+                value: "1.1.1.1".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+            DnsRecord {
+                id: None,
+                name: "multi.com.".to_string(),
+                record_type: RecordKind::A,
+                value: "2.2.2.2".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        ];
+        cache.insert("multi.com.", Some(RecordKind::A), records, 300);
+
+        let result = cache.lookup("multi.com.", Some(RecordKind::A));
+        assert_eq!(result.len(), 2);
     }
 }

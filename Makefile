@@ -14,7 +14,7 @@ PODMAN_BUILD_IMAGE := rolodex-dns-build-$(INSTANCE_ID)
 RELEASE_IMAGE      := quay.io/town/rolodex
 export PODMAN_BUILD_IMAGE RELEASE_IMAGE
 
-.PHONY: test build clean go-test go-integration-test dev dev-release install lint
+.PHONY: test build clean go-test go-integration-test dev dev-release install lint bench
 .PHONY: rust-test rust-integration-test
 .PHONY: image push push-rc push-release quay-login clean-containers
 
@@ -44,6 +44,9 @@ go-test: go-integration-test
 
 go-integration-test: build
 	cd go && ROLODEX_DNS_BINARY=$(CURDIR)/target/debug/rolodex-dns go test -v -count=1 -tags=integration ./...
+
+bench:
+	cargo bench --bench dns_perf
 
 install:
 	cargo install --path .
