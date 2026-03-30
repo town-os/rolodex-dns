@@ -110,7 +110,9 @@ async fn main() -> Result<()> {
     }
 
     // Spawn DNS UDP servers
-    for udp_bind in config.dns.udp_bind.clone() {
+    for addr in &config.dns.udp_bind {
+        let udp_bind = rolodex_dns::config::resolve_bind_addr(addr, 53)
+            .with_context(|| format!("resolving UDP bind address '{}'", addr))?;
         let udp_server = Arc::clone(&dns_server);
         tokio::spawn(async move {
             if let Err(e) = udp_server.serve_udp(&udp_bind).await {
@@ -120,7 +122,9 @@ async fn main() -> Result<()> {
     }
 
     // Spawn DNS TCP servers
-    for tcp_bind in config.dns.tcp_bind.clone() {
+    for addr in &config.dns.tcp_bind {
+        let tcp_bind = rolodex_dns::config::resolve_bind_addr(addr, 53)
+            .with_context(|| format!("resolving TCP bind address '{}'", addr))?;
         let tcp_server = Arc::clone(&dns_server);
         tokio::spawn(async move {
             if let Err(e) = tcp_server.serve_tcp(&tcp_bind).await {
@@ -138,7 +142,8 @@ async fn main() -> Result<()> {
         };
         match rolodex_dns::tls::TlsManager::new(tls_cfg, vec![]) {
             Ok(tls_mgr) => {
-                let dot_bind = dot_config.bind.clone();
+                let dot_bind = rolodex_dns::config::resolve_bind_addr(&dot_config.bind, 853)
+                    .context("resolving DoT bind address")?;
                 let dot_dns = Arc::clone(&dns_server);
                 let acceptor = tokio_rustls::TlsAcceptor::from(tls_mgr.server_config());
                 tokio::spawn(async move {
@@ -163,7 +168,8 @@ async fn main() -> Result<()> {
         match rolodex_dns::tls::TlsManager::new(tls_cfg, vec![b"h2".to_vec(), b"http/1.1".to_vec()])
         {
             Ok(tls_mgr) => {
-                let doh_bind = doh_config.bind.clone();
+                let doh_bind = rolodex_dns::config::resolve_bind_addr(&doh_config.bind, 443)
+                    .context("resolving DoH bind address")?;
                 let doh_dns = Arc::clone(&dns_server);
                 let server_config = tls_mgr.server_config();
                 tokio::spawn(async move {
@@ -187,7 +193,8 @@ async fn main() -> Result<()> {
         };
         match rolodex_dns::tls::TlsManager::new(tls_cfg, vec![b"doq".to_vec()]) {
             Ok(tls_mgr) => {
-                let doq_bind = doq_config.bind.clone();
+                let doq_bind = rolodex_dns::config::resolve_bind_addr(&doq_config.bind, 8853)
+                    .context("resolving DoQ bind address")?;
                 let doq_dns = Arc::clone(&dns_server);
                 let server_config = tls_mgr.server_config();
                 tokio::spawn(async move {
@@ -204,6 +211,8 @@ async fn main() -> Result<()> {
 
     // Spawn gRPC TCP server
     if !config.grpc.tcp_bind.is_empty() {
+        let grpc_bind = rolodex_dns::config::resolve_bind_addr(&config.grpc.tcp_bind, 50051)
+            .context("resolving gRPC TCP bind address")?;
         let grpc_service = RolodexDnsGrpcService::new(
             db.clone(),
             Arc::clone(&dns_server),
@@ -211,11 +220,7 @@ async fn main() -> Result<()> {
             config.grpc.shared_secret.clone(),
             false,
         );
-        let addr: SocketAddr = config
-            .grpc
-            .tcp_bind
-            .parse()
-            .context("invalid gRPC TCP bind address")?;
+        let addr: SocketAddr = grpc_bind.parse().context("invalid gRPC TCP bind address")?;
         info!("gRPC TCP server listening on {}", addr);
         tokio::spawn(async move {
             if let Err(e) = Server::builder()
@@ -267,7 +272,8 @@ async fn main() -> Result<()> {
             Arc::clone(&dns_server),
             dhcp_config,
         ));
-        let dhcp_bind = dhcp_config.bind.clone();
+        let dhcp_bind = rolodex_dns::config::resolve_bind_addr(&dhcp_config.bind, 67)
+            .context("resolving DHCP bind address")?;
         let sweep_server = Arc::clone(&dhcp_server);
         tokio::spawn(async move {
             if let Err(e) = dhcp_server.serve_dhcp(&dhcp_bind).await {

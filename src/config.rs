@@ -1,3 +1,4 @@
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// Configuration for the rolodex-dns server.
@@ -81,6 +82,43 @@ where
     }
 
     deserializer.deserialize_any(StringOrVec)
+}
+
+/// Detects the primary outbound IP address by asking the OS which interface
+/// would route to a public address. No data is sent over the network.
+pub fn detect_remote_ip() -> Result<std::net::IpAddr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0")
+        .context("failed to bind UDP socket for remote IP detection")?;
+    socket
+        .connect("8.8.8.8:53")
+        .context("failed to detect remote IP: no default route?")?;
+    let addr = socket
+        .local_addr()
+        .context("failed to get local address for remote IP detection")?;
+    Ok(addr.ip())
+}
+
+/// Resolves a bind address, replacing the keyword `"remote"` with the
+/// detected outbound IP address.
+///
+/// - `"remote"` → `"<detected_ip>:<default_port>"`
+/// - `"remote:PORT"` → `"<detected_ip>:PORT"`
+/// - anything else → returned unchanged
+pub fn resolve_bind_addr(addr: &str, default_port: u16) -> Result<String> {
+    let trimmed = addr.trim();
+    if trimmed.eq_ignore_ascii_case("remote") {
+        let ip = detect_remote_ip()?;
+        Ok(format!("{}:{}", ip, default_port))
+    } else if trimmed.len() > 7 && trimmed[..7].eq_ignore_ascii_case("remote:") {
+        let port_str = &trimmed[7..];
+        let port: u16 = port_str
+            .parse()
+            .with_context(|| format!("invalid port in remote bind address: {}", addr))?;
+        let ip = detect_remote_ip()?;
+        Ok(format!("{}:{}", ip, port))
+    } else {
+        Ok(trimmed.to_string())
+    }
 }
 
 /// gRPC management interface configuration.
@@ -658,5 +696,57 @@ rbl:
         let deserialized: Config = serde_yaml_ng::from_str(&yaml).unwrap();
         assert_eq!(config.dns.udp_bind, deserialized.dns.udp_bind);
         assert_eq!(config.dns.tcp_bind, deserialized.dns.tcp_bind);
+    }
+
+    #[test]
+    fn test_resolve_bind_addr_passthrough() {
+        let result = resolve_bind_addr("127.0.0.1:5300", 53).unwrap();
+        assert_eq!(result, "127.0.0.1:5300");
+
+        let result = resolve_bind_addr("0.0.0.0:53", 53).unwrap();
+        assert_eq!(result, "0.0.0.0:53");
+    }
+
+    #[test]
+    fn test_resolve_bind_addr_remote_default_port() {
+        let result = resolve_bind_addr("remote", 53).unwrap();
+        // Should be a valid socket address with port 53
+        let addr: std::net::SocketAddr = result.parse().expect("should be a valid socket addr");
+        assert_eq!(addr.port(), 53);
+        assert!(!addr.ip().is_loopback());
+        assert!(!addr.ip().is_unspecified());
+    }
+
+    #[test]
+    fn test_resolve_bind_addr_remote_custom_port() {
+        let result = resolve_bind_addr("remote:5300", 53).unwrap();
+        let addr: std::net::SocketAddr = result.parse().expect("should be a valid socket addr");
+        assert_eq!(addr.port(), 5300);
+        assert!(!addr.ip().is_loopback());
+    }
+
+    #[test]
+    fn test_resolve_bind_addr_remote_case_insensitive() {
+        let r1 = resolve_bind_addr("REMOTE", 853).unwrap();
+        let r2 = resolve_bind_addr("Remote", 853).unwrap();
+        let r3 = resolve_bind_addr("remote", 853).unwrap();
+        // All should resolve to the same address
+        assert_eq!(r1, r2);
+        assert_eq!(r2, r3);
+        let addr: std::net::SocketAddr = r1.parse().unwrap();
+        assert_eq!(addr.port(), 853);
+    }
+
+    #[test]
+    fn test_resolve_bind_addr_remote_invalid_port() {
+        let result = resolve_bind_addr("remote:abc", 53);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_detect_remote_ip() {
+        let ip = detect_remote_ip().unwrap();
+        assert!(!ip.is_loopback());
+        assert!(!ip.is_unspecified());
     }
 }
