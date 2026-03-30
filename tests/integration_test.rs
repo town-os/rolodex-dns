@@ -754,6 +754,76 @@ async fn test_multi_bind_tcp_serves_all_addresses() {
 }
 
 // ========================================================
+// Integration: "remote" bind address resolves and serves
+// ========================================================
+
+#[tokio::test]
+async fn test_remote_bind_addr_udp_serves_queries() {
+    let db = Database::open_memory().unwrap();
+    let rbl = Arc::new(RblChecker::with_resolver(
+        false,
+        vec![],
+        Arc::new(NeverListedResolver),
+    ));
+    let dns_server = Arc::new(DnsServer::new(db.clone(), rbl, vec![]));
+
+    db.add_record(&DnsRecord {
+        id: None,
+        name: "remote-bind.test.".to_string(),
+        record_type: RecordKind::A,
+        value: "10.0.0.99".to_string(),
+        ttl: 300,
+        priority: 0,
+    })
+    .unwrap();
+
+    // Resolve "remote" to the actual outbound IP, pick a random port
+    let port = {
+        let s = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        s.local_addr().unwrap().port()
+    };
+    let resolved = rolodex_dns::config::resolve_bind_addr(&format!("remote:{}", port), 53).unwrap();
+
+    // Verify it resolved to a real IP, not "remote"
+    let parsed: std::net::SocketAddr = resolved.parse().expect("should be a valid socket addr");
+    assert!(!parsed.ip().is_unspecified());
+    assert!(!parsed.ip().is_loopback());
+    assert_eq!(parsed.port(), port);
+
+    // Start serve_udp on the resolved address
+    let server = Arc::clone(&dns_server);
+    let bind = resolved.clone();
+    let handle = tokio::spawn(async move {
+        let _ = server.serve_udp(&bind).await;
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Send a query to the resolved remote address
+    let client = tokio::net::UdpSocket::bind("0.0.0.0:0").await.unwrap();
+    let query = build_dns_query("remote-bind.test.", hickory_proto::rr::RecordType::A);
+    client.send_to(&query, &resolved).await.unwrap();
+
+    let mut buf = vec![0u8; 4096];
+    let (len, _) = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client.recv_from(&mut buf),
+    )
+    .await
+    .expect("timeout waiting for UDP response from remote bind addr")
+    .unwrap();
+
+    let response = hickory_proto::op::Message::from_bytes(&buf[..len]).unwrap();
+    assert_eq!(
+        response.response_code(),
+        hickory_proto::op::ResponseCode::NoError,
+    );
+    assert_eq!(response.answers().len(), 1);
+
+    handle.abort();
+}
+
+// ========================================================
 // Integration: Database persistence
 // ========================================================
 
