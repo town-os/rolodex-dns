@@ -109,23 +109,25 @@ async fn main() -> Result<()> {
         dns_server.set_proxy_config(Some(runtime_proxy));
     }
 
-    // Spawn DNS UDP server
-    let udp_server = Arc::clone(&dns_server);
-    let udp_bind = config.dns.udp_bind.clone();
-    tokio::spawn(async move {
-        if let Err(e) = udp_server.serve_udp(&udp_bind).await {
-            error!("DNS UDP server error: {}", e);
-        }
-    });
+    // Spawn DNS UDP servers
+    for udp_bind in config.dns.udp_bind.clone() {
+        let udp_server = Arc::clone(&dns_server);
+        tokio::spawn(async move {
+            if let Err(e) = udp_server.serve_udp(&udp_bind).await {
+                error!("DNS UDP server error on {}: {}", udp_bind, e);
+            }
+        });
+    }
 
-    // Spawn DNS TCP server
-    let tcp_server = Arc::clone(&dns_server);
-    let tcp_bind = config.dns.tcp_bind.clone();
-    tokio::spawn(async move {
-        if let Err(e) = tcp_server.serve_tcp(&tcp_bind).await {
-            error!("DNS TCP server error: {}", e);
-        }
-    });
+    // Spawn DNS TCP servers
+    for tcp_bind in config.dns.tcp_bind.clone() {
+        let tcp_server = Arc::clone(&dns_server);
+        tokio::spawn(async move {
+            if let Err(e) = tcp_server.serve_tcp(&tcp_bind).await {
+                error!("DNS TCP server error on {}: {}", tcp_bind, e);
+            }
+        });
+    }
 
     // Spawn DNS-over-TLS (DoT) server if configured
     if let Some(ref dot_config) = config.dot {

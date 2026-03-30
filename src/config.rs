@@ -42,10 +42,45 @@ pub struct Config {
 /// DNS listener configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DnsConfig {
-    /// Address to bind the DNS UDP listener (e.g. "0.0.0.0:53").
-    pub udp_bind: String,
-    /// Address to bind the DNS TCP listener (e.g. "0.0.0.0:53").
-    pub tcp_bind: String,
+    /// Addresses to bind the DNS UDP listener (e.g. ["127.0.0.2:53", "192.168.1.1:53"]).
+    /// Accepts a single string or a list of strings.
+    #[serde(deserialize_with = "string_or_vec")]
+    pub udp_bind: Vec<String>,
+    /// Addresses to bind the DNS TCP listener (e.g. ["127.0.0.2:53", "192.168.1.1:53"]).
+    /// Accepts a single string or a list of strings.
+    #[serde(deserialize_with = "string_or_vec")]
+    pub tcp_bind: Vec<String>,
+}
+
+fn string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct StringOrVec;
+
+    impl<'de> de::Visitor<'de> for StringOrVec {
+        type Value = Vec<String>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a string or list of strings")
+        }
+
+        fn visit_str<E: de::Error>(self, value: &str) -> Result<Vec<String>, E> {
+            Ok(vec![value.to_owned()])
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<String>, A::Error> {
+            let mut v = Vec::new();
+            while let Some(s) = seq.next_element()? {
+                v.push(s);
+            }
+            Ok(v)
+        }
+    }
+
+    deserializer.deserialize_any(StringOrVec)
 }
 
 /// gRPC management interface configuration.
@@ -336,8 +371,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             dns: DnsConfig {
-                udp_bind: "0.0.0.0:53".to_string(),
-                tcp_bind: "0.0.0.0:53".to_string(),
+                udp_bind: vec!["0.0.0.0:53".to_string()],
+                tcp_bind: vec!["0.0.0.0:53".to_string()],
             },
             grpc: GrpcConfig {
                 tcp_bind: "127.0.0.1:50051".to_string(),
@@ -402,8 +437,8 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.dns.udp_bind, "0.0.0.0:53");
-        assert_eq!(config.dns.tcp_bind, "0.0.0.0:53");
+        assert_eq!(config.dns.udp_bind, vec!["0.0.0.0:53"]);
+        assert_eq!(config.dns.tcp_bind, vec!["0.0.0.0:53"]);
         assert_eq!(config.grpc.tcp_bind, "127.0.0.1:50051");
         assert!(!config.rbl.enabled);
         assert!(!config.rbl.providers.is_empty());
@@ -554,5 +589,74 @@ rbl:
         assert_eq!(config.ttl_drift.mode, "disabled");
         assert!(!config.dns64.enabled);
         assert!(config.security.qname_case_randomization);
+    }
+
+    #[test]
+    fn test_multi_bind_addresses_parse() {
+        let yaml = r#"
+dns:
+  udp_bind:
+    - "127.0.0.1:5300"
+    - "127.0.0.2:5300"
+  tcp_bind:
+    - "127.0.0.1:5300"
+    - "127.0.0.2:5300"
+    - "10.0.0.1:53"
+grpc:
+  tcp_bind: "127.0.0.1:50051"
+  unix_socket: "/var/run/rolodex-dns.sock"
+  shared_secret: ""
+forwarders:
+  - "8.8.8.8:53"
+database_path: "rolodex-dns.db"
+rbl:
+  enabled: false
+  providers: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(
+            config.dns.udp_bind,
+            vec!["127.0.0.1:5300", "127.0.0.2:5300"]
+        );
+        assert_eq!(
+            config.dns.tcp_bind,
+            vec!["127.0.0.1:5300", "127.0.0.2:5300", "10.0.0.1:53"]
+        );
+    }
+
+    #[test]
+    fn test_empty_bind_list_parse() {
+        let yaml = r#"
+dns:
+  udp_bind: []
+  tcp_bind: []
+grpc:
+  tcp_bind: "127.0.0.1:50051"
+  unix_socket: "/var/run/rolodex-dns.sock"
+  shared_secret: ""
+forwarders: []
+database_path: "rolodex-dns.db"
+rbl:
+  enabled: false
+  providers: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(config.dns.udp_bind.is_empty());
+        assert!(config.dns.tcp_bind.is_empty());
+    }
+
+    #[test]
+    fn test_multi_bind_serialization_roundtrip() {
+        let mut config = Config::default();
+        config.dns.udp_bind = vec!["127.0.0.1:53".to_string(), "10.0.0.1:53".to_string()];
+        config.dns.tcp_bind = vec![
+            "127.0.0.1:53".to_string(),
+            "10.0.0.1:53".to_string(),
+            "192.168.1.1:5353".to_string(),
+        ];
+        let yaml = serde_yaml_ng::to_string(&config).unwrap();
+        let deserialized: Config = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(config.dns.udp_bind, deserialized.dns.udp_bind);
+        assert_eq!(config.dns.tcp_bind, deserialized.dns.tcp_bind);
     }
 }

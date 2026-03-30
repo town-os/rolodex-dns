@@ -578,6 +578,182 @@ async fn test_dns_tcp_server() {
 }
 
 // ========================================================
+// Integration: Multiple UDP bind addresses serve queries
+// ========================================================
+
+#[tokio::test]
+async fn test_multi_bind_udp_serves_all_addresses() {
+    let db = Database::open_memory().unwrap();
+    let rbl = Arc::new(RblChecker::with_resolver(
+        false,
+        vec![],
+        Arc::new(NeverListedResolver),
+    ));
+    let dns_server = Arc::new(DnsServer::new(db.clone(), rbl, vec![]));
+
+    db.add_record(&DnsRecord {
+        id: None,
+        name: "multi-udp.test.".to_string(),
+        record_type: RecordKind::A,
+        value: "10.0.0.42".to_string(),
+        ttl: 300,
+        priority: 0,
+    })
+    .unwrap();
+
+    // Find two free ports
+    let port1 = {
+        let s = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        s.local_addr().unwrap().port()
+    };
+    let port2 = {
+        let s = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        s.local_addr().unwrap().port()
+    };
+
+    let addr1 = format!("127.0.0.1:{}", port1);
+    let addr2 = format!("127.0.0.1:{}", port2);
+
+    // Spawn serve_udp on both addresses (same pattern as main.rs loop)
+    let server1 = Arc::clone(&dns_server);
+    let bind1 = addr1.clone();
+    let handle1 = tokio::spawn(async move {
+        let _ = server1.serve_udp(&bind1).await;
+    });
+
+    let server2 = Arc::clone(&dns_server);
+    let bind2 = addr2.clone();
+    let handle2 = tokio::spawn(async move {
+        let _ = server2.serve_udp(&bind2).await;
+    });
+
+    // Give listeners time to bind
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Query both addresses and verify both respond
+    let query = build_dns_query("multi-udp.test.", hickory_proto::rr::RecordType::A);
+
+    for addr in &[&addr1, &addr2] {
+        let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        client.send_to(&query, addr).await.unwrap();
+
+        let mut buf = vec![0u8; 4096];
+        let (len, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client.recv_from(&mut buf),
+        )
+        .await
+        .expect("timeout waiting for UDP response")
+        .unwrap();
+
+        let response = hickory_proto::op::Message::from_bytes(&buf[..len]).unwrap();
+        assert_eq!(
+            response.response_code(),
+            hickory_proto::op::ResponseCode::NoError,
+            "query to {} failed",
+            addr,
+        );
+        assert_eq!(response.answers().len(), 1, "no answer from {}", addr);
+    }
+
+    handle1.abort();
+    handle2.abort();
+}
+
+// ========================================================
+// Integration: Multiple TCP bind addresses serve queries
+// ========================================================
+
+#[tokio::test]
+async fn test_multi_bind_tcp_serves_all_addresses() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let db = Database::open_memory().unwrap();
+    let rbl = Arc::new(RblChecker::with_resolver(
+        false,
+        vec![],
+        Arc::new(NeverListedResolver),
+    ));
+    let dns_server = Arc::new(DnsServer::new(db.clone(), rbl, vec![]));
+
+    db.add_record(&DnsRecord {
+        id: None,
+        name: "multi-tcp.test.".to_string(),
+        record_type: RecordKind::A,
+        value: "10.0.0.43".to_string(),
+        ttl: 300,
+        priority: 0,
+    })
+    .unwrap();
+
+    // Find two free ports
+    let port1 = {
+        let s = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        s.local_addr().unwrap().port()
+    };
+    let port2 = {
+        let s = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        s.local_addr().unwrap().port()
+    };
+
+    let addr1 = format!("127.0.0.1:{}", port1);
+    let addr2 = format!("127.0.0.1:{}", port2);
+
+    // Spawn serve_tcp on both addresses
+    let server1 = Arc::clone(&dns_server);
+    let bind1 = addr1.clone();
+    let handle1 = tokio::spawn(async move {
+        let _ = server1.serve_tcp(&bind1).await;
+    });
+
+    let server2 = Arc::clone(&dns_server);
+    let bind2 = addr2.clone();
+    let handle2 = tokio::spawn(async move {
+        let _ = server2.serve_tcp(&bind2).await;
+    });
+
+    // Give listeners time to bind
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Query both addresses over TCP
+    let query = build_dns_query("multi-tcp.test.", hickory_proto::rr::RecordType::A);
+
+    for addr in &[&addr1, &addr2] {
+        let mut stream = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tokio::net::TcpStream::connect(addr),
+        )
+        .await
+        .expect("timeout connecting to TCP")
+        .unwrap();
+
+        // Send with 2-byte length prefix
+        let len_bytes = (query.len() as u16).to_be_bytes();
+        stream.write_all(&len_bytes).await.unwrap();
+        stream.write_all(&query).await.unwrap();
+
+        // Read response
+        let mut len_buf = [0u8; 2];
+        stream.read_exact(&mut len_buf).await.unwrap();
+        let resp_len = u16::from_be_bytes(len_buf) as usize;
+        let mut resp_buf = vec![0u8; resp_len];
+        stream.read_exact(&mut resp_buf).await.unwrap();
+
+        let response = hickory_proto::op::Message::from_bytes(&resp_buf).unwrap();
+        assert_eq!(
+            response.response_code(),
+            hickory_proto::op::ResponseCode::NoError,
+            "query to {} failed",
+            addr,
+        );
+        assert_eq!(response.answers().len(), 1, "no answer from {}", addr);
+    }
+
+    handle1.abort();
+    handle2.abort();
+}
+
+// ========================================================
 // Integration: Database persistence
 // ========================================================
 
@@ -696,8 +872,8 @@ fn test_config_roundtrip() {
 fn test_dev_config_parses() {
     let content = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/dev.yml")).unwrap();
     let config: rolodex_dns::config::Config = serde_yaml_ng::from_str(&content).unwrap();
-    assert_eq!(config.dns.udp_bind, "127.0.0.1:5300");
-    assert_eq!(config.dns.tcp_bind, "127.0.0.1:5300");
+    assert_eq!(config.dns.udp_bind, vec!["127.0.0.1:5300"]);
+    assert_eq!(config.dns.tcp_bind, vec!["127.0.0.1:5300"]);
     assert_eq!(config.database_path, "/tmp/rolodex-dns-dev.db");
     assert!(config.grpc.tcp_bind.is_empty());
     assert_eq!(config.grpc.unix_socket, "/tmp/rolodex-dns.sock");
