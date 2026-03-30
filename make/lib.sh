@@ -5,7 +5,7 @@
 # Privileged execution
 # ---------------------------------------------------------------------------
 
-SUDO="sudo -E"
+SUDO="sudo"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -41,6 +41,6 @@ registry_login() {
     step "Skipping ${registry} login (credentials not set)"
   else
     step "Logging in to ${registry}"
-    ${SUDO} podman login -u "${user}" -p "${pass}" "${registry}"
+    sudo podman login -u "${user}" -p "${pass}" "${registry}"
   fi
 }
