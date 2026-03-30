@@ -2124,7 +2124,7 @@ dependencies = [
 
 [[package]]
 name = "rolodex-dns"
-version = "0.2.0-alpha"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "arc-swap",
