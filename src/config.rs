@@ -84,41 +84,73 @@ where
     deserializer.deserialize_any(StringOrVec)
 }
 
-/// Detects the primary outbound IP address by asking the OS which interface
-/// would route to a public address. No data is sent over the network.
-pub fn detect_remote_ip() -> Result<std::net::IpAddr> {
-    let socket = std::net::UdpSocket::bind("0.0.0.0:0")
-        .context("failed to bind UDP socket for remote IP detection")?;
-    socket
-        .connect("8.8.8.8:53")
-        .context("failed to detect remote IP: no default route?")?;
-    let addr = socket
-        .local_addr()
-        .context("failed to get local address for remote IP detection")?;
-    Ok(addr.ip())
+/// Resolves IP addresses assigned to the named network interface.
+///
+/// Returns all IPv4 and IPv6 addresses on the interface, each formatted
+/// as `"ip:port"` (IPv4) or `"[ip]:port"` (IPv6, bracketed for socket parsing).
+fn resolve_interface_addrs(iface_name: &str, port: u16) -> Result<Vec<String>> {
+    let addrs = nix::ifaddrs::getifaddrs().context("failed to enumerate network interfaces")?;
+    let mut found_interface = false;
+    let mut result = Vec::new();
+    for ia in addrs {
+        if ia.interface_name != iface_name {
+            continue;
+        }
+        found_interface = true;
+        if let Some(addr) = ia.address {
+            if let Some(sin) = addr.as_sockaddr_in() {
+                let ip = sin.ip();
+                result.push(format!("{}:{}", ip, port));
+            } else if let Some(sin6) = addr.as_sockaddr_in6() {
+                let ip = sin6.ip();
+                result.push(format!("[{}]:{}", ip, port));
+            }
+        }
+    }
+    if !found_interface {
+        anyhow::bail!("no interface named '{}' found", iface_name);
+    }
+    if result.is_empty() {
+        anyhow::bail!("interface '{}' has no IP addresses assigned", iface_name);
+    }
+    Ok(result)
 }
 
-/// Resolves a bind address, replacing the keyword `"remote"` with the
-/// detected outbound IP address.
+/// Resolves a bind address specification into one or more concrete socket addresses.
 ///
-/// - `"remote"` → `"<detected_ip>:<default_port>"`
-/// - `"remote:PORT"` → `"<detected_ip>:PORT"`
-/// - anything else → returned unchanged
-pub fn resolve_bind_addr(addr: &str, default_port: u16) -> Result<String> {
+/// Accepts three forms:
+/// - `"ip:port"` — literal IPv4 address, returned as-is in a single-element Vec
+/// - `"[ipv6]:port"` — bracketed IPv6 literal, returned as-is
+/// - `"interface_name:port"` — resolved to all IP addresses on the named interface
+///
+/// Each resolved address is a concrete socket address string suitable for binding.
+pub fn resolve_bind_addrs(addr: &str) -> Result<Vec<String>> {
     let trimmed = addr.trim();
-    if trimmed.eq_ignore_ascii_case("remote") {
-        let ip = detect_remote_ip()?;
-        Ok(format!("{}:{}", ip, default_port))
-    } else if trimmed.len() > 7 && trimmed[..7].eq_ignore_ascii_case("remote:") {
-        let port_str = &trimmed[7..];
-        let port: u16 = port_str
-            .parse()
-            .with_context(|| format!("invalid port in remote bind address: {}", addr))?;
-        let ip = detect_remote_ip()?;
-        Ok(format!("{}:{}", ip, port))
-    } else {
-        Ok(trimmed.to_string())
+    if trimmed.is_empty() {
+        anyhow::bail!("bind address must not be empty");
     }
+    // Bracketed IPv6 literal: [::1]:port
+    if trimmed.starts_with('[') {
+        return Ok(vec![trimmed.to_string()]);
+    }
+    // Split on the last colon to separate host from port
+    let Some(colon_pos) = trimmed.rfind(':') else {
+        anyhow::bail!(
+            "bind address '{}' must include a port (e.g. 'eth0:53' or '127.0.0.1:53')",
+            trimmed
+        );
+    };
+    let host = &trimmed[..colon_pos];
+    let port_str = &trimmed[colon_pos + 1..];
+    let port: u16 = port_str
+        .parse()
+        .with_context(|| format!("invalid port in bind address '{}': '{}'", trimmed, port_str))?;
+    // If host parses as an IP address, it's a literal — pass through
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return Ok(vec![trimmed.to_string()]);
+    }
+    // Otherwise treat host as a network interface name
+    resolve_interface_addrs(host, port)
 }
 
 /// gRPC management interface configuration.
@@ -699,54 +731,75 @@ rbl:
     }
 
     #[test]
-    fn test_resolve_bind_addr_passthrough() {
-        let result = resolve_bind_addr("127.0.0.1:5300", 53).unwrap();
-        assert_eq!(result, "127.0.0.1:5300");
+    fn test_resolve_bind_addrs_ipv4_passthrough() {
+        let result = resolve_bind_addrs("127.0.0.1:5300").unwrap();
+        assert_eq!(result, vec!["127.0.0.1:5300"]);
 
-        let result = resolve_bind_addr("0.0.0.0:53", 53).unwrap();
-        assert_eq!(result, "0.0.0.0:53");
+        let result = resolve_bind_addrs("0.0.0.0:53").unwrap();
+        assert_eq!(result, vec!["0.0.0.0:53"]);
     }
 
     #[test]
-    fn test_resolve_bind_addr_remote_default_port() {
-        let result = resolve_bind_addr("remote", 53).unwrap();
-        // Should be a valid socket address with port 53
-        let addr: std::net::SocketAddr = result.parse().expect("should be a valid socket addr");
-        assert_eq!(addr.port(), 53);
-        assert!(!addr.ip().is_loopback());
-        assert!(!addr.ip().is_unspecified());
+    fn test_resolve_bind_addrs_ipv6_passthrough() {
+        let result = resolve_bind_addrs("[::1]:5300").unwrap();
+        assert_eq!(result, vec!["[::1]:5300"]);
     }
 
     #[test]
-    fn test_resolve_bind_addr_remote_custom_port() {
-        let result = resolve_bind_addr("remote:5300", 53).unwrap();
-        let addr: std::net::SocketAddr = result.parse().expect("should be a valid socket addr");
-        assert_eq!(addr.port(), 5300);
-        assert!(!addr.ip().is_loopback());
+    fn test_resolve_bind_addrs_loopback_interface() {
+        let result = resolve_bind_addrs("lo:53").unwrap();
+        assert!(!result.is_empty());
+        // lo always has 127.0.0.1
+        assert!(
+            result.iter().any(|a| a == "127.0.0.1:53"),
+            "expected 127.0.0.1:53 in {:?}",
+            result
+        );
     }
 
     #[test]
-    fn test_resolve_bind_addr_remote_case_insensitive() {
-        let r1 = resolve_bind_addr("REMOTE", 853).unwrap();
-        let r2 = resolve_bind_addr("Remote", 853).unwrap();
-        let r3 = resolve_bind_addr("remote", 853).unwrap();
-        // All should resolve to the same address
-        assert_eq!(r1, r2);
-        assert_eq!(r2, r3);
-        let addr: std::net::SocketAddr = r1.parse().unwrap();
-        assert_eq!(addr.port(), 853);
+    fn test_resolve_bind_addrs_nonexistent_interface() {
+        let result = resolve_bind_addrs("nonexistent99:53");
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("no interface named"),
+            "unexpected error: {}",
+            msg
+        );
     }
 
     #[test]
-    fn test_resolve_bind_addr_remote_invalid_port() {
-        let result = resolve_bind_addr("remote:abc", 53);
+    fn test_resolve_bind_addrs_no_port() {
+        let result = resolve_bind_addrs("eth0");
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("must include a port"),
+            "unexpected error: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_resolve_bind_addrs_invalid_port() {
+        let result = resolve_bind_addrs("eth0:abc");
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("invalid port"), "unexpected error: {}", msg);
+    }
+
+    #[test]
+    fn test_resolve_bind_addrs_empty() {
+        let result = resolve_bind_addrs("");
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_detect_remote_ip() {
-        let ip = detect_remote_ip().unwrap();
-        assert!(!ip.is_loopback());
-        assert!(!ip.is_unspecified());
+    fn test_resolve_bind_addrs_bare_ipv6() {
+        // Bare IPv6 like ::1:53 — rfind splits to host "::1", port "53"
+        // "::1" parses as IpAddr, so it passes through as literal
+        let result = resolve_bind_addrs("::1:53").unwrap();
+        assert_eq!(result, vec!["::1:53"]);
     }
 }

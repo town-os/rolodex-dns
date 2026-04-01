@@ -121,6 +121,30 @@ make clean-containers
 
 Rolodex DNS reads configuration from a YAML file (default: `rolodex-dns.yml`).
 
+### Bind Address Syntax
+
+All bind address fields (`dns.udp_bind`, `dns.tcp_bind`, `dot.bind`, `doh.bind`, `doq.bind`, `grpc.tcp_bind`, `dhcp.bind`) accept three forms:
+
+| Form | Example | Description |
+| ---- | ------- | ----------- |
+| `ip:port` | `192.168.1.1:53` | Bind to a specific IPv4 address and port |
+| `[ipv6]:port` | `[::1]:53` | Bind to a specific IPv6 address and port (brackets required) |
+| `interface:port` | `eth0:53` | Bind to all IPs on the named network interface |
+
+Interface binding resolves all IPv4 and IPv6 addresses assigned to the interface and creates a separate listener for each. For example, if `eth0` has `192.168.1.5` and `fe80::1`, then `eth0:53` creates listeners on both `192.168.1.5:53` and `[fe80::1]:53`.
+
+The `dns.udp_bind` and `dns.tcp_bind` fields accept a single string or a list:
+
+```yaml
+dns:
+  udp_bind:
+    - "eth0:53"
+    - "lo:53"
+  tcp_bind: "eth0:53"
+```
+
+### Example Configuration
+
 ```yaml
 # Database file path
 database_path: rolodex-dns.db
@@ -131,10 +155,10 @@ forwarders:
   - "8.8.8.8:53"
   - "8.8.4.4:53"
 
+# Bind addresses accept ip:port, [ipv6]:port, or interface:port.
+# Interface binding resolves all IPs on the named interface.
 dns:
-  # UDP listener bind address
-  udp_bind: "0.0.0.0:53"
-  # TCP listener bind address
+  udp_bind: "0.0.0.0:53"    # or "eth0:53" to bind to a specific interface
   tcp_bind: "0.0.0.0:53"
 
 # DNS-over-TLS (RFC 7858)
@@ -214,22 +238,22 @@ security:
 |--------|---------|-------------|
 | `database_path` | `"rolodex-dns.db"` | Path to the SQLite database file |
 | `forwarders` | `["8.8.8.8:53", "8.8.4.4:53"]` | Upstream DNS resolver addresses. Empty list = purely authoritative |
-| `dns.udp_bind` | `"0.0.0.0:53"` | UDP DNS listener bind address |
-| `dns.tcp_bind` | `"0.0.0.0:53"` | TCP DNS listener bind address |
-| `dot.bind` | `""` (disabled) | DNS-over-TLS listener bind address (typically port 853) |
+| `dns.udp_bind` | `"0.0.0.0:53"` | UDP DNS listener; supports interface:port (single string or list) |
+| `dns.tcp_bind` | `"0.0.0.0:53"` | TCP DNS listener; supports interface:port (single string or list) |
+| `dot.bind` | `""` (disabled) | DoT listener; supports interface:port (typically port 853) |
 | `dot.tls.cert_path` | `""` | TLS certificate path for DoT |
 | `dot.tls.key_path` | `""` | TLS private key path for DoT |
 | `dot.tls.auto_self_signed` | `true` | Auto-generate a self-signed certificate for DoT |
-| `doh.bind` | `""` (disabled) | DNS-over-HTTPS listener bind address (typically port 443) |
+| `doh.bind` | `""` (disabled) | DoH listener; supports interface:port (typically port 443) |
 | `doh.tls.cert_path` | `""` | TLS certificate path for DoH |
 | `doh.tls.key_path` | `""` | TLS private key path for DoH |
 | `doh.tls.auto_self_signed` | `true` | Auto-generate a self-signed certificate for DoH |
 | `doh.enable_h3` | `false` | Enable HTTP/3 (QUIC) transport for DoH |
-| `doq.bind` | `""` (disabled) | DNS-over-QUIC listener bind address (typically port 8853) |
+| `doq.bind` | `""` (disabled) | DoQ listener; supports interface:port (typically port 8853) |
 | `doq.tls.cert_path` | `""` | TLS certificate path for DoQ |
 | `doq.tls.key_path` | `""` | TLS private key path for DoQ |
 | `doq.tls.auto_self_signed` | `true` | Auto-generate a self-signed certificate for DoQ |
-| `grpc.tcp_bind` | `"127.0.0.1:50051"` | TCP gRPC listener address (empty to disable) |
+| `grpc.tcp_bind` | `"127.0.0.1:50051"` | TCP gRPC listener; supports interface:port (empty to disable) |
 | `grpc.unix_socket` | `"/var/run/rolodex-dns.sock"` | Unix socket path (empty to disable) |
 | `grpc.shared_secret` | `""` | Shared secret for TCP gRPC auth (empty = no auth) |
 | `rbl.enabled` | `false` | Enable RBL checking globally |

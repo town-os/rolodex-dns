@@ -754,11 +754,11 @@ async fn test_multi_bind_tcp_serves_all_addresses() {
 }
 
 // ========================================================
-// Integration: "remote" bind address resolves and serves
+// Integration: interface bind address resolves and serves
 // ========================================================
 
 #[tokio::test]
-async fn test_remote_bind_addr_udp_serves_queries() {
+async fn test_interface_bind_addr_udp_serves_queries() {
     let db = Database::open_memory().unwrap();
     let rbl = Arc::new(RblChecker::with_resolver(
         false,
@@ -769,7 +769,7 @@ async fn test_remote_bind_addr_udp_serves_queries() {
 
     db.add_record(&DnsRecord {
         id: None,
-        name: "remote-bind.test.".to_string(),
+        name: "iface-bind.test.".to_string(),
         record_type: RecordKind::A,
         value: "10.0.0.99".to_string(),
         ttl: 300,
@@ -777,32 +777,36 @@ async fn test_remote_bind_addr_udp_serves_queries() {
     })
     .unwrap();
 
-    // Resolve "remote" to the actual outbound IP, pick a random port
+    // Resolve "lo" interface to get 127.0.0.1, pick a random port
     let port = {
-        let s = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        let s = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         s.local_addr().unwrap().port()
     };
-    let resolved = rolodex_dns::config::resolve_bind_addr(&format!("remote:{}", port), 53).unwrap();
+    let resolved = rolodex_dns::config::resolve_bind_addrs(&format!("lo:{}", port)).unwrap();
 
-    // Verify it resolved to a real IP, not "remote"
-    let parsed: std::net::SocketAddr = resolved.parse().expect("should be a valid socket addr");
-    assert!(!parsed.ip().is_unspecified());
-    assert!(!parsed.ip().is_loopback());
+    // Should contain 127.0.0.1:port
+    let bind_addr = resolved
+        .iter()
+        .find(|a| a.starts_with("127.0.0.1:"))
+        .expect("lo interface should have 127.0.0.1");
+
+    let parsed: std::net::SocketAddr = bind_addr.parse().expect("should be a valid socket addr");
+    assert!(parsed.ip().is_loopback());
     assert_eq!(parsed.port(), port);
 
     // Start serve_udp on the resolved address
     let server = Arc::clone(&dns_server);
-    let bind = resolved.clone();
+    let bind = bind_addr.clone();
     let handle = tokio::spawn(async move {
         let _ = server.serve_udp(&bind).await;
     });
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    // Send a query to the resolved remote address
-    let client = tokio::net::UdpSocket::bind("0.0.0.0:0").await.unwrap();
-    let query = build_dns_query("remote-bind.test.", hickory_proto::rr::RecordType::A);
-    client.send_to(&query, &resolved).await.unwrap();
+    // Send a query to the resolved loopback address
+    let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let query = build_dns_query("iface-bind.test.", hickory_proto::rr::RecordType::A);
+    client.send_to(&query, bind_addr.as_str()).await.unwrap();
 
     let mut buf = vec![0u8; 4096];
     let (len, _) = tokio::time::timeout(
@@ -810,7 +814,7 @@ async fn test_remote_bind_addr_udp_serves_queries() {
         client.recv_from(&mut buf),
     )
     .await
-    .expect("timeout waiting for UDP response from remote bind addr")
+    .expect("timeout waiting for UDP response from interface bind addr")
     .unwrap();
 
     let response = hickory_proto::op::Message::from_bytes(&buf[..len]).unwrap();

@@ -689,27 +689,49 @@ Generated Go protobuf and gRPC bindings are in `go/rolodexdnspb/`, produced from
 
 Configuration is loaded from a YAML file (default path `rolodex-dns.yml`, overridable via `-c`/`--config` CLI flag). If the file does not exist, sensible defaults are used.
 
+### Bind Address Syntax
+
+All bind address fields (`dns.udp_bind`, `dns.tcp_bind`, `dot.bind`, `doh.bind`, `doq.bind`, `grpc.tcp_bind`, `dhcp.bind`) accept three forms:
+
+| Form | Example | Description |
+| ---- | ------- | ----------- |
+| `ip:port` | `192.168.1.1:53` | Bind to a specific IPv4 address and port |
+| `[ipv6]:port` | `[::1]:53` | Bind to a specific IPv6 address and port (brackets required) |
+| `interface:port` | `eth0:53` | Resolve all IP addresses on the named network interface and bind to each one |
+
+Interface binding creates one listener per IP address assigned to the interface. For example, if `eth0` has both `192.168.1.5` and `fe80::1`, then `eth0:53` creates two listeners: `192.168.1.5:53` and `[fe80::1]:53`.
+
+The `dns.udp_bind` and `dns.tcp_bind` fields accept a single string or a list of strings, allowing multiple bind addresses:
+
+```yaml
+dns:
+  udp_bind:
+    - "eth0:53"
+    - "127.0.0.1:53"
+  tcp_bind: "eth0:53"
+```
+
 ### Configuration Fields
 
 | Field                               | Default                        | Description                                            |
 | ----------------------------------- | ------------------------------ | ------------------------------------------------------ |
-| `dns.udp_bind`                      | `0.0.0.0:53`                   | DNS UDP listener address                               |
-| `dns.tcp_bind`                      | `0.0.0.0:53`                   | DNS TCP listener address                               |
-| `grpc.tcp_bind`                     | `127.0.0.1:50051`              | gRPC TCP listener address (empty to disable)           |
+| `dns.udp_bind`                      | `0.0.0.0:53`                   | DNS UDP listener address(es); supports interface:port  |
+| `dns.tcp_bind`                      | `0.0.0.0:53`                   | DNS TCP listener address(es); supports interface:port  |
+| `grpc.tcp_bind`                     | `127.0.0.1:50051`              | gRPC TCP listener; supports interface:port (empty to disable) |
 | `grpc.unix_socket`                  | `/var/run/rolodex-dns.sock`    | gRPC Unix socket path (empty to disable)               |
 | `grpc.shared_secret`                | (empty)                        | Shared secret for TCP gRPC auth                        |
 | `forwarders`                        | `["8.8.8.8:53", "8.8.4.4:53"]` | Upstream DNS resolvers                                 |
 | `database_path`                     | `rolodex-dns.db`               | SQLite database file path                              |
 | `rbl.enabled`                       | `false`                        | Global RBL enable flag                                 |
 | `rbl.providers`                     | 5 default zones (see above)    | RBL provider list                                      |
-| `dot.bind`                          | `0.0.0.0:853`                  | DoT listener address (section optional)                |
+| `dot.bind`                          | `0.0.0.0:853`                  | DoT listener; supports interface:port (section optional) |
 | `dot.tls.cert_path`                 | (none)                         | TLS certificate path                                   |
 | `dot.tls.key_path`                  | (none)                         | TLS private key path                                   |
 | `dot.tls.auto_self_signed`          | `true`                         | Auto-generate self-signed certificate                  |
-| `doh.bind`                          | `0.0.0.0:443`                  | DoH listener address (section optional)                |
+| `doh.bind`                          | `0.0.0.0:443`                  | DoH listener; supports interface:port (section optional) |
 | `doh.tls.*`                         | (same as DoT)                  | TLS settings for DoH                                   |
 | `doh.enable_h3`                     | `false`                        | Enable HTTP/3 (QUIC) transport for DoH                 |
-| `doq.bind`                          | `0.0.0.0:8853`                 | DoQ listener address (section optional)                |
+| `doq.bind`                          | `0.0.0.0:8853`                 | DoQ listener; supports interface:port (section optional) |
 | `doq.tls.*`                         | (same as DoT)                  | TLS settings for DoQ                                   |
 | `proxy.url`                         | (empty)                        | Proxy URL (e.g., `socks5://127.0.0.1:1080`)            |
 | `proxy.auth`                        | (none)                         | Proxy authentication (`user:pass`)                     |
@@ -720,7 +742,7 @@ Configuration is loaded from a YAML file (default path `rolodex-dns.yml`, overri
 | `dns64.enabled`                     | `false`                        | Enable DNS64 AAAA synthesis                            |
 | `dns64.prefix`                      | `64:ff9b::`                    | NAT64 prefix for synthesis                             |
 | `security.qname_case_randomization` | `true`                         | 0x20 encoding for cache poisoning resistance           |
-| `dhcp.bind`                         | `0.0.0.0:67`                   | DHCP UDP listener address (section optional)           |
+| `dhcp.bind`                         | `0.0.0.0:67`                   | DHCP listener; supports interface:port (section optional) |
 | `dhcp.default_lease_duration`       | `3600`                         | Default DHCP lease duration in seconds                 |
 | `dhcp.reclaim_timeout`              | `86400`                        | Seconds after expiry before IP is reclaimed            |
 | `dhcp.sweep_interval`               | `60`                           | Background lease sweep interval in seconds             |
@@ -825,6 +847,7 @@ The `make test` target runs the full test suite: Go integration tests, Go unit t
 - **serde** / **serde_yaml_ng** — Configuration serialization
 - **fancy_duration** — Compound duration parsing for TTL drift
 - **rand** — QNAME case randomization
+- **nix** — Safe Unix interface abstractions (interface address enumeration via `getifaddrs`)
 - **anyhow** / **thiserror** — Error handling
 
 ### Dev / Benchmarks
