@@ -3,16 +3,14 @@ forwarders:
   - "8.8.8.8:53"
   - "8.8.4.4:53"
 
-# Bind addresses accept ip:port, [ipv6]:port, or interface:port.
-# Interface binding resolves all IPs on the named interface, e.g.:
-#   udp_bind: "eth0:5300"       # bind to all IPs on eth0
-#   udp_bind: "lo:5300"         # bind to 127.0.0.1 via loopback
-#   udp_bind:                   # multiple addresses
-#     - "eth0:5300"
-#     - "127.0.0.1:5300"
+# Each entry is a protocol (udp/tcp) mapped to a bind address.
+# Bind addresses accept ip:port, [ipv6]:port, primary:port, or interface:port.
 dns:
-  udp_bind: "127.0.0.1:5300"
-  tcp_bind: "127.0.0.1:5300"
+  bind:
+    - udp: "127.0.0.1:5300"
+    - tcp: "127.0.0.1:5300"
+    - udp: "primary:5300"
+    - tcp: "primary:5300"
 
 grpc:
   tcp_bind: ""

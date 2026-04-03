@@ -691,32 +691,35 @@ Configuration is loaded from a YAML file (default path `rolodex-dns.yml`, overri
 
 ### Bind Address Syntax
 
-All bind address fields (`dns.udp_bind`, `dns.tcp_bind`, `dot.bind`, `doh.bind`, `doq.bind`, `grpc.tcp_bind`, `dhcp.bind`) accept three forms:
+Bind address strings (used by `dns.bind`, `dot.bind`, `doh.bind`, `doq.bind`, `grpc.tcp_bind`, `dhcp.bind`) accept four forms:
 
 | Form | Example | Description |
 | ---- | ------- | ----------- |
 | `ip:port` | `192.168.1.1:53` | Bind to a specific IPv4 address and port |
 | `[ipv6]:port` | `[::1]:53` | Bind to a specific IPv6 address and port (brackets required) |
+| `primary:port` | `primary:53` | Detect the OS default-route outbound IP and bind to it |
 | `interface:port` | `eth0:53` | Resolve all IP addresses on the named network interface and bind to each one |
+
+The `primary` keyword detects which IP address the OS would use to reach the public internet (via a non-sending UDP connect to `8.8.8.8:53`) and binds a single listener on that address. The keyword is case-insensitive.
 
 Interface binding creates one listener per IP address assigned to the interface. For example, if `eth0` has both `192.168.1.5` and `fe80::1`, then `eth0:53` creates two listeners: `192.168.1.5:53` and `[fe80::1]:53`.
 
-The `dns.udp_bind` and `dns.tcp_bind` fields accept a single string or a list of strings, allowing multiple bind addresses:
+The `dns.bind` field is a list of protocol/address pairs. Each entry is a single-key map with `udp` or `tcp` as the key and a bind address as the value:
 
 ```yaml
 dns:
-  udp_bind:
-    - "eth0:53"
-    - "127.0.0.1:53"
-  tcp_bind: "eth0:53"
+  bind:
+    - udp: "eth0:53"
+    - udp: "127.0.0.1:53"
+    - tcp: "eth0:53"
+    - tcp: "primary:53"
 ```
 
 ### Configuration Fields
 
 | Field                               | Default                        | Description                                            |
 | ----------------------------------- | ------------------------------ | ------------------------------------------------------ |
-| `dns.udp_bind`                      | `0.0.0.0:53`                   | DNS UDP listener address(es); supports interface:port  |
-| `dns.tcp_bind`                      | `0.0.0.0:53`                   | DNS TCP listener address(es); supports interface:port  |
+| `dns.bind`                          | `[{udp: "0.0.0.0:53"}, {tcp: "0.0.0.0:53"}]` | DNS listeners; list of `{udp: addr}` / `{tcp: addr}` entries |
 | `grpc.tcp_bind`                     | `127.0.0.1:50051`              | gRPC TCP listener; supports interface:port (empty to disable) |
 | `grpc.unix_socket`                  | `/var/run/rolodex-dns.sock`    | gRPC Unix socket path (empty to disable)               |
 | `grpc.shared_secret`                | (empty)                        | Shared secret for TCP gRPC auth                        |
@@ -766,18 +769,46 @@ The project uses a top-level Makefile with the following targets:
 | `install`             | Install the Rust binaries to the Cargo bin directory (`cargo install --path .`).                                                                           |
 | `dev`                 | Build the Rust project in debug mode, then start a development server using `dev.yml`.                                                                     |
 | `dev-release`         | Build the Rust project in release mode, then start a development server using `dev.yml`.                                                                   |
-| `image`               | Build a container image using `make/build.sh release`.                                                                                                     |
-| `push` / `push-rc`    | Build and push a release candidate container image to `gitea.com/town-os/rolodex-dns`.                                                                     |
-| `push-release`        | Build and push a release container image.                                                                                                                  |
+| `image`               | Build a container image using `make/build.sh release`. Accepts `IMAGE_TAG` to set a specific tag (default `latest`).                                       |
+| `push` / `push-rc`    | Build and push a release candidate container image to `quay.io/town/rolodex`. Auto-tags `rc.YYYYMMDD` + `rc.latest` unless `IMAGE_TAG` is set.             |
+| `push-release`        | Build and push a release container image to `quay.io/town/rolodex`. Auto-tags `release.YYYYMMDD` + `latest` unless `IMAGE_TAG` is set.                     |
+| `quay-login`          | Login to Quay.io using `QUAY_USERNAME` and `QUAY_PASSWORD` from environment or `.env`.                                                                     |
 | `clean-containers`    | Remove locally built container images.                                                                                                                     |
 
 The Makefile is designed to be extended for non-cargo scenarios. Protocol buffer bindings are generated at build time via `build.rs` using `tonic-prost-build`. Container images are built with Podman using unique instance IDs derived from the working directory path.
+
+### Container Image Tagging
+
+Images are published to `quay.io/town/rolodex`. The `IMAGE_TAG` variable controls the tag used for both building and pushing.
+
+**Push with auto-generated tags** (default):
+
+```bash
+make push-rc        # pushes rc.YYYYMMDD and rc.latest
+make push-release   # pushes release.YYYYMMDD and latest
+```
+
+**Push a specific tag**:
+
+```bash
+make IMAGE_TAG=v1.2.3 push-release    # pushes quay.io/town/rolodex:v1.2.3
+make IMAGE_TAG=v1.2.3-rc1 push-rc     # pushes quay.io/town/rolodex:v1.2.3-rc1
+```
+
+When `IMAGE_TAG` is set, only that exact tag is pushed — no date-based or `latest` tags are created.
+
+**Re-tag and push to a different registry**:
+
+```bash
+sudo podman tag quay.io/town/rolodex:latest registry.example.com/myorg/rolodex:v1.2.3
+sudo podman push registry.example.com/myorg/rolodex:v1.2.3
+```
 
 ### Development Server
 
 The `make dev` target starts a local development instance configured via `dev.yml`:
 
-- DNS listeners on `127.0.0.1:5300` (UDP and TCP) — a non-privileged port that does not require root.
+- DNS listeners on `127.0.0.1:5300` and the primary outbound IP on port `5300` (UDP and TCP) — a non-privileged port that does not require root.
 - gRPC management via Unix socket at `/tmp/rolodex-dns.sock` only (TCP gRPC disabled).
 - Database at `/tmp/rolodex-dns-dev.db`.
 - No authentication (empty shared secret).

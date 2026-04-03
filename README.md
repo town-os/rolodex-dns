@@ -54,7 +54,7 @@ make dev
 This will:
 1. Build the project in debug mode (`cargo build`)
 2. Start the server using `dev.yml` with the following settings:
-   - DNS listeners on `127.0.0.1:5300` (UDP and TCP)
+   - DNS listeners on `127.0.0.1:5300` and the primary outbound IP on port `5300` (UDP and TCP)
    - gRPC Unix socket at `/tmp/rolodex-dns.sock` (no TCP gRPC listener)
    - SQLite database at `/tmp/rolodex-dns-dev.db`
    - No authentication required
@@ -77,36 +77,70 @@ After the dev server is running, you can manage it using the `rolodex-dns-cli` b
 
 Rolodex DNS builds with Podman using two Containerfiles: `Containerfile.build` compiles the Rust binaries in a full toolchain image, and `Containerfile` provisions a lean runtime image (`debian:bookworm-slim`) containing only the stripped binaries and CA certificates.
 
-Images are published to `gitea.com/town-os/rolodex-dns`.
+Images are published to `quay.io/town/rolodex`.
 
 ### Building
 
-Build the release image (tagged as `gitea.com/town-os/rolodex-dns`):
+Build the release image (tagged as `quay.io/town/rolodex:latest`):
 
 ```
 make image
+```
+
+Build with a specific tag:
+
+```
+make IMAGE_TAG=v1.2.3 image
 ```
 
 Cargo registry and git caches are persisted in `.cache/` to speed up rebuilds.
 
 ### Pushing
 
-Login to gitea.com (reads `GITEA_USERNAME` and `GITEA_PASSWORD` from the environment or `.env`):
+Login to Quay.io (reads `QUAY_USERNAME` and `QUAY_PASSWORD` from the environment or `.env`):
 
 ```
-make gitea-login
+make quay-login
 ```
 
-Build and push a release candidate (tags `rc.YYYYMMDD` and `rc.latest`):
+Build and push a release candidate (auto-tags `rc.YYYYMMDD` and `rc.latest`):
 
 ```
 make push-rc
 ```
 
-Build and push a release (tags `release.YYYYMMDD` and `latest`):
+Build and push a release (auto-tags `release.YYYYMMDD` and `latest`):
 
 ```
 make push-release
+```
+
+#### Pushing a Specific Tag
+
+Use `IMAGE_TAG` to build and push an exact tag instead of the auto-generated date-based tags:
+
+```
+make IMAGE_TAG=v1.2.3 push-release
+```
+
+This builds the image as `quay.io/town/rolodex:v1.2.3` and pushes only that tag. The same works with `push-rc`:
+
+```
+make IMAGE_TAG=v1.2.3-rc1 push-rc
+```
+
+To push an already-built image under a different tag without rebuilding:
+
+```
+sudo podman tag quay.io/town/rolodex:latest quay.io/town/rolodex:v1.2.3
+sudo podman push quay.io/town/rolodex:v1.2.3
+```
+
+To push to a different registry entirely:
+
+```
+sudo podman tag quay.io/town/rolodex:latest registry.example.com/myorg/rolodex:v1.2.3
+sudo podman push registry.example.com/myorg/rolodex:v1.2.3
 ```
 
 ### Cleanup
@@ -123,24 +157,27 @@ Rolodex DNS reads configuration from a YAML file (default: `rolodex-dns.yml`).
 
 ### Bind Address Syntax
 
-All bind address fields (`dns.udp_bind`, `dns.tcp_bind`, `dot.bind`, `doh.bind`, `doq.bind`, `grpc.tcp_bind`, `dhcp.bind`) accept three forms:
+Bind address strings (used by `dns.bind`, `dot.bind`, `doh.bind`, `doq.bind`, `grpc.tcp_bind`, `dhcp.bind`) accept four forms:
 
 | Form | Example | Description |
 | ---- | ------- | ----------- |
 | `ip:port` | `192.168.1.1:53` | Bind to a specific IPv4 address and port |
 | `[ipv6]:port` | `[::1]:53` | Bind to a specific IPv6 address and port (brackets required) |
+| `primary:port` | `primary:53` | Detect the OS default-route outbound IP and bind to it |
 | `interface:port` | `eth0:53` | Bind to all IPs on the named network interface |
+
+The `primary` keyword detects which IP address the OS would use to reach the public internet (via a non-sending UDP connect to `8.8.8.8:53`) and binds a single listener on that address. The keyword is case-insensitive.
 
 Interface binding resolves all IPv4 and IPv6 addresses assigned to the interface and creates a separate listener for each. For example, if `eth0` has `192.168.1.5` and `fe80::1`, then `eth0:53` creates listeners on both `192.168.1.5:53` and `[fe80::1]:53`.
 
-The `dns.udp_bind` and `dns.tcp_bind` fields accept a single string or a list:
+The `dns.bind` field is a list of protocol/address pairs. Each entry is a single-key map with `udp` or `tcp` as the key and a bind address as the value:
 
 ```yaml
 dns:
-  udp_bind:
-    - "eth0:53"
-    - "lo:53"
-  tcp_bind: "eth0:53"
+  bind:
+    - udp: "eth0:53"
+    - udp: "lo:53"
+    - tcp: "eth0:53"
 ```
 
 ### Example Configuration
@@ -155,11 +192,12 @@ forwarders:
   - "8.8.8.8:53"
   - "8.8.4.4:53"
 
-# Bind addresses accept ip:port, [ipv6]:port, or interface:port.
-# Interface binding resolves all IPs on the named interface.
+# Each entry pairs a protocol (udp/tcp) with a bind address.
+# Bind addresses accept ip:port, [ipv6]:port, primary:port, or interface:port.
 dns:
-  udp_bind: "0.0.0.0:53"    # or "eth0:53" to bind to a specific interface
-  tcp_bind: "0.0.0.0:53"
+  bind:
+    - udp: "0.0.0.0:53"     # or "eth0:53" to bind to a specific interface
+    - tcp: "0.0.0.0:53"
 
 # DNS-over-TLS (RFC 7858)
 dot:
@@ -238,8 +276,7 @@ security:
 |--------|---------|-------------|
 | `database_path` | `"rolodex-dns.db"` | Path to the SQLite database file |
 | `forwarders` | `["8.8.8.8:53", "8.8.4.4:53"]` | Upstream DNS resolver addresses. Empty list = purely authoritative |
-| `dns.udp_bind` | `"0.0.0.0:53"` | UDP DNS listener; supports interface:port (single string or list) |
-| `dns.tcp_bind` | `"0.0.0.0:53"` | TCP DNS listener; supports interface:port (single string or list) |
+| `dns.bind` | `[{udp: "0.0.0.0:53"}, {tcp: "0.0.0.0:53"}]` | DNS listeners; list of `{udp: addr}` / `{tcp: addr}` entries |
 | `dot.bind` | `""` (disabled) | DoT listener; supports interface:port (typically port 853) |
 | `dot.tls.cert_path` | `""` | TLS certificate path for DoT |
 | `dot.tls.key_path` | `""` | TLS private key path for DoT |

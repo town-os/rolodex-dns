@@ -52,8 +52,9 @@ func startServer(t *testing.T, cfg serverConfig) {
 forwarders: []
 
 dns:
-  udp_bind: %q
-  tcp_bind: %q
+  bind:
+    - udp: %q
+    - tcp: %q
 
 grpc:
   tcp_bind: %q

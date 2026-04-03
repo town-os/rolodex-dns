@@ -827,6 +827,204 @@ async fn test_interface_bind_addr_udp_serves_queries() {
     handle.abort();
 }
 
+#[tokio::test]
+async fn test_interface_bind_addr_tcp_serves_queries() {
+    let db = Database::open_memory().unwrap();
+    let rbl = Arc::new(RblChecker::with_resolver(
+        false,
+        vec![],
+        Arc::new(NeverListedResolver),
+    ));
+    let dns_server = Arc::new(DnsServer::new(db.clone(), rbl, vec![]));
+
+    db.add_record(&DnsRecord {
+        id: None,
+        name: "iface-tcp.test.".to_string(),
+        record_type: RecordKind::A,
+        value: "10.0.0.88".to_string(),
+        ttl: 300,
+        priority: 0,
+    })
+    .unwrap();
+
+    let port = {
+        let s = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        s.local_addr().unwrap().port()
+    };
+    let resolved = rolodex_dns::config::resolve_bind_addrs(&format!("lo:{}", port)).unwrap();
+    let bind_addr = resolved
+        .iter()
+        .find(|a| a.starts_with("127.0.0.1:"))
+        .expect("lo interface should have 127.0.0.1")
+        .clone();
+
+    let server = Arc::clone(&dns_server);
+    let bind = bind_addr.clone();
+    let handle = tokio::spawn(async move {
+        let _ = server.serve_tcp(&bind).await;
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(bind_addr.as_str())
+        .await
+        .unwrap();
+    let query = build_dns_query("iface-tcp.test.", hickory_proto::rr::RecordType::A);
+    let len = (query.len() as u16).to_be_bytes();
+    stream.write_all(&len).await.unwrap();
+    stream.write_all(&query).await.unwrap();
+
+    let mut len_buf = [0u8; 2];
+    stream.read_exact(&mut len_buf).await.unwrap();
+    let resp_len = u16::from_be_bytes(len_buf) as usize;
+    let mut resp_buf = vec![0u8; resp_len];
+    stream.read_exact(&mut resp_buf).await.unwrap();
+
+    let response = hickory_proto::op::Message::from_bytes(&resp_buf).unwrap();
+    assert_eq!(
+        response.response_code(),
+        hickory_proto::op::ResponseCode::NoError,
+    );
+    assert_eq!(response.answers().len(), 1);
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_interface_bind_resolves_ipv6_and_serves() {
+    let db = Database::open_memory().unwrap();
+    let rbl = Arc::new(RblChecker::with_resolver(
+        false,
+        vec![],
+        Arc::new(NeverListedResolver),
+    ));
+    let dns_server = Arc::new(DnsServer::new(db.clone(), rbl, vec![]));
+
+    db.add_record(&DnsRecord {
+        id: None,
+        name: "iface-v6.test.".to_string(),
+        record_type: RecordKind::AAAA,
+        value: "fd00::1".to_string(),
+        ttl: 300,
+        priority: 0,
+    })
+    .unwrap();
+
+    let port = {
+        let s = std::net::UdpSocket::bind("[::1]:0").unwrap();
+        s.local_addr().unwrap().port()
+    };
+    let resolved = rolodex_dns::config::resolve_bind_addrs(&format!("lo:{}", port)).unwrap();
+
+    // lo should resolve to both IPv4 and IPv6 addresses
+    assert!(
+        resolved.len() >= 2,
+        "expected lo to have at least 2 addresses (IPv4 + IPv6), got {:?}",
+        resolved
+    );
+
+    let v6_addr = resolved
+        .iter()
+        .find(|a| a.starts_with("[::1]:"))
+        .expect("lo interface should have [::1]")
+        .clone();
+
+    let server = Arc::clone(&dns_server);
+    let bind = v6_addr.clone();
+    let handle = tokio::spawn(async move {
+        let _ = server.serve_udp(&bind).await;
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let client = tokio::net::UdpSocket::bind("[::1]:0").await.unwrap();
+    let query = build_dns_query("iface-v6.test.", hickory_proto::rr::RecordType::AAAA);
+    client.send_to(&query, v6_addr.as_str()).await.unwrap();
+
+    let mut buf = vec![0u8; 4096];
+    let (len, _) = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client.recv_from(&mut buf),
+    )
+    .await
+    .expect("timeout waiting for UDP response from IPv6 interface bind addr")
+    .unwrap();
+
+    let response = hickory_proto::op::Message::from_bytes(&buf[..len]).unwrap();
+    assert_eq!(
+        response.response_code(),
+        hickory_proto::op::ResponseCode::NoError,
+    );
+    assert_eq!(response.answers().len(), 1);
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_primary_bind_addr_udp_serves_queries() {
+    let db = Database::open_memory().unwrap();
+    let rbl = Arc::new(RblChecker::with_resolver(
+        false,
+        vec![],
+        Arc::new(NeverListedResolver),
+    ));
+    let dns_server = Arc::new(DnsServer::new(db.clone(), rbl, vec![]));
+
+    db.add_record(&DnsRecord {
+        id: None,
+        name: "primary-bind.test.".to_string(),
+        record_type: RecordKind::A,
+        value: "10.0.0.77".to_string(),
+        ttl: 300,
+        priority: 0,
+    })
+    .unwrap();
+
+    let port = {
+        let s = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        s.local_addr().unwrap().port()
+    };
+    let resolved = rolodex_dns::config::resolve_bind_addrs(&format!("primary:{}", port)).unwrap();
+    assert_eq!(resolved.len(), 1);
+
+    let bind_addr = &resolved[0];
+    let parsed: std::net::SocketAddr = bind_addr.parse().expect("should be a valid socket addr");
+    assert!(!parsed.ip().is_loopback());
+    assert!(!parsed.ip().is_unspecified());
+    assert_eq!(parsed.port(), port);
+
+    let server = Arc::clone(&dns_server);
+    let bind = bind_addr.clone();
+    let handle = tokio::spawn(async move {
+        let _ = server.serve_udp(&bind).await;
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let client = tokio::net::UdpSocket::bind("0.0.0.0:0").await.unwrap();
+    let query = build_dns_query("primary-bind.test.", hickory_proto::rr::RecordType::A);
+    client.send_to(&query, bind_addr.as_str()).await.unwrap();
+
+    let mut buf = vec![0u8; 4096];
+    let (len, _) = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client.recv_from(&mut buf),
+    )
+    .await
+    .expect("timeout waiting for UDP response from primary bind addr")
+    .unwrap();
+
+    let response = hickory_proto::op::Message::from_bytes(&buf[..len]).unwrap();
+    assert_eq!(
+        response.response_code(),
+        hickory_proto::op::ResponseCode::NoError,
+    );
+    assert_eq!(response.answers().len(), 1);
+
+    handle.abort();
+}
+
 // ========================================================
 // Integration: Database persistence
 // ========================================================
@@ -930,8 +1128,7 @@ fn test_config_roundtrip() {
     let yaml_str = serde_yaml_ng::to_string(&config).unwrap();
     let deserialized: rolodex_dns::config::Config = serde_yaml_ng::from_str(&yaml_str).unwrap();
 
-    assert_eq!(config.dns.udp_bind, deserialized.dns.udp_bind);
-    assert_eq!(config.dns.tcp_bind, deserialized.dns.tcp_bind);
+    assert_eq!(config.dns.bind, deserialized.dns.bind);
     assert_eq!(config.grpc.tcp_bind, deserialized.grpc.tcp_bind);
     assert_eq!(config.forwarders.len(), deserialized.forwarders.len());
     assert_eq!(config.rbl.enabled, deserialized.rbl.enabled);
@@ -946,8 +1143,18 @@ fn test_config_roundtrip() {
 fn test_dev_config_parses() {
     let content = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/dev.yml")).unwrap();
     let config: rolodex_dns::config::Config = serde_yaml_ng::from_str(&content).unwrap();
-    assert_eq!(config.dns.udp_bind, vec!["127.0.0.1:5300"]);
-    assert_eq!(config.dns.tcp_bind, vec!["127.0.0.1:5300"]);
+    use rolodex_dns::config::DnsBind;
+    assert_eq!(config.dns.bind.len(), 4);
+    assert_eq!(
+        config.dns.bind[0],
+        DnsBind::Udp("127.0.0.1:5300".to_string())
+    );
+    assert_eq!(
+        config.dns.bind[1],
+        DnsBind::Tcp("127.0.0.1:5300".to_string())
+    );
+    assert_eq!(config.dns.bind[2], DnsBind::Udp("primary:5300".to_string()));
+    assert_eq!(config.dns.bind[3], DnsBind::Tcp("primary:5300".to_string()));
     assert_eq!(config.database_path, "/tmp/rolodex-dns-dev.db");
     assert!(config.grpc.tcp_bind.is_empty());
     assert_eq!(config.grpc.unix_socket, "/tmp/rolodex-dns.sock");

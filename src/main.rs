@@ -110,7 +110,7 @@ async fn main() -> Result<()> {
     }
 
     // Spawn DNS UDP servers
-    for addr in &config.dns.udp_bind {
+    for addr in config.dns.udp_addrs() {
         let resolved = rolodex_dns::config::resolve_bind_addrs(addr)
             .with_context(|| format!("resolving UDP bind address '{}'", addr))?;
         for udp_bind in resolved {
@@ -124,7 +124,7 @@ async fn main() -> Result<()> {
     }
 
     // Spawn DNS TCP servers
-    for addr in &config.dns.tcp_bind {
+    for addr in config.dns.tcp_addrs() {
         let resolved = rolodex_dns::config::resolve_bind_addrs(addr)
             .with_context(|| format!("resolving TCP bind address '{}'", addr))?;
         for tcp_bind in resolved {

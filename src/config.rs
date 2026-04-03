@@ -40,48 +40,92 @@ pub struct Config {
     pub dhcp: Option<DhcpConfig>,
 }
 
+/// A DNS bind entry: protocol (udp/tcp) paired with a bind address.
+///
+/// Serializes as a single-key map: `{udp: "addr"}` or `{tcp: "addr"}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DnsBind {
+    Udp(String),
+    Tcp(String),
+}
+
+impl Serialize for DnsBind {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(1))?;
+        match self {
+            DnsBind::Udp(addr) => map.serialize_entry("udp", addr)?,
+            DnsBind::Tcp(addr) => map.serialize_entry("tcp", addr)?,
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for DnsBind {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de;
+        use std::collections::HashMap;
+
+        let map = HashMap::<String, String>::deserialize(deserializer)?;
+        if map.len() != 1 {
+            return Err(de::Error::custom(
+                "expected a single-key map with 'udp' or 'tcp'",
+            ));
+        }
+        let (key, value) = map.into_iter().next().expect("checked len == 1");
+        match key.as_str() {
+            "udp" => Ok(DnsBind::Udp(value)),
+            "tcp" => Ok(DnsBind::Tcp(value)),
+            other => Err(de::Error::unknown_variant(other, &["udp", "tcp"])),
+        }
+    }
+}
+
+impl DnsBind {
+    /// Returns the bind address string regardless of protocol.
+    pub fn addr(&self) -> &str {
+        match self {
+            DnsBind::Udp(a) | DnsBind::Tcp(a) => a,
+        }
+    }
+}
+
 /// DNS listener configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DnsConfig {
-    /// Addresses to bind the DNS UDP listener (e.g. ["127.0.0.2:53", "192.168.1.1:53"]).
-    /// Accepts a single string or a list of strings.
-    #[serde(deserialize_with = "string_or_vec")]
-    pub udp_bind: Vec<String>,
-    /// Addresses to bind the DNS TCP listener (e.g. ["127.0.0.2:53", "192.168.1.1:53"]).
-    /// Accepts a single string or a list of strings.
-    #[serde(deserialize_with = "string_or_vec")]
-    pub tcp_bind: Vec<String>,
+    /// List of protocol + address pairs to bind (e.g. `[{udp: "0.0.0.0:53"}, {tcp: "0.0.0.0:53"}]`).
+    pub bind: Vec<DnsBind>,
 }
 
-fn string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::de;
-
-    struct StringOrVec;
-
-    impl<'de> de::Visitor<'de> for StringOrVec {
-        type Value = Vec<String>;
-
-        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-            formatter.write_str("a string or list of strings")
-        }
-
-        fn visit_str<E: de::Error>(self, value: &str) -> Result<Vec<String>, E> {
-            Ok(vec![value.to_owned()])
-        }
-
-        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<String>, A::Error> {
-            let mut v = Vec::new();
-            while let Some(s) = seq.next_element()? {
-                v.push(s);
-            }
-            Ok(v)
-        }
+impl DnsConfig {
+    /// Returns all UDP bind address strings.
+    pub fn udp_addrs(&self) -> impl Iterator<Item = &str> {
+        self.bind.iter().filter_map(|e| match e {
+            DnsBind::Udp(a) => Some(a.as_str()),
+            _ => None,
+        })
     }
+    /// Returns all TCP bind address strings.
+    pub fn tcp_addrs(&self) -> impl Iterator<Item = &str> {
+        self.bind.iter().filter_map(|e| match e {
+            DnsBind::Tcp(a) => Some(a.as_str()),
+            _ => None,
+        })
+    }
+}
 
-    deserializer.deserialize_any(StringOrVec)
+/// Detects the primary outbound IP address by asking the OS which interface
+/// would route to a public address. No data is sent over the network.
+fn detect_primary_ip() -> Result<std::net::IpAddr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0")
+        .context("failed to bind UDP socket for primary IP detection")?;
+    socket
+        .connect("8.8.8.8:53")
+        .context("failed to detect primary IP: no default route?")?;
+    let addr = socket
+        .local_addr()
+        .context("failed to get local address for primary IP detection")?;
+    Ok(addr.ip())
 }
 
 /// Resolves IP addresses assigned to the named network interface.
@@ -118,9 +162,10 @@ fn resolve_interface_addrs(iface_name: &str, port: u16) -> Result<Vec<String>> {
 
 /// Resolves a bind address specification into one or more concrete socket addresses.
 ///
-/// Accepts three forms:
+/// Accepts four forms:
 /// - `"ip:port"` — literal IPv4 address, returned as-is in a single-element Vec
 /// - `"[ipv6]:port"` — bracketed IPv6 literal, returned as-is
+/// - `"primary:port"` — resolved to the OS default-route outbound IP address
 /// - `"interface_name:port"` — resolved to all IP addresses on the named interface
 ///
 /// Each resolved address is a concrete socket address string suitable for binding.
@@ -145,6 +190,11 @@ pub fn resolve_bind_addrs(addr: &str) -> Result<Vec<String>> {
     let port: u16 = port_str
         .parse()
         .with_context(|| format!("invalid port in bind address '{}': '{}'", trimmed, port_str))?;
+    // "primary" keyword — detect outbound IP via default route
+    if host.eq_ignore_ascii_case("primary") {
+        let ip = detect_primary_ip()?;
+        return Ok(vec![format!("{}:{}", ip, port)]);
+    }
     // If host parses as an IP address, it's a literal — pass through
     if host.parse::<std::net::IpAddr>().is_ok() {
         return Ok(vec![trimmed.to_string()]);
@@ -441,8 +491,10 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             dns: DnsConfig {
-                udp_bind: vec!["0.0.0.0:53".to_string()],
-                tcp_bind: vec!["0.0.0.0:53".to_string()],
+                bind: vec![
+                    DnsBind::Udp("0.0.0.0:53".to_string()),
+                    DnsBind::Tcp("0.0.0.0:53".to_string()),
+                ],
             },
             grpc: GrpcConfig {
                 tcp_bind: "127.0.0.1:50051".to_string(),
@@ -507,8 +559,13 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.dns.udp_bind, vec!["0.0.0.0:53"]);
-        assert_eq!(config.dns.tcp_bind, vec!["0.0.0.0:53"]);
+        assert_eq!(
+            config.dns.bind,
+            vec![
+                DnsBind::Udp("0.0.0.0:53".to_string()),
+                DnsBind::Tcp("0.0.0.0:53".to_string()),
+            ]
+        );
         assert_eq!(config.grpc.tcp_bind, "127.0.0.1:50051");
         assert!(!config.rbl.enabled);
         assert!(!config.rbl.providers.is_empty());
@@ -527,7 +584,7 @@ mod tests {
         let config = Config::default();
         let serialized = serde_yaml_ng::to_string(&config).unwrap();
         let deserialized: Config = serde_yaml_ng::from_str(&serialized).unwrap();
-        assert_eq!(deserialized.dns.udp_bind, config.dns.udp_bind);
+        assert_eq!(deserialized.dns.bind, config.dns.bind);
         assert_eq!(deserialized.forwarders.len(), config.forwarders.len());
     }
 
@@ -638,8 +695,9 @@ mod tests {
         // correctly, with all new fields taking their defaults.
         let yaml = r#"
 dns:
-  udp_bind: "0.0.0.0:53"
-  tcp_bind: "0.0.0.0:53"
+  bind:
+    - udp: "0.0.0.0:53"
+    - tcp: "0.0.0.0:53"
 grpc:
   tcp_bind: "127.0.0.1:50051"
   unix_socket: "/var/run/rolodex-dns.sock"
@@ -665,13 +723,12 @@ rbl:
     fn test_multi_bind_addresses_parse() {
         let yaml = r#"
 dns:
-  udp_bind:
-    - "127.0.0.1:5300"
-    - "127.0.0.2:5300"
-  tcp_bind:
-    - "127.0.0.1:5300"
-    - "127.0.0.2:5300"
-    - "10.0.0.1:53"
+  bind:
+    - udp: "127.0.0.1:5300"
+    - udp: "127.0.0.2:5300"
+    - tcp: "127.0.0.1:5300"
+    - tcp: "127.0.0.2:5300"
+    - tcp: "10.0.0.1:53"
 grpc:
   tcp_bind: "127.0.0.1:50051"
   unix_socket: "/var/run/rolodex-dns.sock"
@@ -684,22 +741,17 @@ rbl:
   providers: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(
-            config.dns.udp_bind,
-            vec!["127.0.0.1:5300", "127.0.0.2:5300"]
-        );
-        assert_eq!(
-            config.dns.tcp_bind,
-            vec!["127.0.0.1:5300", "127.0.0.2:5300", "10.0.0.1:53"]
-        );
+        let udp: Vec<&str> = config.dns.udp_addrs().collect();
+        assert_eq!(udp, vec!["127.0.0.1:5300", "127.0.0.2:5300"]);
+        let tcp: Vec<&str> = config.dns.tcp_addrs().collect();
+        assert_eq!(tcp, vec!["127.0.0.1:5300", "127.0.0.2:5300", "10.0.0.1:53"]);
     }
 
     #[test]
     fn test_empty_bind_list_parse() {
         let yaml = r#"
 dns:
-  udp_bind: []
-  tcp_bind: []
+  bind: []
 grpc:
   tcp_bind: "127.0.0.1:50051"
   unix_socket: "/var/run/rolodex-dns.sock"
@@ -711,23 +763,22 @@ rbl:
   providers: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        assert!(config.dns.udp_bind.is_empty());
-        assert!(config.dns.tcp_bind.is_empty());
+        assert!(config.dns.bind.is_empty());
     }
 
     #[test]
     fn test_multi_bind_serialization_roundtrip() {
         let mut config = Config::default();
-        config.dns.udp_bind = vec!["127.0.0.1:53".to_string(), "10.0.0.1:53".to_string()];
-        config.dns.tcp_bind = vec![
-            "127.0.0.1:53".to_string(),
-            "10.0.0.1:53".to_string(),
-            "192.168.1.1:5353".to_string(),
+        config.dns.bind = vec![
+            DnsBind::Udp("127.0.0.1:53".to_string()),
+            DnsBind::Udp("10.0.0.1:53".to_string()),
+            DnsBind::Tcp("127.0.0.1:53".to_string()),
+            DnsBind::Tcp("10.0.0.1:53".to_string()),
+            DnsBind::Tcp("192.168.1.1:5353".to_string()),
         ];
         let yaml = serde_yaml_ng::to_string(&config).unwrap();
         let deserialized: Config = serde_yaml_ng::from_str(&yaml).unwrap();
-        assert_eq!(config.dns.udp_bind, deserialized.dns.udp_bind);
-        assert_eq!(config.dns.tcp_bind, deserialized.dns.tcp_bind);
+        assert_eq!(config.dns.bind, deserialized.dns.bind);
     }
 
     #[test]
@@ -801,5 +852,85 @@ rbl:
         // "::1" parses as IpAddr, so it passes through as literal
         let result = resolve_bind_addrs("::1:53").unwrap();
         assert_eq!(result, vec!["::1:53"]);
+    }
+
+    #[test]
+    fn test_resolve_bind_addrs_interface_returns_multiple_addresses() {
+        // lo has both 127.0.0.1 and ::1 on Linux
+        let result = resolve_bind_addrs("lo:9999").unwrap();
+        assert!(
+            result.len() >= 2,
+            "expected lo to have at least IPv4 + IPv6, got {:?}",
+            result
+        );
+        assert!(
+            result.iter().any(|a| a == "127.0.0.1:9999"),
+            "expected 127.0.0.1:9999 in {:?}",
+            result
+        );
+        assert!(
+            result.iter().any(|a| a == "[::1]:9999"),
+            "expected [::1]:9999 in {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_resolve_bind_addrs_all_results_are_parseable_socket_addrs() {
+        let result = resolve_bind_addrs("lo:4321").unwrap();
+        for addr in &result {
+            let parsed: std::net::SocketAddr = addr
+                .parse()
+                .unwrap_or_else(|e| panic!("'{}' should parse as SocketAddr: {}", addr, e));
+            assert_eq!(parsed.port(), 4321);
+        }
+    }
+
+    #[test]
+    fn test_resolve_bind_addrs_port_zero() {
+        // Port 0 is valid (OS assigns ephemeral)
+        let result = resolve_bind_addrs("127.0.0.1:0").unwrap();
+        assert_eq!(result, vec!["127.0.0.1:0"]);
+    }
+
+    #[test]
+    fn test_resolve_bind_addrs_whitespace_trimmed() {
+        let result = resolve_bind_addrs("  127.0.0.1:53  ").unwrap();
+        assert_eq!(result, vec!["127.0.0.1:53"]);
+    }
+
+    #[test]
+    fn test_resolve_bind_addrs_port_overflow() {
+        let result = resolve_bind_addrs("127.0.0.1:99999");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_bind_addrs_primary_resolves_to_routable_ip() {
+        let result = resolve_bind_addrs("primary:53").unwrap();
+        assert_eq!(result.len(), 1);
+        let addr: std::net::SocketAddr = result[0].parse().expect("should be a valid socket addr");
+        assert_eq!(addr.port(), 53);
+        assert!(!addr.ip().is_loopback());
+        assert!(!addr.ip().is_unspecified());
+    }
+
+    #[test]
+    fn test_resolve_bind_addrs_primary_custom_port() {
+        let result = resolve_bind_addrs("primary:5300").unwrap();
+        assert_eq!(result.len(), 1);
+        let addr: std::net::SocketAddr = result[0].parse().unwrap();
+        assert_eq!(addr.port(), 5300);
+    }
+
+    #[test]
+    fn test_resolve_bind_addrs_primary_case_insensitive() {
+        let r1 = resolve_bind_addrs("PRIMARY:853").unwrap();
+        let r2 = resolve_bind_addrs("Primary:853").unwrap();
+        let r3 = resolve_bind_addrs("primary:853").unwrap();
+        assert_eq!(r1, r2);
+        assert_eq!(r2, r3);
+        let addr: std::net::SocketAddr = r1[0].parse().unwrap();
+        assert_eq!(addr.port(), 853);
     }
 }
