@@ -769,39 +769,54 @@ The project uses a top-level Makefile with the following targets:
 | `install`             | Install the Rust binaries to the Cargo bin directory (`cargo install --path .`).                                                                           |
 | `dev`                 | Build the Rust project in debug mode, then start a development server using `dev.yml`.                                                                     |
 | `dev-release`         | Build the Rust project in release mode, then start a development server using `dev.yml`.                                                                   |
-| `image`               | Build a container image using `make/build.sh release`. Accepts `IMAGE_TAG` to set a specific tag (default `latest`).                                       |
-| `push` / `push-rc`    | Build and push a release candidate container image to `quay.io/town/rolodex`. Auto-tags `rc.YYYYMMDD` + `rc.latest` unless `IMAGE_TAG` is set.             |
-| `push-release`        | Build and push a release container image to `quay.io/town/rolodex`. Auto-tags `release.YYYYMMDD` + `latest` unless `IMAGE_TAG` is set.                     |
+| `image`               | Build a container image for the host architecture using `make/build.sh release`. Tags with an arch suffix (`-amd64`/`-arm64`). Accepts `IMAGE_TAG` (default `latest`). |
+| `push` / `push-rc`    | Build and push the host-arch release candidate image to `quay.io/town/rolodex`. Auto-tags `rc.YYYYMMDD-<arch>` + `rc.latest-<arch>` unless `IMAGE_TAG` is set.   |
+| `push-release`        | Build and push the host-arch release image to `quay.io/town/rolodex`. Auto-tags `release.YYYYMMDD-<arch>` + `latest-<arch>` unless `IMAGE_TAG` is set.             |
+| `manifest` / `manifest-rc` | Assemble and push a multi-arch RC manifest list (`rc.YYYYMMDD`, `rc.latest`, or `IMAGE_TAG`) from the per-arch tags already in the registry.            |
+| `manifest-release`    | Assemble and push a multi-arch release manifest list (`release.YYYYMMDD`, `latest`, or `IMAGE_TAG`) from the per-arch tags already in the registry.                |
 | `quay-login`          | Login to Quay.io using `QUAY_USERNAME` and `QUAY_PASSWORD` from environment or `.env`.                                                                     |
-| `clean-containers`    | Remove locally built container images.                                                                                                                     |
+| `clean-containers`    | Remove locally built per-arch container images.                                                                                                            |
 
 The Makefile is designed to be extended for non-cargo scenarios. Protocol buffer bindings are generated at build time via `build.rs` using `tonic-prost-build`. Container images are built with Podman using unique instance IDs derived from the working directory path.
 
+### Multi-Architecture Container Builds
+
+Images are published to `quay.io/town/rolodex` as multi-arch manifest lists covering `linux/amd64` and `linux/arm64`. Builds are **native-only**: each architecture is compiled on a host of that architecture (no cross-compilation or QEMU). `make/build.sh` detects the host arch via `uname -m` (`host_arch` in `make/lib.sh`, mapping `x86_64`→`amd64`, `aarch64`→`arm64`) and suffixes every per-arch image tag accordingly. The `build_manifest` helper assembles a manifest list from the per-arch tags using `podman manifest add docker://…`, so the per-arch images only need to exist in the registry, not locally.
+
+The end-to-end multi-arch publish flow:
+
+1. On an amd64 host: `make push-release` → pushes `…:latest-amd64` (+ date tag).
+2. On an arm64 host: `make push-release` → pushes `…:latest-arm64` (+ date tag).
+3. On any host, once both are pushed: `make manifest-release` → pushes the `…:latest` manifest list.
+
 ### Container Image Tagging
 
-Images are published to `quay.io/town/rolodex`. The `IMAGE_TAG` variable controls the tag used for both building and pushing.
+Images are published to `quay.io/town/rolodex`. The `IMAGE_TAG` variable controls the tag used for both building and pushing. Per-arch images carry an arch suffix; the manifest targets produce the un-suffixed multi-arch tag.
 
 **Push with auto-generated tags** (default):
 
 ```bash
-make push-rc        # pushes rc.YYYYMMDD and rc.latest
-make push-release   # pushes release.YYYYMMDD and latest
+make push-rc          # pushes rc.YYYYMMDD-<arch> and rc.latest-<arch>
+make push-release     # pushes release.YYYYMMDD-<arch> and latest-<arch>
+make manifest-rc      # pushes rc.YYYYMMDD and rc.latest manifest lists
+make manifest-release # pushes release.YYYYMMDD and latest manifest lists
 ```
 
 **Push a specific tag**:
 
 ```bash
-make IMAGE_TAG=v1.2.3 push-release    # pushes quay.io/town/rolodex:v1.2.3
-make IMAGE_TAG=v1.2.3-rc1 push-rc     # pushes quay.io/town/rolodex:v1.2.3-rc1
+make IMAGE_TAG=v1.2.3 push-release      # pushes quay.io/town/rolodex:v1.2.3-<arch>
+make IMAGE_TAG=v1.2.3 manifest-release  # pushes quay.io/town/rolodex:v1.2.3 manifest list
+make IMAGE_TAG=v1.2.3-rc1 push-rc       # pushes quay.io/town/rolodex:v1.2.3-rc1-<arch>
 ```
 
-When `IMAGE_TAG` is set, only that exact tag is pushed — no date-based or `latest` tags are created.
+When `IMAGE_TAG` is set, only that exact tag (per-arch, then manifest) is pushed — no date-based or `latest` tags are created.
 
 **Re-tag and push to a different registry**:
 
 ```bash
 sudo podman tag quay.io/town/rolodex:latest registry.example.com/myorg/rolodex:v1.2.3
-sudo podman push registry.example.com/myorg/rolodex:v1.2.3
+sudo podman push quay.io/town/rolodex:latest registry.example.com/myorg/rolodex:v1.2.3
 ```
 
 ### Development Server

@@ -17,7 +17,7 @@ export PODMAN_BUILD_IMAGE RELEASE_IMAGE IMAGE_TAG
 
 .PHONY: test build clean go-test go-integration-test dev dev-release install lint bench
 .PHONY: rust-test rust-integration-test
-.PHONY: image push push-rc push-release quay-login clean-containers
+.PHONY: image push push-rc push-release manifest manifest-rc manifest-release quay-login clean-containers
 
 lint:
 	cargo fmt -- --check
@@ -77,8 +77,20 @@ push-rc: image quay-login
 push-release: image quay-login
 	@make/build.sh push-release
 
+# Manifest targets assemble a multi-arch manifest list from the per-arch image
+# tags already pushed (via push-rc/push-release) from each native host. Run
+# these once, after both the amd64 and arm64 images have been pushed.
+manifest: manifest-rc
+
+manifest-rc: quay-login
+	@make/build.sh manifest-rc
+
+manifest-release: quay-login
+	@make/build.sh manifest-release
+
 quay-login:
 	@make/build.sh quay-login
 
 clean-containers:
-	-sudo podman rmi $(PODMAN_BUILD_IMAGE) $(RELEASE_IMAGE) 2>/dev/null || true
+	-sudo podman rmi $(PODMAN_BUILD_IMAGE)-amd64 $(PODMAN_BUILD_IMAGE)-arm64 2>/dev/null || true
+	-sudo podman rmi $(RELEASE_IMAGE):latest-amd64 $(RELEASE_IMAGE):latest-arm64 2>/dev/null || true

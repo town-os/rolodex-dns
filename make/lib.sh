@@ -29,6 +29,44 @@ warn() {
 }
 
 # ---------------------------------------------------------------------------
+# Architecture
+# ---------------------------------------------------------------------------
+
+# Architectures that participate in multi-arch manifests (OCI names).
+ARCHES="amd64 arm64"
+
+# host_arch — print the OCI arch name (amd64/arm64) for the current host.
+# Builds are native-only: each arch is built on a host of that arch.
+host_arch() {
+  case "$(uname -m)" in
+    x86_64 | amd64) echo amd64 ;;
+    aarch64 | arm64) echo arm64 ;;
+    *)
+      echo "unsupported host architecture: $(uname -m)" >&2
+      return 1
+      ;;
+  esac
+}
+
+# build_manifest LIST_TAG — assemble and push a multi-arch manifest list from
+# the per-arch image tags (LIST_TAG-amd64, LIST_TAG-arm64) already pushed to the
+# registry from their respective native hosts.
+build_manifest() {
+  local list="$1"
+  local ref="${RELEASE_IMAGE}:${list}"
+  substep "Creating manifest ${ref}"
+  ${SUDO} podman manifest rm "${ref}" 2>/dev/null || true
+  ${SUDO} podman manifest create "${ref}"
+  local arch
+  for arch in ${ARCHES}; do
+    substep "Adding ${ref}-${arch}"
+    ${SUDO} podman manifest add "${ref}" "docker://${ref}-${arch}"
+  done
+  substep "Pushing manifest ${ref}"
+  ${SUDO} podman manifest push --all "${ref}" "docker://${ref}"
+}
+
+# ---------------------------------------------------------------------------
 # Registry login
 # ---------------------------------------------------------------------------
 

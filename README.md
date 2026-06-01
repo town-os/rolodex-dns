@@ -77,11 +77,23 @@ After the dev server is running, you can manage it using the `rolodex-dns-cli` b
 
 Rolodex DNS builds with Podman using two Containerfiles: `Containerfile.build` compiles the Rust binaries in a full toolchain image, and `Containerfile` provisions a lean runtime image (`debian:bookworm-slim`) containing only the stripped binaries and CA certificates.
 
-Images are published to `quay.io/town/rolodex`.
+Images are published to `quay.io/town/rolodex` as multi-arch manifest lists covering `linux/amd64` and `linux/arm64`.
+
+### Multi-Architecture Builds
+
+Builds are **native-only**: each architecture is compiled on a host of that architecture (no cross-compilation or QEMU emulation). The build tooling detects the host architecture via `uname -m` and tags every image with an arch suffix (`-amd64` or `-arm64`). A separate manifest step then assembles the per-arch images into a single multi-arch tag.
+
+The end-to-end flow for publishing a multi-arch image is:
+
+1. On an amd64 host: `make push-release` → pushes `…:latest-amd64` (and the date tag).
+2. On an arm64 host: `make push-release` → pushes `…:latest-arm64` (and the date tag).
+3. On either host (once both are pushed): `make manifest-release` → creates and pushes the multi-arch `…:latest` manifest list.
+
+A consumer that pulls `quay.io/town/rolodex:latest` then transparently receives the image matching their architecture.
 
 ### Building
 
-Build the release image (tagged as `quay.io/town/rolodex:latest`):
+Build the release image for the **host** architecture (tagged as `quay.io/town/rolodex:latest-<arch>`):
 
 ```
 make image
@@ -103,30 +115,43 @@ Login to Quay.io (reads `QUAY_USERNAME` and `QUAY_PASSWORD` from the environment
 make quay-login
 ```
 
-Build and push a release candidate (auto-tags `rc.YYYYMMDD` and `rc.latest`):
+Build and push the host-arch release candidate image (auto-tags `rc.YYYYMMDD-<arch>` and `rc.latest-<arch>`):
 
 ```
 make push-rc
 ```
 
-Build and push a release (auto-tags `release.YYYYMMDD` and `latest`):
+Build and push the host-arch release image (auto-tags `release.YYYYMMDD-<arch>` and `latest-<arch>`):
 
 ```
 make push-release
 ```
 
+#### Assembling the Multi-Arch Manifest
+
+After the per-arch images for **all** architectures have been pushed (run `push-rc`/`push-release` on each native host), assemble and push the multi-arch manifest list from any host:
+
+```
+make manifest-rc       # combines rc.latest-amd64 + rc.latest-arm64 → rc.latest (and the rc.YYYYMMDD date tag)
+make manifest-release  # combines latest-amd64 + latest-arm64 → latest (and the release.YYYYMMDD date tag)
+```
+
+The manifest is assembled from the images already in the registry (`podman manifest add docker://…`), so it does not require the per-arch images to be present locally.
+
 #### Pushing a Specific Tag
 
-Use `IMAGE_TAG` to build and push an exact tag instead of the auto-generated date-based tags:
+Use `IMAGE_TAG` to build and push an exact tag instead of the auto-generated date-based tags. The arch suffix is still applied to the per-arch images:
 
 ```
-make IMAGE_TAG=v1.2.3 push-release
+make IMAGE_TAG=v1.2.3 push-release    # pushes quay.io/town/rolodex:v1.2.3-<arch>
+make IMAGE_TAG=v1.2.3 manifest-release # combines v1.2.3-amd64 + v1.2.3-arm64 → v1.2.3
 ```
 
-This builds the image as `quay.io/town/rolodex:v1.2.3` and pushes only that tag. The same works with `push-rc`:
+The same works with `push-rc` / `manifest-rc`:
 
 ```
 make IMAGE_TAG=v1.2.3-rc1 push-rc
+make IMAGE_TAG=v1.2.3-rc1 manifest-rc
 ```
 
 To push an already-built image under a different tag without rebuilding:

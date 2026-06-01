@@ -2,61 +2,75 @@
 set -e
 . make/lib.sh
 
+ARCH="$(host_arch)"
+
 case "$1" in
   release)
-    step "Building build image"
+    step "Building build image (${ARCH})"
     mkdir -p .cache/cargo-registry .cache/cargo-git
     ${SUDO} podman build \
       --volume "$(pwd)/.cache/cargo-registry:/usr/local/cargo/registry:z" \
       --volume "$(pwd)/.cache/cargo-git:/usr/local/cargo/git:z" \
-      -t "${PODMAN_BUILD_IMAGE}" -f Containerfile.build .
+      -t "${PODMAN_BUILD_IMAGE}-${ARCH}" -f Containerfile.build .
 
-    step "Building release image"
+    step "Building release image (${ARCH})"
     ${SUDO} podman build --pull=never \
-      --build-arg "BUILD_IMAGE=${PODMAN_BUILD_IMAGE}" \
-      -t "${RELEASE_IMAGE}:${IMAGE_TAG:-latest}" -f Containerfile .
+      --build-arg "BUILD_IMAGE=${PODMAN_BUILD_IMAGE}-${ARCH}" \
+      -t "${RELEASE_IMAGE}:${IMAGE_TAG:-latest}-${ARCH}" -f Containerfile .
     ;;
   push-rc)
-    step "Pushing release candidate"
-    SRC="${RELEASE_IMAGE}:${IMAGE_TAG:-latest}"
+    step "Pushing release candidate (${ARCH})"
+    SRC="${RELEASE_IMAGE}:${IMAGE_TAG:-latest}-${ARCH}"
     if [ -n "${IMAGE_TAG}" ]; then
       substep "Pushing ${SRC}"
       ${SUDO} podman push "${SRC}"
     else
-      DATE_TAG="rc.$(date +%Y%m%d)"
-      substep "Tagging ${RELEASE_IMAGE}:${DATE_TAG}"
-      ${SUDO} podman tag "${SRC}" "${RELEASE_IMAGE}:${DATE_TAG}"
-      substep "Tagging ${RELEASE_IMAGE}:rc.latest"
-      ${SUDO} podman tag "${SRC}" "${RELEASE_IMAGE}:rc.latest"
-      substep "Pushing ${RELEASE_IMAGE}:${DATE_TAG}"
-      ${SUDO} podman push "${RELEASE_IMAGE}:${DATE_TAG}"
-      substep "Pushing ${RELEASE_IMAGE}:rc.latest"
-      ${SUDO} podman push "${RELEASE_IMAGE}:rc.latest"
+      for t in "rc.$(date +%Y%m%d)" "rc.latest"; do
+        substep "Tagging ${RELEASE_IMAGE}:${t}-${ARCH}"
+        ${SUDO} podman tag "${SRC}" "${RELEASE_IMAGE}:${t}-${ARCH}"
+        substep "Pushing ${RELEASE_IMAGE}:${t}-${ARCH}"
+        ${SUDO} podman push "${RELEASE_IMAGE}:${t}-${ARCH}"
+      done
     fi
     ;;
   push-release)
-    step "Pushing release"
-    SRC="${RELEASE_IMAGE}:${IMAGE_TAG:-latest}"
+    step "Pushing release (${ARCH})"
+    SRC="${RELEASE_IMAGE}:${IMAGE_TAG:-latest}-${ARCH}"
     if [ -n "${IMAGE_TAG}" ]; then
       substep "Pushing ${SRC}"
       ${SUDO} podman push "${SRC}"
     else
-      DATE_TAG="release.$(date +%Y%m%d)"
-      substep "Tagging ${RELEASE_IMAGE}:${DATE_TAG}"
-      ${SUDO} podman tag "${SRC}" "${RELEASE_IMAGE}:${DATE_TAG}"
-      substep "Tagging ${RELEASE_IMAGE}:latest"
-      ${SUDO} podman tag "${SRC}" "${RELEASE_IMAGE}:latest"
-      substep "Pushing ${RELEASE_IMAGE}:${DATE_TAG}"
-      ${SUDO} podman push "${RELEASE_IMAGE}:${DATE_TAG}"
-      substep "Pushing ${RELEASE_IMAGE}:latest"
-      ${SUDO} podman push "${RELEASE_IMAGE}:latest"
+      for t in "release.$(date +%Y%m%d)" "latest"; do
+        substep "Tagging ${RELEASE_IMAGE}:${t}-${ARCH}"
+        ${SUDO} podman tag "${SRC}" "${RELEASE_IMAGE}:${t}-${ARCH}"
+        substep "Pushing ${RELEASE_IMAGE}:${t}-${ARCH}"
+        ${SUDO} podman push "${RELEASE_IMAGE}:${t}-${ARCH}"
+      done
+    fi
+    ;;
+  manifest-rc)
+    step "Assembling release candidate manifest"
+    if [ -n "${IMAGE_TAG}" ]; then
+      build_manifest "${IMAGE_TAG}"
+    else
+      build_manifest "rc.$(date +%Y%m%d)"
+      build_manifest "rc.latest"
+    fi
+    ;;
+  manifest-release)
+    step "Assembling release manifest"
+    if [ -n "${IMAGE_TAG}" ]; then
+      build_manifest "${IMAGE_TAG}"
+    else
+      build_manifest "release.$(date +%Y%m%d)"
+      build_manifest "latest"
     fi
     ;;
   quay-login)
     registry_login quay.io QUAY_USERNAME QUAY_PASSWORD
     ;;
   *)
-    echo "Usage: $0 {release|push-rc|push-release|quay-login}"
+    echo "Usage: $0 {release|push-rc|push-release|manifest-rc|manifest-release|quay-login}"
     exit 1
     ;;
 esac
