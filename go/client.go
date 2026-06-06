@@ -1474,3 +1474,123 @@ func (c *Client) ListDhcpCertOptions(ctx context.Context, scopeName string) ([]*
 	}
 	return resp.Options, nil
 }
+
+// ============================================================================
+// ACME Issuer (CA) Administration
+// ============================================================================
+
+// ZoneCa holds the root and intermediate CA certificates for a zone.
+type ZoneCa struct {
+	RootCAPEM         string
+	IntermediateCAPEM string
+}
+
+// EabCredential is an External Account Binding credential for ACME clients.
+type EabCredential struct {
+	Kid          string
+	HmacKey      string // base64url-encoded
+	DirectoryURL string
+}
+
+// AcmeAccount describes a registered ACME server account.
+type AcmeAccount struct {
+	AccountID string
+	Status    string
+	Zone      string
+	EabKid    string
+}
+
+// AcmeCertificate describes an issued ACME certificate.
+type AcmeCertificate struct {
+	ID        int64
+	Domain    string
+	IssuedAt  int64
+	ExpiresAt int64
+}
+
+// EnsureZoneCa creates the per-zone intermediate CA if absent and returns the
+// root + intermediate certificates.
+func (c *Client) EnsureZoneCa(ctx context.Context, zone string) (*ZoneCa, error) {
+	resp, err := c.rpc.EnsureZoneCa(ctx, &pb.EnsureZoneCaRequest{
+		Zone:      zone,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex-dns: ensure zone ca: %w", err)
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("rolodex-dns: ensure zone ca: %s", resp.Message)
+	}
+	return &ZoneCa{RootCAPEM: resp.RootCaPem, IntermediateCAPEM: resp.IntermediateCaPem}, nil
+}
+
+// CreateEabCredential mints an EAB credential scoped to a zone.
+func (c *Client) CreateEabCredential(ctx context.Context, zone string) (*EabCredential, error) {
+	resp, err := c.rpc.CreateEabCredential(ctx, &pb.CreateEabCredentialRequest{
+		Zone:      zone,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex-dns: create eab credential: %w", err)
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("rolodex-dns: create eab credential: %s", resp.Message)
+	}
+	return &EabCredential{Kid: resp.Kid, HmacKey: resp.HmacKey, DirectoryURL: resp.DirectoryUrl}, nil
+}
+
+// RemoveEabCredential removes an EAB credential by key id.
+func (c *Client) RemoveEabCredential(ctx context.Context, kid string) error {
+	resp, err := c.rpc.RemoveEabCredential(ctx, &pb.RemoveEabCredentialRequest{
+		Kid:       kid,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex-dns: remove eab credential: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex-dns: remove eab credential: %s", resp.Message)
+	}
+	return nil
+}
+
+// ListAcmeAccounts lists registered ACME server accounts.
+func (c *Client) ListAcmeAccounts(ctx context.Context) ([]*AcmeAccount, error) {
+	resp, err := c.rpc.ListAcmeAccounts(ctx, &pb.ListAcmeAccountsRequest{
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex-dns: list acme accounts: %w", err)
+	}
+	out := make([]*AcmeAccount, 0, len(resp.Accounts))
+	for _, a := range resp.Accounts {
+		out = append(out, &AcmeAccount{
+			AccountID: a.AccountId,
+			Status:    a.Status,
+			Zone:      a.Zone,
+			EabKid:    a.EabKid,
+		})
+	}
+	return out, nil
+}
+
+// ListAcmeCertificates lists issued certificates, optionally filtered by zone.
+func (c *Client) ListAcmeCertificates(ctx context.Context, zone string) ([]*AcmeCertificate, error) {
+	resp, err := c.rpc.ListAcmeCertificates(ctx, &pb.ListAcmeCertificatesRequest{
+		Zone:      zone,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex-dns: list acme certificates: %w", err)
+	}
+	out := make([]*AcmeCertificate, 0, len(resp.Certificates))
+	for _, cert := range resp.Certificates {
+		out = append(out, &AcmeCertificate{
+			ID:        cert.Id,
+			Domain:    cert.Domain,
+			IssuedAt:  cert.IssuedAt,
+			ExpiresAt: cert.ExpiresAt,
+		})
+	}
+	return out, nil
+}

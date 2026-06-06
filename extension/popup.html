@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<style>
+  body { font-family: system-ui, sans-serif; width: 360px; margin: 0; padding: 12px;
+         color-scheme: light dark; }
+  h1 { font-size: 1.05rem; margin: 0 0 .5rem; }
+  label { display: block; font-weight: 600; margin: .5rem 0 .2rem; font-size: .85rem; }
+  input, select { width: 100%; box-sizing: border-box; padding: .4rem; border-radius: 6px;
+                  border: 1px solid #8886; font-size: .9rem; }
+  button { margin-top: .6rem; padding: .45rem .8rem; border: 0; border-radius: 6px;
+           background: #2563eb; color: #fff; cursor: pointer; font-size: .9rem; }
+  button.secondary { background: #6b7280; }
+  pre { background: #8881; border-radius: 6px; padding: .5rem; white-space: pre-wrap;
+        word-break: break-all; font-size: .78rem; max-height: 220px; overflow: auto; }
+  .muted { color: #6b7280; font-size: .78rem; }
+  .hidden { display: none; }
+  .row { display: flex; gap: .4rem; }
+  .row > * { flex: 1; }
+</style>
+</head>
+<body>
+  <h1>Rolodex DNS Enrollment</h1>
+
+  <label for="portal">Portal URL</label>
+  <input id="portal" type="url" placeholder="https://dns.example.com:8500" />
+
+  <label for="zone">Zone</label>
+  <div class="row">
+    <select id="zone"></select>
+    <button id="load" class="secondary">Load</button>
+  </div>
+
+  <button id="enroll">Enroll</button>
+  <button id="ca" class="secondary">Download root CA</button>
+
+  <div id="out" class="hidden">
+    <label>EAB credentials & client config</label>
+    <pre id="result"></pre>
+  </div>
+  <p id="status" class="muted"></p>
+
+  <script src="popup.js"></script>
+</body>
+</html>

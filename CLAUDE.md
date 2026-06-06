@@ -167,13 +167,33 @@ TLSA DNS names follow the `_port._protocol.domain.` convention.
 
 A self-signed DANE root CA can be generated via `GenerateDaneRootCa` for trust-anchor-based DANE deployments.
 
-## ACME Certificate Management
+## ACME Issuer (Certificate Authority)
 
-Since Rolodex is the DNS server, it can serve `_acme-challenge` TXT records natively for DNS-01 challenge validation (RFC 8555). This enables automated certificate issuance without external DNS providers.
+Rolodex is itself an **ACME server / certificate authority** (RFC 8555, server side) — not merely an ACME client. Off-the-shelf ACME clients (certbot, lego, acme.sh, Caddy) point at the Rolodex directory URL and obtain certificates issued by a Rolodex-run CA. Because Rolodex is also the DNS server, it serves and self-validates the dns-01 challenge against its own database.
 
-- `RequestAcmeCert` initiates a certificate request for a domain using a configurable ACME provider URL (default: Let's Encrypt).
-- `GetAcmeStatus` retrieves the current certificate status: `not_configured`, `pending`, `valid`, `expired`, or `failed`.
-- Challenge records use a TTL of 60 seconds.
+### CA hierarchy
+
+A single self-signed **root CA** signs a **per-zone intermediate CA**; each intermediate signs the leaf certificates issued through ACME. All keys are **Ed25519**. CAs are stored as PEM in the database (`dane_root_cas` reserved name `__rolodex_root__`, and `zone_cas`) and re-materialized at use time via rcgen `from_ca_cert_pem`. See `src/ca.rs` (`ensure_root_ca`, `ensure_zone_intermediate`, `issue_leaf`, `intermediate_tlsa`, `responsible_zone`).
+
+### Protocol flow (`src/acme_server.rs`, `src/acme_jose.rs`)
+
+Endpoints are mounted under `/acme`: `directory`, `new-nonce`, `new-account`, `new-order`, `order/{id}`, `authz/{id}`, `challenge/{id}`, `finalize/{id}`, `cert/{id}`, `revoke-cert`. Every response carries a fresh `Replay-Nonce`. JWS requests are verified with `ring` for `EdDSA`, `ES256`, and `RS256`; nonces are single-use (anti-replay). Account identity uses the RFC 7638 JWK thumbprint.
+
+- **Validation is dns-01 only**, checked against Rolodex's own DNS data. The client provisions `_acme-challenge.<name>` TXT (60s TTL) through the Rolodex control plane — use the bundled hook `scripts/rolodex-dns01-hook.sh` (supports lego `exec` and certbot `--manual-auth-hook`).
+- **Authorization**: account registration requires External Account Binding (EAB) by default (`require_eab`); EAB credentials are scoped to a zone and minted by the portal/CLI. Issuance is restricted to names under an intermediate-backed zone unless `issuance_scope` is `any`.
+- **Issuance**: `finalize` signs the client CSR with the per-zone intermediate and returns the `leaf + intermediate` chain.
+
+### DANE integration
+
+On issuance, the per-zone intermediate is auto-published as a **DANE-TA** TLSA record — `2 1 1` (intermediate SPKI SHA-256) at `_<port>._<proto>.<name>` (default `_443._tcp`, configurable). The server presents `leaf + intermediate`, so a DANE-TA validator matches the intermediate in the chain. No per-leaf EE records are published.
+
+### Enrollment surfaces (trusted-network)
+
+End users do not need a CLI. A built-in **web portal** (`src/portal.rs`, served on `acme.portal_bind`) and a **browser extension** (`extension/`) share one JSON API (`/api/account`, `/api/ca`, `/api/zones`, `/api/certs`). The portal mints an EAB account behind the scenes and returns copy-paste client config; users just trust the root CA and run their client. **Access is trusted-network only** — bind `portal_bind` to an internal address; anyone who can reach it may enroll.
+
+### Legacy stub RPCs
+
+`RequestAcmeCert`/`GetAcmeStatus` remain for backward compatibility (challenge-record plumbing + status), superseded by the ACME endpoint and the admin RPCs below.
 
 ## DNS64
 
@@ -368,8 +388,18 @@ The management API is defined in `proto/rolodex_dns.proto` under the `RolodexDns
 
 | RPC               | Description                                                              |
 | ----------------- | ------------------------------------------------------------------------ |
-| `RequestAcmeCert` | Requests a certificate via ACME DNS-01 challenge (domain, provider URL). |
+| `RequestAcmeCert` | Legacy: provisions a dns-01 challenge record (superseded by the issuer). |
 | `GetAcmeStatus`   | Retrieves ACME certificate status (status, expiry, domain).              |
+
+#### ACME Issuer Administration
+
+| RPC                    | Description                                                                  |
+| ---------------------- | ---------------------------------------------------------------------------- |
+| `EnsureZoneCa`         | Creates the per-zone intermediate CA if absent; returns root + intermediate PEM. |
+| `CreateEabCredential`  | Mints an EAB credential (kid + base64url HMAC) scoped to a zone.             |
+| `RemoveEabCredential`  | Removes an EAB credential by kid.                                            |
+| `ListAcmeAccounts`     | Lists registered ACME server accounts.                                      |
+| `ListAcmeCertificates` | Lists issued certificates, optionally filtered by zone.                     |
 
 #### DNS64
 
@@ -506,6 +536,18 @@ The `rolodex-dns-cli` binary is a command-line client for the gRPC management in
 | `request-acme-cert` | Request an ACME certificate. Takes `--domain` and `--provider-url` (default: Let's Encrypt).                                                                                          |
 | `acme-status`       | Get ACME certificate status. Takes `--domain`.                                                                                                                                        |
 
+#### ACME Issuer Administration
+
+| Command              | Description                                                                |
+| -------------------- | -------------------------------------------------------------------------- |
+| `ensure-zone-ca`     | Ensure the per-zone intermediate CA exists. Takes `--zone`. Prints root + intermediate PEM. |
+| `create-eab`         | Mint an EAB credential scoped to a zone. Takes `--zone`. Prints kid + HMAC key. |
+| `remove-eab`         | Remove an EAB credential. Takes `--kid`.                                   |
+| `list-acme-accounts` | List registered ACME server accounts.                                     |
+| `list-acme-certs`    | List issued certificates. Takes optional `--zone`.                        |
+
+The bundled `scripts/rolodex-dns01-hook.sh` provisions/removes the `_acme-challenge` TXT via `rolodex-dns-cli` for ACME clients doing dns-01 (lego `exec` and certbot `--manual-auth-hook`).
+
 #### DHCP
 
 | Command             | Description                                                                                                                                        |
@@ -626,6 +668,11 @@ An additional `WithGRPCDialOption` option allows passing custom `grpc.DialOption
 | `RequestAcmeCert(ctx, domain, providerURL)`           | Requests an ACME certificate via DNS-01.    |
 | `GetAcmeStatus(ctx, domain)`                          | Retrieves ACME certificate status.          |
 | `SetDns64Config(ctx, config)` / `GetDns64Config(ctx)` | Configures DNS64 synthesis.                 |
+| `EnsureZoneCa(ctx, zone)`                             | Ensures the per-zone intermediate CA exists. |
+| `CreateEabCredential(ctx, zone)`                      | Mints an EAB credential scoped to a zone.   |
+| `RemoveEabCredential(ctx, kid)`                       | Removes an EAB credential by kid.           |
+| `ListAcmeAccounts(ctx)`                               | Lists registered ACME server accounts.      |
+| `ListAcmeCertificates(ctx, zone)`                     | Lists issued certificates, optionally by zone. |
 
 #### DHCP
 
@@ -750,8 +797,17 @@ dns:
 | `dhcp.reclaim_timeout`              | `86400`                        | Seconds after expiry before IP is reclaimed            |
 | `dhcp.sweep_interval`               | `60`                           | Background lease sweep interval in seconds             |
 | `dhcp.tld`                          | (required)                     | TLD for hostname DNS registration (e.g. `example.com`) |
+| `acme.bind`                         | `0.0.0.0:8555`                 | Client-facing ACME HTTPS listener; supports interface:port |
+| `acme.portal_bind`                  | `127.0.0.1:8500`               | Trusted-network enrollment portal listener (portal + `/api`) |
+| `acme.tls.*`                        | (same as DoT)                  | TLS settings for the ACME and portal listeners         |
+| `acme.directory_url`                | `https://localhost:8555/acme`  | External ACME directory URL advertised to clients (set this) |
+| `acme.root_ca_cn`                   | `Rolodex Root CA`              | Common name for the root CA created at boot             |
+| `acme.leaf_validity_days`           | `90`                           | Validity of issued leaf certificates                   |
+| `acme.tlsa_port` / `acme.tlsa_proto`| `443` / `tcp`                  | Where the DANE-TA TLSA record is published per name    |
+| `acme.require_eab`                  | `true`                         | Require External Account Binding for account registration |
+| `acme.issuance_scope`               | `managed_zones`                | `managed_zones` (zone must have a CA) or `any`          |
 
-The `dot`, `doh`, `doq`, and `proxy` sections are optional. When omitted, the corresponding transport is not started.
+The `dot`, `doh`, `doq`, `proxy`, and `acme` sections are optional. When omitted, the corresponding transport/service is not started. When `acme` is present, the root CA is created at boot and both the ACME and portal listeners start.
 
 ## Build System
 
@@ -884,7 +940,9 @@ The `make test` target runs the full test suite: Go integration tests, Go unit t
 - **tracing** / **tracing-subscriber** — Structured logging (configurable via `RUST_LOG` environment variable)
 - **hyper-util** / **tower** — HTTP/2 transport for Unix socket gRPC connections
 - **rustls** / **tokio-rustls** — TLS for encrypted DNS transports
-- **rcgen** — Self-signed certificate generation
+- **rcgen** (with `x509-parser` feature) — certificate generation and CA signing (root → per-zone intermediate → leaf-from-CSR)
+- **x509-parser** — SPKI extraction for TLSA records and CA import
+- **time** — certificate validity periods and RFC 3339 timestamps in ACME responses
 - **axum** / **axum-server** — HTTP framework for DoH
 - **quinn** — QUIC protocol for DoQ
 - **ring** / **sha2** — Cryptographic operations for DNSSEC and DANE

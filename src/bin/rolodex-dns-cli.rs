@@ -709,6 +709,47 @@ enum Commands {
         #[arg(short, long)]
         domain: String,
     },
+
+    /// Ensure the per-zone intermediate CA exists (ACME issuer).
+    /// gRPC path: /rolodex_dns.RolodexDnsService/EnsureZoneCa
+    #[command(name = "ensure-zone-ca")]
+    EnsureZoneCa {
+        /// The DNS zone to create a CA for
+        #[arg(short, long)]
+        zone: String,
+    },
+
+    /// Mint an External Account Binding credential scoped to a zone.
+    /// gRPC path: /rolodex_dns.RolodexDnsService/CreateEabCredential
+    #[command(name = "create-eab")]
+    CreateEab {
+        /// The DNS zone the credential may issue for
+        #[arg(short, long)]
+        zone: String,
+    },
+
+    /// Remove an External Account Binding credential by key id.
+    /// gRPC path: /rolodex_dns.RolodexDnsService/RemoveEabCredential
+    #[command(name = "remove-eab")]
+    RemoveEab {
+        /// The EAB key id to remove
+        #[arg(short, long)]
+        kid: String,
+    },
+
+    /// List registered ACME server accounts.
+    /// gRPC path: /rolodex_dns.RolodexDnsService/ListAcmeAccounts
+    #[command(name = "list-acme-accounts")]
+    ListAcmeAccounts,
+
+    /// List issued ACME certificates, optionally filtered by zone.
+    /// gRPC path: /rolodex_dns.RolodexDnsService/ListAcmeCertificates
+    #[command(name = "list-acme-certs")]
+    ListAcmeCerts {
+        /// Optional zone filter
+        #[arg(short, long)]
+        zone: Option<String>,
+    },
 }
 
 async fn connect(cli: &Cli) -> Result<RolodexDnsServiceClient<Channel>> {
@@ -1783,6 +1824,104 @@ async fn main() -> Result<()> {
             println!("  Domain:  {}", resp.domain);
             if resp.expires_at > 0 {
                 println!("  Expires: {}", resp.expires_at);
+            }
+        }
+
+        Commands::EnsureZoneCa { zone } => {
+            let response = client
+                .ensure_zone_ca(EnsureZoneCaRequest {
+                    zone: zone.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("ensure-zone-ca RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("Zone CA ready for {}.", zone);
+                println!("\nRoot CA:\n{}", resp.root_ca_pem);
+                println!("Intermediate CA:\n{}", resp.intermediate_ca_pem);
+            } else {
+                anyhow::bail!("Failed to ensure zone CA: {}", resp.message);
+            }
+        }
+
+        Commands::CreateEab { zone } => {
+            let response = client
+                .create_eab_credential(CreateEabCredentialRequest {
+                    zone: zone.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("create-eab RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("EAB credential created for {}:", zone);
+                println!("  Key ID:   {}", resp.kid);
+                println!("  HMAC key: {}", resp.hmac_key);
+                if !resp.directory_url.is_empty() {
+                    println!("  ACME dir: {}", resp.directory_url);
+                }
+            } else {
+                anyhow::bail!("Failed to create EAB credential: {}", resp.message);
+            }
+        }
+
+        Commands::RemoveEab { kid } => {
+            let response = client
+                .remove_eab_credential(RemoveEabCredentialRequest {
+                    kid: kid.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("remove-eab RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("Removed EAB credential {}.", kid);
+            } else {
+                anyhow::bail!("Failed to remove EAB credential: {}", resp.message);
+            }
+        }
+
+        Commands::ListAcmeAccounts => {
+            let response = client
+                .list_acme_accounts(ListAcmeAccountsRequest {
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("list-acme-accounts RPC failed")?;
+            let accounts = response.into_inner().accounts;
+            if accounts.is_empty() {
+                println!("No ACME accounts.");
+            } else {
+                println!("{:<24} {:<8} {:<24} EAB KID", "ACCOUNT", "STATUS", "ZONE");
+                for a in accounts {
+                    println!(
+                        "{:<24} {:<8} {:<24} {}",
+                        a.account_id, a.status, a.zone, a.eab_kid
+                    );
+                }
+            }
+        }
+
+        Commands::ListAcmeCerts { zone } => {
+            let response = client
+                .list_acme_certificates(ListAcmeCertificatesRequest {
+                    zone: zone.unwrap_or_default(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("list-acme-certs RPC failed")?;
+            let certs = response.into_inner().certificates;
+            if certs.is_empty() {
+                println!("No issued certificates.");
+            } else {
+                println!("{:<6} {:<32} {:<12} EXPIRES", "ID", "DOMAIN", "ISSUED");
+                for c in certs {
+                    println!(
+                        "{:<6} {:<32} {:<12} {}",
+                        c.id, c.domain, c.issued_at, c.expires_at
+                    );
+                }
             }
         }
     }

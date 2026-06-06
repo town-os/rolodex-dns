@@ -38,6 +38,9 @@ pub struct Config {
     /// DHCP server configuration (disabled when absent).
     #[serde(default)]
     pub dhcp: Option<DhcpConfig>,
+    /// ACME issuer / certificate-authority configuration (disabled when absent).
+    #[serde(default)]
+    pub acme: Option<AcmeConfig>,
 }
 
 /// A DNS bind entry: protocol (udp/tcp) paired with a bind address.
@@ -321,6 +324,71 @@ impl Default for DoqConfig {
     }
 }
 
+/// ACME issuer / certificate-authority configuration.
+///
+/// When present, Rolodex runs an RFC 8555 ACME server (the `bind` listener,
+/// client-facing) plus a trusted-network enrollment portal (the `portal_bind`
+/// listener). Omit the section to disable both.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AcmeConfig {
+    /// Address to bind the client-facing ACME HTTPS listener (e.g. "0.0.0.0:8555").
+    #[serde(default = "default_acme_bind")]
+    pub bind: String,
+    /// Address to bind the trusted-network enrollment portal (e.g. "127.0.0.1:8500").
+    #[serde(default = "default_acme_portal_bind")]
+    pub portal_bind: String,
+    /// TLS settings for the ACME and portal listeners.
+    #[serde(default)]
+    pub tls: TlsConfig,
+    /// External base URL of the ACME directory advertised to clients
+    /// (e.g. "https://dns.example.com:8555/acme"). Must be reachable by clients.
+    #[serde(default = "default_acme_directory_url")]
+    pub directory_url: String,
+    /// Common name for the Rolodex root CA created at boot.
+    #[serde(default = "default_acme_root_cn")]
+    pub root_ca_cn: String,
+    /// Validity of issued leaf certificates, in days.
+    #[serde(default = "default_acme_leaf_validity_days")]
+    pub leaf_validity_days: i64,
+    /// Default port used to place the auto-published DANE-TA TLSA record.
+    #[serde(default = "default_acme_tlsa_port")]
+    pub tlsa_port: u16,
+    /// Default protocol used to place the auto-published DANE-TA TLSA record.
+    #[serde(default = "default_acme_tlsa_proto")]
+    pub tlsa_proto: String,
+    /// Whether External Account Binding is required for account registration.
+    #[serde(default = "default_true")]
+    pub require_eab: bool,
+    /// Issuance scope: "managed_zones" (only names under an intermediate-backed
+    /// zone) or "any".
+    #[serde(default = "default_acme_issuance_scope")]
+    pub issuance_scope: String,
+}
+
+impl Default for AcmeConfig {
+    fn default() -> Self {
+        Self {
+            bind: default_acme_bind(),
+            portal_bind: default_acme_portal_bind(),
+            tls: TlsConfig::default(),
+            directory_url: default_acme_directory_url(),
+            root_ca_cn: default_acme_root_cn(),
+            leaf_validity_days: default_acme_leaf_validity_days(),
+            tlsa_port: default_acme_tlsa_port(),
+            tlsa_proto: default_acme_tlsa_proto(),
+            require_eab: true,
+            issuance_scope: default_acme_issuance_scope(),
+        }
+    }
+}
+
+impl AcmeConfig {
+    /// Returns true if issuance is allowed for any name (not just managed zones).
+    pub fn issuance_any(&self) -> bool {
+        self.issuance_scope.eq_ignore_ascii_case("any")
+    }
+}
+
 /// Upstream proxy configuration for forwarding DNS queries through a proxy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyConfig {
@@ -455,6 +523,38 @@ fn default_proxy_mode() -> String {
     "connect".to_string()
 }
 
+fn default_acme_bind() -> String {
+    "0.0.0.0:8555".to_string()
+}
+
+fn default_acme_portal_bind() -> String {
+    "127.0.0.1:8500".to_string()
+}
+
+fn default_acme_directory_url() -> String {
+    "https://localhost:8555/acme".to_string()
+}
+
+fn default_acme_root_cn() -> String {
+    "Rolodex Root CA".to_string()
+}
+
+fn default_acme_leaf_validity_days() -> i64 {
+    90
+}
+
+fn default_acme_tlsa_port() -> u16 {
+    443
+}
+
+fn default_acme_tlsa_proto() -> String {
+    "tcp".to_string()
+}
+
+fn default_acme_issuance_scope() -> String {
+    "managed_zones".to_string()
+}
+
 fn default_ttl_drift_mode() -> String {
     "disabled".to_string()
 }
@@ -515,6 +615,7 @@ impl Default for Config {
             dns64: Dns64Config::default(),
             security: SecurityConfig::default(),
             dhcp: None,
+            acme: None,
         }
     }
 }

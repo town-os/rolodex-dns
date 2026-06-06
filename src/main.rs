@@ -195,6 +195,78 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Spawn the ACME issuer (CA) + enrollment portal if configured
+    if let Some(ref acme_config) = config.acme {
+        // Ensure the Rolodex root CA exists before serving.
+        rolodex_dns::ca::ensure_root_ca(&db, &acme_config.root_ca_cn)
+            .context("failed to initialize Rolodex root CA")?;
+
+        let tls_cfg = rolodex_dns::tls::TlsConfig {
+            cert_path: acme_config.tls.cert_path.clone(),
+            key_path: acme_config.tls.key_path.clone(),
+            auto_self_signed: acme_config.tls.auto_self_signed,
+        };
+        match rolodex_dns::tls::TlsManager::new(tls_cfg, vec![b"h2".to_vec(), b"http/1.1".to_vec()])
+        {
+            Ok(tls_mgr) => {
+                let server_config = tls_mgr.server_config();
+                let acme_state = rolodex_dns::acme_server::AcmeState {
+                    db: db.clone(),
+                    dns_server: Some(Arc::clone(&dns_server)),
+                    directory_url: acme_config.directory_url.clone(),
+                    require_eab: acme_config.require_eab,
+                    issuance_any: acme_config.issuance_any(),
+                    leaf_validity_days: acme_config.leaf_validity_days,
+                    tlsa_port: acme_config.tlsa_port,
+                    tlsa_proto: acme_config.tlsa_proto.clone(),
+                };
+
+                // Client-facing ACME HTTPS listener(s).
+                match rolodex_dns::config::resolve_bind_addrs(&acme_config.bind) {
+                    Ok(acme_binds) => {
+                        for acme_bind in acme_binds {
+                            let state = acme_state.clone();
+                            let cfg = server_config.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    rolodex_dns::acme_server::serve_acme(&acme_bind, state, cfg)
+                                        .await
+                                {
+                                    error!("ACME server error on {}: {}", acme_bind, e);
+                                }
+                            });
+                        }
+                    }
+                    Err(e) => error!("resolving ACME bind address: {}", e),
+                }
+
+                // Trusted-network enrollment portal listener(s).
+                let portal_state = rolodex_dns::portal::PortalState {
+                    db: db.clone(),
+                    acme: acme_state.clone(),
+                };
+                match rolodex_dns::config::resolve_bind_addrs(&acme_config.portal_bind) {
+                    Ok(portal_binds) => {
+                        for portal_bind in portal_binds {
+                            let state = portal_state.clone();
+                            let cfg = server_config.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    rolodex_dns::portal::serve_portal(&portal_bind, state, cfg)
+                                        .await
+                                {
+                                    error!("ACME portal error on {}: {}", portal_bind, e);
+                                }
+                            });
+                        }
+                    }
+                    Err(e) => error!("resolving ACME portal bind address: {}", e),
+                }
+            }
+            Err(e) => error!("Failed to initialize ACME TLS: {}", e),
+        }
+    }
+
     // Spawn DNS-over-QUIC (DoQ) server if configured
     if let Some(ref doq_config) = config.doq {
         let tls_cfg = rolodex_dns::tls::TlsConfig {
@@ -223,6 +295,12 @@ async fn main() -> Result<()> {
         }
     }
 
+    // ACME issuer parameters threaded into the gRPC admin RPCs.
+    let (acme_directory_url, acme_root_cn) = match &config.acme {
+        Some(a) => (a.directory_url.clone(), a.root_ca_cn.clone()),
+        None => (String::new(), String::new()),
+    };
+
     // Spawn gRPC TCP server
     if !config.grpc.tcp_bind.is_empty() {
         let grpc_binds = rolodex_dns::config::resolve_bind_addrs(&config.grpc.tcp_bind)
@@ -234,7 +312,8 @@ async fn main() -> Result<()> {
                 rbl.clone(),
                 config.grpc.shared_secret.clone(),
                 false,
-            );
+            )
+            .with_acme(acme_directory_url.clone(), acme_root_cn.clone());
             let addr: SocketAddr = grpc_bind
                 .parse()
                 .with_context(|| format!("invalid gRPC TCP bind address: {}", grpc_bind))?;
@@ -270,7 +349,8 @@ async fn main() -> Result<()> {
             rbl.clone(),
             config.grpc.shared_secret.clone(),
             true,
-        );
+        )
+        .with_acme(acme_directory_url.clone(), acme_root_cn.clone());
         info!("gRPC Unix socket server listening on {}", socket_path);
         tokio::spawn(async move {
             if let Err(e) = Server::builder()

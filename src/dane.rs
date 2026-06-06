@@ -46,7 +46,7 @@ pub fn tlsa_dns_name(domain: &str, port: u16, protocol: &str) -> String {
     format!("_{}._{}.{}.", port, protocol, domain)
 }
 
-/// Generates a self-signed root CA certificate for DANE.
+/// Generates a self-signed root CA certificate for DANE (Ed25519).
 pub fn generate_dane_root_ca(name: &str) -> Result<(String, String)> {
     let mut params = rcgen::CertificateParams::new(vec![]).context("failed to create CA params")?;
     params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
@@ -55,7 +55,8 @@ pub fn generate_dane_root_ca(name: &str) -> Result<(String, String)> {
         .distinguished_name
         .push(rcgen::DnType::CommonName, name);
 
-    let key_pair = rcgen::KeyPair::generate().context("failed to generate CA key pair")?;
+    let key_pair = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519)
+        .context("failed to generate CA key pair")?;
     let cert = params
         .self_signed(&key_pair)
         .context("failed to generate root CA")?;
@@ -79,13 +80,14 @@ fn pem_to_der(pem: &str) -> Result<Vec<u8>> {
         .context("failed to decode PEM base64")
 }
 
-/// Extracts the SubjectPublicKeyInfo from a DER-encoded certificate.
-/// This is a simplified extraction that finds the SPKI within the TBS.
+/// Extracts the DER-encoded SubjectPublicKeyInfo from a DER-encoded certificate.
+///
+/// TLSA selector 1 hashes the SPKI (the full `SubjectPublicKeyInfo` structure,
+/// algorithm identifier included), per RFC 6698 §2.1.2.
 fn extract_spki(cert_der: &[u8]) -> Result<Vec<u8>> {
-    // For now, use the full certificate DER as a fallback
-    // A full implementation would parse ASN.1 to extract SPKI
-    // Using x509-parser when available
-    Ok(cert_der.to_vec())
+    let (_, cert) = x509_parser::parse_x509_certificate(cert_der)
+        .context("failed to parse certificate for SPKI extraction")?;
+    Ok(cert.tbs_certificate.subject_pki.raw.to_vec())
 }
 
 #[cfg(test)]

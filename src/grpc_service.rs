@@ -24,6 +24,11 @@ pub struct RolodexDnsGrpcService {
     shared_secret: String,
     /// Whether this connection is over a Unix socket (bypasses auth).
     is_unix: bool,
+    /// External ACME directory URL advertised when minting EAB credentials.
+    /// Empty when no ACME issuer is configured.
+    acme_directory_url: String,
+    /// Common name for the Rolodex root CA created on demand by ACME admin RPCs.
+    acme_root_cn: String,
 }
 
 impl RolodexDnsGrpcService {
@@ -40,7 +45,18 @@ impl RolodexDnsGrpcService {
             rbl,
             shared_secret,
             is_unix,
+            acme_directory_url: String::new(),
+            acme_root_cn: "Rolodex Root CA".to_string(),
         }
+    }
+
+    /// Sets the ACME issuer parameters used by the ACME admin RPCs.
+    pub fn with_acme(mut self, directory_url: String, root_cn: String) -> Self {
+        self.acme_directory_url = directory_url;
+        if !root_cn.is_empty() {
+            self.acme_root_cn = root_cn;
+        }
+        self
     }
 
     /// Validates the auth token. Unix socket connections always pass.
@@ -1798,6 +1814,159 @@ impl RolodexDnsService for RolodexDnsGrpcService {
             Err(e) => Err(Status::internal(e.to_string())),
         }
     }
+
+    // ================================================================
+    // ACME Issuer (CA) Administration
+    // ================================================================
+
+    async fn ensure_zone_ca(
+        &self,
+        request: Request<EnsureZoneCaRequest>,
+    ) -> Result<Response<EnsureZoneCaResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        crate::ca::ensure_root_ca(&self.db, &self.acme_root_cn)
+            .map_err(|e| Status::internal(format!("failed to ensure root CA: {}", e)))?;
+        crate::ca::ensure_zone_intermediate(&self.db, &req.zone)
+            .map_err(|e| Status::internal(format!("failed to ensure zone CA: {}", e)))?;
+
+        let root_ca_pem = crate::ca::root_ca_pem(&self.db)
+            .map_err(|e| Status::internal(format!("failed to read root CA: {}", e)))?;
+        let intermediate_ca_pem = self
+            .db
+            .get_zone_ca(&req.zone)
+            .map_err(|e| Status::internal(e.to_string()))?
+            .map(|(cert, _)| cert)
+            .unwrap_or_default();
+
+        info!("Ensured zone CA for {}", req.zone);
+        Ok(Response::new(EnsureZoneCaResponse {
+            success: true,
+            message: String::new(),
+            root_ca_pem,
+            intermediate_ca_pem,
+        }))
+    }
+
+    async fn create_eab_credential(
+        &self,
+        request: Request<CreateEabCredentialRequest>,
+    ) -> Result<Response<CreateEabCredentialResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        // Ensure the per-zone CA exists so issuance against this EAB can succeed.
+        crate::ca::ensure_root_ca(&self.db, &self.acme_root_cn)
+            .map_err(|e| Status::internal(format!("failed to ensure root CA: {}", e)))?;
+        crate::ca::ensure_zone_intermediate(&self.db, &req.zone)
+            .map_err(|e| Status::internal(format!("failed to ensure zone CA: {}", e)))?;
+
+        let (kid, secret) = generate_eab()?;
+        let hmac_b64 =
+            base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &secret);
+        self.db
+            .create_eab(&kid, &secret, Some(&req.zone))
+            .map_err(|e| Status::internal(format!("failed to store EAB: {}", e)))?;
+
+        info!("Created EAB credential {} for zone {}", kid, req.zone);
+        Ok(Response::new(CreateEabCredentialResponse {
+            success: true,
+            message: String::new(),
+            kid,
+            hmac_key: hmac_b64,
+            directory_url: self.acme_directory_url.clone(),
+        }))
+    }
+
+    async fn remove_eab_credential(
+        &self,
+        request: Request<RemoveEabCredentialRequest>,
+    ) -> Result<Response<RemoveEabCredentialResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        match self.db.remove_eab(&req.kid) {
+            Ok(removed) => Ok(Response::new(RemoveEabCredentialResponse {
+                success: removed,
+                message: if removed {
+                    String::new()
+                } else {
+                    "no such EAB credential".to_string()
+                },
+            })),
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+
+    async fn list_acme_accounts(
+        &self,
+        request: Request<ListAcmeAccountsRequest>,
+    ) -> Result<Response<ListAcmeAccountsResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        match self.db.list_acme_accounts() {
+            Ok(accounts) => {
+                let accounts = accounts
+                    .into_iter()
+                    .map(|a| proto::AcmeAccountInfo {
+                        account_id: a.account_id,
+                        status: a.status,
+                        zone: a.zone.unwrap_or_default(),
+                        eab_kid: a.eab_kid.unwrap_or_default(),
+                    })
+                    .collect();
+                Ok(Response::new(ListAcmeAccountsResponse { accounts }))
+            }
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+
+    async fn list_acme_certificates(
+        &self,
+        request: Request<ListAcmeCertificatesRequest>,
+    ) -> Result<Response<ListAcmeCertificatesResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        let zone = if req.zone.is_empty() {
+            None
+        } else {
+            Some(req.zone.as_str())
+        };
+        match self.db.list_acme_certificates(zone) {
+            Ok(certs) => {
+                let certificates = certs
+                    .into_iter()
+                    .map(|c| proto::AcmeCertificateInfo {
+                        id: c.id,
+                        domain: c.domain,
+                        issued_at: c.issued_at,
+                        expires_at: c.expires_at,
+                    })
+                    .collect();
+                Ok(Response::new(ListAcmeCertificatesResponse { certificates }))
+            }
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+}
+
+/// Generates an EAB credential: a random kid and a base64url HMAC key.
+///
+/// Returns `(kid, secret_bytes)`. Errors only if the system RNG fails.
+fn generate_eab() -> Result<(String, Vec<u8>), Status> {
+    use base64::Engine;
+    use ring::rand::SecureRandom;
+    let rng = ring::rand::SystemRandom::new();
+    let mut kid = [0u8; 16];
+    let mut secret = [0u8; 32];
+    rng.fill(&mut kid)
+        .map_err(|_| Status::internal("secure RNG failure"))?;
+    rng.fill(&mut secret)
+        .map_err(|_| Status::internal("secure RNG failure"))?;
+    Ok((
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(kid),
+        secret.to_vec(),
+    ))
 }
 
 #[cfg(test)]

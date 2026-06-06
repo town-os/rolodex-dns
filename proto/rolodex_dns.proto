@@ -776,6 +776,88 @@ message GetAcmeStatusResponse {
   string domain = 3;
 }
 
+// ================================================================
+// ACME Issuer (CA) Administration
+// ================================================================
+
+// EnsureZoneCaRequest ensures a per-zone intermediate CA exists.
+message EnsureZoneCaRequest {
+  string zone = 1;
+  string auth_token = 2;
+}
+
+// EnsureZoneCaResponse returns the root and intermediate CA certificates.
+message EnsureZoneCaResponse {
+  bool success = 1;
+  string message = 2;
+  string root_ca_pem = 3;
+  string intermediate_ca_pem = 4;
+}
+
+// CreateEabCredentialRequest mints an EAB credential scoped to a zone.
+message CreateEabCredentialRequest {
+  string zone = 1;
+  string auth_token = 2;
+}
+
+// CreateEabCredentialResponse returns the EAB key id and base64url HMAC key.
+message CreateEabCredentialResponse {
+  bool success = 1;
+  string message = 2;
+  string kid = 3;
+  string hmac_key = 4;
+  string directory_url = 5;
+}
+
+// RemoveEabCredentialRequest removes an EAB credential by kid.
+message RemoveEabCredentialRequest {
+  string kid = 1;
+  string auth_token = 2;
+}
+
+// RemoveEabCredentialResponse is returned after removing an EAB credential.
+message RemoveEabCredentialResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// AcmeAccountInfo describes a registered ACME server account.
+message AcmeAccountInfo {
+  string account_id = 1;
+  string status = 2;
+  string zone = 3;
+  string eab_kid = 4;
+}
+
+// ListAcmeAccountsRequest lists ACME server accounts.
+message ListAcmeAccountsRequest {
+  string auth_token = 1;
+}
+
+// ListAcmeAccountsResponse contains ACME server accounts.
+message ListAcmeAccountsResponse {
+  repeated AcmeAccountInfo accounts = 1;
+}
+
+// AcmeCertificateInfo describes an issued ACME certificate.
+message AcmeCertificateInfo {
+  int64 id = 1;
+  string domain = 2;
+  int64 issued_at = 3;
+  int64 expires_at = 4;
+}
+
+// ListAcmeCertificatesRequest lists issued certificates, optionally by zone.
+message ListAcmeCertificatesRequest {
+  string zone = 1;
+  string auth_token = 2;
+}
+
+// ListAcmeCertificatesResponse contains issued ACME certificates.
+message ListAcmeCertificatesResponse {
+  repeated AcmeCertificateInfo certificates = 1;
+}
+
 // Dns64Config configures DNS64 synthesis.
 message Dns64Config {
   bool enabled = 1;
@@ -1212,4 +1294,25 @@ service RolodexDnsService {
 
   // ListDhcpCertOptions lists DHCP certificate options for a scope.
   rpc ListDhcpCertOptions(ListDhcpCertOptionsRequest) returns (ListDhcpCertOptionsResponse);
+
+  // ================================================================
+  // ACME Issuer (CA) Administration
+  // ================================================================
+
+  // EnsureZoneCa creates the per-zone intermediate CA if absent and returns the
+  // root + intermediate PEM.
+  rpc EnsureZoneCa(EnsureZoneCaRequest) returns (EnsureZoneCaResponse);
+
+  // CreateEabCredential mints an External Account Binding (kid + HMAC) scoped to
+  // a zone, for use by an ACME client's newAccount.
+  rpc CreateEabCredential(CreateEabCredentialRequest) returns (CreateEabCredentialResponse);
+
+  // RemoveEabCredential removes an EAB credential by kid.
+  rpc RemoveEabCredential(RemoveEabCredentialRequest) returns (RemoveEabCredentialResponse);
+
+  // ListAcmeAccounts lists registered ACME server accounts.
+  rpc ListAcmeAccounts(ListAcmeAccountsRequest) returns (ListAcmeAccountsResponse);
+
+  // ListAcmeCertificates lists issued ACME certificates, optionally by zone.
+  rpc ListAcmeCertificates(ListAcmeCertificatesRequest) returns (ListAcmeCertificatesResponse);
 }

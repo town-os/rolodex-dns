@@ -225,6 +225,66 @@ pub struct AcmeCertRow {
     pub expires_at: i64,
 }
 
+/// An ACME server account (RFC 8555), keyed by an opaque account id (the `kid` tail).
+#[derive(Debug, Clone)]
+pub struct AcmeAccount {
+    pub account_id: String,
+    /// The client's account public key as a JWK JSON string.
+    pub jwk: String,
+    /// Base64url SHA-256 JWK thumbprint (RFC 7638).
+    pub thumbprint: String,
+    pub contacts: Option<String>,
+    pub status: String,
+    pub eab_kid: Option<String>,
+    /// Zone this account is scoped to (from its EAB), if any.
+    pub zone: Option<String>,
+}
+
+/// An External Account Binding credential (kid + HMAC secret).
+#[derive(Debug, Clone)]
+pub struct AcmeEab {
+    pub kid: String,
+    pub hmac_key: Vec<u8>,
+    pub zone: Option<String>,
+    pub used: bool,
+}
+
+/// An ACME order.
+#[derive(Debug, Clone)]
+pub struct AcmeOrder {
+    pub id: String,
+    pub account_id: String,
+    pub status: String,
+    /// JSON array of DNS identifier names.
+    pub identifiers: String,
+    /// JSON array of authorization ids.
+    pub authorizations: String,
+    pub cert_id: Option<i64>,
+    pub expires_at: i64,
+}
+
+/// An ACME authorization for a single identifier.
+#[derive(Debug, Clone)]
+pub struct AcmeAuthorization {
+    pub id: String,
+    pub order_id: String,
+    pub account_id: String,
+    pub identifier: String,
+    pub status: String,
+    pub expires_at: i64,
+}
+
+/// An ACME challenge belonging to an authorization.
+#[derive(Debug, Clone)]
+pub struct AcmeChallenge {
+    pub id: String,
+    pub authz_id: String,
+    pub challenge_type: String,
+    pub token: String,
+    pub status: String,
+    pub validated_at: Option<i64>,
+}
+
 /// DHCP address pool for a network scope.
 #[derive(Debug, Clone)]
 pub struct DhcpPool {
@@ -458,6 +518,76 @@ impl Database {
                 name TEXT NOT NULL,
                 cert_pem TEXT NOT NULL,
                 key_pem TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+
+            -- Per-zone intermediate CAs (signed by the Rolodex root CA).
+            CREATE TABLE IF NOT EXISTS zone_cas (
+                zone TEXT PRIMARY KEY,
+                cert_pem TEXT NOT NULL,
+                key_pem TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+
+            -- ACME server accounts (RFC 8555): one per client account key.
+            CREATE TABLE IF NOT EXISTS acme_server_accounts (
+                account_id TEXT PRIMARY KEY,
+                jwk TEXT NOT NULL,
+                thumbprint TEXT NOT NULL,
+                contacts TEXT,
+                status TEXT NOT NULL DEFAULT 'valid',
+                eab_kid TEXT,
+                zone TEXT,
+                created_at INTEGER NOT NULL
+            );
+
+            -- External Account Binding credentials (kid + HMAC secret).
+            CREATE TABLE IF NOT EXISTS acme_eab (
+                kid TEXT PRIMARY KEY,
+                hmac_key BLOB NOT NULL,
+                zone TEXT,
+                used INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL
+            );
+
+            -- ACME orders, authorizations, and challenges.
+            CREATE TABLE IF NOT EXISTS acme_orders (
+                id TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                identifiers TEXT NOT NULL,
+                authorizations TEXT NOT NULL,
+                cert_id INTEGER,
+                expires_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_acme_orders_account ON acme_orders(account_id);
+
+            CREATE TABLE IF NOT EXISTS acme_authorizations (
+                id TEXT PRIMARY KEY,
+                order_id TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                identifier TEXT NOT NULL,
+                status TEXT NOT NULL,
+                expires_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_acme_authz_order ON acme_authorizations(order_id);
+
+            CREATE TABLE IF NOT EXISTS acme_challenges (
+                id TEXT PRIMARY KEY,
+                authz_id TEXT NOT NULL,
+                challenge_type TEXT NOT NULL,
+                token TEXT NOT NULL,
+                status TEXT NOT NULL,
+                validated_at INTEGER,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_acme_chal_authz ON acme_challenges(authz_id);
+
+            -- Anti-replay nonces issued to ACME clients.
+            CREATE TABLE IF NOT EXISTS acme_nonces (
+                nonce TEXT PRIMARY KEY,
                 created_at INTEGER NOT NULL
             );
 
@@ -1890,6 +2020,452 @@ impl Database {
         }
     }
 
+    /// Gets an ACME certificate by its row id (used by the ACME cert download URL).
+    pub fn get_acme_certificate_by_id(&self, id: i64) -> Result<Option<AcmeCertRow>> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, domain, cert_pem, key_pem, chain_pem, issued_at, expires_at
+             FROM acme_certificates WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], |row| {
+            Ok(AcmeCertRow {
+                id: row.get(0)?,
+                domain: row.get(1)?,
+                cert_pem: row.get(2)?,
+                key_pem: row.get(3)?,
+                chain_pem: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                issued_at: row.get(5)?,
+                expires_at: row.get(6)?,
+            })
+        })?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Lists all ACME certificates, newest first, optionally filtered by zone suffix.
+    pub fn list_acme_certificates(&self, zone: Option<&str>) -> Result<Vec<AcmeCertRow>> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, domain, cert_pem, key_pem, chain_pem, issued_at, expires_at
+             FROM acme_certificates ORDER BY issued_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(AcmeCertRow {
+                id: row.get(0)?,
+                domain: row.get(1)?,
+                cert_pem: row.get(2)?,
+                key_pem: row.get(3)?,
+                chain_pem: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                issued_at: row.get(5)?,
+                expires_at: row.get(6)?,
+            })
+        })?;
+        let suffix = zone.map(normalize_name);
+        let mut out = Vec::new();
+        for row in rows {
+            let row = row?;
+            match &suffix {
+                Some(s) if !normalize_name(&row.domain).ends_with(s.as_str()) => continue,
+                _ => out.push(row),
+            }
+        }
+        Ok(out)
+    }
+
+    // ================================================================
+    // Per-Zone Intermediate CA Management
+    // ================================================================
+
+    /// Stores (or replaces) a per-zone intermediate CA.
+    pub fn store_zone_ca(&self, zone: &str, cert_pem: &str, key_pem: &str) -> Result<()> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO zone_cas (zone, cert_pem, key_pem, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![normalize_name(zone), cert_pem, key_pem, now_secs()?],
+        )
+        .context("failed to store zone CA")?;
+        Ok(())
+    }
+
+    /// Gets a per-zone intermediate CA `(cert_pem, key_pem)`.
+    pub fn get_zone_ca(&self, zone: &str) -> Result<Option<(String, String)>> {
+        let conn = self.lock()?;
+        let mut stmt =
+            conn.prepare_cached("SELECT cert_pem, key_pem FROM zone_cas WHERE zone = ?1")?;
+        let mut rows = stmt.query_map(params![normalize_name(zone)], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Lists the zones that have an intermediate CA.
+    pub fn list_zone_cas(&self) -> Result<Vec<String>> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare_cached("SELECT zone FROM zone_cas ORDER BY zone")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    // ================================================================
+    // ACME Server Accounts, EAB, Orders, Authorizations, Challenges
+    // ================================================================
+
+    /// Creates an ACME server account.
+    pub fn create_acme_account(&self, account: &AcmeAccount) -> Result<()> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO acme_server_accounts
+                (account_id, jwk, thumbprint, contacts, status, eab_kid, zone, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                account.account_id,
+                account.jwk,
+                account.thumbprint,
+                account.contacts,
+                account.status,
+                account.eab_kid,
+                account.zone,
+                now_secs()?,
+            ],
+        )
+        .context("failed to create ACME account")?;
+        Ok(())
+    }
+
+    /// Gets an ACME account by its account id.
+    pub fn get_acme_account(&self, account_id: &str) -> Result<Option<AcmeAccount>> {
+        self.query_acme_account("account_id", account_id)
+    }
+
+    /// Gets an ACME account by its JWK thumbprint (for account key reuse on newAccount).
+    pub fn get_acme_account_by_thumbprint(&self, thumbprint: &str) -> Result<Option<AcmeAccount>> {
+        self.query_acme_account("thumbprint", thumbprint)
+    }
+
+    fn query_acme_account(&self, column: &str, value: &str) -> Result<Option<AcmeAccount>> {
+        let conn = self.lock()?;
+        // `column` is a fixed internal literal, never user input.
+        let sql = format!(
+            "SELECT account_id, jwk, thumbprint, contacts, status, eab_kid, zone
+             FROM acme_server_accounts WHERE {} = ?1",
+            column
+        );
+        let mut stmt = conn.prepare_cached(&sql)?;
+        let mut rows = stmt.query_map(params![value], |row| {
+            Ok(AcmeAccount {
+                account_id: row.get(0)?,
+                jwk: row.get(1)?,
+                thumbprint: row.get(2)?,
+                contacts: row.get(3)?,
+                status: row.get(4)?,
+                eab_kid: row.get(5)?,
+                zone: row.get(6)?,
+            })
+        })?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Lists all ACME server accounts.
+    pub fn list_acme_accounts(&self) -> Result<Vec<AcmeAccount>> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT account_id, jwk, thumbprint, contacts, status, eab_kid, zone
+             FROM acme_server_accounts ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(AcmeAccount {
+                account_id: row.get(0)?,
+                jwk: row.get(1)?,
+                thumbprint: row.get(2)?,
+                contacts: row.get(3)?,
+                status: row.get(4)?,
+                eab_kid: row.get(5)?,
+                zone: row.get(6)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Creates an EAB credential.
+    pub fn create_eab(&self, kid: &str, hmac_key: &[u8], zone: Option<&str>) -> Result<()> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO acme_eab (kid, hmac_key, zone, used, created_at) VALUES (?1, ?2, ?3, 0, ?4)",
+            params![kid, hmac_key, zone, now_secs()?],
+        )
+        .context("failed to create EAB credential")?;
+        Ok(())
+    }
+
+    /// Gets an EAB credential by kid.
+    pub fn get_eab(&self, kid: &str) -> Result<Option<AcmeEab>> {
+        let conn = self.lock()?;
+        let mut stmt =
+            conn.prepare_cached("SELECT kid, hmac_key, zone, used FROM acme_eab WHERE kid = ?1")?;
+        let mut rows = stmt.query_map(params![kid], |row| {
+            Ok(AcmeEab {
+                kid: row.get(0)?,
+                hmac_key: row.get(1)?,
+                zone: row.get(2)?,
+                used: row.get::<_, i64>(3)? != 0,
+            })
+        })?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Marks an EAB credential as used (one-time binding).
+    pub fn mark_eab_used(&self, kid: &str) -> Result<()> {
+        let conn = self.lock()?;
+        conn.execute("UPDATE acme_eab SET used = 1 WHERE kid = ?1", params![kid])
+            .context("failed to mark EAB used")?;
+        Ok(())
+    }
+
+    /// Removes an EAB credential by kid. Returns true if a row was removed.
+    pub fn remove_eab(&self, kid: &str) -> Result<bool> {
+        let conn = self.lock()?;
+        let n = conn
+            .execute("DELETE FROM acme_eab WHERE kid = ?1", params![kid])
+            .context("failed to remove EAB credential")?;
+        Ok(n > 0)
+    }
+
+    /// Stores a freshly issued anti-replay nonce.
+    pub fn store_nonce(&self, nonce: &str) -> Result<()> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO acme_nonces (nonce, created_at) VALUES (?1, ?2)",
+            params![nonce, now_secs()?],
+        )
+        .context("failed to store nonce")?;
+        Ok(())
+    }
+
+    /// Consumes a nonce, returning true if it existed (and is now removed).
+    pub fn consume_nonce(&self, nonce: &str) -> Result<bool> {
+        let conn = self.lock()?;
+        let n = conn
+            .execute("DELETE FROM acme_nonces WHERE nonce = ?1", params![nonce])
+            .context("failed to consume nonce")?;
+        Ok(n > 0)
+    }
+
+    /// Creates an ACME order.
+    pub fn create_order(&self, order: &AcmeOrder) -> Result<()> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO acme_orders
+                (id, account_id, status, identifiers, authorizations, cert_id, expires_at, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                order.id,
+                order.account_id,
+                order.status,
+                order.identifiers,
+                order.authorizations,
+                order.cert_id,
+                order.expires_at,
+                now_secs()?,
+            ],
+        )
+        .context("failed to create ACME order")?;
+        Ok(())
+    }
+
+    /// Gets an ACME order by id.
+    pub fn get_order(&self, id: &str) -> Result<Option<AcmeOrder>> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, account_id, status, identifiers, authorizations, cert_id, expires_at
+             FROM acme_orders WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], |row| {
+            Ok(AcmeOrder {
+                id: row.get(0)?,
+                account_id: row.get(1)?,
+                status: row.get(2)?,
+                identifiers: row.get(3)?,
+                authorizations: row.get(4)?,
+                cert_id: row.get(5)?,
+                expires_at: row.get(6)?,
+            })
+        })?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Updates an order's status and (optionally) the issued certificate id.
+    pub fn update_order(&self, id: &str, status: &str, cert_id: Option<i64>) -> Result<()> {
+        let conn = self.lock()?;
+        conn.execute(
+            "UPDATE acme_orders SET status = ?2, cert_id = ?3 WHERE id = ?1",
+            params![id, status, cert_id],
+        )
+        .context("failed to update ACME order")?;
+        Ok(())
+    }
+
+    /// Creates an authorization.
+    pub fn create_authorization(&self, authz: &AcmeAuthorization) -> Result<()> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO acme_authorizations
+                (id, order_id, account_id, identifier, status, expires_at, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                authz.id,
+                authz.order_id,
+                authz.account_id,
+                authz.identifier,
+                authz.status,
+                authz.expires_at,
+                now_secs()?,
+            ],
+        )
+        .context("failed to create authorization")?;
+        Ok(())
+    }
+
+    /// Gets an authorization by id.
+    pub fn get_authorization(&self, id: &str) -> Result<Option<AcmeAuthorization>> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, order_id, account_id, identifier, status, expires_at
+             FROM acme_authorizations WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], |row| {
+            Ok(AcmeAuthorization {
+                id: row.get(0)?,
+                order_id: row.get(1)?,
+                account_id: row.get(2)?,
+                identifier: row.get(3)?,
+                status: row.get(4)?,
+                expires_at: row.get(5)?,
+            })
+        })?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Updates an authorization's status.
+    pub fn update_authorization_status(&self, id: &str, status: &str) -> Result<()> {
+        let conn = self.lock()?;
+        conn.execute(
+            "UPDATE acme_authorizations SET status = ?2 WHERE id = ?1",
+            params![id, status],
+        )
+        .context("failed to update authorization")?;
+        Ok(())
+    }
+
+    /// Creates a challenge.
+    pub fn create_challenge(&self, chal: &AcmeChallenge) -> Result<()> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO acme_challenges
+                (id, authz_id, challenge_type, token, status, validated_at, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                chal.id,
+                chal.authz_id,
+                chal.challenge_type,
+                chal.token,
+                chal.status,
+                chal.validated_at,
+                now_secs()?,
+            ],
+        )
+        .context("failed to create challenge")?;
+        Ok(())
+    }
+
+    /// Gets a challenge by id.
+    pub fn get_challenge(&self, id: &str) -> Result<Option<AcmeChallenge>> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, authz_id, challenge_type, token, status, validated_at
+             FROM acme_challenges WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], |row| {
+            Ok(AcmeChallenge {
+                id: row.get(0)?,
+                authz_id: row.get(1)?,
+                challenge_type: row.get(2)?,
+                token: row.get(3)?,
+                status: row.get(4)?,
+                validated_at: row.get(5)?,
+            })
+        })?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Lists challenges for an authorization.
+    pub fn list_challenges_for_authz(&self, authz_id: &str) -> Result<Vec<AcmeChallenge>> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, authz_id, challenge_type, token, status, validated_at
+             FROM acme_challenges WHERE authz_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![authz_id], |row| {
+            Ok(AcmeChallenge {
+                id: row.get(0)?,
+                authz_id: row.get(1)?,
+                challenge_type: row.get(2)?,
+                token: row.get(3)?,
+                status: row.get(4)?,
+                validated_at: row.get(5)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Updates a challenge's status and validation timestamp.
+    pub fn update_challenge_status(
+        &self,
+        id: &str,
+        status: &str,
+        validated_at: Option<i64>,
+    ) -> Result<()> {
+        let conn = self.lock()?;
+        conn.execute(
+            "UPDATE acme_challenges SET status = ?2, validated_at = ?3 WHERE id = ?1",
+            params![id, status, validated_at],
+        )
+        .context("failed to update challenge")?;
+        Ok(())
+    }
+
     // ================================================================
     // DHCP Pool Management
     // ================================================================
@@ -2392,6 +2968,14 @@ fn scoped_record_cache_key(
         Some(rt) => format!("{}:{}:{}", scope_name, normalized_name, rt.as_str()),
         None => format!("{}:{}:*", scope_name, normalized_name),
     }
+}
+
+/// Returns the current UNIX timestamp in seconds.
+fn now_secs() -> Result<i64> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("system clock before UNIX epoch")?
+        .as_secs() as i64)
 }
 
 /// Normalizes a DNS name to lowercase with a trailing dot.

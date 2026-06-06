@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Rolodex DNS — Certificate Enrollment</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         max-width: 820px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { font-size: 1.5rem; }
+  fieldset { border: 1px solid #8884; border-radius: 8px; margin: 1rem 0; padding: 1rem; }
+  legend { font-weight: 600; padding: 0 .4rem; }
+  label { display: block; margin: .4rem 0 .2rem; font-weight: 600; }
+  input, select { width: 100%; padding: .5rem; box-sizing: border-box; border-radius: 6px;
+                  border: 1px solid #8886; font-size: 1rem; }
+  button { margin-top: .8rem; padding: .55rem 1rem; border-radius: 6px; border: 0;
+           background: #2563eb; color: #fff; font-size: 1rem; cursor: pointer; }
+  button.secondary { background: #6b7280; }
+  pre { background: #11182708; border: 1px solid #8883; border-radius: 6px;
+        padding: .75rem; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+  .row { display: flex; gap: .5rem; align-items: center; }
+  .muted { color: #6b7280; font-size: .9rem; }
+  .hidden { display: none; }
+  code { background: #8881; padding: .1rem .3rem; border-radius: 4px; }
+</style>
+</head>
+<body>
+  <h1>Rolodex DNS — Certificate Enrollment</h1>
+  <p class="muted">
+    Get a TLS certificate for a name in one of your zones. Certificates are issued by the
+    Rolodex per-zone CA and automatically published as DANE records. No command line needed.
+  </p>
+
+  <fieldset>
+    <legend>1. Trust the Rolodex root CA</legend>
+    <p class="muted">Install this once on your machines so issued certificates are trusted.</p>
+    <button id="download-ca" class="secondary">Download root CA (PEM)</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>2. Enroll</legend>
+    <label for="zone">Zone</label>
+    <select id="zone"></select>
+    <button id="enroll">Create enrollment credentials</button>
+    <div id="result" class="hidden">
+      <label>ACME directory URL</label>
+      <pre id="dir"></pre>
+      <label>EAB key id</label>
+      <pre id="kid"></pre>
+      <label>EAB HMAC key</label>
+      <pre id="hmac"></pre>
+      <label>Ready-to-run client commands</label>
+      <pre id="snippets"></pre>
+      <p class="muted">
+        Provision the dns-01 record with the bundled hook, e.g.
+        <code>rolodex-dns-cli add-record</code>, when your client asks for the challenge.
+      </p>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>3. Issued certificates</legend>
+    <button id="refresh-certs" class="secondary">Refresh</button>
+    <pre id="certs">(none loaded)</pre>
+  </fieldset>
+
+<script>
+const api = (p) => fetch(p, {headers: {"accept": "application/json"}});
+
+async function loadZones() {
+  try {
+    const r = await api("/api/zones");
+    const data = await r.json();
+    const sel = document.getElementById("zone");
+    sel.innerHTML = "";
+    (data.zones || []).forEach((z) => {
+      const o = document.createElement("option"); o.value = z; o.textContent = z;
+      sel.appendChild(o);
+    });
+    if (!(data.zones || []).length) {
+      const o = document.createElement("option");
+      o.value = ""; o.textContent = "(no zones configured)";
+      sel.appendChild(o);
+    }
+  } catch (e) { /* ignore */ }
+}
+
+document.getElementById("download-ca").onclick = () => { window.location = "/api/ca"; };
+
+document.getElementById("enroll").onclick = async () => {
+  const zone = document.getElementById("zone").value;
+  const r = await fetch("/api/account", {
+    method: "POST",
+    headers: {"content-type": "application/json"},
+    body: JSON.stringify({zone}),
+  });
+  if (!r.ok) { alert("Enrollment failed: " + (await r.text())); return; }
+  const d = await r.json();
+  document.getElementById("dir").textContent = d.directory_url;
+  document.getElementById("kid").textContent = d.eab_kid;
+  document.getElementById("hmac").textContent = d.eab_hmac_key;
+  document.getElementById("snippets").textContent = (d.snippets || []).join("\n\n");
+  document.getElementById("result").classList.remove("hidden");
+};
+
+document.getElementById("refresh-certs").onclick = async () => {
+  const r = await api("/api/certs");
+  const d = await r.json();
+  const rows = (d.certificates || []).map(
+    (c) => `${c.domain}  expires=${c.expires_at}`);
+  document.getElementById("certs").textContent =
+    rows.length ? rows.join("\n") : "(none)";
+};
+
+loadZones();
+</script>
+</body>
+</html>

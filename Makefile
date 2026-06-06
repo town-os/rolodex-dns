@@ -33,6 +33,7 @@ rust-integration-test: build
 	cargo test --test new_features_test
 	cargo test --test cli_integration_test
 	cargo test --test dhcp_integration_test
+	cargo test --test acme_issuer_test
 
 build:
 	cargo build
