@@ -70,15 +70,15 @@ build_manifest() {
 # Registry login
 # ---------------------------------------------------------------------------
 
-# registry_login REGISTRY USER_VAR PASS_VAR — log in or skip if creds are empty.
+# registry_login REGISTRY USER_VAR PASS_VAR — log in only if creds are given.
 #   USER_VAR / PASS_VAR are the *names* of the env vars (e.g. QUAY_USERNAME).
+# If the creds are empty, do nothing and let podman use whatever login it
+# already has.
 registry_login() {
   local registry="$1" user_var="$2" pass_var="$3"
   local user="${!user_var}" pass="${!pass_var}"
-  if [ -z "${user}" ] || [ -z "${pass}" ]; then
-    step "Skipping ${registry} login (credentials not set)"
-  else
+  if [ -n "${user}" ] && [ -n "${pass}" ]; then
     step "Logging in to ${registry}"
-    sudo podman login -u "${user}" -p "${pass}" "${registry}"
+    ${SUDO} podman login -u "${user}" -p "${pass}" "${registry}"
   fi
 }
