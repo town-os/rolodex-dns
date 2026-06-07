@@ -827,6 +827,7 @@ The project uses a top-level Makefile with the following targets:
 | `dev-release`         | Build the Rust project in release mode, then start a development server using `dev.yml`.                                                                   |
 | `image`               | Build a container image for the host architecture using `make/build.sh release`. Tags with an arch suffix (`-amd64`/`-arm64`). Accepts `IMAGE_TAG` (default `latest`). |
 | `push` / `push-rc`    | Build and push the host-arch release candidate image to `quay.io/town/rolodex`. Auto-tags `rc.YYYYMMDD-<arch>` + `rc.latest-<arch>` unless `IMAGE_TAG` is set.   |
+| `push-arch`           | Build and push ONLY the current host's per-arch tag (`<IMAGE_TAG\|latest>-<arch>`) to `quay.io/town/rolodex`. No date/`rc`/`latest` aliases, no manifest.       |
 | `push-release`        | Build and push the host-arch release image to `quay.io/town/rolodex`. Auto-tags `release.YYYYMMDD-<arch>` + `latest-<arch>` unless `IMAGE_TAG` is set.             |
 | `manifest` / `manifest-rc` | Assemble and push a multi-arch RC manifest list (`rc.YYYYMMDD`, `rc.latest`, or `IMAGE_TAG`) from the per-arch tags already in the registry.            |
 | `manifest-release`    | Assemble and push a multi-arch release manifest list (`release.YYYYMMDD`, `latest`, or `IMAGE_TAG`) from the per-arch tags already in the registry.                |

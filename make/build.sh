@@ -18,6 +18,12 @@ case "$1" in
       --build-arg "BUILD_IMAGE=${PODMAN_BUILD_IMAGE}-${ARCH}" \
       -t "${RELEASE_IMAGE}:${IMAGE_TAG:-latest}-${ARCH}" -f Containerfile .
     ;;
+  push-arch)
+    step "Pushing current-arch image (${ARCH})"
+    SRC="${RELEASE_IMAGE}:${IMAGE_TAG:-latest}-${ARCH}"
+    substep "Pushing ${SRC}"
+    ${SUDO} podman push "${SRC}"
+    ;;
   push-rc)
     step "Pushing release candidate (${ARCH})"
     SRC="${RELEASE_IMAGE}:${IMAGE_TAG:-latest}-${ARCH}"
@@ -70,7 +76,7 @@ case "$1" in
     registry_login quay.io QUAY_USERNAME QUAY_PASSWORD
     ;;
   *)
-    echo "Usage: $0 {release|push-rc|push-release|manifest-rc|manifest-release|quay-login}"
+    echo "Usage: $0 {release|push-arch|push-rc|push-release|manifest-rc|manifest-release|quay-login}"
     exit 1
     ;;
 esac

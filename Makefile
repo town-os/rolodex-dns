@@ -17,7 +17,7 @@ export PODMAN_BUILD_IMAGE RELEASE_IMAGE IMAGE_TAG
 
 .PHONY: test build clean go-test go-integration-test dev dev-release install lint bench
 .PHONY: rust-test rust-integration-test
-.PHONY: image push push-rc push-release manifest manifest-rc manifest-release quay-login clean-containers
+.PHONY: image push push-arch push-rc push-release manifest manifest-rc manifest-release quay-login clean-containers
 
 lint:
 	cargo fmt -- --check
@@ -71,6 +71,11 @@ image:
 	@make/build.sh release
 
 push: push-rc
+
+# Build and push ONLY the current host's per-arch tag (no rc/release/latest
+# aliases, no manifest). Produces quay.io/town/rolodex:<IMAGE_TAG|latest>-<arch>.
+push-arch: image quay-login
+	@make/build.sh push-arch
 
 push-rc: image quay-login
 	@make/build.sh push-rc
