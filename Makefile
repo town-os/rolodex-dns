@@ -17,13 +17,14 @@ export PODMAN_BUILD_IMAGE RELEASE_IMAGE IMAGE_TAG
 
 .PHONY: test build clean go-test go-integration-test dev dev-release install lint bench
 .PHONY: rust-test rust-integration-test
+.PHONY: deps js-lint js-test js-integration-test
 .PHONY: image push push-arch push-rc push-release manifest manifest-rc manifest-release quay-login clean-containers
 
 lint:
 	cargo fmt -- --check
 	cargo clippy -- -D warnings
 
-test: lint go-test rust-test
+test: lint go-test rust-test js-test
 
 rust-test: rust-integration-test
 	cargo test
@@ -46,6 +47,18 @@ go-test: go-integration-test
 
 go-integration-test: build
 	cd go && ROLODEX_DNS_BINARY=$(CURDIR)/target/debug/rolodex-dns go test -v -count=1 -tags=integration ./...
+
+deps:
+	cd js && npm install --no-audit --no-fund
+
+js-lint: deps
+	cd js && npm run lint
+
+js-test: js-integration-test
+	cd js && npm test
+
+js-integration-test: build js-lint
+	cd js && ROLODEX_DNS_BINARY=$(CURDIR)/target/debug/rolodex-dns npm run test:integration
 
 bench:
 	cargo bench --bench dns_perf

@@ -1,0 +1,29 @@
+{
+  "name": "rolodex-ca-client",
+  "version": "0.1.0",
+  "description": "JavaScript client for the Rolodex DNS ACME issuer: enrollment portal API, DANE/TLSA protocol retrieval, and a local enrollment UI.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./portal": "./src/portal.js",
+    "./dane": "./src/dane.js"
+  },
+  "bin": {
+    "rolodex-ca-ui": "bin/rolodex-ca-ui.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "test": "node --test test/dane.test.js test/portal.test.js test/ui.test.js",
+    "test:integration": "node --test test/integration.test.js",
+    "ui": "node bin/rolodex-ca-ui.js"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "eslint": "^9.0.0"
+  }
+}

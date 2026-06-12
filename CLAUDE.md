@@ -189,7 +189,7 @@ On issuance, the per-zone intermediate is auto-published as a **DANE-TA** TLSA r
 
 ### Enrollment surfaces (trusted-network)
 
-End users do not need a CLI. A built-in **web portal** (`src/portal.rs`, served on `acme.portal_bind`) and a **browser extension** (`extension/`) share one JSON API (`/api/account`, `/api/ca`, `/api/zones`, `/api/certs`). The portal mints an EAB account behind the scenes and returns copy-paste client config; users just trust the root CA and run their client. **Access is trusted-network only** — bind `portal_bind` to an internal address; anyone who can reach it may enroll.
+End users do not need a CLI. A built-in **web portal** (`src/portal.rs`, served on `acme.portal_bind`) and a **browser extension** (`extension/`) share one JSON API (`/api/account`, `/api/ca`, `/api/zones`, `/api/certs`); a **JavaScript client library** for the same API plus DANE/TLSA retrieval and a local enrollment UI lives in `js/` (see the JavaScript Client Library section). The portal mints an EAB account behind the scenes and returns copy-paste client config; users just trust the root CA and run their client. **Access is trusted-network only** — bind `portal_bind` to an internal address; anyone who can reach it may enroll.
 
 ### Legacy stub RPCs
 
@@ -732,6 +732,41 @@ The client automatically includes the auth token in every RPC call. All methods 
 
 Generated Go protobuf and gRPC bindings are in `go/rolodexdnspb/`, produced from `proto/rolodex_dns.proto`. The client library re-exports the key types so consumers do not need to import the generated package directly.
 
+## JavaScript Client Library
+
+A JavaScript client for the ACME issuer is provided in the `js/` directory (`rolodex-ca-client`, ESM, Node 20+, no runtime dependencies). It targets the issuer's HTTP surfaces rather than gRPC.
+
+### Portal Client (`js/src/portal.js`)
+
+`PortalClient` wraps the trusted-network enrollment portal JSON API (the same API used by the built-in web portal and browser extension):
+
+| Method                   | Endpoint                  | Description                                                       |
+| ------------------------ | ------------------------- | ----------------------------------------------------------------- |
+| `createAccount(zone)`    | `POST /api/account`       | Mints a zone-scoped EAB credential (creates the intermediate CA). |
+| `getCaPem()`             | `GET /api/ca`             | Downloads the root CA PEM.                                        |
+| `listZones()`            | `GET /api/zones`          | Lists enrollable (intermediate-backed) zones.                     |
+| `listCertificates(zone)` | `GET /api/certs[?zone=]`  | Lists issued certificates.                                        |
+
+The portal listener serves an auto-generated self-signed certificate by default, so the constructor accepts `ca` (PEM to trust) or `insecure: true` (trusted-network only). Non-2xx responses raise `PortalError` with the HTTP status.
+
+### DANE Module (`js/src/dane.js`)
+
+Implements DANE protocol retrieval directly on the DNS wire format (Node's resolver does not expose TLSA):
+
+- `fetchTlsaRecords(domain, {port, protocol, dnsServer, dnsPort, transport})` — queries `_<port>._<protocol>.<domain>.` for TLSA over UDP with automatic TCP fallback on truncation (or forced TCP). NXDOMAIN yields `[]`; other rcodes raise `DnsError`.
+- `certAssociationData(certPem, selector, matchingType)` — computes RFC 6698 association data from a PEM certificate via `node:crypto` (selector 0 = full DER cert, 1 = SPKI; matching 0/1/2 = exact/SHA-256/SHA-512), mirroring the Rust `dane::generate_tlsa_record`.
+- `verifyCertAgainstTlsa(certPem, record)` / `matchDane(records, chainPem)` — verify retrieved records against a certificate or a `leaf + intermediate` chain (with Rolodex's DANE-TA publication the intermediate is the expected match).
+- Wire codec helpers (`encodeQuery`, `decodeMessage`, `encodeResponse`, `parseTlsaRdata`, …) are exported and symmetric, and are reused by the tests' mock DNS servers.
+
+### Local Enrollment UI (`js/bin/rolodex-ca-ui.js`, `js/src/ui_server.js`, `js/ui/`)
+
+`rolodex-ca-ui` serves a local web console (plain HTTP on a loopback bind) that proxies the portal API over its self-signed TLS — so the browser never needs to trust the portal certificate — and adds a `POST /api/dane` endpoint performing live TLSA lookups (something a browser cannot do) with optional verification of a pasted PEM chain. Flags: `--portal`, `--bind`, `--dns`, `--ca`, `--insecure`.
+
+### JavaScript Tests
+
+- **Unit tests** (`js/test/*.test.js`, `node:test`) — DNS wire codec round-trips (including compression pointers and pointer-loop rejection), TLSA retrieval against in-process mock UDP/TCP DNS servers (truncation fallback, NXDOMAIN, SERVFAIL, timeout), portal client against a mock self-signed HTTPS portal, and the UI server's proxy + DANE endpoints. Certificate association data is checked against openssl-generated Ed25519 fixtures in `js/test/fixtures/` whose expected SPKI/cert digests were computed with openssl — an oracle independent of `node:crypto`.
+- **Integration tests** (`js/test/integration.test.js`) — gated on `ROLODEX_DNS_BINARY`; spawn a real server with the ACME issuer enabled in an isolated temp dir with random ports. They exercise the portal flow (EAB minting, zone listing, root CA download) and a cross-implementation DANE check: the Rust side publishes a DANE-TA TLSA record for the zone intermediate (via `ensure-zone-ca` + `generate-tlsa` over the Unix socket CLI), and the JS client retrieves it over real UDP and TCP DNS and independently recomputes the SPKI SHA-256 from the intermediate PEM. The two implementations must agree.
+
 ## Configuration
 
 Configuration is loaded from a YAML file (default path `rolodex-dns.yml`, overridable via `-c`/`--config` CLI flag). If the file does not exist, sensible defaults are used.
@@ -816,8 +851,12 @@ The project uses a top-level Makefile with the following targets:
 | Target                | Description                                                                                                                                                |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `build`               | Compile the Rust project in debug mode (`cargo build`). Produces the `rolodex-dns` server and `rolodex-dns-cli` client binaries.                           |
-| `test`                | Run all tests: lint, Go integration tests, Go unit tests, and Rust tests (`cargo test`).                                                                   |
+| `test`                | Run all tests: lint, Go integration tests, Go unit tests, Rust tests (`cargo test`), and JavaScript tests.                                                 |
 | `lint`                | Run `cargo fmt -- --check` and `cargo clippy -- -D warnings`.                                                                                             |
+| `deps`                | Install JavaScript dev dependencies (`npm install` in `js/`).                                                                                              |
+| `js-lint`             | Run eslint on the JavaScript package (depends on `deps`).                                                                                                  |
+| `js-test`             | Run JavaScript unit tests (depends on `js-integration-test`).                                                                                              |
+| `js-integration-test` | Build the Rust binaries, lint, then run JavaScript integration tests with `ROLODEX_DNS_BINARY` pointing at the compiled server.                            |
 | `bench`               | Run criterion benchmarks (`cargo bench --bench dns_perf`). Benchmarks cover QNAME randomization, cache key generation, DB lookups, zone matching, and cache operations. |
 | `clean`               | Clean build artifacts (`cargo clean`).                                                                                                                     |
 | `go-test`             | Run Go unit tests (depends on `go-integration-test`).                                                                                                      |
@@ -925,7 +964,7 @@ The Go client has two test layers:
 - **Unit tests** — Use an in-process mock gRPC server via `bufconn` to test all client methods, authentication token propagation, transport modes, error handling, and edge cases (idempotent close, lazy dial, custom dial options).
 - **Integration tests** — Gated behind the `integration` build tag. Each test starts a real Rolodex DNS server subprocess with a unique temporary directory, random ports, and isolated database. Tests cover record CRUD, wildcard filtering, forwarder configuration, RBL round-trip, cache flushing, Unix socket transport, authentication failure, default TTL behavior, concurrent clients (5 simultaneous), network scoping, DNS64, and TTL drift.
 
-The `make test` target runs the full test suite: Go integration tests, Go unit tests, Rust integration tests (each test file explicitly: `integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`), and then all Rust tests via `cargo test`. Individual targets are available: `make go-integration-test`, `make go-test`, `make rust-integration-test`, `make rust-test`.
+The `make test` target runs the full test suite: Go integration tests, Go unit tests, Rust integration tests (each test file explicitly: `integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`), all Rust tests via `cargo test`, and the JavaScript lint/integration/unit tests. Individual targets are available: `make go-integration-test`, `make go-test`, `make rust-integration-test`, `make rust-test`, `make js-integration-test`, `make js-test`.
 
 ## Key Dependencies
 

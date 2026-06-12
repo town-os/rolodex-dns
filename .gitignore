@@ -1,5 +1,6 @@
 /target
 /.cache
+/js/node_modules
 verify-passed.txt
 verify-failed.txt
 rolodex-dns-dev.db

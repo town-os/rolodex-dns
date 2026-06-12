@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Rolodex CA — Enrollment &amp; DANE</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         max-width: 820px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { font-size: 1.5rem; }
+  fieldset { border: 1px solid #8884; border-radius: 8px; margin: 1rem 0; padding: 1rem; }
+  legend { font-weight: 600; padding: 0 .4rem; }
+  label { display: block; margin: .4rem 0 .2rem; font-weight: 600; }
+  input, select, textarea { width: 100%; padding: .5rem; box-sizing: border-box;
+                  border-radius: 6px; border: 1px solid #8886; font-size: 1rem; }
+  textarea { font-family: ui-monospace, monospace; font-size: .85rem; min-height: 7rem; }
+  button { margin-top: .8rem; padding: .55rem 1rem; border-radius: 6px; border: 0;
+           background: #2563eb; color: #fff; font-size: 1rem; cursor: pointer; }
+  button.secondary { background: #6b7280; }
+  pre { background: #11182708; border: 1px solid #8883; border-radius: 6px;
+        padding: .75rem; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+  .row { display: flex; gap: .5rem; align-items: flex-end; }
+  .row > div { flex: 1; }
+  .muted { color: #6b7280; font-size: .9rem; }
+  .hidden { display: none; }
+  .ok { color: #16a34a; font-weight: 600; }
+  .bad { color: #dc2626; font-weight: 600; }
+  code { background: #8881; padding: .1rem .3rem; border-radius: 4px; }
+</style>
+</head>
+<body>
+  <h1>Rolodex CA — Enrollment &amp; DANE</h1>
+  <p class="muted">
+    Local console for the Rolodex ACME issuer. Enrollment requests are proxied to the
+    trusted-network portal; DANE lookups query the DNS server directly over the wire protocol.
+  </p>
+
+  <fieldset>
+    <legend>1. Trust the Rolodex root CA</legend>
+    <p class="muted">Install this once on your machines so issued certificates are trusted.</p>
+    <button id="download-ca" class="secondary">Download root CA (PEM)</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>2. Enroll</legend>
+    <label for="zone">Zone</label>
+    <select id="zone"></select>
+    <button id="enroll">Create enrollment credentials</button>
+    <div id="result" class="hidden">
+      <label>ACME directory URL</label>
+      <pre id="dir"></pre>
+      <label>EAB key id</label>
+      <pre id="kid"></pre>
+      <label>EAB HMAC key</label>
+      <pre id="hmac"></pre>
+      <label>Ready-to-run client commands</label>
+      <pre id="snippets"></pre>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>3. Issued certificates</legend>
+    <button id="refresh-certs" class="secondary">Refresh</button>
+    <pre id="certs">(none loaded)</pre>
+  </fieldset>
+
+  <fieldset>
+    <legend>4. DANE / TLSA lookup</legend>
+    <p class="muted">
+      Retrieves TLSA records for <code>_port._proto.domain</code> via DNS. Paste a
+      certificate (or <code>leaf + intermediate</code> chain) PEM to verify it against
+      the published records.
+    </p>
+    <div class="row">
+      <div>
+        <label for="dane-domain">Domain</label>
+        <input id="dane-domain" placeholder="host.example.com" />
+      </div>
+      <div>
+        <label for="dane-port">Port</label>
+        <input id="dane-port" value="443" />
+      </div>
+      <div>
+        <label for="dane-proto">Protocol</label>
+        <input id="dane-proto" value="tcp" />
+      </div>
+    </div>
+    <label for="dane-pem">Certificate PEM (optional, for verification)</label>
+    <textarea id="dane-pem" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+    <button id="dane-lookup">Look up TLSA records</button>
+    <div id="dane-result" class="hidden">
+      <label>Record name</label>
+      <pre id="dane-name"></pre>
+      <label>Records</label>
+      <pre id="dane-records"></pre>
+      <div id="dane-verdict"></div>
+    </div>
+  </fieldset>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+async function loadZones() {
+  try {
+    const r = await fetch("/api/zones");
+    const data = await r.json();
+    const sel = $("zone");
+    sel.innerHTML = "";
+    (data.zones || []).forEach((z) => {
+      const o = document.createElement("option"); o.value = z; o.textContent = z;
+      sel.appendChild(o);
+    });
+    if (!(data.zones || []).length) {
+      const o = document.createElement("option");
+      o.value = ""; o.textContent = "(no zones configured)";
+      sel.appendChild(o);
+    }
+  } catch (e) { console.error(e); }
+}
+
+$("download-ca").onclick = () => { window.location = "/api/ca"; };
+
+$("enroll").onclick = async () => {
+  const zone = $("zone").value;
+  const r = await fetch("/api/account", {
+    method: "POST",
+    headers: {"content-type": "application/json"},
+    body: JSON.stringify({zone}),
+  });
+  if (!r.ok) { alert("Enrollment failed: " + (await r.text())); return; }
+  const d = await r.json();
+  $("dir").textContent = d.directory_url;
+  $("kid").textContent = d.eab_kid;
+  $("hmac").textContent = d.eab_hmac_key;
+  $("snippets").textContent = (d.snippets || []).join("\n\n");
+  $("result").classList.remove("hidden");
+};
+
+$("refresh-certs").onclick = async () => {
+  const r = await fetch("/api/certs");
+  const d = await r.json();
+  const rows = (d.certificates || []).map(
+    (c) => `${c.domain}  expires=${c.expires_at}`);
+  $("certs").textContent = rows.length ? rows.join("\n") : "(none)";
+};
+
+$("dane-lookup").onclick = async () => {
+  const body = {
+    domain: $("dane-domain").value.trim(),
+    port: Number($("dane-port").value) || 443,
+    protocol: $("dane-proto").value.trim() || "tcp",
+  };
+  const pem = $("dane-pem").value.trim();
+  if (pem) body.certPem = pem;
+
+  const r = await fetch("/api/dane", {
+    method: "POST",
+    headers: {"content-type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  const d = await r.json();
+  if (!r.ok) { alert("DANE lookup failed: " + (d.error || r.status)); return; }
+
+  $("dane-name").textContent = d.name;
+  $("dane-records").textContent = d.records.length
+    ? d.records.map((rec) => rec.value).join("\n")
+    : "(no TLSA records)";
+  const verdict = $("dane-verdict");
+  if (d.verified === null) {
+    verdict.textContent = "";
+  } else if (d.verified) {
+    verdict.innerHTML = '<p class="ok">✓ certificate matches a published TLSA record</p>';
+  } else {
+    verdict.innerHTML = '<p class="bad">✗ certificate does not match any published TLSA record</p>';
+  }
+  $("dane-result").classList.remove("hidden");
+};
+
+loadZones();
+</script>
+</body>
+</html>
