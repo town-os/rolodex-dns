@@ -18,6 +18,7 @@ case "$1" in
     step "Building build image (${ARCH})"
     mkdir -p .cache/cargo-registry .cache/cargo-git
     ${SUDO} podman build ${NETWORK_FLAG} \
+      --build-arg "CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-}" \
       --volume "$(pwd)/.cache/cargo-registry:/usr/local/cargo/registry:z" \
       --volume "$(pwd)/.cache/cargo-git:/usr/local/cargo/git:z" \
       -t "${PODMAN_BUILD_IMAGE}-${ARCH}" -f Containerfile.build .

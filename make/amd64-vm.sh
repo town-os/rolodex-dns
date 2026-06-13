@@ -30,6 +30,9 @@ VM_CPUS="${VM_CPUS:-4}"
 VM_DISK_SIZE="${VM_DISK_SIZE:-20G}"
 VM_SSH_PORT="${VM_SSH_PORT:-2222}"
 VM_USER="builder"
+# Cap parallel cargo jobs inside the VM build to bound peak memory (2 fits a
+# 4 GiB guest). Empty = let cargo use all guest cores.
+VM_BUILD_JOBS="${VM_BUILD_JOBS:-2}"
 VM_IMAGE_URL="${VM_IMAGE_URL:-https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2}"
 
 BASE_IMG="${VM_DIR}/base.qcow2"
@@ -216,7 +219,7 @@ case "$1" in
     "$0" up
     sync_repo
     step "Building amd64 image inside the VM ($(image_ref))"
-    vm_ssh "cd rolodex-dns && make image IMAGE_TAG='${IMAGE_TAG}'"
+    vm_ssh "cd rolodex-dns && CARGO_BUILD_JOBS='${VM_BUILD_JOBS}' make image IMAGE_TAG='${IMAGE_TAG}'"
     step "Importing $(image_ref) into host podman"
     vm_ssh "sudo podman save $(image_ref)" | ${SUDO} podman load
     substep "Imported $(image_ref)"
@@ -227,7 +230,7 @@ case "$1" in
     step "Building and pushing amd64 ($1) from inside the VM"
     # Forward registry credentials so the VM can push directly to the registry.
     vm_ssh "cd rolodex-dns && QUAY_USERNAME='${QUAY_USERNAME}' QUAY_PASSWORD='${QUAY_PASSWORD}' \
-      IMAGE_TAG='${IMAGE_TAG}' make $1"
+      CARGO_BUILD_JOBS='${VM_BUILD_JOBS}' IMAGE_TAG='${IMAGE_TAG}' make $1"
     ;;
   *)
     echo "Usage: $0 {up|down|destroy|status|ssh [cmd]|sync|build|push-rc|push-release}"
