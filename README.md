@@ -15,8 +15,9 @@ Rolodex DNS also supports Realtime Blackhole Lists (RBLs) for DNS-based spam/mal
 - **Forwarding resolver**: Configurable upstream DNS forwarders for non-local queries
 - **TLD/domain overlay**: Add records at any level (including TLDs) to override public DNS
 - **DNSSEC**: Ed25519 (preferred), ECDSA P-256/P-384, RSA/SHA-256 key generation, zone signing, and DS record computation
-- **DANE TLSA + ACME**: TLSA record generation from certificates, self-signed root CA generation, ACME DNS-01 challenge handling (serves `_acme-challenge` TXT records natively)
-- **21 record types**: A, AAAA, CNAME, MX, TXT, NS, SOA, SRV, PTR, URI, SSHFP, DNAME, ANAME, ZONEMD, TLSA, DNSKEY, DS, RRSIG, NSEC, NSEC3, NSEC3PARAM
+- **DANE TLSA + ACME issuer**: TLSA record generation from certificates, a built-in ACME certificate authority (per-zone intermediate CAs), self-signed root CA generation, ACME DNS-01 challenge handling (serves `_acme-challenge` TXT records natively)
+- **CA distribution over DNS**: the root and per-zone intermediate CA chain is published as `CERT` records (RFC 4398) with a chunked `TXT` fallback, so any client that can resolve the zone can fetch and trust the CA — no portal access required (see [Distributing and Trusting the CA](#distributing-and-trusting-the-ca))
+- **22 record types**: A, AAAA, CNAME, MX, TXT, NS, SOA, SRV, PTR, URI, SSHFP, DNAME, ANAME, ZONEMD, TLSA, CERT, DNSKEY, DS, RRSIG, NSEC, NSEC3, NSEC3PARAM
 - **DNS wildcards**: RFC 4592 compliant wildcard matching (`*.example.com.` matches single-label substitutions, exact match takes priority)
 - **Authoritative DNS**: AA bit enforcement for local zones and explicitly declared authoritative zones
 - **EDNS (RFC 6891)**: OPT record support, payload size negotiation, DO bit for DNSSEC, BADVERS for version > 0
@@ -414,6 +415,10 @@ rolodex-dns-cli [OPTIONS] <COMMAND>
 | `generate-dane-root-ca` | Generate a self-signed DANE root CA |
 | `request-acme-cert` | Request a certificate via ACME DNS-01 |
 | `get-acme-status` | Check ACME certificate status |
+| `ensure-zone-ca` | Ensure the per-zone intermediate CA exists; prints root + intermediate PEM and publishes the CA chain into DNS |
+| `create-eab` | Mint an EAB credential scoped to a zone |
+| `list-acme-accounts` | List registered ACME accounts |
+| `list-acme-certs` | List issued certificates |
 | **TTL Drift** | |
 | `set-ttl-drift-config` / `get-ttl-drift-config` | Configure/retrieve TTL drift settings |
 | **DNS64** | |
@@ -1099,6 +1104,7 @@ The following methods are also available. See `proto/rolodex_dns.proto` for full
 | 18 | `NSEC` | Next secure record (DNSSEC). Managed automatically by zone signing |
 | 19 | `NSEC3` | Next secure record v3 (DNSSEC). Managed automatically by zone signing |
 | 20 | `NSEC3PARAM` | NSEC3 parameters (DNSSEC). Managed automatically by zone signing |
+| 21 | `CERT` | Certificate storage in DNS (RFC 4398). Value: `"cert_type key_tag algorithm base64_cert_data"`. Used to distribute the CA chain |
 
 ## Privacy-First Caching
 
@@ -1154,6 +1160,40 @@ Ed448 is not supported due to a limitation in the ring cryptography crate.
    ```
 
 Signing produces DNSKEY, RRSIG, NSEC/NSEC3, and NSEC3PARAM records automatically. Re-run `sign-zone` after adding or modifying records.
+
+## Distributing and Trusting the CA
+
+Rolodex DNS is itself an ACME certificate authority: a self-signed **root CA** signs a **per-zone intermediate CA**, and each intermediate signs the leaf certificates issued through the ACME endpoint. For clients to trust those certificates, they need to trust the root CA. Rolodex distributes the CA chain three ways.
+
+### CA over DNS (CERT records with TXT fallback)
+
+Whenever a per-zone intermediate CA is created, Rolodex publishes the root and intermediate certificates **into DNS itself**, so any client that can resolve the zone can fetch and trust the CA without ever touching the enrollment portal:
+
+- **`CERT` records (RFC 4398)** at `_ca.<zone>.` — one record per certificate, with RDATA `"1 0 0 <base64 DER>"` (type 1 = PKIX/X.509, key tag and algorithm 0). The root is identified as the self-signed certificate. Any DNS client works:
+  ```bash
+  dig CERT _ca.example.com
+  ```
+- **`TXT` records** at `_rolodex-ca.<zone>.` — the same base64 DER split into ≤255-byte chunks framed as `rolodex-ca:v1:<root|intermediate>:<i>/<n>:<chunk>`. The unique `rolodex-ca:` prefix distinguishes the chunks from unrelated TXT data, and the explicit sequence numbers let clients reassemble them regardless of answer order. This is the fallback for resolver stacks that cannot query `CERT`.
+
+Publication is idempotent (records are replaced, not duplicated) and happens at every point a zone CA is ensured: portal enrollment, the `EnsureZoneCa`/`CreateEabCredential` RPCs, and ACME account/finalize. Consumers should prefer `CERT` and fall back to `TXT`.
+
+### Browser extension
+
+The browser extension under [`extension/`](extension/) has a portal-independent **CA via DNS** panel: give it a DoH URL (e.g. `https://dns.example.com/dns-query`) and a zone, and it retrieves the chain over DNS-over-HTTPS (preferring `CERT`, falling back to `TXT`), identifies the root vs intermediate, optionally verifies the intermediate against the published DANE-TA `TLSA` record, and offers root / intermediate / chain PEM downloads. The DNS logic lives in `extension/ca_dns.js`, a dependency-free browser module reused by the JavaScript test suite.
+
+### Portal and CLI
+
+On the trusted network, the enrollment portal (`acme.portal_bind`, default `https://<host>:8500`) serves the root CA at `GET /api/ca`, and the management CLI prints the full chain:
+
+```bash
+# Print root + intermediate PEM for a zone
+rolodex-dns-cli ensure-zone-ca --zone example.com
+
+# Or download the root CA from the portal
+curl -k https://<host>:8500/api/ca -o rolodex-root-ca.pem
+```
+
+Once you have the root CA PEM, add it to each device's trust store (e.g. `update-ca-trust` on Fedora/RHEL, `update-ca-certificates` on Debian/Ubuntu, Keychain Access on macOS, or the browser's own certificate manager for Firefox). Servers issued through the ACME endpoint present a `leaf + intermediate` chain that validates against this root; DANE-aware clients can additionally pin the intermediate via the `TLSA` records Rolodex publishes automatically on issuance.
 
 ## DNS64
 
@@ -1446,12 +1486,14 @@ All methods accept a `context.Context` for cancellation and deadlines.
 | `RecordTypeNSEC` | 18 | DNSSEC next secure record |
 | `RecordTypeNSEC3` | 19 | DNSSEC next secure record v3 |
 | `RecordTypeNSEC3PARAM` | 20 | DNSSEC NSEC3 parameters |
+| `RecordTypeCERT` | 21 | Certificate storage in DNS (RFC 4398) |
 
 ## RFC Compliance
 
 | RFC | Name | Support |
 |-----|------|---------|
 | RFC 4255 | SSHFP DNS record | Full (storage, lookup, algorithm/fingerprint type) |
+| RFC 4398 | CERT DNS record | Full (storage, lookup, PKIX CA-chain distribution) |
 | RFC 4592 | Wildcards in DNS | Full (single-label substitution, exact match priority) |
 | RFC 5782 | DNSBL (RBL) | Full (reverse-IP query format, local + external providers) |
 | RFC 6147 | DNS64 | Full (AAAA synthesis from A records, configurable prefix) |
