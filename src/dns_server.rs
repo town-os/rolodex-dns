@@ -957,6 +957,7 @@ fn map_query_type_to_kind(rt: RecordType) -> Option<RecordKind> {
         RecordType::SRV => Some(RecordKind::SRV),
         RecordType::PTR => Some(RecordKind::PTR),
         RecordType::TLSA => Some(RecordKind::TLSA),
+        RecordType::CERT => Some(RecordKind::CERT),
         RecordType::SSHFP => Some(RecordKind::SSHFP),
         RecordType::DNSKEY => Some(RecordKind::DNSKEY),
         RecordType::RRSIG => Some(RecordKind::RRSIG),
@@ -1082,6 +1083,26 @@ fn db_record_to_dns_record(db_rec: &crate::db::DnsRecord) -> Option<Record> {
                     hickory_proto::rr::rdata::tlsa::CertUsage::from(usage),
                     hickory_proto::rr::rdata::tlsa::Selector::from(selector),
                     hickory_proto::rr::rdata::tlsa::Matching::from(matching_type),
+                    cert_data,
+                ))
+            } else {
+                return None;
+            }
+        }
+        RecordKind::CERT => {
+            // CERT (RFC 4398): "cert_type key_tag algorithm base64_cert_data"
+            let parts: Vec<&str> = db_rec.value.split_whitespace().collect();
+            if parts.len() >= 4 {
+                let cert_type: u16 = parts[0].parse().ok()?;
+                let key_tag: u16 = parts[1].parse().ok()?;
+                let algorithm: u8 = parts[2].parse().ok()?;
+                let cert_data =
+                    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, parts[3])
+                        .ok()?;
+                RData::CERT(rdata::CERT::new(
+                    hickory_proto::rr::rdata::cert::CertType::from(cert_type),
+                    key_tag,
+                    hickory_proto::rr::rdata::cert::Algorithm::from(algorithm),
                     cert_data,
                 ))
             } else {
@@ -1651,6 +1672,54 @@ mod tests {
             map_query_type_to_kind(RecordType::PTR),
             Some(RecordKind::PTR)
         );
+        assert_eq!(
+            map_query_type_to_kind(RecordType::CERT),
+            Some(RecordKind::CERT)
+        );
+    }
+
+    #[test]
+    fn test_db_record_to_dns_record_cert() {
+        // CERT (RFC 4398): "cert_type key_tag algorithm base64_cert_data"
+        let payload = b"fake der bytes";
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, payload);
+        let db_rec = DnsRecord {
+            id: None,
+            name: "_ca.example.com.".to_string(),
+            record_type: RecordKind::CERT,
+            value: format!("1 0 0 {}", b64),
+            ttl: 3600,
+            priority: 0,
+        };
+        let rec = db_record_to_dns_record(&db_rec).expect("CERT record");
+        assert_eq!(rec.record_type(), RecordType::CERT);
+        match rec.data() {
+            RData::CERT(cert) => {
+                assert_eq!(u16::from(cert.cert_type()), 1); // PKIX
+                assert_eq!(cert.key_tag(), 0);
+                assert_eq!(u8::from(cert.algorithm()), 0);
+                assert_eq!(cert.cert_data(), payload);
+            }
+            other => panic!("expected CERT rdata, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_db_record_to_dns_record_cert_malformed() {
+        let db_rec = DnsRecord {
+            id: None,
+            name: "_ca.example.com.".to_string(),
+            record_type: RecordKind::CERT,
+            value: "1 0 0 not!base64!".to_string(),
+            ttl: 3600,
+            priority: 0,
+        };
+        assert!(db_record_to_dns_record(&db_rec).is_none());
+        let too_short = DnsRecord {
+            value: "1 0 0".to_string(),
+            ..db_rec
+        };
+        assert!(db_record_to_dns_record(&too_short).is_none());
     }
 
     #[test]

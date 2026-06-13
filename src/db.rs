@@ -61,6 +61,7 @@ pub enum RecordKind {
     NSEC,
     NSEC3,
     NSEC3PARAM,
+    CERT,
 }
 
 impl RecordKind {
@@ -87,6 +88,7 @@ impl RecordKind {
             RecordKind::NSEC => "NSEC",
             RecordKind::NSEC3 => "NSEC3",
             RecordKind::NSEC3PARAM => "NSEC3PARAM",
+            RecordKind::CERT => "CERT",
         }
     }
 
@@ -113,6 +115,7 @@ impl RecordKind {
             "NSEC" => Some(RecordKind::NSEC),
             "NSEC3" => Some(RecordKind::NSEC3),
             "NSEC3PARAM" => Some(RecordKind::NSEC3PARAM),
+            "CERT" => Some(RecordKind::CERT),
             _ => None,
         }
     }
@@ -140,6 +143,7 @@ impl RecordKind {
             RecordKind::NSEC => 18,
             RecordKind::NSEC3 => 19,
             RecordKind::NSEC3PARAM => 20,
+            RecordKind::CERT => 21,
         }
     }
 
@@ -166,6 +170,7 @@ impl RecordKind {
             18 => Some(RecordKind::NSEC),
             19 => Some(RecordKind::NSEC3),
             20 => Some(RecordKind::NSEC3PARAM),
+            21 => Some(RecordKind::CERT),
             _ => None,
         }
     }

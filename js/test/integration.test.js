@@ -12,13 +12,10 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn, execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
-import net from "node:net";
-import os from "node:os";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
 
+import { startServer, cli, skip } from "./server_helper.js";
 import { PortalClient } from "../src/portal.js";
 import {
   fetchTlsaRecords,
@@ -28,114 +25,6 @@ import {
   splitPemCertificates,
   DnsError,
 } from "../src/dane.js";
-
-const execFileP = promisify(execFile);
-
-const BINARY = process.env.ROLODEX_DNS_BINARY ?? "";
-const CLI_BINARY =
-  process.env.ROLODEX_DNS_CLI_BINARY ||
-  (BINARY ? path.join(path.dirname(BINARY), "rolodex-dns-cli") : "");
-
-const skip = BINARY
-  ? false
-  : "ROLODEX_DNS_BINARY not set; run via `make js-integration-test`";
-
-function allocatePort() {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.listen(0, "127.0.0.1", () => {
-      const { port } = srv.address();
-      srv.close(() => resolve(port));
-    });
-    srv.on("error", reject);
-  });
-}
-
-function waitForPort(port, timeoutMs = 10000) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const attempt = () => {
-      const sock = net.connect({ host: "127.0.0.1", port, timeout: 250 });
-      sock.on("connect", () => {
-        sock.destroy();
-        resolve();
-      });
-      const retry = () => {
-        sock.destroy();
-        if (Date.now() > deadline) {
-          reject(new Error(`port ${port} did not open within ${timeoutMs}ms`));
-        } else {
-          setTimeout(attempt, 100);
-        }
-      };
-      sock.on("error", retry);
-      sock.on("timeout", retry);
-    };
-    attempt();
-  });
-}
-
-async function waitForFile(file, timeoutMs = 10000) {
-  const deadline = Date.now() + timeoutMs;
-  while (!existsSync(file)) {
-    if (Date.now() > deadline) {
-      throw new Error(`${file} did not appear within ${timeoutMs}ms`);
-    }
-    await new Promise((r) => setTimeout(r, 100));
-  }
-}
-
-async function startServer(t) {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "rolodex-js-"));
-  const socketPath = path.join(dir, "rolodex.sock");
-  const dnsPort = await allocatePort();
-  const acmePort = await allocatePort();
-  const portalPort = await allocatePort();
-
-  const config = `database_path: "${path.join(dir, "rolodex-dns.db")}"
-forwarders: []
-
-dns:
-  bind:
-    - udp: "127.0.0.1:${dnsPort}"
-    - tcp: "127.0.0.1:${dnsPort}"
-
-grpc:
-  tcp_bind: ""
-  unix_socket: "${socketPath}"
-  shared_secret: ""
-
-rbl:
-  enabled: false
-  providers: []
-
-acme:
-  bind: "127.0.0.1:${acmePort}"
-  portal_bind: "127.0.0.1:${portalPort}"
-  directory_url: "https://127.0.0.1:${acmePort}/acme"
-`;
-  const configPath = path.join(dir, "rolodex-dns.yml");
-  writeFileSync(configPath, config);
-
-  const proc = spawn(BINARY, ["-c", configPath], {
-    stdio: ["ignore", "inherit", "inherit"],
-  });
-
-  t.after(() => {
-    proc.kill("SIGKILL");
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  await waitForPort(portalPort);
-  await waitForPort(dnsPort); // DNS TCP listener
-  await waitForFile(socketPath);
-
-  return { dir, socketPath, dnsPort, acmePort, portalPort };
-}
-
-function cli(socketPath, args) {
-  return execFileP(CLI_BINARY, ["--unix-socket", socketPath, ...args]);
-}
 
 test("portal API and DANE retrieval against a live server", { skip }, async (t) => {
   const srv = await startServer(t);

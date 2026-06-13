@@ -145,7 +145,11 @@ fn create_account_inner(state: &PortalState, body: &[u8]) -> Result<Response> {
     }
 
     // Ensure the per-zone intermediate CA exists so issuance can succeed.
+    // This also publishes the CA chain into DNS (CERT + TXT records).
     ca::ensure_zone_intermediate(&state.db, zone)?;
+    if let Some(dns) = &state.acme.dns_server {
+        dns.flush_cache();
+    }
 
     // Mint an EAB credential scoped to this zone.
     let kid = random_b64(16)?;

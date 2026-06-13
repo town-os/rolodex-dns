@@ -67,6 +67,8 @@ const (
 	RecordType_NSEC3 RecordType = 19
 	// NSEC3PARAM record - NSEC3 parameters (DNSSEC)
 	RecordType_NSEC3PARAM RecordType = 20
+	// CERT record - certificate storage in DNS (RFC 4398)
+	RecordType_CERT RecordType = 21
 )
 
 // Enum value maps for RecordType.
@@ -93,6 +95,7 @@ var (
 		18: "NSEC",
 		19: "NSEC3",
 		20: "NSEC3PARAM",
+		21: "CERT",
 	}
 	RecordType_value = map[string]int32{
 		"A":          0,
@@ -116,6 +119,7 @@ var (
 		"NSEC":       18,
 		"NSEC3":      19,
 		"NSEC3PARAM": 20,
+		"CERT":       21,
 	}
 )
 
@@ -8894,7 +8898,7 @@ const file_rolodex_dns_proto_rawDesc = "" +
 	"\n" +
 	"auth_token\x18\x02 \x01(\tR\tauthToken\"T\n" +
 	"\x1bListDhcpCertOptionsResponse\x125\n" +
-	"\aoptions\x18\x01 \x03(\v2\x1b.rolodex_dns.DhcpCertOptionR\aoptions*\xe0\x01\n" +
+	"\aoptions\x18\x01 \x03(\v2\x1b.rolodex_dns.DhcpCertOptionR\aoptions*\xea\x01\n" +
 	"\n" +
 	"RecordType\x12\x05\n" +
 	"\x01A\x10\x00\x12\b\n" +
@@ -8921,7 +8925,8 @@ const file_rolodex_dns_proto_rawDesc = "" +
 	"\x04NSEC\x10\x12\x12\t\n" +
 	"\x05NSEC3\x10\x13\x12\x0e\n" +
 	"\n" +
-	"NSEC3PARAM\x10\x142\xdf/\n" +
+	"NSEC3PARAM\x10\x14\x12\b\n" +
+	"\x04CERT\x10\x152\xdf/\n" +
 	"\x11RolodexDnsService\x12J\n" +
 	"\tAddRecord\x12\x1d.rolodex_dns.AddRecordRequest\x1a\x1e.rolodex_dns.AddRecordResponse\x12S\n" +
 	"\fRemoveRecord\x12 .rolodex_dns.RemoveRecordRequest\x1a!.rolodex_dns.RemoveRecordResponse\x12P\n" +

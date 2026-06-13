@@ -28,7 +28,7 @@ Rolodex DNS serves DNS queries over UDP, TCP, DNS-over-TLS (DoT), DNS-over-HTTPS
 
 **Basic**: A, AAAA, CNAME, MX, TXT, NS, SOA, SRV, PTR.
 
-**Extended**: URI (RFC 7553), SSHFP (RFC 4255), DNAME (RFC 6672), ANAME (alias resolved at query time), ZONEMD (RFC 9156), TLSA (RFC 6698).
+**Extended**: URI (RFC 7553), SSHFP (RFC 4255), DNAME (RFC 6672), ANAME (alias resolved at query time), ZONEMD (RFC 9156), TLSA (RFC 6698), CERT (RFC 4398).
 
 **DNSSEC**: DNSKEY, DS, RRSIG, NSEC, NSEC3, NSEC3PARAM.
 
@@ -62,7 +62,7 @@ Domain names are normalized to lowercase with a trailing dot on storage and look
 
 Records consist of: name, record type, value, TTL (default 300 seconds), and priority (used by MX and SRV).
 
-SOA values are stored as `"mname rname serial refresh retry expire minimum"`. SRV values are stored as `"weight port target"`. TLSA values are stored as `"usage selector matching_type hex_data"`. URI values are stored as `"priority weight target_uri"`. SSHFP values are stored as `"algorithm fp_type hex_fingerprint"`. ZONEMD values are stored as `"serial scheme hash_algorithm hex_digest"`.
+SOA values are stored as `"mname rname serial refresh retry expire minimum"`. SRV values are stored as `"weight port target"`. TLSA values are stored as `"usage selector matching_type hex_data"`. URI values are stored as `"priority weight target_uri"`. SSHFP values are stored as `"algorithm fp_type hex_fingerprint"`. ZONEMD values are stored as `"serial scheme hash_algorithm hex_digest"`. CERT values are stored as `"cert_type key_tag algorithm base64_cert_data"`.
 
 ## DNS Response Cache
 
@@ -187,9 +187,18 @@ Endpoints are mounted under `/acme`: `directory`, `new-nonce`, `new-account`, `n
 
 On issuance, the per-zone intermediate is auto-published as a **DANE-TA** TLSA record — `2 1 1` (intermediate SPKI SHA-256) at `_<port>._<proto>.<name>` (default `_443._tcp`, configurable). The server presents `leaf + intermediate`, so a DANE-TA validator matches the intermediate in the chain. No per-leaf EE records are published.
 
+### CA Distribution over DNS
+
+When a per-zone intermediate CA is created (or re-ensured), `publish_ca_dns_records` in `src/ca.rs` publishes the CA chain into the local DNS database so any client that can resolve the zone can retrieve the root and intermediate certificates — no portal access required:
+
+- **CERT records (RFC 4398)** at `_ca.<zone>.` — one record per certificate, value `"1 0 0 <base64 DER>"` (type 1 = PKIX, key tag 0, algorithm 0). Retrievable with any DNS client (`dig CERT _ca.<zone>`); the root is identified as the self-signed certificate.
+- **TXT records** at `_rolodex-ca.<zone>.` — the same base64 DER split into ≤255-byte character-string chunks framed as `rolodex-ca:v1:<root|intermediate>:<i>/<n>:<chunk>`. The unique `rolodex-ca:` prefix distinguishes the chunks from unrelated TXT data; chunks carry explicit sequence numbers because DNS answer order is not guaranteed. This is the fallback for resolver stacks that cannot query CERT.
+
+Publication is idempotent (existing records at both names are replaced) and happens at every `ensure_zone_intermediate` call site: portal account creation, the `EnsureZoneCa`/`CreateEabCredential` RPCs, and ACME account/finalize paths. The DNS response cache is flushed after publication. Consumers prefer CERT and fall back to TXT — the browser extension's `extension/ca_dns.js` retrieves the chain over DoH this way and can verify the intermediate against the DANE-TA TLSA record.
+
 ### Enrollment surfaces (trusted-network)
 
-End users do not need a CLI. A built-in **web portal** (`src/portal.rs`, served on `acme.portal_bind`) and a **browser extension** (`extension/`) share one JSON API (`/api/account`, `/api/ca`, `/api/zones`, `/api/certs`); a **JavaScript client library** for the same API plus DANE/TLSA retrieval and a local enrollment UI lives in `js/` (see the JavaScript Client Library section). The portal mints an EAB account behind the scenes and returns copy-paste client config; users just trust the root CA and run their client. **Access is trusted-network only** — bind `portal_bind` to an internal address; anyone who can reach it may enroll.
+End users do not need a CLI. A built-in **web portal** (`src/portal.rs`, served on `acme.portal_bind`) and a **browser extension** (`extension/`) share one JSON API (`/api/account`, `/api/ca`, `/api/zones`, `/api/certs`); a **JavaScript client library** for the same API plus DANE/TLSA retrieval and a local enrollment UI lives in `js/` (see the JavaScript Client Library section). The extension can additionally retrieve the CA chain from DNS itself over DoH (see CA Distribution over DNS), which works for any client that can resolve the zone — no portal access required. The portal mints an EAB account behind the scenes and returns copy-paste client config; users just trust the root CA and run their client. **Access is trusted-network only** — bind `portal_bind` to an internal address; anyone who can reach it may enroll.
 
 ### Legacy stub RPCs
 
@@ -698,7 +707,7 @@ The client automatically includes the auth token in every RPC call. All methods 
 
 ### Exported Types
 
-- `RecordType` — DNS record type enum (constants: `RecordTypeA`, `RecordTypeAAAA`, `RecordTypeCNAME`, `RecordTypeMX`, `RecordTypeTXT`, `RecordTypeNS`, `RecordTypeSOA`, `RecordTypeSRV`, `RecordTypePTR`, `RecordTypeURI`, `RecordTypeSSHFP`, `RecordTypeDNAME`, `RecordTypeANAME`, `RecordTypeZONEMD`, `RecordTypeTLSA`, `RecordTypeDNSKEY`, `RecordTypeDS`, `RecordTypeRRSIG`, `RecordTypeNSEC`, `RecordTypeNSEC3`, `RecordTypeNSEC3PARAM`).
+- `RecordType` — DNS record type enum (constants: `RecordTypeA`, `RecordTypeAAAA`, `RecordTypeCNAME`, `RecordTypeMX`, `RecordTypeTXT`, `RecordTypeNS`, `RecordTypeSOA`, `RecordTypeSRV`, `RecordTypePTR`, `RecordTypeURI`, `RecordTypeSSHFP`, `RecordTypeDNAME`, `RecordTypeANAME`, `RecordTypeZONEMD`, `RecordTypeTLSA`, `RecordTypeDNSKEY`, `RecordTypeDS`, `RecordTypeRRSIG`, `RecordTypeNSEC`, `RecordTypeNSEC3`, `RecordTypeNSEC3PARAM`, `RecordTypeCERT`).
 - `DnsRecord` — DNS record with name, record type, value, TTL, and priority.
 - `RblConfig` — RBL provider configuration (zone and enabled flag).
 - `RblStatus` — RBL state returned by `GetRblConfig` (global enabled flag and provider list).
@@ -764,8 +773,8 @@ Implements DANE protocol retrieval directly on the DNS wire format (Node's resol
 
 ### JavaScript Tests
 
-- **Unit tests** (`js/test/*.test.js`, `node:test`) — DNS wire codec round-trips (including compression pointers and pointer-loop rejection), TLSA retrieval against in-process mock UDP/TCP DNS servers (truncation fallback, NXDOMAIN, SERVFAIL, timeout), portal client against a mock self-signed HTTPS portal, and the UI server's proxy + DANE endpoints. Certificate association data is checked against openssl-generated Ed25519 fixtures in `js/test/fixtures/` whose expected SPKI/cert digests were computed with openssl — an oracle independent of `node:crypto`.
-- **Integration tests** (`js/test/integration.test.js`) — gated on `ROLODEX_DNS_BINARY`; spawn a real server with the ACME issuer enabled in an isolated temp dir with random ports. They exercise the portal flow (EAB minting, zone listing, root CA download) and a cross-implementation DANE check: the Rust side publishes a DANE-TA TLSA record for the zone intermediate (via `ensure-zone-ca` + `generate-tlsa` over the Unix socket CLI), and the JS client retrieves it over real UDP and TCP DNS and independently recomputes the SPKI SHA-256 from the intermediate PEM. The two implementations must agree.
+- **Unit tests** (`js/test/*.test.js`, `node:test`) — DNS wire codec round-trips (including compression pointers and pointer-loop rejection), TLSA retrieval against in-process mock UDP/TCP DNS servers (truncation fallback, NXDOMAIN, SERVFAIL, timeout), portal client against a mock self-signed HTTPS portal, and the UI server's proxy + DANE endpoints. The browser extension's `ca_dns.js` module is tested here too (`extension.test.js`): codec interop against the Node encoder, X.509 DER field extraction cross-checked against `node:crypto`, TXT chunk reassembly (shuffled/incomplete/foreign data), CERT-preferred retrieval with TXT fallback, and DANE-TA verification — all with mocked DoH. Certificate association data is checked against openssl-generated Ed25519 fixtures in `js/test/fixtures/` whose expected SPKI/cert digests were computed with openssl — an oracle independent of `node:crypto`.
+- **Integration tests** (`js/test/integration.test.js`, `js/test/ca_dns_integration.test.js`, shared harness in `js/test/server_helper.js`) — gated on `ROLODEX_DNS_BINARY`; spawn a real server with the ACME issuer (and DoH) enabled in an isolated temp dir with random ports. They exercise the portal flow (EAB minting, zone listing, root CA download) and a cross-implementation DANE check: the Rust side publishes a DANE-TA TLSA record for the zone intermediate (via `ensure-zone-ca` + `generate-tlsa` over the Unix socket CLI), and the JS client retrieves it over real UDP and TCP DNS and independently recomputes the SPKI SHA-256 from the intermediate PEM. The two implementations must agree. The CA-over-DNS suite retrieves the published chain via CERT records over DoH and plain UDP, reassembles the TXT fallback, compares both byte-for-byte with `ensure-zone-ca` output and the portal root CA, and runs DANE-TA verification end to end.
 
 ## Configuration
 

@@ -39,8 +39,35 @@
     <label>EAB credentials & client config</label>
     <pre id="result"></pre>
   </div>
+
+  <hr style="border: 0; border-top: 1px solid #8884; margin: .9rem 0" />
+  <h1>CA via DNS</h1>
+  <p class="muted">
+    Retrieve the CA chain from DNS itself (CERT records, TXT fallback) over
+    DoH — no portal access needed, only DNS reachability.
+  </p>
+
+  <label for="doh">DoH URL</label>
+  <input id="doh" type="url" placeholder="https://dns.example.com/dns-query" />
+
+  <label for="dns-zone">Zone</label>
+  <input id="dns-zone" type="text" placeholder="example.com" />
+
+  <label for="dane-name">Verify against DANE TLSA of (optional)</label>
+  <input id="dane-name" type="text" placeholder="host.example.com" />
+
+  <button id="fetch-ca">Fetch CA via DNS</button>
+
+  <div id="dns-out" class="hidden">
+    <pre id="dns-result"></pre>
+    <div class="row">
+      <button id="dl-root" class="secondary">Root PEM</button>
+      <button id="dl-int" class="secondary">Intermediate PEM</button>
+      <button id="dl-chain" class="secondary">Chain PEM</button>
+    </div>
+  </div>
   <p id="status" class="muted"></p>
 
-  <script src="popup.js"></script>
+  <script type="module" src="popup.js"></script>
 </body>
 </html>

@@ -2,7 +2,9 @@
 
 A Manifest V3 browser extension that provides the same self-service certificate
 enrollment as the built-in web portal, against a Rolodex DNS ACME issuer. It
-calls the trusted-network `/api/*` surface served by `acme.portal_bind`.
+calls the trusted-network `/api/*` surface served by `acme.portal_bind`, and can
+additionally retrieve the CA chain **from DNS itself** over DoH — for any client
+that can resolve the zone, no portal access required.
 
 ## What it does
 
@@ -14,6 +16,28 @@ calls the trusted-network `/api/*` surface served by `acme.portal_bind`.
 
 It shares the exact API the web portal uses, so anything you can do here you can
 also do in a plain browser at the portal URL.
+
+## CA via DNS (portal-independent)
+
+Rolodex publishes its CA chain into DNS whenever a per-zone CA is created:
+
+- **CERT records** (RFC 4398) at `_ca.<zone>.` — root + intermediate, each as
+  `1 0 0 <base64 DER>` (PKIX). `dig CERT _ca.<zone>` works too.
+- **TXT records** at `_rolodex-ca.<zone>.` — the same base64 DER chunked and
+  framed as `rolodex-ca:v1:<root|intermediate>:<i>/<n>:<chunk>`, a fallback
+  for stacks that cannot query CERT. The unique `rolodex-ca:` prefix keeps the
+  chunks distinguishable from unrelated TXT data.
+
+The **CA via DNS** section of the popup takes a **DoH URL** (the Rolodex DoH
+listener, e.g. `https://dns.example.com/dns-query`) and a **zone**, queries the
+CERT records first and falls back to TXT, identifies the root (self-signed) vs
+the intermediate, and offers root / intermediate / chain PEM downloads.
+Optionally it verifies the retrieved intermediate against the DANE-TA TLSA
+record (`2 1 1`, SHA-256 of the intermediate SPKI) published for a hostname.
+
+The DNS logic lives in `ca_dns.js`, a browser ES module (DNS wire codec, DoH
+POST, minimal X.509 DER walking, WebCrypto hashing) that is also imported and
+tested by the Node test suite in `js/test/`.
 
 ## Install (unpacked)
 

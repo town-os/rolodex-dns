@@ -48,6 +48,8 @@ enum RecordType {
   NSEC3 = 19;
   // NSEC3PARAM record - NSEC3 parameters (DNSSEC)
   NSEC3PARAM = 20;
+  // CERT record - certificate storage in DNS (RFC 4398)
+  CERT = 21;
 }
 
 // DnsRecord represents a single DNS record in the database.

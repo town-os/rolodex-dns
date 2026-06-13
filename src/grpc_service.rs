@@ -1830,6 +1830,8 @@ impl RolodexDnsService for RolodexDnsGrpcService {
             .map_err(|e| Status::internal(format!("failed to ensure root CA: {}", e)))?;
         crate::ca::ensure_zone_intermediate(&self.db, &req.zone)
             .map_err(|e| Status::internal(format!("failed to ensure zone CA: {}", e)))?;
+        // ensure_zone_intermediate publishes CA records into DNS.
+        self.dns_server.flush_cache();
 
         let root_ca_pem = crate::ca::root_ca_pem(&self.db)
             .map_err(|e| Status::internal(format!("failed to read root CA: {}", e)))?;
@@ -1861,6 +1863,8 @@ impl RolodexDnsService for RolodexDnsGrpcService {
             .map_err(|e| Status::internal(format!("failed to ensure root CA: {}", e)))?;
         crate::ca::ensure_zone_intermediate(&self.db, &req.zone)
             .map_err(|e| Status::internal(format!("failed to ensure zone CA: {}", e)))?;
+        // ensure_zone_intermediate publishes CA records into DNS.
+        self.dns_server.flush_cache();
 
         let (kid, secret) = generate_eab()?;
         let hmac_b64 =

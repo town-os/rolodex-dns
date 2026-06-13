@@ -80,6 +80,8 @@ const (
 	RecordTypeNSEC3 RecordType = pb.RecordType_NSEC3
 	// RecordTypeNSEC3PARAM represents a DNSSEC NSEC3 parameters record.
 	RecordTypeNSEC3PARAM RecordType = pb.RecordType_NSEC3PARAM
+	// RecordTypeCERT represents a certificate record (RFC 4398).
+	RecordTypeCERT RecordType = pb.RecordType_CERT
 )
 
 // DnsRecord represents a DNS record managed by the Rolodex DNS server.

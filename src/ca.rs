@@ -11,7 +11,7 @@
 //! CAs are persisted as PEM in the database and re-materialized at use time via
 //! [`rcgen::CertificateParams::from_ca_cert_pem`] + [`rcgen::KeyPair::from_pem`].
 
-use crate::db::{Database, normalize_name};
+use crate::db::{Database, DnsRecord, RecordKind, normalize_name};
 use anyhow::{Context, Result};
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, CertificateSigningRequestParams,
@@ -24,6 +24,18 @@ pub const ROOT_CA_NAME: &str = "__rolodex_root__";
 
 const ROOT_VALIDITY_DAYS: i64 = 3650; // 10 years
 const INTERMEDIATE_VALIDITY_DAYS: i64 = 1825; // 5 years
+
+/// Owner label for CA distribution via CERT records: `_ca.<zone>.`
+pub const CA_CERT_LABEL: &str = "_ca";
+/// Owner label for CA distribution via TXT records: `_rolodex-ca.<zone>.`
+pub const CA_TXT_LABEL: &str = "_rolodex-ca";
+/// Unique prefix distinguishing Rolodex CA TXT chunks from unrelated TXT data.
+pub const CA_TXT_PREFIX: &str = "rolodex-ca:v1";
+/// TTL for published CA records.
+const CA_RECORD_TTL: u32 = 3600;
+/// Base64 payload bytes per TXT chunk. With the `rolodex-ca:v1:<kind>:<i>/<n>:`
+/// framing this keeps each TXT value under the 255-byte character-string limit.
+const CA_TXT_CHUNK: usize = 180;
 
 /// Generates a fresh Ed25519 key pair.
 fn ed25519_key() -> Result<KeyPair> {
@@ -94,6 +106,9 @@ fn materialize_issuer(cert_pem: &str, key_pem: &str) -> Result<(Certificate, Key
 pub fn ensure_zone_intermediate(db: &Database, zone: &str) -> Result<()> {
     let zone = normalize_name(zone);
     if db.get_zone_ca(&zone)?.is_some() {
+        // Re-publish the CA DNS records in case they were removed or the CA
+        // predates CA-over-DNS distribution.
+        publish_ca_dns_records(db, &zone)?;
         return Ok(());
     }
     let (root_cert, root_key) = load_root(db)?;
@@ -115,6 +130,100 @@ pub fn ensure_zone_intermediate(db: &Database, zone: &str) -> Result<()> {
         .signed_by(&key, &root_cert, &root_key)
         .context("failed to sign intermediate CA")?;
     db.store_zone_ca(&zone, &cert.pem(), &key.serialize_pem())?;
+    publish_ca_dns_records(db, &zone)?;
+    Ok(())
+}
+
+/// Returns the owner name for a zone's CA CERT records: `_ca.<zone>.`
+pub fn ca_cert_record_name(zone: &str) -> String {
+    format!("{}.{}.", CA_CERT_LABEL, zone.trim_end_matches('.'))
+}
+
+/// Returns the owner name for a zone's CA TXT records: `_rolodex-ca.<zone>.`
+pub fn ca_txt_record_name(zone: &str) -> String {
+    format!("{}.{}.", CA_TXT_LABEL, zone.trim_end_matches('.'))
+}
+
+/// Extracts the base64 body (DER, base64-encoded) of the first CERTIFICATE
+/// block in a PEM — which is exactly the payload a CERT record carries.
+fn pem_body(pem: &str) -> Result<String> {
+    let mut body = String::new();
+    let mut inside = false;
+    for line in pem.lines() {
+        if line.starts_with("-----BEGIN CERTIFICATE-----") {
+            inside = true;
+        } else if line.starts_with("-----END CERTIFICATE-----") {
+            break;
+        } else if inside {
+            body.push_str(line.trim());
+        }
+    }
+    if body.is_empty() {
+        anyhow::bail!("no CERTIFICATE block found in PEM");
+    }
+    Ok(body)
+}
+
+/// Publishes the root and per-zone intermediate CA certificates into DNS so
+/// any client that can resolve the zone can retrieve the CA chain:
+///
+/// - **CERT records (RFC 4398)** at `_ca.<zone>.`, one per certificate, with
+///   RDATA `PKIX (1)`, key tag 0, algorithm 0 — the standards-friendly form
+///   (`dig CERT _ca.<zone>` works).
+/// - **TXT records** at `_rolodex-ca.<zone>.`, the same base64 DER split into
+///   chunks framed as `rolodex-ca:v1:<root|intermediate>:<i>/<n>:<chunk>` —
+///   a fallback for resolvers/stacks that cannot query CERT. The unique
+///   prefix distinguishes the chunks from unrelated TXT data.
+///
+/// Idempotent: previously published CA records at both names are replaced.
+/// Callers with a DNS server handle should flush the response cache after.
+pub fn publish_ca_dns_records(db: &Database, zone: &str) -> Result<()> {
+    let zone = normalize_name(zone);
+    let root_pem = root_ca_pem(db)?;
+    let (int_pem, _) = db
+        .get_zone_ca(&zone)?
+        .with_context(|| format!("no intermediate CA for zone {}", zone))?;
+
+    let cert_name = ca_cert_record_name(&zone);
+    let txt_name = ca_txt_record_name(&zone);
+    db.remove_records(&cert_name, Some(RecordKind::CERT), "")?;
+    db.remove_records(&txt_name, Some(RecordKind::TXT), "")?;
+
+    for (kind, pem) in [("root", &root_pem), ("intermediate", &int_pem)] {
+        let b64 = pem_body(pem)?;
+
+        // CERT (RFC 4398): "cert_type key_tag algorithm base64_cert_data".
+        // Type 1 = PKIX (X.509); key tag and algorithm are 0 since the
+        // payload is not a DNSSEC key.
+        db.add_record(&DnsRecord {
+            id: None,
+            name: cert_name.clone(),
+            record_type: RecordKind::CERT,
+            value: format!("1 0 0 {}", b64),
+            ttl: CA_RECORD_TTL,
+            priority: 0,
+        })?;
+
+        // TXT fallback: chunked base64 with explicit sequence framing, since
+        // a TXT character-string is limited to 255 bytes and answer order is
+        // not guaranteed.
+        let chunks: Vec<String> = b64
+            .as_bytes()
+            .chunks(CA_TXT_CHUNK)
+            .map(|c| String::from_utf8_lossy(c).into_owned())
+            .collect();
+        let total = chunks.len();
+        for (i, chunk) in chunks.iter().enumerate() {
+            db.add_record(&DnsRecord {
+                id: None,
+                name: txt_name.clone(),
+                record_type: RecordKind::TXT,
+                value: format!("{}:{}:{}/{}:{}", CA_TXT_PREFIX, kind, i + 1, total, chunk),
+                ttl: CA_RECORD_TTL,
+                priority: 0,
+            })?;
+        }
+    }
     Ok(())
 }
 
@@ -288,6 +397,99 @@ mod tests {
         assert!(tlsa.starts_with("2 1 1 "));
         let parts: Vec<&str> = tlsa.split_whitespace().collect();
         assert_eq!(parts[3].len(), 64); // SHA-256 hex
+    }
+
+    #[test]
+    fn ca_chain_is_published_as_cert_records() {
+        let db = test_db();
+        ensure_zone_intermediate(&db, "example.com").expect("intermediate");
+
+        let certs = db
+            .lookup(&ca_cert_record_name("example.com"), Some(RecordKind::CERT))
+            .expect("lookup CERT");
+        assert_eq!(certs.len(), 2, "root + intermediate CERT records");
+        for rec in &certs {
+            // "cert_type key_tag algorithm base64": PKIX, no key tag/algorithm.
+            assert!(rec.value.starts_with("1 0 0 "), "value: {}", rec.value);
+        }
+
+        // The published payloads must be exactly the PEM bodies of the stored CAs.
+        let root_b64 = pem_body(&root_ca_pem(&db).unwrap()).unwrap();
+        let (int_pem, _) = db.get_zone_ca("example.com.").unwrap().unwrap();
+        let int_b64 = pem_body(&int_pem).unwrap();
+        let payloads: Vec<&str> = certs
+            .iter()
+            .filter_map(|r| r.value.split_whitespace().nth(3))
+            .collect();
+        assert!(payloads.contains(&root_b64.as_str()));
+        assert!(payloads.contains(&int_b64.as_str()));
+    }
+
+    #[test]
+    fn ca_chain_is_published_as_prefixed_txt_chunks() {
+        let db = test_db();
+        ensure_zone_intermediate(&db, "example.com").expect("intermediate");
+
+        let txts = db
+            .lookup(&ca_txt_record_name("example.com"), Some(RecordKind::TXT))
+            .expect("lookup TXT");
+        assert!(!txts.is_empty());
+
+        let mut root_chunks: Vec<(usize, String)> = Vec::new();
+        let mut int_chunks: Vec<(usize, String)> = Vec::new();
+        for rec in &txts {
+            // Every value fits in a single TXT character-string.
+            assert!(rec.value.len() <= 255, "TXT too long: {}", rec.value.len());
+            assert!(rec.value.starts_with(CA_TXT_PREFIX), "value: {}", rec.value);
+            let parts: Vec<&str> = rec.value.splitn(5, ':').collect();
+            assert_eq!(parts.len(), 5, "framing: {}", rec.value);
+            let (kind, seq, data) = (parts[2], parts[3], parts[4]);
+            let idx: usize = seq
+                .split('/')
+                .next()
+                .and_then(|s| s.parse().ok())
+                .expect("seq index");
+            match kind {
+                "root" => root_chunks.push((idx, data.to_string())),
+                "intermediate" => int_chunks.push((idx, data.to_string())),
+                other => panic!("unexpected kind {}", other),
+            }
+        }
+
+        // Reassembled chunks must reproduce the stored CA PEM bodies.
+        let reassemble = |mut chunks: Vec<(usize, String)>| {
+            chunks.sort_by_key(|(i, _)| *i);
+            chunks.into_iter().map(|(_, d)| d).collect::<String>()
+        };
+        assert_eq!(
+            reassemble(root_chunks),
+            pem_body(&root_ca_pem(&db).unwrap()).unwrap()
+        );
+        let (int_pem, _) = db.get_zone_ca("example.com.").unwrap().unwrap();
+        assert_eq!(reassemble(int_chunks), pem_body(&int_pem).unwrap());
+    }
+
+    #[test]
+    fn ca_publication_is_idempotent() {
+        let db = test_db();
+        ensure_zone_intermediate(&db, "example.com").expect("first");
+        let certs_before = db
+            .lookup(&ca_cert_record_name("example.com"), Some(RecordKind::CERT))
+            .unwrap();
+        let txts_before = db
+            .lookup(&ca_txt_record_name("example.com"), Some(RecordKind::TXT))
+            .unwrap();
+
+        // Re-ensuring must replace, not duplicate, the published records.
+        ensure_zone_intermediate(&db, "example.com").expect("second");
+        let certs_after = db
+            .lookup(&ca_cert_record_name("example.com"), Some(RecordKind::CERT))
+            .unwrap();
+        let txts_after = db
+            .lookup(&ca_txt_record_name("example.com"), Some(RecordKind::TXT))
+            .unwrap();
+        assert_eq!(certs_before.len(), certs_after.len());
+        assert_eq!(txts_before.len(), txts_after.len());
     }
 
     #[test]

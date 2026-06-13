@@ -395,6 +395,10 @@ async fn new_account_inner(state: &AcmeState, body: &[u8]) -> Result<Response, A
         // Make sure the per-zone intermediate exists for this account's zone.
         if let Some(z) = &zone {
             ca::ensure_zone_intermediate(&state.db, z).map_err(internal)?;
+            // ensure_zone_intermediate publishes CA records into DNS.
+            if let Some(dns) = &state.dns_server {
+                dns.flush_cache();
+            }
         }
     } else if state.require_eab {
         return Err(AcmeError::new(
@@ -549,6 +553,10 @@ fn check_issuable(
             // Derive a zone from the last two labels and create an intermediate.
             let zone = derive_zone(&normalized);
             ca::ensure_zone_intermediate(&state.db, &zone).map_err(internal)?;
+            // ensure_zone_intermediate publishes CA records into DNS.
+            if let Some(dns) = &state.dns_server {
+                dns.flush_cache();
+            }
             Ok(zone)
         }
         None => Err(AcmeError::new(

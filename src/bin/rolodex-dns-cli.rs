@@ -92,6 +92,8 @@ enum RecordTypeArg {
     Nsec3,
     /// NSEC3PARAM parameters (DNSSEC)
     Nsec3param,
+    /// CERT certificate (RFC 4398). Value: "cert_type key_tag algorithm base64_cert_data"
+    Cert,
 }
 
 impl RecordTypeArg {
@@ -118,6 +120,7 @@ impl RecordTypeArg {
             RecordTypeArg::Nsec => 18,
             RecordTypeArg::Nsec3 => 19,
             RecordTypeArg::Nsec3param => 20,
+            RecordTypeArg::Cert => 21,
         }
     }
 
@@ -144,6 +147,7 @@ impl RecordTypeArg {
             18 => "NSEC",
             19 => "NSEC3",
             20 => "NSEC3PARAM",
+            21 => "CERT",
             _ => "UNKNOWN",
         }
     }

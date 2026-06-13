@@ -17,9 +17,9 @@
     "node": ">=20"
   },
   "scripts": {
-    "lint": "eslint .",
-    "test": "node --test test/dane.test.js test/portal.test.js test/ui.test.js",
-    "test:integration": "node --test test/integration.test.js",
+    "lint": "eslint . && cd ../extension && eslint .",
+    "test": "node --test test/dane.test.js test/portal.test.js test/ui.test.js test/extension.test.js",
+    "test:integration": "node --test test/integration.test.js test/ca_dns_integration.test.js",
     "ui": "node bin/rolodex-ca-ui.js"
   },
   "devDependencies": {
