@@ -1,5 +1,6 @@
 /target
 /.cache
+/.claude
 /js/node_modules
 verify-passed.txt
 verify-failed.txt
