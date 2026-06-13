@@ -116,7 +116,7 @@ Login to Quay.io (reads `QUAY_USERNAME` and `QUAY_PASSWORD` from the environment
 make quay-login
 ```
 
-Build and push the host-arch release candidate image (auto-tags `rc.YYYYMMDD-<arch>` and `rc.latest-<arch>`):
+Build and push the host-arch release candidate image (auto-tags `rc.YYYYMMDD-<arch>` and `` rc.latest-`uname -m` ``, e.g. `rc.latest-x86_64` / `rc.latest-aarch64`):
 
 ```
 make push-rc
@@ -133,7 +133,7 @@ make push-release
 After the per-arch images for **all** architectures have been pushed (run `push-rc`/`push-release` on each native host), assemble and push the multi-arch manifest list from any host:
 
 ```
-make manifest-rc       # combines rc.latest-amd64 + rc.latest-arm64 → rc.latest (and the rc.YYYYMMDD date tag)
+make manifest-rc       # combines rc.latest-x86_64 + rc.latest-aarch64 → rc.latest (and the rc.YYYYMMDD date tag)
 make manifest-release  # combines latest-amd64 + latest-arm64 → latest (and the release.YYYYMMDD date tag)
 ```
 

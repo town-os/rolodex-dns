@@ -31,11 +31,13 @@ case "$1" in
       substep "Pushing ${SRC}"
       ${SUDO} podman push "${SRC}"
     else
-      for t in "rc.$(date +%Y%m%d)" "rc.latest"; do
-        substep "Tagging ${RELEASE_IMAGE}:${t}-${ARCH}"
-        ${SUDO} podman tag "${SRC}" "${RELEASE_IMAGE}:${t}-${ARCH}"
-        substep "Pushing ${RELEASE_IMAGE}:${t}-${ARCH}"
-        ${SUDO} podman push "${RELEASE_IMAGE}:${t}-${ARCH}"
+      # rc.latest is suffixed with uname -m so deploy hosts can pull
+      # rc.latest-$(uname -m) without mapping to OCI arch names.
+      for t in "rc.$(date +%Y%m%d)-${ARCH}" "rc.latest-$(uname -m)"; do
+        substep "Tagging ${RELEASE_IMAGE}:${t}"
+        ${SUDO} podman tag "${SRC}" "${RELEASE_IMAGE}:${t}"
+        substep "Pushing ${RELEASE_IMAGE}:${t}"
+        ${SUDO} podman push "${RELEASE_IMAGE}:${t}"
       done
     fi
     ;;
@@ -60,7 +62,7 @@ case "$1" in
       build_manifest "${IMAGE_TAG}"
     else
       build_manifest "rc.$(date +%Y%m%d)"
-      build_manifest "rc.latest"
+      build_manifest "rc.latest" "${MACHINES}"
     fi
     ;;
   manifest-release)

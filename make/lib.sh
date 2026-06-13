@@ -35,6 +35,11 @@ warn() {
 # Architectures that participate in multi-arch manifests (OCI names).
 ARCHES="amd64 arm64"
 
+# Machine names (uname -m) that participate in multi-arch manifests. The
+# rc.latest per-arch tags use these so deploy hosts can pull
+# rc.latest-$(uname -m) directly without mapping to OCI arch names.
+MACHINES="x86_64 aarch64"
+
 # host_arch — print the OCI arch name (amd64/arm64) for the current host.
 # Builds are native-only: each arch is built on a host of that arch.
 host_arch() {
@@ -48,17 +53,19 @@ host_arch() {
   esac
 }
 
-# build_manifest LIST_TAG — assemble and push a multi-arch manifest list from
-# the per-arch image tags (LIST_TAG-amd64, LIST_TAG-arm64) already pushed to the
-# registry from their respective native hosts.
+# build_manifest LIST_TAG [SUFFIXES] — assemble and push a multi-arch manifest
+# list from the per-arch image tags (LIST_TAG-<suffix> for each suffix in
+# SUFFIXES, default ${ARCHES}) already pushed to the registry from their
+# respective native hosts.
 build_manifest() {
   local list="$1"
+  local suffixes="${2:-${ARCHES}}"
   local ref="${RELEASE_IMAGE}:${list}"
   substep "Creating manifest ${ref}"
   ${SUDO} podman manifest rm "${ref}" 2>/dev/null || true
   ${SUDO} podman manifest create "${ref}"
   local arch
-  for arch in ${ARCHES}; do
+  for arch in ${suffixes}; do
     substep "Adding ${ref}-${arch}"
     ${SUDO} podman manifest add "${ref}" "docker://${ref}-${arch}"
   done

@@ -15,101 +15,109 @@ RELEASE_IMAGE      := quay.io/town/rolodex
 IMAGE_TAG ?=
 export PODMAN_BUILD_IMAGE RELEASE_IMAGE IMAGE_TAG
 
-.PHONY: test build clean go-test go-integration-test dev dev-release install lint bench
+.PHONY: help test build clean go-test go-integration-test dev dev-release install lint bench
 .PHONY: rust-test rust-integration-test
 .PHONY: deps js-lint js-test js-integration-test
 .PHONY: image push push-arch push-rc push-release manifest manifest-rc manifest-release quay-login clean-containers
 
-lint:
+help: ## Show this help
+	@printf "Usage: make <target> [IMAGE_TAG=...]\n"
+	@awk 'BEGIN {FS = ":.*##"} \
+	  /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5); next } \
+	  /^[a-zA-Z0-9_-]+:.*##/ { printf "  \033[36m%-21s\033[0m %s\n", $$1, $$2 }' $(firstword $(MAKEFILE_LIST))
+
+##@ Build & Test
+
+lint: ## Run cargo fmt --check and clippy -D warnings
 	cargo fmt -- --check
 	cargo clippy -- -D warnings
 
-test: lint go-test rust-test js-test
+test: lint go-test rust-test js-test ## Run the full suite: lint, Go, Rust, and JavaScript tests
 
-rust-test: rust-integration-test
+rust-test: rust-integration-test ## Run all Rust tests (includes integration tests)
 	cargo test
 
-rust-integration-test: build
+rust-integration-test: build ## Run each Rust integration test file
 	cargo test --test integration_test
 	cargo test --test new_features_test
 	cargo test --test cli_integration_test
 	cargo test --test dhcp_integration_test
 	cargo test --test acme_issuer_test
 
-build:
+build: ## Compile debug binaries (rolodex-dns + rolodex-dns-cli)
 	cargo build
 
-clean:
+clean: ## Clean cargo build artifacts
 	cargo clean
 
-go-test: go-integration-test
+go-test: go-integration-test ## Run Go unit tests (includes integration tests)
 	cd go && go test -v -count=1 ./...
 
-go-integration-test: build
+go-integration-test: build ## Run Go integration tests against a real server
 	cd go && ROLODEX_DNS_BINARY=$(CURDIR)/target/debug/rolodex-dns go test -v -count=1 -tags=integration ./...
 
-deps:
+deps: ## Install JavaScript dev dependencies (npm install in js/)
 	cd js && npm install --no-audit --no-fund
 
-js-lint: deps
+js-lint: deps ## Run eslint on the JavaScript package
 	cd js && npm run lint
 
-js-test: js-integration-test
+js-test: js-integration-test ## Run JavaScript unit tests (includes integration tests)
 	cd js && npm test
 
-js-integration-test: build js-lint
+js-integration-test: build js-lint ## Run JavaScript integration tests against a real server
 	cd js && ROLODEX_DNS_BINARY=$(CURDIR)/target/debug/rolodex-dns npm run test:integration
 
-bench:
+bench: ## Run criterion benchmarks (cargo bench --bench dns_perf)
 	cargo bench --bench dns_perf
 
-install:
+install: ## Install the binaries to the cargo bin directory
 	cargo install --path .
 
-dev-release:
+##@ Development
+
+dev-release: ## Build release and start a dev server using dev.yml
 	cargo build --release
 	@echo "Starting rolodex-dns dev server on 127.0.0.1:5300 with socket at /tmp/rolodex-dns.sock"
 	$(CURDIR)/target/release/rolodex-dns -c $(CURDIR)/dev.yml
 
-dev:
+dev: ## Build debug and start a dev server using dev.yml
 	cargo build
 	@echo "Starting rolodex-dns dev server on 127.0.0.1:5300 with socket at /tmp/rolodex-dns.sock"
 	$(CURDIR)/target/debug/rolodex-dns -c $(CURDIR)/dev.yml
 
-# ---------------------------------------------------------------------------
-# Container targets
-# ---------------------------------------------------------------------------
+##@ Containers
 
-image:
+image: ## Build the host-arch container image (<IMAGE_TAG|latest>-<arch>)
 	@make/build.sh release
 
-push: push-rc
+push: push-rc ## Alias for push-rc
 
 # Build and push ONLY the current host's per-arch tag (no rc/release/latest
 # aliases, no manifest). Produces quay.io/town/rolodex:<IMAGE_TAG|latest>-<arch>.
-push-arch: image quay-login
+push-arch: image quay-login ## Push only the current host's per-arch tag (no aliases, no manifest)
 	@make/build.sh push-arch
 
-push-rc: image quay-login
+push-rc: image quay-login ## Push the host-arch RC image (rc.YYYYMMDD-<arch> + rc.latest-<uname -m>, or IMAGE_TAG)
 	@make/build.sh push-rc
 
-push-release: image quay-login
+push-release: image quay-login ## Push the host-arch release image (release.YYYYMMDD-<arch> + latest-<arch>, or IMAGE_TAG)
 	@make/build.sh push-release
 
 # Manifest targets assemble a multi-arch manifest list from the per-arch image
 # tags already pushed (via push-rc/push-release) from each native host. Run
 # these once, after both the amd64 and arm64 images have been pushed.
-manifest: manifest-rc
+manifest: manifest-rc ## Alias for manifest-rc
 
-manifest-rc: quay-login
+manifest-rc: quay-login ## Push multi-arch RC manifest lists (rc.YYYYMMDD + rc.latest, or IMAGE_TAG)
 	@make/build.sh manifest-rc
 
-manifest-release: quay-login
+manifest-release: quay-login ## Push multi-arch release manifest lists (release.YYYYMMDD + latest, or IMAGE_TAG)
 	@make/build.sh manifest-release
 
-quay-login:
+quay-login: ## Log in to quay.io using QUAY_USERNAME/QUAY_PASSWORD (env or .env)
 	@make/build.sh quay-login
 
-clean-containers:
+clean-containers: ## Remove locally built per-arch container images
 	-sudo podman rmi $(PODMAN_BUILD_IMAGE)-amd64 $(PODMAN_BUILD_IMAGE)-arm64 2>/dev/null || true
 	-sudo podman rmi $(RELEASE_IMAGE):latest-amd64 $(RELEASE_IMAGE):latest-arm64 2>/dev/null || true

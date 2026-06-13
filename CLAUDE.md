@@ -859,6 +859,7 @@ The project uses a top-level Makefile with the following targets:
 
 | Target                | Description                                                                                                                                                |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `help`                | Print all targets with their descriptions, grouped by section. The default goal, so bare `make` shows it. Descriptions come from `##` annotations on the target lines; `##@` lines start sections. |
 | `build`               | Compile the Rust project in debug mode (`cargo build`). Produces the `rolodex-dns` server and `rolodex-dns-cli` client binaries.                           |
 | `test`                | Run all tests: lint, Go integration tests, Go unit tests, Rust tests (`cargo test`), and JavaScript tests.                                                 |
 | `lint`                | Run `cargo fmt -- --check` and `cargo clippy -- -D warnings`.                                                                                             |
@@ -874,10 +875,10 @@ The project uses a top-level Makefile with the following targets:
 | `dev`                 | Build the Rust project in debug mode, then start a development server using `dev.yml`.                                                                     |
 | `dev-release`         | Build the Rust project in release mode, then start a development server using `dev.yml`.                                                                   |
 | `image`               | Build a container image for the host architecture using `make/build.sh release`. Tags with an arch suffix (`-amd64`/`-arm64`). Accepts `IMAGE_TAG` (default `latest`). |
-| `push` / `push-rc`    | Build and push the host-arch release candidate image to `quay.io/town/rolodex`. Auto-tags `rc.YYYYMMDD-<arch>` + `rc.latest-<arch>` unless `IMAGE_TAG` is set.   |
+| `push` / `push-rc`    | Build and push the host-arch release candidate image to `quay.io/town/rolodex`. Auto-tags `rc.YYYYMMDD-<arch>` + `` rc.latest-`uname -m` `` (e.g. `rc.latest-x86_64`/`rc.latest-aarch64`) unless `IMAGE_TAG` is set.   |
 | `push-arch`           | Build and push ONLY the current host's per-arch tag (`<IMAGE_TAG\|latest>-<arch>`) to `quay.io/town/rolodex`. No date/`rc`/`latest` aliases, no manifest.       |
 | `push-release`        | Build and push the host-arch release image to `quay.io/town/rolodex`. Auto-tags `release.YYYYMMDD-<arch>` + `latest-<arch>` unless `IMAGE_TAG` is set.             |
-| `manifest` / `manifest-rc` | Assemble and push a multi-arch RC manifest list (`rc.YYYYMMDD`, `rc.latest`, or `IMAGE_TAG`) from the per-arch tags already in the registry.            |
+| `manifest` / `manifest-rc` | Assemble and push a multi-arch RC manifest list (`rc.YYYYMMDD`, `rc.latest`, or `IMAGE_TAG`) from the per-arch tags already in the registry. The `rc.latest` list is assembled from the `uname -m`-suffixed tags (`rc.latest-x86_64`, `rc.latest-aarch64`). |
 | `manifest-release`    | Assemble and push a multi-arch release manifest list (`release.YYYYMMDD`, `latest`, or `IMAGE_TAG`) from the per-arch tags already in the registry.                |
 | `quay-login`          | Login to Quay.io using `QUAY_USERNAME` and `QUAY_PASSWORD` from environment or `.env`.                                                                     |
 | `clean-containers`    | Remove locally built per-arch container images.                                                                                                            |
@@ -886,7 +887,7 @@ The Makefile is designed to be extended for non-cargo scenarios. Protocol buffer
 
 ### Multi-Architecture Container Builds
 
-Images are published to `quay.io/town/rolodex` as multi-arch manifest lists covering `linux/amd64` and `linux/arm64`. Builds are **native-only**: each architecture is compiled on a host of that architecture (no cross-compilation or QEMU). `make/build.sh` detects the host arch via `uname -m` (`host_arch` in `make/lib.sh`, mapping `x86_64`→`amd64`, `aarch64`→`arm64`) and suffixes every per-arch image tag accordingly. The `build_manifest` helper assembles a manifest list from the per-arch tags using `podman manifest add docker://…`, so the per-arch images only need to exist in the registry, not locally.
+Images are published to `quay.io/town/rolodex` as multi-arch manifest lists covering `linux/amd64` and `linux/arm64`. Builds are **native-only**: each architecture is compiled on a host of that architecture (no cross-compilation or QEMU). `make/build.sh` detects the host arch via `uname -m` (`host_arch` in `make/lib.sh`, mapping `x86_64`→`amd64`, `aarch64`→`arm64`) and suffixes every per-arch image tag accordingly — except `rc.latest`, which is suffixed with the raw `uname -m` machine name (`rc.latest-x86_64`/`rc.latest-aarch64`, `MACHINES` in `make/lib.sh`) so deploy hosts can pull `` rc.latest-`uname -m` `` directly. The `build_manifest` helper assembles a manifest list from the per-arch tags using `podman manifest add docker://…`, so the per-arch images only need to exist in the registry, not locally.
 
 The end-to-end multi-arch publish flow:
 
@@ -901,7 +902,7 @@ Images are published to `quay.io/town/rolodex`. The `IMAGE_TAG` variable control
 **Push with auto-generated tags** (default):
 
 ```bash
-make push-rc          # pushes rc.YYYYMMDD-<arch> and rc.latest-<arch>
+make push-rc          # pushes rc.YYYYMMDD-<arch> and rc.latest-$(uname -m)
 make push-release     # pushes release.YYYYMMDD-<arch> and latest-<arch>
 make manifest-rc      # pushes rc.YYYYMMDD and rc.latest manifest lists
 make manifest-release # pushes release.YYYYMMDD and latest manifest lists
