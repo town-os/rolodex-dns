@@ -76,21 +76,35 @@ After the dev server is running, you can manage it using the `rolodex-dns-cli` b
 
 ## Container Images
 
-Rolodex DNS builds with Podman using two Containerfiles: `Containerfile.build` compiles the Rust binaries in a full toolchain image, and `Containerfile` provisions a lean runtime image (`debian:bookworm-slim`) containing only the stripped binaries and CA certificates.
+Rolodex DNS builds with Podman using two Containerfiles: `Containerfile.build` compiles the Rust binaries in a full toolchain image, and `Containerfile` provisions a lean runtime image (`debian:bookworm`) containing only the stripped binaries and CA certificates.
 
 Images are published to `quay.io/town/rolodex` as multi-arch manifest lists covering `linux/amd64` and `linux/arm64`.
 
 ### Multi-Architecture Builds
 
-Builds are **native-only**: each architecture is compiled on a host of that architecture (no cross-compilation or QEMU emulation). The build tooling detects the host architecture via `uname -m` and tags every image with an arch suffix (`-amd64` or `-arm64`). A separate manifest step then assembles the per-arch images into a single multi-arch tag.
+Builds are **native**: each architecture is compiled on a host of that architecture. The build tooling detects the host architecture via `uname -m`, tags every image with an arch suffix (`-amd64` or `-arm64`), and a separate manifest step assembles the per-arch images into a single multi-arch tag.
 
-The end-to-end flow for publishing a multi-arch image is:
+`podman build` RUN steps share the host network (`--network=host`) so they can use a DNS resolver on the host's loopback (e.g. rolodex itself); override with `BUILD_NETWORK=` to opt out.
+
+The end-to-end flow for publishing a multi-arch image — one host per arch:
 
 1. On an amd64 host: `make push-release` → pushes `…:latest-amd64` (and the date tag).
 2. On an arm64 host: `make push-release` → pushes `…:latest-arm64` (and the date tag).
 3. On either host (once both are pushed): `make manifest-release` → creates and pushes the multi-arch `…:latest` manifest list.
 
 A consumer that pulls `quay.io/town/rolodex:latest` then transparently receives the image matching their architecture.
+
+#### Building amd64 from an arm64 host (builder VM)
+
+On an arm64 host such as **Fedora Asahi**, amd64 images can't be built with in-container user-mode emulation — the platform's x86 emulation (FEX / `binfmt-dispatcher` / `muvm`) runs inside a 4k-page microVM and isn't usable in a `podman build` sandbox. Instead, amd64 is built **natively inside a full-system qemu VM** (`make/amd64-vm.sh`): a Debian cloud image booted under `qemu-system-x86_64` (TCG; there's no KVM for x86 on arm), provisioned with podman via cloud-init.
+
+```bash
+make image-amd64          # build amd64 in the VM, import into host podman
+make push-release-amd64   # build + push amd64 straight from the VM (needs QUAY_* creds)
+make push-release-all     # native arm64 here + amd64 in the VM + the manifest, in one go
+```
+
+VM lifecycle: `make amd64-vm-up` / `amd64-vm-down` / `amd64-vm-status` / `amd64-vm-ssh` / `amd64-vm-destroy`. State lives in `.cache/amd64-vm/`; tune with `VM_MEM`, `VM_CPUS`, `VM_DISK_SIZE`, `VM_IMAGE_URL`. Full-system emulation is slow — an amd64 build takes minutes to tens of minutes.
 
 ### Building
 

@@ -878,6 +878,10 @@ The project uses a top-level Makefile with the following targets:
 | `push` / `push-rc`    | Build and push the host-arch release candidate image to `quay.io/town/rolodex`. Auto-tags `rc.YYYYMMDD-<arch>` + `` rc.latest-`uname -m` `` (e.g. `rc.latest-x86_64`/`rc.latest-aarch64`) unless `IMAGE_TAG` is set.   |
 | `push-arch`           | Build and push ONLY the current host's per-arch tag (`<IMAGE_TAG\|latest>-<arch>`) to `quay.io/town/rolodex`. No date/`rc`/`latest` aliases, no manifest.       |
 | `push-release`        | Build and push the host-arch release image to `quay.io/town/rolodex`. Auto-tags `release.YYYYMMDD-<arch>` + `latest-<arch>` unless `IMAGE_TAG` is set.             |
+| `image-amd64`         | Build the amd64 image inside the builder VM (`make/amd64-vm.sh`) and import it into host podman. |
+| `push-rc-amd64` / `push-release-amd64` | Build and push the amd64 RC/release image from inside the builder VM (pushes straight to the registry). |
+| `push-rc-all` / `push-release-all` | Publish **both** arches from a single arm64 host — native arm64 here, amd64 in the VM — then assemble the manifest. |
+| `amd64-vm-up` / `-down` / `-destroy` / `-status` / `-ssh` | Manage the amd64 builder VM lifecycle (`make/amd64-vm.sh`). |
 | `manifest` / `manifest-rc` | Assemble and push a multi-arch RC manifest list (`rc.YYYYMMDD`, `rc.latest`, or `IMAGE_TAG`) from the per-arch tags already in the registry. The `rc.latest` list is assembled from the `uname -m`-suffixed tags (`rc.latest-x86_64`, `rc.latest-aarch64`). |
 | `manifest-release`    | Assemble and push a multi-arch release manifest list (`release.YYYYMMDD`, `latest`, or `IMAGE_TAG`) from the per-arch tags already in the registry.                |
 | `quay-login`          | Login to Quay.io using `QUAY_USERNAME` and `QUAY_PASSWORD` from environment or `.env`.                                                                     |
@@ -887,13 +891,19 @@ The Makefile is designed to be extended for non-cargo scenarios. Protocol buffer
 
 ### Multi-Architecture Container Builds
 
-Images are published to `quay.io/town/rolodex` as multi-arch manifest lists covering `linux/amd64` and `linux/arm64`. Builds are **native-only**: each architecture is compiled on a host of that architecture (no cross-compilation or QEMU). `make/build.sh` detects the host arch via `uname -m` (`host_arch` in `make/lib.sh`, mapping `x86_64`→`amd64`, `aarch64`→`arm64`) and suffixes every per-arch image tag accordingly — except `rc.latest`, which is suffixed with the raw `uname -m` machine name (`rc.latest-x86_64`/`rc.latest-aarch64`, `MACHINES` in `make/lib.sh`) so deploy hosts can pull `` rc.latest-`uname -m` `` directly. The `build_manifest` helper assembles a manifest list from the per-arch tags using `podman manifest add docker://…`, so the per-arch images only need to exist in the registry, not locally.
+Images are published to `quay.io/town/rolodex` as multi-arch manifest lists covering `linux/amd64` and `linux/arm64`. Builds are **native**: each architecture is compiled on a host of that architecture (no in-container cross-compilation). `make/build.sh` detects the host arch via `uname -m` (`host_arch` in `make/lib.sh`, mapping `x86_64`→`amd64`, `aarch64`→`arm64`) and suffixes every per-arch image tag accordingly — except `rc.latest`, which is suffixed with the raw `uname -m` machine name (`rc.latest-x86_64`/`rc.latest-aarch64`, `MACHINES` in `make/lib.sh`) so deploy hosts can pull `` rc.latest-`uname -m` `` directly. The `build_manifest` helper assembles a manifest list from the per-arch tags using `podman manifest add docker://…`, so the per-arch images only need to exist in the registry, not locally.
 
-The end-to-end multi-arch publish flow:
+**amd64 builder VM (`make/amd64-vm.sh`).** To build amd64 images from an arm64 host (e.g. Fedora Asahi), in-container user-mode emulation is **not** an option: Fedora Asahi's x86 emulation runs through FEX + `binfmt-dispatcher` + `muvm`, which on a 16k-page kernel executes the emulator inside a 4k-page microVM and is not usable inside a `podman build` sandbox (even a bare `podman run --platform linux/amd64` fails there). Instead, amd64 is built **natively inside a full-system qemu VM**: `make/amd64-vm.sh` boots a Debian cloud image under `qemu-system-x86_64` (TCG — there is no KVM for x86 on arm), provisions podman via cloud-init, `rsync`s the repo in, and runs the ordinary `make image`/push targets inside the guest (where `host_arch` is genuinely amd64). `make image-amd64` builds in the VM and streams the result back to host podman via `podman save | podman load`; `make push-rc-amd64`/`push-release-amd64` push straight to the registry from the guest (forwarding `QUAY_*`). VM state lives under `.cache/amd64-vm/` (gitignored); tunables: `VM_MEM`, `VM_CPUS`, `VM_DISK_SIZE`, `VM_SSH_PORT`, `VM_IMAGE_URL`. TCG builds are slow — expect minutes-to-tens-of-minutes.
+
+**Build network.** `podman build` RUN steps run in their own network namespace, which cannot reach a resolver on the host's loopback (e.g. rolodex on `127.0.0.1`). `build.sh` therefore passes `--network=host` to both `podman build` invocations so RUN steps use the host's `/etc/resolv.conf`. Override with `BUILD_NETWORK=` (empty, to opt out) or `BUILD_NETWORK=<name>` (another podman network).
+
+The end-to-end multi-arch publish flow — either build each arch on its own native host:
 
 1. On an amd64 host: `make push-release` → pushes `…:latest-amd64` (+ date tag).
 2. On an arm64 host: `make push-release` → pushes `…:latest-arm64` (+ date tag).
 3. On any host, once both are pushed: `make manifest-release` → pushes the `…:latest` manifest list.
+
+— or, from a single arm64 host, `make push-release-all` (native arm64 + amd64 in the VM, then the manifest); `push-rc-all` is the RC equivalent.
 
 ### Container Image Tagging
 

@@ -6,15 +6,24 @@ ARCH="$(host_arch)"
 
 case "$1" in
   release)
+    # RUN steps (apt-get, cargo fetch) resolve DNS in their own network
+    # namespace, which can't reach a resolver on the host's loopback (e.g.
+    # rolodex on 127.0.0.1). Share the host network so they use the host's
+    # /etc/resolv.conf. Override with BUILD_NETWORK= to opt out, or
+    # BUILD_NETWORK=<name> to pick another network.
+    BUILD_NETWORK="${BUILD_NETWORK-host}"
+    NETWORK_FLAG=""
+    [ -n "${BUILD_NETWORK}" ] && NETWORK_FLAG="--network=${BUILD_NETWORK}"
+
     step "Building build image (${ARCH})"
     mkdir -p .cache/cargo-registry .cache/cargo-git
-    ${SUDO} podman build \
+    ${SUDO} podman build ${NETWORK_FLAG} \
       --volume "$(pwd)/.cache/cargo-registry:/usr/local/cargo/registry:z" \
       --volume "$(pwd)/.cache/cargo-git:/usr/local/cargo/git:z" \
       -t "${PODMAN_BUILD_IMAGE}-${ARCH}" -f Containerfile.build .
 
     step "Building release image (${ARCH})"
-    ${SUDO} podman build --pull=never \
+    ${SUDO} podman build ${NETWORK_FLAG} --pull=never \
       --build-arg "BUILD_IMAGE=${PODMAN_BUILD_IMAGE}-${ARCH}" \
       -t "${RELEASE_IMAGE}:${IMAGE_TAG:-latest}-${ARCH}" -f Containerfile .
     ;;

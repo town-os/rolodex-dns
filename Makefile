@@ -19,6 +19,8 @@ export PODMAN_BUILD_IMAGE RELEASE_IMAGE IMAGE_TAG
 .PHONY: rust-test rust-integration-test
 .PHONY: deps js-lint js-test js-integration-test
 .PHONY: image push push-arch push-rc push-release manifest manifest-rc manifest-release quay-login clean-containers
+.PHONY: amd64-vm-up amd64-vm-down amd64-vm-status amd64-vm-ssh amd64-vm-destroy
+.PHONY: image-amd64 push-rc-amd64 push-release-amd64 push-rc-all push-release-all
 
 help: ## Show this help
 	@printf "Usage: make <target> [IMAGE_TAG=...]\n"
@@ -121,3 +123,44 @@ quay-login: ## Log in to quay.io using QUAY_USERNAME/QUAY_PASSWORD (env or .env)
 clean-containers: ## Remove locally built per-arch container images
 	-sudo podman rmi $(PODMAN_BUILD_IMAGE)-amd64 $(PODMAN_BUILD_IMAGE)-arm64 2>/dev/null || true
 	-sudo podman rmi $(RELEASE_IMAGE):latest-amd64 $(RELEASE_IMAGE):latest-arm64 2>/dev/null || true
+
+##@ amd64 builder VM (cross-arch from an arm64 host)
+
+# On an arm64 host (e.g. Fedora Asahi) amd64 images are built natively inside a
+# full-system qemu VM rather than via in-container emulation. See make/amd64-vm.sh.
+amd64-vm-up: ## Provision and boot the amd64 builder VM (downloads a cloud image on first run)
+	@make/amd64-vm.sh up
+
+amd64-vm-down: ## Stop the amd64 builder VM (keeps its disk/state)
+	@make/amd64-vm.sh down
+
+amd64-vm-destroy: ## Stop the VM and delete its disk/state under .cache/amd64-vm
+	@make/amd64-vm.sh destroy
+
+amd64-vm-status: ## Show whether the amd64 builder VM is running
+	@make/amd64-vm.sh status
+
+amd64-vm-ssh: ## Open a shell in the amd64 builder VM
+	@make/amd64-vm.sh ssh
+
+image-amd64: ## Build the amd64 image inside the VM and import it into host podman
+	@make/amd64-vm.sh build
+
+push-rc-amd64: quay-login ## Build+push the amd64 RC image from inside the VM
+	@make/amd64-vm.sh push-rc
+
+push-release-amd64: quay-login ## Build+push the amd64 release image from inside the VM
+	@make/amd64-vm.sh push-release
+
+# Full multi-arch publish from a single arm64 host: native arm64 here, amd64 in
+# the VM, then assemble the manifest from the per-arch tags in the registry.
+# Sequenced via recursive make so the manifest is always assembled last.
+push-rc-all: ## Publish both arches (arm64 native + amd64 VM) and the RC manifest
+	$(MAKE) push-rc
+	$(MAKE) push-rc-amd64
+	$(MAKE) manifest-rc
+
+push-release-all: ## Publish both arches (arm64 native + amd64 VM) and the release manifest
+	$(MAKE) push-release
+	$(MAKE) push-release-amd64
+	$(MAKE) manifest-release

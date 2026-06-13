@@ -41,7 +41,8 @@ ARCHES="amd64 arm64"
 MACHINES="x86_64 aarch64"
 
 # host_arch — print the OCI arch name (amd64/arm64) for the current host.
-# Builds are native-only: each arch is built on a host of that arch.
+# Each arch is built natively: arm64 on an arm64 host, amd64 either on an amd64
+# host or inside the amd64 builder VM (see make/amd64-vm.sh).
 host_arch() {
   case "$(uname -m)" in
     x86_64 | amd64) echo amd64 ;;
