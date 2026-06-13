@@ -52,9 +52,9 @@ SSH_OPTS=(
 )
 
 # Remote ref of the built image (the in-VM build is native amd64, so build.sh
-# tags it with the amd64 suffix).
+# tags it with the x86_64 machine-name suffix).
 image_ref() {
-  echo "${RELEASE_IMAGE}:${IMAGE_TAG:-latest}-amd64"
+  echo "${RELEASE_IMAGE}:${IMAGE_TAG:-latest}-x86_64"
 }
 
 vm_pid() {

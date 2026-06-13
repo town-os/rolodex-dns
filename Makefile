@@ -121,8 +121,8 @@ quay-login: ## Log in to quay.io using QUAY_USERNAME/QUAY_PASSWORD (env or .env)
 	@make/build.sh quay-login
 
 clean-containers: ## Remove locally built per-arch container images
-	-sudo podman rmi $(PODMAN_BUILD_IMAGE)-amd64 $(PODMAN_BUILD_IMAGE)-arm64 2>/dev/null || true
-	-sudo podman rmi $(RELEASE_IMAGE):latest-amd64 $(RELEASE_IMAGE):latest-arm64 2>/dev/null || true
+	-sudo podman rmi $(PODMAN_BUILD_IMAGE)-x86_64 $(PODMAN_BUILD_IMAGE)-aarch64 2>/dev/null || true
+	-sudo podman rmi $(RELEASE_IMAGE):latest-x86_64 $(RELEASE_IMAGE):latest-aarch64 2>/dev/null || true
 
 ##@ amd64 builder VM (cross-arch from an arm64 host)
 

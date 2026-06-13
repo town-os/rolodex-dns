@@ -32,21 +32,18 @@ warn() {
 # Architecture
 # ---------------------------------------------------------------------------
 
-# Architectures that participate in multi-arch manifests (OCI names).
-ARCHES="amd64 arm64"
+# Machine names (uname -m) that participate in multi-arch manifests. Per-arch
+# image tags use these uname -m names directly (x86_64/aarch64, not the OCI
+# amd64/arm64) so deploy hosts can pull <tag>-$(uname -m) without mapping.
+ARCHES="x86_64 aarch64"
 
-# Machine names (uname -m) that participate in multi-arch manifests. The
-# rc.latest per-arch tags use these so deploy hosts can pull
-# rc.latest-$(uname -m) directly without mapping to OCI arch names.
-MACHINES="x86_64 aarch64"
-
-# host_arch — print the OCI arch name (amd64/arm64) for the current host.
-# Each arch is built natively: arm64 on an arm64 host, amd64 either on an amd64
-# host or inside the amd64 builder VM (see make/amd64-vm.sh).
+# host_arch — print the uname -m machine name (x86_64/aarch64) for the current
+# host. Each arch is built natively: aarch64 on an arm64 host, x86_64 either on
+# an x86_64 host or inside the amd64 builder VM (see make/amd64-vm.sh).
 host_arch() {
   case "$(uname -m)" in
-    x86_64 | amd64) echo amd64 ;;
-    aarch64 | arm64) echo arm64 ;;
+    x86_64 | amd64) echo x86_64 ;;
+    aarch64 | arm64) echo aarch64 ;;
     *)
       echo "unsupported host architecture: $(uname -m)" >&2
       return 1

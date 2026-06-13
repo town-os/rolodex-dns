@@ -18,7 +18,7 @@ case "$1" in
     step "Building build image (${ARCH})"
     mkdir -p .cache/cargo-registry .cache/cargo-git
     ${SUDO} podman build ${NETWORK_FLAG} \
-      --build-arg "CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-}" \
+      --build-arg "CARGO_JOBS=${CARGO_BUILD_JOBS:-}" \
       --volume "$(pwd)/.cache/cargo-registry:/usr/local/cargo/registry:z" \
       --volume "$(pwd)/.cache/cargo-git:/usr/local/cargo/git:z" \
       -t "${PODMAN_BUILD_IMAGE}-${ARCH}" -f Containerfile.build .
@@ -41,9 +41,9 @@ case "$1" in
       substep "Pushing ${SRC}"
       ${SUDO} podman push "${SRC}"
     else
-      # rc.latest is suffixed with uname -m so deploy hosts can pull
-      # rc.latest-$(uname -m) without mapping to OCI arch names.
-      for t in "rc.$(date +%Y%m%d)-${ARCH}" "rc.latest-$(uname -m)"; do
+      # rc.latest is suffixed with the machine name so deploy hosts can pull
+      # rc.latest-$(uname -m) directly.
+      for t in "rc.$(date +%Y%m%d)-${ARCH}" "rc.latest-${ARCH}"; do
         substep "Tagging ${RELEASE_IMAGE}:${t}"
         ${SUDO} podman tag "${SRC}" "${RELEASE_IMAGE}:${t}"
         substep "Pushing ${RELEASE_IMAGE}:${t}"
@@ -72,7 +72,7 @@ case "$1" in
       build_manifest "${IMAGE_TAG}"
     else
       build_manifest "rc.$(date +%Y%m%d)"
-      build_manifest "rc.latest" "${MACHINES}"
+      build_manifest "rc.latest"
     fi
     ;;
   manifest-release)

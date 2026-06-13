@@ -1,7 +1,11 @@
 FROM docker.io/library/rust:bookworm
 # Optional cap on parallel cargo jobs. Empty (default) lets cargo use all cores;
 # set it to bound peak memory on small/emulated builders (e.g. the amd64 VM).
-ARG CARGO_BUILD_JOBS=
+# NB: deliberately NOT named CARGO_BUILD_JOBS — buildah exports build args into
+# the RUN environment, and CARGO_BUILD_JOBS is cargo's own env var for
+# build.jobs. An empty value there makes cargo fail ("could not parse ``"), so
+# we use a non-colliding arg name and feed the value via --jobs instead.
+ARG CARGO_JOBS=
 RUN apt-get update && apt-get install -y protobuf-compiler \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
@@ -9,5 +13,5 @@ COPY Cargo.toml Cargo.lock build.rs /src/
 COPY proto/ /src/proto/
 COPY src/ /src/src/
 COPY benches/ /src/benches/
-RUN cargo build --release ${CARGO_BUILD_JOBS:+--jobs ${CARGO_BUILD_JOBS}} \
+RUN cargo build --release ${CARGO_JOBS:+--jobs ${CARGO_JOBS}} \
     && strip target/release/rolodex-dns target/release/rolodex-dns-cli
