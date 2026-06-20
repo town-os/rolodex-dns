@@ -1803,3 +1803,134 @@ async fn test_scoped_managed_zone_nxdomain_integration() {
         hickory_proto::op::ResponseCode::NXDomain
     );
 }
+
+// ============================================================
+// Integration: real upstream forwarding (network-dependent)
+//
+// These tests forward through the DnsServer to a real public
+// resolver (1.1.1.1 / 8.8.8.8) and resolve google.com. As requested,
+// each first confirms it can reach an upstream directly with a plain
+// UDP query; if no upstream is reachable (e.g. offline CI), the test
+// logs a skip and returns rather than failing. The forward path also
+// exercises QNAME 0x20 case randomization, which both resolvers honor.
+// ============================================================
+
+/// Directly query `upstream` (host:port) for the A records of `name`
+/// over a plain connected UDP socket, mirroring an ordinary stub
+/// resolver. Returns the number of A answers, or `None` on any network
+/// error, timeout, or empty answer.
+async fn direct_upstream_a_count(upstream: &str, name: &str) -> Option<usize> {
+    let query = build_dns_query(name, RecordType::A);
+    let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await.ok()?;
+    socket.connect(upstream).await.ok()?;
+    socket.send(&query).await.ok()?;
+    let mut buf = vec![0u8; 4096];
+    let len = tokio::time::timeout(std::time::Duration::from_secs(5), socket.recv(&mut buf))
+        .await
+        .ok()?
+        .ok()?;
+    let msg = Message::from_bytes(&buf[..len]).ok()?;
+    let count = msg
+        .answers()
+        .iter()
+        .filter(|r| matches!(r.data(), hickory_proto::rr::RData::A(_)))
+        .count();
+    if count == 0 { None } else { Some(count) }
+}
+
+/// Returns the first reachable upstream that can directly resolve
+/// google.com, or `None` if the environment has no outbound DNS.
+async fn first_reachable_upstream() -> Option<&'static str> {
+    for upstream in ["1.1.1.1:53", "8.8.8.8:53"] {
+        if let Some(n) = direct_upstream_a_count(upstream, "google.com.").await {
+            eprintln!("preflight: {upstream} directly resolved google.com ({n} A records)");
+            return Some(upstream);
+        }
+    }
+    None
+}
+
+#[tokio::test]
+async fn test_forward_to_real_upstream() {
+    let Some(upstream) = first_reachable_upstream().await else {
+        eprintln!("skipping test_forward_to_real_upstream: no upstream DNS reachable");
+        return;
+    };
+
+    let (_db, dns_server, _rbl, _service) = make_test_stack();
+    dns_server
+        .set_forwarders(vec![upstream.parse().unwrap()])
+        .await;
+
+    // google.com has no local record / managed zone, so it must be forwarded.
+    let query = build_dns_query("google.com.", RecordType::A);
+    let resp_bytes = dns_server.handle_query(&query).await.unwrap();
+    let resp = Message::from_bytes(&resp_bytes).unwrap();
+
+    assert_eq!(
+        resp.response_code(),
+        hickory_proto::op::ResponseCode::NoError,
+        "expected NoError forwarding google.com via {upstream}"
+    );
+    assert!(
+        resp.answers()
+            .iter()
+            .any(|r| matches!(r.data(), hickory_proto::rr::RData::A(_))),
+        "expected at least one A record forwarding google.com via {upstream}"
+    );
+}
+
+#[tokio::test]
+async fn test_forward_failover_to_second_upstream() {
+    let Some(upstream) = first_reachable_upstream().await else {
+        eprintln!("skipping test_forward_failover_to_second_upstream: no upstream DNS reachable");
+        return;
+    };
+
+    let (_db, dns_server, _rbl, _service) = make_test_stack();
+    // The first forwarder is a black hole (nothing listens on 127.0.0.1:9):
+    // it times out, and the server must fail over to the reachable second.
+    dns_server
+        .set_forwarders(vec![
+            "127.0.0.1:9".parse().unwrap(),
+            upstream.parse().unwrap(),
+        ])
+        .await;
+
+    let query = build_dns_query("google.com.", RecordType::A);
+    let resp_bytes = dns_server.handle_query(&query).await.unwrap();
+    let resp = Message::from_bytes(&resp_bytes).unwrap();
+
+    assert_eq!(
+        resp.response_code(),
+        hickory_proto::op::ResponseCode::NoError,
+        "expected failover to {upstream} to yield NoError"
+    );
+    assert!(
+        resp.answers()
+            .iter()
+            .any(|r| matches!(r.data(), hickory_proto::rr::RData::A(_))),
+        "expected an A record after failover to {upstream}"
+    );
+}
+
+#[tokio::test]
+async fn test_forward_all_upstreams_dead_servfail() {
+    // No network required: a single black-hole forwarder that never replies
+    // must yield SERVFAIL once it times out, never a panic or hang.
+    let (_db, dns_server, _rbl, _service) = make_test_stack();
+    dns_server
+        .set_forwarders(vec!["127.0.0.1:9".parse().unwrap()])
+        .await;
+
+    let query = build_dns_query("google.com.", RecordType::A);
+    let resp_bytes = dns_server.handle_query(&query).await.unwrap();
+    let resp = Message::from_bytes(&resp_bytes).unwrap();
+
+    assert_eq!(
+        resp.response_code(),
+        hickory_proto::op::ResponseCode::ServFail,
+        "expected SERVFAIL when every forwarder is unreachable"
+    );
+    assert!(resp.answers().is_empty());
+}
