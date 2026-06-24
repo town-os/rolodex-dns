@@ -1934,3 +1934,168 @@ async fn test_forward_all_upstreams_dead_servfail() {
     );
     assert!(resp.answers().is_empty());
 }
+
+// ========================================================
+// Integration: auto-PTR maintenance for A and AAAA records
+// ========================================================
+
+fn make_auto_ptr_stack() -> (Database, RolodexDnsGrpcService) {
+    let db = Database::open_memory().unwrap();
+    let rbl = Arc::new(RblChecker::with_resolver(
+        false,
+        vec![],
+        Arc::new(NeverListedResolver),
+    ));
+    let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
+    let service = RolodexDnsGrpcService::new(
+        db.clone(),
+        dns_server,
+        rbl,
+        "test-secret".to_string(),
+        false,
+    )
+    .with_auto_ptr(true);
+    (db, service)
+}
+
+async fn add_record(service: &RolodexDnsGrpcService, name: &str, rtype: i32, value: &str) {
+    let req = Request::new(AddRecordRequest {
+        record: Some(rolodex_dns::grpc_service::proto::DnsRecord {
+            name: name.to_string(),
+            record_type: rtype,
+            value: value.to_string(),
+            ttl: 300,
+            priority: 0,
+        }),
+        auth_token: "test-secret".to_string(),
+    });
+    service.add_record(req).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_auto_ptr_creates_ipv4_ptr() {
+    let (db, service) = make_auto_ptr_stack();
+
+    let add_req = Request::new(AddRecordRequest {
+        record: Some(rolodex_dns::grpc_service::proto::DnsRecord {
+            name: "host.example.com.".to_string(),
+            record_type: 0, // A
+            value: "192.0.2.5".to_string(),
+            ttl: 600,
+            priority: 0,
+        }),
+        auth_token: "test-secret".to_string(),
+    });
+    assert!(
+        service
+            .add_record(add_req)
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+    );
+
+    let ptr = db
+        .lookup("5.2.0.192.in-addr.arpa.", Some(RecordKind::PTR))
+        .unwrap();
+    assert_eq!(ptr.len(), 1);
+    assert_eq!(ptr[0].value, "host.example.com.");
+    assert_eq!(ptr[0].ttl, 600);
+}
+
+#[tokio::test]
+async fn test_auto_ptr_creates_ipv6_ptr() {
+    let (db, service) = make_auto_ptr_stack();
+
+    let add_req = Request::new(AddRecordRequest {
+        record: Some(rolodex_dns::grpc_service::proto::DnsRecord {
+            name: "host6.example.com.".to_string(),
+            record_type: 1, // AAAA
+            value: "2001:db8::1".to_string(),
+            ttl: 300,
+            priority: 0,
+        }),
+        auth_token: "test-secret".to_string(),
+    });
+    assert!(
+        service
+            .add_record(add_req)
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+    );
+
+    let expected = "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa.";
+    let ptr = db.lookup(expected, Some(RecordKind::PTR)).unwrap();
+    assert_eq!(ptr.len(), 1);
+    assert_eq!(ptr[0].value, "host6.example.com.");
+}
+
+#[tokio::test]
+async fn test_auto_ptr_removed_with_forward_record() {
+    let (db, service) = make_auto_ptr_stack();
+
+    add_record(&service, "drop.example.com.", 0, "203.0.113.9").await;
+    add_record(&service, "keep6.example.com.", 1, "2001:db8::99").await;
+
+    // Both PTRs exist.
+    assert_eq!(
+        db.lookup("9.113.0.203.in-addr.arpa.", Some(RecordKind::PTR))
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // Remove the A record; its PTR should be cleaned up.
+    let remove_req = Request::new(RemoveRecordRequest {
+        name: "drop.example.com.".to_string(),
+        record_type: 0,
+        value: String::new(),
+        auth_token: "test-secret".to_string(),
+    });
+    assert!(
+        service
+            .remove_record(remove_req)
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+    );
+
+    assert!(
+        db.lookup("9.113.0.203.in-addr.arpa.", Some(RecordKind::PTR))
+            .unwrap()
+            .is_empty()
+    );
+    // The unrelated AAAA PTR is untouched.
+    let v6_ptr = rolodex_dns::db::reverse_ptr_name("2001:db8::99".parse().unwrap());
+    assert_eq!(db.lookup(&v6_ptr, Some(RecordKind::PTR)).unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn test_auto_ptr_disabled_by_default_constructor() {
+    // A service built via `new()` (no `.with_auto_ptr`) must not create PTRs,
+    // preserving the behavior existing callers and tests rely on.
+    let db = Database::open_memory().unwrap();
+    let rbl = Arc::new(RblChecker::with_resolver(
+        false,
+        vec![],
+        Arc::new(NeverListedResolver),
+    ));
+    let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
+    let service = RolodexDnsGrpcService::new(
+        db.clone(),
+        dns_server,
+        rbl,
+        "test-secret".to_string(),
+        false,
+    );
+
+    add_record(&service, "noptr.example.com.", 0, "198.51.100.7").await;
+    assert!(
+        db.lookup("7.100.51.198.in-addr.arpa.", Some(RecordKind::PTR))
+            .unwrap()
+            .is_empty()
+    );
+}

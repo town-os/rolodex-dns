@@ -313,7 +313,8 @@ async fn main() -> Result<()> {
                 config.grpc.shared_secret.clone(),
                 false,
             )
-            .with_acme(acme_directory_url.clone(), acme_root_cn.clone());
+            .with_acme(acme_directory_url.clone(), acme_root_cn.clone())
+            .with_auto_ptr(config.dns.auto_ptr);
             let addr: SocketAddr = grpc_bind
                 .parse()
                 .with_context(|| format!("invalid gRPC TCP bind address: {}", grpc_bind))?;
@@ -350,7 +351,8 @@ async fn main() -> Result<()> {
             config.grpc.shared_secret.clone(),
             true,
         )
-        .with_acme(acme_directory_url.clone(), acme_root_cn.clone());
+        .with_acme(acme_directory_url.clone(), acme_root_cn.clone())
+        .with_auto_ptr(config.dns.auto_ptr);
         info!("gRPC Unix socket server listening on {}", socket_path);
         tokio::spawn(async move {
             if let Err(e) = Server::builder()

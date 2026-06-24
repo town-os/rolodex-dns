@@ -5,7 +5,7 @@ use crate::ttl_drift::{TtlDriftConfig as TtlDriftCfg, TtlDriftMode};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
-use tracing::info;
+use tracing::{info, warn};
 
 pub mod proto {
     tonic::include_proto!("rolodex_dns");
@@ -29,6 +29,8 @@ pub struct RolodexDnsGrpcService {
     acme_directory_url: String,
     /// Common name for the Rolodex root CA created on demand by ACME admin RPCs.
     acme_root_cn: String,
+    /// Whether to automatically maintain reverse PTR records for A/AAAA records.
+    auto_ptr: bool,
 }
 
 impl RolodexDnsGrpcService {
@@ -47,6 +49,7 @@ impl RolodexDnsGrpcService {
             is_unix,
             acme_directory_url: String::new(),
             acme_root_cn: "Rolodex Root CA".to_string(),
+            auto_ptr: false,
         }
     }
 
@@ -57,6 +60,64 @@ impl RolodexDnsGrpcService {
             self.acme_root_cn = root_cn;
         }
         self
+    }
+
+    /// Enables or disables automatic reverse PTR maintenance for A/AAAA records.
+    pub fn with_auto_ptr(mut self, auto_ptr: bool) -> Self {
+        self.auto_ptr = auto_ptr;
+        self
+    }
+
+    /// Builds the reverse PTR record for an A/AAAA forward record when auto-PTR
+    /// is enabled and the value parses as an IP of the matching family. Returns
+    /// `None` for other record types, an unparseable value, or when disabled.
+    fn auto_ptr_record(
+        &self,
+        fwd_name: &str,
+        kind: RecordKind,
+        value: &str,
+        ttl: u32,
+    ) -> Option<DnsRecord> {
+        if !self.auto_ptr {
+            return None;
+        }
+        let ip = match kind {
+            RecordKind::A => value
+                .parse::<std::net::Ipv4Addr>()
+                .ok()
+                .map(std::net::IpAddr::V4),
+            RecordKind::AAAA => value
+                .parse::<std::net::Ipv6Addr>()
+                .ok()
+                .map(std::net::IpAddr::V6),
+            _ => None,
+        }?;
+        Some(DnsRecord {
+            id: None,
+            name: crate::db::reverse_ptr_name(ip),
+            record_type: RecordKind::PTR,
+            value: crate::db::normalize_name(fwd_name),
+            ttl,
+            priority: 0,
+        })
+    }
+
+    /// Collects the reverse PTR records that correspond to the A/AAAA forward
+    /// records currently matching `(name, type filter, value filter)`. Used to
+    /// clean up PTRs when their forward records are removed.
+    fn ptr_records_to_remove(
+        &self,
+        records: &[DnsRecord],
+        type_filter: Option<RecordKind>,
+        value_filter: &str,
+    ) -> Vec<DnsRecord> {
+        records
+            .iter()
+            .filter(|r| matches!(r.record_type, RecordKind::A | RecordKind::AAAA))
+            .filter(|r| type_filter.is_none_or(|t| t == r.record_type))
+            .filter(|r| value_filter.is_empty() || r.value == value_filter)
+            .filter_map(|r| self.auto_ptr_record(&r.name, r.record_type, &r.value, r.ttl))
+            .collect()
     }
 
     /// Validates the auth token. Unix socket connections always pass.
@@ -104,6 +165,18 @@ impl RolodexDnsService for RolodexDnsGrpcService {
 
         match self.db.add_record(&db_record) {
             Ok(_) => {
+                if let Some(ptr) =
+                    self.auto_ptr_record(&record.name, record_type, &record.value, ttl)
+                {
+                    if let Err(e) = self.db.add_record(&ptr) {
+                        warn!(
+                            "auto-PTR: failed to add {} -> {}: {}",
+                            ptr.name, ptr.value, e
+                        );
+                    } else {
+                        info!("auto-PTR: added {} -> {}", ptr.name, ptr.value);
+                    }
+                }
                 self.dns_server.flush_cache();
                 info!(
                     "Added record: {} {:?} {}",
@@ -130,8 +203,29 @@ impl RolodexDnsService for RolodexDnsGrpcService {
 
         let record_type = RecordKind::from_proto_i32(req.record_type);
 
+        // Gather the PTRs to clean up before the forward records are deleted.
+        let ptr_targets = if self.auto_ptr {
+            match self.db.lookup(&req.name, None) {
+                Ok(recs) => self.ptr_records_to_remove(&recs, record_type, &req.value),
+                Err(e) => {
+                    warn!("auto-PTR: lookup for {} failed: {}", req.name, e);
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
         match self.db.remove_records(&req.name, record_type, &req.value) {
             Ok(count) => {
+                for ptr in &ptr_targets {
+                    if let Err(e) =
+                        self.db
+                            .remove_records(&ptr.name, Some(RecordKind::PTR), &ptr.value)
+                    {
+                        warn!("auto-PTR: failed to remove {}: {}", ptr.name, e);
+                    }
+                }
                 self.dns_server.flush_cache();
                 info!("Removed {} records for {}", count, req.name);
                 Ok(Response::new(RemoveRecordResponse {
@@ -502,6 +596,21 @@ impl RolodexDnsService for RolodexDnsGrpcService {
 
         match self.db.add_scoped_record(&req.scope_name, &db_record) {
             Ok(_) => {
+                if let Some(ptr) =
+                    self.auto_ptr_record(&record.name, record_type, &record.value, ttl)
+                {
+                    if let Err(e) = self.db.add_scoped_record(&req.scope_name, &ptr) {
+                        warn!(
+                            "auto-PTR: failed to add scoped {} -> {} in {}: {}",
+                            ptr.name, ptr.value, req.scope_name, e
+                        );
+                    } else {
+                        info!(
+                            "auto-PTR: added scoped {} -> {} in {}",
+                            ptr.name, ptr.value, req.scope_name
+                        );
+                    }
+                }
                 self.dns_server.flush_cache();
                 info!(
                     "Added scoped record in {}: {} {:?} {}",
@@ -532,11 +641,32 @@ impl RolodexDnsService for RolodexDnsGrpcService {
 
         let record_type = RecordKind::from_proto_i32(req.record_type);
 
+        // Gather scoped PTRs to clean up before the forward records are deleted.
+        let ptr_targets = if self.auto_ptr {
+            let recs = self.db.lookup_scoped(&req.scope_name, &req.name, None);
+            self.ptr_records_to_remove(&recs, record_type, &req.value)
+        } else {
+            Vec::new()
+        };
+
         match self
             .db
             .remove_scoped_records(&req.scope_name, &req.name, record_type, &req.value)
         {
             Ok(count) => {
+                for ptr in &ptr_targets {
+                    if let Err(e) = self.db.remove_scoped_records(
+                        &req.scope_name,
+                        &ptr.name,
+                        Some(RecordKind::PTR),
+                        &ptr.value,
+                    ) {
+                        warn!(
+                            "auto-PTR: failed to remove scoped {} in {}: {}",
+                            ptr.name, req.scope_name, e
+                        );
+                    }
+                }
                 self.dns_server.flush_cache();
                 info!(
                     "Removed {} scoped records from {} for {}",

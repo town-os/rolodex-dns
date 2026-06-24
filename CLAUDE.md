@@ -64,6 +64,10 @@ Records consist of: name, record type, value, TTL (default 300 seconds), and pri
 
 SOA values are stored as `"mname rname serial refresh retry expire minimum"`. SRV values are stored as `"weight port target"`. TLSA values are stored as `"usage selector matching_type hex_data"`. URI values are stored as `"priority weight target_uri"`. SSHFP values are stored as `"algorithm fp_type hex_fingerprint"`. ZONEMD values are stored as `"serial scheme hash_algorithm hex_digest"`. CERT values are stored as `"cert_type key_tag algorithm base64_cert_data"`.
 
+### Automatic Reverse PTR Records
+
+When `dns.auto_ptr` is enabled (disabled by default), A and AAAA records added or removed through the gRPC management interface (`AddRecord`/`RemoveRecord` and the scoped `AddScopedRecord`/`RemoveScopedRecord`) automatically maintain a matching reverse PTR record. Adding an A record creates the `<reversed-octets>.in-addr.arpa.` PTR; adding an AAAA record creates the 32-nibble `<reversed-nibbles>.ip6.arpa.` PTR. The PTR carries the forward record's TTL and points back to the (normalized) forward name. Removing the forward record removes the corresponding PTR; scoped records create/remove the PTR within the same scope. A and AAAA are handled equivalently — the only difference is the reverse zone (`in-addr.arpa` vs `ip6.arpa`). The reverse name is built by `db::reverse_ptr_name`, the inverse of the reverse-name parser used for RBL lookups. This is independent of the DHCP server's own A/PTR registration, which remains IPv4-only.
+
 ## DNS Response Cache
 
 Rolodex DNS caches DNS responses in memory backed by SQLite for persistence across restarts. Once cached, queries are answered without contacting upstream resolvers. This is a deliberate privacy-first design to prevent DNS query leakage to upstream providers.
@@ -811,6 +815,7 @@ dns:
 | Field                               | Default                        | Description                                            |
 | ----------------------------------- | ------------------------------ | ------------------------------------------------------ |
 | `dns.bind`                          | `[{udp: "0.0.0.0:53"}, {tcp: "0.0.0.0:53"}]` | DNS listeners; list of `{udp: addr}` / `{tcp: addr}` entries |
+| `dns.auto_ptr`                      | `false`                        | Auto-maintain reverse PTR records for A/AAAA added via gRPC (see Automatic Reverse PTR Records) |
 | `grpc.tcp_bind`                     | `127.0.0.1:50051`              | gRPC TCP listener; supports interface:port (empty to disable) |
 | `grpc.unix_socket`                  | `/var/run/rolodex-dns.sock`    | gRPC Unix socket path (empty to disable)               |
 | `grpc.shared_secret`                | (empty)                        | Shared secret for TCP gRPC auth                        |

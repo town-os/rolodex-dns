@@ -911,7 +911,7 @@ impl DnsServer {
 
 /// Extracts an IP address from a DNS name for RBL checking.
 /// This handles reverse DNS names (in-addr.arpa / ip6.arpa) by reconstructing the IP.
-fn extract_ip_from_name(name: &str) -> Option<IpAddr> {
+pub(crate) fn extract_ip_from_name(name: &str) -> Option<IpAddr> {
     let name = name.trim_end_matches('.');
 
     // Check for IPv4 reverse DNS (x.x.x.x.in-addr.arpa)

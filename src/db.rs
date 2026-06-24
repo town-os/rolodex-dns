@@ -2993,6 +2993,34 @@ pub fn normalize_name(name: &str) -> String {
     }
 }
 
+/// Builds the reverse-DNS PTR owner name for an IP address.
+///
+/// IPv4 addresses produce `<reversed-octets>.in-addr.arpa.` and IPv6 addresses
+/// produce the 32-nibble `<reversed-nibbles>.ip6.arpa.` form. The result always
+/// carries a trailing dot. This is the inverse of the reverse-name parsing used
+/// for RBL lookups, so a name built here round-trips back to the same address.
+pub fn reverse_ptr_name(ip: std::net::IpAddr) -> String {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            format!("{}.{}.{}.{}.in-addr.arpa.", o[3], o[2], o[1], o[0])
+        }
+        std::net::IpAddr::V6(v6) => {
+            let mut s = String::with_capacity(72);
+            // Emit nibbles least-significant first: for each byte (reading the
+            // address from its last byte), push the low nibble then the high nibble.
+            for byte in v6.octets().iter().rev() {
+                s.push(char::from_digit((byte & 0x0f) as u32, 16).unwrap_or('0'));
+                s.push('.');
+                s.push(char::from_digit((byte >> 4) as u32, 16).unwrap_or('0'));
+                s.push('.');
+            }
+            s.push_str("ip6.arpa.");
+            s
+        }
+    }
+}
+
 /// Constructs a wildcard name by replacing the first label with "*".
 /// E.g. "foo.example.com." -> "*.example.com."
 /// Returns None if there's no parent domain (single-label or empty).
@@ -3023,6 +3051,33 @@ mod tests {
 
     fn test_db() -> Database {
         Database::open_memory().unwrap()
+    }
+
+    #[test]
+    fn test_reverse_ptr_name_ipv4() {
+        let ip: std::net::IpAddr = "192.0.2.5".parse().unwrap();
+        assert_eq!(reverse_ptr_name(ip), "5.2.0.192.in-addr.arpa.");
+    }
+
+    #[test]
+    fn test_reverse_ptr_name_ipv6() {
+        let ip: std::net::IpAddr = "2001:db8::1".parse().unwrap();
+        assert_eq!(
+            reverse_ptr_name(ip),
+            "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa."
+        );
+    }
+
+    #[test]
+    fn test_reverse_ptr_name_roundtrips_to_address() {
+        // A name built here must parse back to the same IP via the reverse-name
+        // parser used for RBL lookups (keeps both ends in lockstep).
+        for raw in ["10.0.0.1", "255.254.253.252", "::1", "2001:db8:abcd::42"] {
+            let ip: std::net::IpAddr = raw.parse().unwrap();
+            let name = reverse_ptr_name(ip);
+            let parsed = crate::dns_server::extract_ip_from_name(&name);
+            assert_eq!(parsed, Some(ip), "round-trip failed for {raw}");
+        }
     }
 
     #[test]

@@ -368,11 +368,7 @@ impl DhcpServer {
 
         // Add PTR record for reverse DNS
         if let Ok(addr) = ip.parse::<Ipv4Addr>() {
-            let octets = addr.octets();
-            let ptr_name = format!(
-                "{}.{}.{}.{}.in-addr.arpa.",
-                octets[3], octets[2], octets[1], octets[0]
-            );
+            let ptr_name = crate::db::reverse_ptr_name(std::net::IpAddr::V4(addr));
             let ptr_record = DnsRecord {
                 id: None,
                 name: ptr_name,
@@ -402,11 +398,7 @@ impl DhcpServer {
 
         // Remove PTR record
         if let Ok(addr) = ip.parse::<Ipv4Addr>() {
-            let octets = addr.octets();
-            let ptr_name = format!(
-                "{}.{}.{}.{}.in-addr.arpa.",
-                octets[3], octets[2], octets[1], octets[0]
-            );
+            let ptr_name = crate::db::reverse_ptr_name(std::net::IpAddr::V4(addr));
             if let Err(e) =
                 self.db
                     .remove_scoped_records(scope_name, &ptr_name, Some(RecordKind::PTR), "")

@@ -98,6 +98,13 @@ impl DnsBind {
 pub struct DnsConfig {
     /// List of protocol + address pairs to bind (e.g. `[{udp: "0.0.0.0:53"}, {tcp: "0.0.0.0:53"}]`).
     pub bind: Vec<DnsBind>,
+    /// Automatically maintain reverse PTR records for A and AAAA records added
+    /// through the management interface. When enabled, adding an A record also
+    /// creates the matching `in-addr.arpa` PTR and adding an AAAA record creates
+    /// the matching `ip6.arpa` PTR; removing the forward record removes the PTR.
+    /// Disabled by default (opt in to let Rolodex manage reverse zones).
+    #[serde(default)]
+    pub auto_ptr: bool,
 }
 
 impl DnsConfig {
@@ -595,6 +602,7 @@ impl Default for Config {
                     DnsBind::Udp("0.0.0.0:53".to_string()),
                     DnsBind::Tcp("0.0.0.0:53".to_string()),
                 ],
+                auto_ptr: false,
             },
             grpc: GrpcConfig {
                 tcp_bind: "127.0.0.1:50051".to_string(),
