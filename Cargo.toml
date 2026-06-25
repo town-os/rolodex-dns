@@ -5,6 +5,7 @@ edition = "2024"
 authors = ["Erik Hollensbe <git@hollensbe.org>"]
 description = "A split-horizon DNS server and forwarding resolver with gRPC management"
 license = "AGPL-3.0-only"
+repository = "https://gitea.com/town-os/rolodex-dns"
 keywords = ["dns", "dns-server", "split-horizon", "grpc", "forwarding-resolver"]
 categories = ["network-programming"]
 
