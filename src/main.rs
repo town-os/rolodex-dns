@@ -7,14 +7,15 @@ use rolodex_dns::config::Config;
 use rolodex_dns::db::Database;
 use rolodex_dns::dns_cache::DnsCache;
 use rolodex_dns::dns_server::DnsServer;
+use rolodex_dns::dns_server::ResolutionMode;
 use rolodex_dns::grpc_service::RolodexDnsGrpcService;
 use rolodex_dns::grpc_service::proto::rolodex_dns_service_server::RolodexDnsServiceServer;
 use rolodex_dns::rbl::{RblChecker, RblProvider};
-use std::net::{Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::net::UnixListener;
 use tonic::transport::Server;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// Rolodex DNS - Split-horizon DNS server with gRPC management
 #[derive(Parser)]
@@ -95,6 +96,34 @@ async fn main() -> Result<()> {
         dns64_prefix,
         config.security.qname_case_randomization,
     ));
+
+    // Configure upstream resolution mode (recursive-from-roots by default).
+    let resolution_mode = match config.resolution.mode.to_ascii_lowercase().as_str() {
+        "forward" => ResolutionMode::Forward,
+        "recursive" | "" => ResolutionMode::Recursive,
+        other => {
+            warn!("Unknown resolution mode '{}', using recursive", other);
+            ResolutionMode::Recursive
+        }
+    };
+    dns_server.set_resolution_mode(resolution_mode);
+    info!("Upstream resolution mode: {:?}", resolution_mode);
+
+    // Apply custom root hints if provided.
+    if !config.resolution.root_hints.is_empty() {
+        let hints: Vec<IpAddr> = config
+            .resolution
+            .root_hints
+            .iter()
+            .filter_map(|h| h.parse().ok())
+            .collect();
+        if hints.is_empty() {
+            warn!("No valid root hints parsed from config; using built-in root hints");
+        } else {
+            info!("Using {} custom root hint(s)", hints.len());
+            dns_server.set_root_hints(hints);
+        }
+    }
 
     // Apply proxy configuration if set
     if let Some(ref proxy_cfg) = config.proxy

@@ -16,6 +16,15 @@ use tracing::{debug, error, info, warn};
 
 const FORWARD_POOL_SIZE: usize = 8;
 
+/// Upstream resolution strategy for queries not satisfied locally.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolutionMode {
+    /// Resolve iteratively starting at the root servers (default).
+    Recursive,
+    /// Forward to the configured upstream resolvers.
+    Forward,
+}
+
 /// Maximum UDP DNS message size.
 const MAX_UDP_SIZE: usize = 4096;
 /// Maximum TCP DNS message size (with 2-byte length prefix).
@@ -46,6 +55,10 @@ pub struct DnsServer {
     forward_sockets: Vec<Arc<tokio::sync::Mutex<Option<UdpSocket>>>>,
     /// Round-robin index for the forward socket pool.
     forward_socket_idx: AtomicUsize,
+    /// Upstream resolution strategy (recursive-from-roots or forward).
+    resolution_mode: Arc<ArcSwap<ResolutionMode>>,
+    /// Iterative resolver used in recursive mode.
+    resolver: Arc<ArcSwap<crate::resolver::IterativeResolver>>,
 }
 
 impl DnsServer {
@@ -66,6 +79,10 @@ impl DnsServer {
             proxy_config: Arc::new(ArcSwap::from_pointee(None)),
             forward_sockets,
             forward_socket_idx: AtomicUsize::new(0),
+            resolution_mode: Arc::new(ArcSwap::from_pointee(ResolutionMode::Forward)),
+            resolver: Arc::new(ArcSwap::from_pointee(
+                crate::resolver::IterativeResolver::with_defaults(),
+            )),
         }
     }
 
@@ -94,7 +111,27 @@ impl DnsServer {
             proxy_config: Arc::new(ArcSwap::from_pointee(None)),
             forward_sockets,
             forward_socket_idx: AtomicUsize::new(0),
+            resolution_mode: Arc::new(ArcSwap::from_pointee(ResolutionMode::Forward)),
+            resolver: Arc::new(ArcSwap::from_pointee(
+                crate::resolver::IterativeResolver::with_defaults(),
+            )),
         }
+    }
+
+    /// Sets the upstream resolution mode (recursive-from-roots or forward).
+    pub fn set_resolution_mode(&self, mode: ResolutionMode) {
+        self.resolution_mode.store(Arc::new(mode));
+    }
+
+    /// Returns the current upstream resolution mode.
+    pub fn get_resolution_mode(&self) -> ResolutionMode {
+        **self.resolution_mode.load()
+    }
+
+    /// Replaces the root hints used by the iterative resolver.
+    pub fn set_root_hints(&self, hints: Vec<IpAddr>) {
+        self.resolver
+            .store(Arc::new(crate::resolver::IterativeResolver::new(hints)));
     }
 
     /// Sets the TTL drift configuration.
@@ -649,8 +686,8 @@ impl DnsServer {
             }
         }
 
-        // Forward to upstream resolvers
-        let forward_result = self.forward_query(query_data).await;
+        // Upstream resolution: iterative from the roots (default) or forward.
+        let forward_result = self.upstream_resolve(query_data, edns_ctx.as_ref()).await;
 
         // DNS64 synthesis: if AAAA query returned no answers and dns64_prefix is set,
         // re-query for A and synthesize AAAA records by embedding IPv4 in the prefix
@@ -666,7 +703,8 @@ impl DnsServer {
             if !has_aaaa {
                 // Build an A query for the same name
                 let a_query = build_query_for_type(&qname, RecordType::A, message.id());
-                if let Ok(a_response_bytes) = self.forward_query(&a_query).await
+                if let Ok(a_response_bytes) =
+                    self.upstream_resolve(&a_query, edns_ctx.as_ref()).await
                     && let Ok(a_msg) = hickory_proto::op::Message::from_bytes(&a_response_bytes)
                 {
                     let synthesized: Vec<Record> = a_msg
@@ -802,6 +840,80 @@ impl DnsServer {
         None
     }
 
+    /// Resolves a query that was not satisfied locally, dispatching on the
+    /// configured resolution mode: iterative from the root servers (default)
+    /// or forwarding to the configured upstream resolvers.
+    async fn upstream_resolve(
+        &self,
+        query_data: &[u8],
+        edns_ctx: Option<&crate::edns::EdnsContext>,
+    ) -> Result<Vec<u8>> {
+        match **self.resolution_mode.load() {
+            ResolutionMode::Forward => self.forward_query(query_data).await,
+            ResolutionMode::Recursive => self.iterative_query(query_data, edns_ctx).await,
+        }
+    }
+
+    /// Resolves a query iteratively starting at the root servers.
+    async fn iterative_query(
+        &self,
+        query_data: &[u8],
+        edns_ctx: Option<&crate::edns::EdnsContext>,
+    ) -> Result<Vec<u8>> {
+        let message = match hickory_proto::op::Message::from_bytes(query_data) {
+            Ok(m) => m,
+            Err(_) => return Ok(make_error_response(query_data, ResponseCode::FormErr)),
+        };
+        let question = match message.queries().first() {
+            Some(q) => q,
+            None => return Ok(make_error_response(query_data, ResponseCode::FormErr)),
+        };
+
+        let resolver = self.resolver.load_full();
+        match resolver
+            .resolve(
+                question.name(),
+                question.query_type(),
+                question.query_class(),
+            )
+            .await
+        {
+            Ok(res) => {
+                if res.rcode == ResponseCode::NoError && !res.answers.is_empty() {
+                    self.cache_answers(&res.answers);
+                }
+                Ok(build_response_edns(
+                    &message,
+                    res.rcode,
+                    res.answers,
+                    false,
+                    edns_ctx,
+                ))
+            }
+            Err(e) => {
+                warn!("Iterative resolution for {} failed: {}", question.name(), e);
+                Ok(make_error_response(query_data, ResponseCode::ServFail))
+            }
+        }
+    }
+
+    /// Inserts a set of answer records into the DNS cache, keyed by the first
+    /// answer's name and type (matching the forward-path caching behavior).
+    fn cache_answers(&self, answers: &[Record]) {
+        if let Some(ref cache) = self.dns_cache
+            && let Some(first) = answers.first()
+        {
+            let name = first.name().to_string();
+            let kind = map_query_type_to_kind(first.record_type());
+            let ttl = answers.iter().map(|a| a.ttl()).min().unwrap_or(300);
+            let cache_records: Vec<crate::db::DnsRecord> =
+                answers.iter().filter_map(dns_record_to_db_record).collect();
+            if !cache_records.is_empty() {
+                cache.insert(&name, kind, cache_records, ttl);
+            }
+        }
+    }
+
     /// Forwards a DNS query to the configured upstream resolvers.
     async fn forward_query(&self, query_data: &[u8]) -> Result<Vec<u8>> {
         let forwarders = self.forwarders.load();
@@ -822,25 +934,13 @@ impl DnsServer {
             };
             match result {
                 Ok(response) => {
-                    // Parse upstream response and insert into cache asynchronously
-                    if let Some(ref cache) = self.dns_cache
+                    // Parse upstream response and insert answers into the cache.
+                    if self.dns_cache.is_some()
                         && let Ok(upstream_msg) = hickory_proto::op::Message::from_bytes(&response)
                         && upstream_msg.response_code() == ResponseCode::NoError
                         && !upstream_msg.answers().is_empty()
                     {
-                        let answers = upstream_msg.answers();
-                        // Use the first answer's name and type as cache key
-                        if let Some(first) = answers.first() {
-                            let name = first.name().to_string();
-                            let rtype = first.record_type();
-                            let kind = map_query_type_to_kind(rtype);
-                            let ttl = answers.iter().map(|a| a.ttl()).min().unwrap_or(300);
-                            let cache_records: Vec<crate::db::DnsRecord> =
-                                answers.iter().filter_map(dns_record_to_db_record).collect();
-                            if !cache_records.is_empty() {
-                                cache.insert(&name, kind, cache_records, ttl);
-                            }
-                        }
+                        self.cache_answers(upstream_msg.answers());
                     }
                     return Ok(response);
                 }
@@ -1761,6 +1861,43 @@ mod tests {
             .await;
         let forwarders = server.get_forwarders().await;
         assert_eq!(forwarders.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_resolution_mode_default_and_set() {
+        let db = Database::open_memory().unwrap();
+        let server = make_test_server(db);
+        // The library default is Forward so tests stay hermetic.
+        assert_eq!(server.get_resolution_mode(), ResolutionMode::Forward);
+        server.set_resolution_mode(ResolutionMode::Recursive);
+        assert_eq!(server.get_resolution_mode(), ResolutionMode::Recursive);
+    }
+
+    #[tokio::test]
+    async fn test_recursive_mode_local_record_wins() {
+        // In recursive mode, a locally-defined record must still be served
+        // from the database (split-horizon: local always wins) without ever
+        // attempting to reach the root servers.
+        let db = Database::open_memory().unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "local.example.".to_string(),
+            record_type: RecordKind::A,
+            value: "10.1.2.3".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        let server = make_test_server(db);
+        server.set_resolution_mode(ResolutionMode::Recursive);
+
+        let query = build_query("local.example.", RecordType::A);
+        let response_bytes = server.handle_query(&query).await.unwrap();
+        let response = Message::from_bytes(&response_bytes).unwrap();
+
+        assert_eq!(response.response_code(), ResponseCode::NoError);
+        assert_eq!(response.answers().len(), 1);
     }
 
     #[test]

@@ -79,6 +79,8 @@ export async function startServer(t, opts = {}) {
 
   let config = `database_path: "${path.join(dir, "rolodex-dns.db")}"
 forwarders: []
+resolution:
+  mode: forward
 
 dns:
   bind:

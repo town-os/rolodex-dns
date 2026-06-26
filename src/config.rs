@@ -10,6 +10,9 @@ pub struct Config {
     pub grpc: GrpcConfig,
     /// Upstream forwarder configuration.
     pub forwarders: Vec<String>,
+    /// Upstream resolution strategy (recursive-from-roots by default).
+    #[serde(default)]
+    pub resolution: ResolutionConfig,
     /// Database file path for persistent DNS records.
     pub database_path: String,
     /// RBL (Realtime Blackhole List) configuration.
@@ -494,6 +497,33 @@ impl Default for DhcpConfig {
     }
 }
 
+/// Upstream resolution strategy.
+///
+/// In `recursive` mode (the default) the server resolves names iteratively
+/// starting at the root servers, never contacting a recursive upstream. In
+/// `forward` mode it forwards unmatched queries to the configured
+/// `forwarders`, matching the legacy behavior.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolutionConfig {
+    /// Resolution mode: `recursive` (iterative from the root servers) or
+    /// `forward` (forward to the configured upstream resolvers).
+    #[serde(default = "default_resolution_mode")]
+    pub mode: String,
+    /// Optional override for the root server hints used in recursive mode.
+    /// When empty, the built-in IANA root server addresses are used.
+    #[serde(default)]
+    pub root_hints: Vec<String>,
+}
+
+impl Default for ResolutionConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_resolution_mode(),
+            root_hints: Vec::new(),
+        }
+    }
+}
+
 /// Security-related configuration options.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityConfig {
@@ -512,6 +542,10 @@ impl Default for SecurityConfig {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_resolution_mode() -> String {
+    "recursive".to_string()
 }
 
 fn default_dot_bind() -> String {
@@ -610,6 +644,7 @@ impl Default for Config {
                 shared_secret: String::new(),
             },
             forwarders: vec!["8.8.8.8:53".to_string(), "8.8.4.4:53".to_string()],
+            resolution: ResolutionConfig::default(),
             database_path: "rolodex-dns.db".to_string(),
             rbl: RblSettings {
                 enabled: false,
@@ -678,6 +713,30 @@ mod tests {
         assert_eq!(config.grpc.tcp_bind, "127.0.0.1:50051");
         assert!(!config.rbl.enabled);
         assert!(!config.rbl.providers.is_empty());
+        // Resolution defaults to recursive-from-roots with no custom hints.
+        assert_eq!(config.resolution.mode, "recursive");
+        assert!(config.resolution.root_hints.is_empty());
+    }
+
+    #[test]
+    fn test_resolution_config_defaults_when_omitted() {
+        // A YAML document without a `resolution:` section must default to
+        // recursive mode (the field is `#[serde(default)]`).
+        let yaml = "dns:\n  bind:\n    - udp: \"0.0.0.0:53\"\ngrpc:\n  tcp_bind: \"127.0.0.1:50051\"\n  unix_socket: \"\"\n  shared_secret: \"\"\nforwarders: []\ndatabase_path: \"x.db\"\nrbl:\n  enabled: false\n  providers: []\n";
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.resolution.mode, "recursive");
+        assert!(config.resolution.root_hints.is_empty());
+    }
+
+    #[test]
+    fn test_resolution_config_roundtrip() {
+        let mut config = Config::default();
+        config.resolution.mode = "forward".to_string();
+        config.resolution.root_hints = vec!["198.41.0.4".to_string()];
+        let serialized = serde_yaml_ng::to_string(&config).unwrap();
+        let deserialized: Config = serde_yaml_ng::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.resolution.mode, "forward");
+        assert_eq!(deserialized.resolution.root_hints, vec!["198.41.0.4"]);
     }
 
     #[test]
