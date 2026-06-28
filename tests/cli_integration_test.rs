@@ -429,6 +429,54 @@ async fn test_cli_set_and_get_rbl_config_tcp() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_cli_set_and_get_dnsbl_config_tcp() {
+    let server = TestServer::start("test-secret").await;
+
+    // DNSBL starts disabled with no providers.
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args(["get-dnsbl-config"]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains("DNSBL enabled: false"))
+    .stdout(predicate::str::contains("No DNSBL providers configured"));
+
+    // Set DNSBL config.
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args([
+            "set-dnsbl-config",
+            "-e",
+            "-p",
+            "dbl.spamhaus.org:true",
+            "multi.surbl.org:false",
+        ]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains(
+        "DNSBL config updated (enabled: true)",
+    ));
+
+    // Get DNSBL config.
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args(["get-dnsbl-config"]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains("DNSBL enabled: true"))
+    .stdout(predicate::str::contains("dbl.spamhaus.org"))
+    .stdout(predicate::str::contains("multi.surbl.org"));
+
+    server.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_cli_get_rbl_config_default_tcp() {
     let server = TestServer::start("test-secret").await;
 
@@ -844,6 +892,8 @@ fn test_cli_help_output() {
         .stdout(predicate::str::contains("set-forwarders"))
         .stdout(predicate::str::contains("set-rbl-config"))
         .stdout(predicate::str::contains("get-rbl-config"))
+        .stdout(predicate::str::contains("set-dnsbl-config"))
+        .stdout(predicate::str::contains("get-dnsbl-config"))
         .stdout(predicate::str::contains("flush-cache"));
 }
 

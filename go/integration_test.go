@@ -370,6 +370,62 @@ func TestIntegrationRblConfigRoundtrip(t *testing.T) {
 	}
 }
 
+func TestIntegrationDnsblConfigRoundtrip(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// DNSBL defaults to disabled with no providers programmed at runtime.
+	status, err := client.GetDnsblConfig(ctx)
+	if err != nil {
+		t.Fatalf("GetDnsblConfig: %v", err)
+	}
+	if status.Enabled {
+		t.Error("expected DNSBL to start disabled")
+	}
+
+	// Program DNSBL providers via the management endpoint.
+	err = client.SetDnsblConfig(ctx, true, []*DnsblConfig{
+		{Zone: "dbl.spamhaus.org", Enabled: true},
+		{Zone: "multi.surbl.org", Enabled: false},
+	})
+	if err != nil {
+		t.Fatalf("SetDnsblConfig: %v", err)
+	}
+
+	// Get it back.
+	status, err = client.GetDnsblConfig(ctx)
+	if err != nil {
+		t.Fatalf("GetDnsblConfig: %v", err)
+	}
+	if !status.Enabled {
+		t.Error("expected DNSBL to be enabled")
+	}
+	if len(status.Providers) != 2 {
+		t.Fatalf("got %d providers, want 2", len(status.Providers))
+	}
+	if status.Providers[0].Zone != "dbl.spamhaus.org" {
+		t.Errorf("provider[0].zone = %q, want %q", status.Providers[0].Zone, "dbl.spamhaus.org")
+	}
+	if !status.Providers[0].Enabled {
+		t.Error("provider[0] should be enabled")
+	}
+	if status.Providers[1].Zone != "multi.surbl.org" {
+		t.Errorf("provider[1].zone = %q, want %q", status.Providers[1].Zone, "multi.surbl.org")
+	}
+	if status.Providers[1].Enabled {
+		t.Error("provider[1] should be disabled")
+	}
+
+	// DNSBL config must be independent of the IP-based RBL config.
+	rbl, err := client.GetRblConfig(ctx)
+	if err != nil {
+		t.Fatalf("GetRblConfig: %v", err)
+	}
+	if rbl.Enabled {
+		t.Error("RBL should remain unaffected by DNSBL changes")
+	}
+}
+
 func TestIntegrationFlushCache(t *testing.T) {
 	client, _ := setupTestServer(t)
 	ctx := context.Background()

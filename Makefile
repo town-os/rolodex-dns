@@ -32,7 +32,7 @@ help: ## Show this help
 
 lint: ## Run cargo fmt --check and clippy -D warnings
 	cargo fmt -- --check
-	cargo clippy -- -D warnings
+	cargo clippy --all-targets -- -D warnings
 
 test: lint go-test rust-test js-test ## Run the full suite: lint, Go, Rust, and JavaScript tests
 

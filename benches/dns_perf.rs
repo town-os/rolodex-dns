@@ -765,13 +765,16 @@ fn bench_tcp_round_trip_reuse_conn(c: &mut Criterion) {
     });
 
     let query = build_dns_query("tcp2.bench.local.");
-    let stream = std::cell::RefCell::new(stream);
+    // Hold the stream in an Option so each iteration can take it out for the
+    // duration of its awaits and put it back, rather than holding a RefCell
+    // borrow guard across the await points.
+    let stream = std::cell::RefCell::new(Some(stream));
 
     // Benchmark reusing the same TCP connection (pipelining)
     c.bench_function("tcp_round_trip_reuse_conn", |b| {
         b.iter(|| {
             rt.block_on(async {
-                let s = &mut *stream.borrow_mut();
+                let mut s = stream.borrow_mut().take().unwrap();
                 let len = (query.len() as u16).to_be_bytes();
                 s.write_all(&len).await.unwrap();
                 s.write_all(black_box(&query)).await.unwrap();
@@ -781,6 +784,7 @@ fn bench_tcp_round_trip_reuse_conn(c: &mut Criterion) {
                 let resp_len = u16::from_be_bytes(resp_len_buf) as usize;
                 let mut resp_buf = vec![0u8; resp_len];
                 s.read_exact(&mut resp_buf).await.unwrap();
+                *stream.borrow_mut() = Some(s);
             })
         })
     });

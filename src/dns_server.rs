@@ -532,9 +532,12 @@ impl DnsServer {
         // results in one lock acquisition instead of 4+ separate queries.
         let record_kind = map_query_type_to_kind(qtype);
         if let Some(kind) = record_kind {
-            // Check cache before hitting the database
+            // Check cache before hitting the database. Only local (authoritative)
+            // cache entries are served here; upstream-cached answers are served
+            // later, after the domain RBL gate, so RBLs keep precedence over any
+            // externally-resolved entry.
             if let Some(ref cache) = self.dns_cache {
-                let cached = cache.lookup(&qname, Some(kind));
+                let cached = cache.lookup_local_only(&qname, Some(kind));
                 if !cached.is_empty() {
                     debug!(
                         "Cache hit (local) for {} {:?}: {} records",
@@ -661,6 +664,27 @@ impl DnsServer {
                 ResponseCode::NXDomain,
                 vec![],
                 true,
+                edns_ctx.as_ref(),
+            ));
+        }
+
+        // RBL precedence over external DNS: at this point the name was not
+        // satisfied by any local/scoped record or managed zone, so it would be
+        // answered from the upstream cache or by forwarding/iterating. If the
+        // name itself is blacklisted by a domain-based RBL provider or a local
+        // RBL entry, refuse to resolve it externally and return NXDOMAIN. This
+        // is checked before the cache lookup so that a previously-cached
+        // upstream answer is suppressed too. Reverse-DNS names are skipped here
+        // because they are handled by the IP-based RBL checks above.
+        if extract_ip_from_name(&qname).is_none()
+            && (self.local_rbl_lists_name(&qname) || self.rbl.is_name_listed(&qname).await)
+        {
+            debug!("RBL block (domain): {} is blacklisted", qname);
+            return Ok(build_response_edns(
+                &message,
+                ResponseCode::NXDomain,
+                vec![],
+                false,
                 edns_ctx.as_ref(),
             ));
         }
@@ -895,6 +919,18 @@ impl DnsServer {
                 Ok(make_error_response(query_data, ResponseCode::ServFail))
             }
         }
+    }
+
+    /// Checks whether a query name is present in the local RBL blocklist,
+    /// tolerating the trailing-dot/case differences between stored entries and
+    /// wire-format query names. The local RBL set holds arbitrary strings, so
+    /// an operator may have added either `example.com` or `example.com.`.
+    fn local_rbl_lists_name(&self, qname: &str) -> bool {
+        if self.db.lookup_local_rbl(qname) {
+            return true;
+        }
+        let normalized = crate::rbl::normalize_rbl_name(qname);
+        !normalized.is_empty() && normalized != qname && self.db.lookup_local_rbl(&normalized)
     }
 
     /// Inserts a set of answer records into the DNS cache, keyed by the first
@@ -1477,6 +1513,47 @@ mod tests {
         }
     }
 
+    /// Mock resolver that lists a query only if it begins with one of the given
+    /// name prefixes, simulating a domain blocklist (e.g. `dbl.spamhaus.org`)
+    /// that lists some names but not others.
+    struct PrefixListedResolver {
+        listed_prefixes: Vec<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl RblResolver for PrefixListedResolver {
+        async fn lookup_rbl(&self, query: &str) -> Result<Option<u32>, anyhow::Error> {
+            if self
+                .listed_prefixes
+                .iter()
+                .any(|p| query.starts_with(p.as_str()))
+            {
+                Ok(Some(300))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+
+    /// Builds a server whose DNSBL (domain blocklist) is enabled with a single
+    /// `dbl.test` provider backed by the given resolver. The IP-based RBL is left
+    /// disabled to prove domain blocking is driven by the DNSBL config alone.
+    async fn make_test_server_with_dnsbl(
+        db: Database,
+        resolver: Arc<dyn RblResolver>,
+    ) -> Arc<DnsServer> {
+        let rbl = Arc::new(RblChecker::with_resolver(false, vec![], resolver));
+        rbl.set_dnsbl_config(
+            true,
+            vec![RblProvider {
+                zone: "dbl.test".to_string(),
+                enabled: true,
+            }],
+        )
+        .await;
+        Arc::new(DnsServer::new(db, rbl, vec![]))
+    }
+
     fn make_test_server(db: Database) -> Arc<DnsServer> {
         let rbl = Arc::new(RblChecker::with_resolver(
             false,
@@ -1722,6 +1799,205 @@ mod tests {
         let response = Message::from_bytes(&response_bytes).unwrap();
 
         assert_eq!(response.response_code(), ResponseCode::NXDomain);
+    }
+
+    /// RBL precedence over external DNS: a domain-blocklisted name (e.g.
+    /// `googleadservices.com`) must be answered with NXDOMAIN rather than being
+    /// forwarded upstream, while a locally-defined name in the same query batch
+    /// (e.g. `gitea.default.home`, which may have been planted by a package)
+    /// continues to resolve from the local database.
+    #[tokio::test]
+    async fn test_rbl_blocks_forwarded_domain_but_not_local() {
+        let db = Database::open_memory().unwrap();
+        // A local record that must keep resolving regardless of RBL state.
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "gitea.default.home.".to_string(),
+            record_type: RecordKind::A,
+            value: "10.0.0.5".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        let resolver = Arc::new(PrefixListedResolver {
+            listed_prefixes: vec!["googleadservices.com.".to_string()],
+        });
+        let server = make_test_server_with_dnsbl(db, resolver).await;
+
+        // The blocklisted external name is refused with NXDOMAIN. With no
+        // forwarders configured an unblocked external name would SERVFAIL, so
+        // NXDOMAIN proves the RBL fired before forwarding.
+        let blocked = build_query("googleadservices.com.", RecordType::A);
+        let blocked_resp =
+            Message::from_bytes(&server.handle_query(&blocked).await.unwrap()).unwrap();
+        assert_eq!(blocked_resp.response_code(), ResponseCode::NXDomain);
+        assert!(blocked_resp.answers().is_empty());
+
+        // The local record resolves normally — RBL never gates local data.
+        let local = build_query("gitea.default.home.", RecordType::A);
+        let local_resp = Message::from_bytes(&server.handle_query(&local).await.unwrap()).unwrap();
+        assert_eq!(local_resp.response_code(), ResponseCode::NoError);
+        assert_eq!(local_resp.answers().len(), 1);
+        if let RData::A(rdata::A(ip)) = local_resp.answers()[0].data() {
+            assert_eq!(*ip, Ipv4Addr::new(10, 0, 0, 5));
+        } else {
+            panic!("expected A record for local name");
+        }
+
+        // A non-blocklisted external name is not over-blocked: with no
+        // forwarders it falls through to SERVFAIL rather than NXDOMAIN.
+        let allowed = build_query("example.org.", RecordType::A);
+        let allowed_resp =
+            Message::from_bytes(&server.handle_query(&allowed).await.unwrap()).unwrap();
+        assert_eq!(allowed_resp.response_code(), ResponseCode::ServFail);
+    }
+
+    /// RBL precedence must also override a previously-cached upstream answer:
+    /// once a name is blocklisted, a cache entry for it is suppressed instead of
+    /// being served.
+    #[tokio::test]
+    async fn test_rbl_blocks_cached_upstream_domain() {
+        let db = Database::open_memory().unwrap();
+        let resolver = Arc::new(PrefixListedResolver {
+            listed_prefixes: vec!["ads.tracker.example.".to_string()],
+        });
+        let rbl = Arc::new(RblChecker::with_resolver(false, vec![], resolver));
+        rbl.set_dnsbl_config(
+            true,
+            vec![RblProvider {
+                zone: "dbl.test".to_string(),
+                enabled: true,
+            }],
+        )
+        .await;
+        let cache = Arc::new(crate::dns_cache::DnsCache::new(
+            Database::open_memory().unwrap(),
+        ));
+        // Seed the cache as if an upstream answer had been stored earlier.
+        cache.insert(
+            "ads.tracker.example.",
+            Some(RecordKind::A),
+            vec![DnsRecord {
+                id: None,
+                name: "ads.tracker.example.".to_string(),
+                record_type: RecordKind::A,
+                value: "203.0.113.7".to_string(),
+                ttl: 300,
+                priority: 0,
+            }],
+            300,
+        );
+        let server = Arc::new(DnsServer::new_with_options(
+            db,
+            rbl,
+            vec![],
+            Some(cache),
+            None,
+            true,
+        ));
+
+        let query = build_query("ads.tracker.example.", RecordType::A);
+        let resp = Message::from_bytes(&server.handle_query(&query).await.unwrap()).unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NXDomain);
+        assert!(resp.answers().is_empty());
+    }
+
+    /// A local RBL entry (DB-backed, independent of DNS providers) blocks a
+    /// forward domain name, tolerating trailing-dot differences between the
+    /// stored entry and the wire-format query name.
+    #[tokio::test]
+    async fn test_local_rbl_blocks_forward_domain() {
+        let db = Database::open_memory().unwrap();
+        // Stored without a trailing dot, as an operator would type it.
+        db.add_local_rbl_entry("tracker.example.com", "ad tracker")
+            .unwrap();
+
+        // RBL DNS providers are disabled; only the local list is consulted.
+        let server = make_test_server(db);
+
+        let blocked = build_query("tracker.example.com.", RecordType::A);
+        let blocked_resp =
+            Message::from_bytes(&server.handle_query(&blocked).await.unwrap()).unwrap();
+        assert_eq!(blocked_resp.response_code(), ResponseCode::NXDomain);
+
+        // An unrelated external name is not blocked (SERVFAIL, no forwarders).
+        let allowed = build_query("safe.example.com.", RecordType::A);
+        let allowed_resp =
+            Message::from_bytes(&server.handle_query(&allowed).await.unwrap()).unwrap();
+        assert_eq!(allowed_resp.response_code(), ResponseCode::ServFail);
+    }
+
+    /// Builds a server with both RBL and DNSBL globally ENABLED but with empty
+    /// provider lists — the default configuration — to prove an enabled-but-empty
+    /// blocklist blocks nothing.
+    async fn make_test_server_empty_blocklists(db: Database) -> Arc<DnsServer> {
+        let rbl = Arc::new(RblChecker::with_resolver(
+            true,
+            vec![],
+            Arc::new(NeverListedResolver),
+        ));
+        rbl.set_dnsbl_config(true, vec![]).await;
+        Arc::new(DnsServer::new(db, rbl, vec![]))
+    }
+
+    #[tokio::test]
+    async fn test_empty_rbl_does_not_block_reverse_dns() {
+        let db = Database::open_memory().unwrap();
+        // A local PTR record so the reverse query has a real answer.
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "100.1.168.192.in-addr.arpa.".to_string(),
+            record_type: RecordKind::PTR,
+            value: "host.local.".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        let server = make_test_server_empty_blocklists(db).await;
+
+        // With RBL enabled but no providers, the reverse lookup is not blocked
+        // and resolves from the local database.
+        let q = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
+        let resp = Message::from_bytes(&server.handle_query(&q).await.unwrap()).unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert_eq!(resp.answers().len(), 1);
+
+        // A reverse lookup with no local record is likewise not blocked; it
+        // falls through to SERVFAIL (no forwarders) rather than NXDOMAIN.
+        let q2 = build_query("200.1.168.192.in-addr.arpa.", RecordType::PTR);
+        let resp2 = Message::from_bytes(&server.handle_query(&q2).await.unwrap()).unwrap();
+        assert_eq!(resp2.response_code(), ResponseCode::ServFail);
+    }
+
+    #[tokio::test]
+    async fn test_empty_dnsbl_does_not_block_forward_domain() {
+        let db = Database::open_memory().unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "gitea.default.home.".to_string(),
+            record_type: RecordKind::A,
+            value: "10.0.0.5".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        let server = make_test_server_empty_blocklists(db).await;
+
+        // Local record resolves normally.
+        let local = build_query("gitea.default.home.", RecordType::A);
+        let local_resp = Message::from_bytes(&server.handle_query(&local).await.unwrap()).unwrap();
+        assert_eq!(local_resp.response_code(), ResponseCode::NoError);
+        assert_eq!(local_resp.answers().len(), 1);
+
+        // An external name is NOT blocked by the enabled-but-empty DNSBL; it
+        // falls through to forwarding and SERVFAILs (no forwarders), proving it
+        // was never turned into an NXDOMAIN block.
+        let ext = build_query("googleadservices.com.", RecordType::A);
+        let ext_resp = Message::from_bytes(&server.handle_query(&ext).await.unwrap()).unwrap();
+        assert_eq!(ext_resp.response_code(), ResponseCode::ServFail);
     }
 
     #[test]

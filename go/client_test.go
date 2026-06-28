@@ -26,6 +26,8 @@ type mockRolodexDnsService struct {
 	setForwarderFn           func(ctx context.Context, req *pb.SetForwarderRequest) (*pb.SetForwarderResponse, error)
 	setRblConfigFn           func(ctx context.Context, req *pb.SetRblConfigRequest) (*pb.SetRblConfigResponse, error)
 	getRblConfigFn           func(ctx context.Context, req *pb.GetRblConfigRequest) (*pb.GetRblConfigResponse, error)
+	setDnsblConfigFn         func(ctx context.Context, req *pb.SetDnsblConfigRequest) (*pb.SetDnsblConfigResponse, error)
+	getDnsblConfigFn         func(ctx context.Context, req *pb.GetDnsblConfigRequest) (*pb.GetDnsblConfigResponse, error)
 	flushCacheFn             func(ctx context.Context, req *pb.FlushCacheRequest) (*pb.FlushCacheResponse, error)
 	createNetworkScopeFn     func(ctx context.Context, req *pb.CreateNetworkScopeRequest) (*pb.CreateNetworkScopeResponse, error)
 	deleteNetworkScopeFn     func(ctx context.Context, req *pb.DeleteNetworkScopeRequest) (*pb.DeleteNetworkScopeResponse, error)
@@ -119,6 +121,20 @@ func (m *mockRolodexDnsService) SetRblConfig(ctx context.Context, req *pb.SetRbl
 func (m *mockRolodexDnsService) GetRblConfig(ctx context.Context, req *pb.GetRblConfigRequest) (*pb.GetRblConfigResponse, error) {
 	if m.getRblConfigFn != nil {
 		return m.getRblConfigFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexDnsService) SetDnsblConfig(ctx context.Context, req *pb.SetDnsblConfigRequest) (*pb.SetDnsblConfigResponse, error) {
+	if m.setDnsblConfigFn != nil {
+		return m.setDnsblConfigFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexDnsService) GetDnsblConfig(ctx context.Context, req *pb.GetDnsblConfigRequest) (*pb.GetDnsblConfigResponse, error) {
+	if m.getDnsblConfigFn != nil {
+		return m.getDnsblConfigFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
@@ -819,6 +835,68 @@ func TestGetRblConfig(t *testing.T) {
 	}
 	if rblStatus.Providers[0].Zone != "zen.spamhaus.org" {
 		t.Errorf("provider zone = %q, want %q", rblStatus.Providers[0].Zone, "zen.spamhaus.org")
+	}
+}
+
+func TestSetDnsblConfig(t *testing.T) {
+	var captured *pb.SetDnsblConfigRequest
+	mock := &mockRolodexDnsService{
+		setDnsblConfigFn: func(_ context.Context, req *pb.SetDnsblConfigRequest) (*pb.SetDnsblConfigResponse, error) {
+			captured = req
+			return &pb.SetDnsblConfigResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock)
+
+	err := client.SetDnsblConfig(context.Background(), true, []*DnsblConfig{
+		{Zone: "dbl.spamhaus.org", Enabled: true},
+		{Zone: "multi.surbl.org", Enabled: false},
+	})
+	if err != nil {
+		t.Fatalf("SetDnsblConfig returned error: %v", err)
+	}
+	if !captured.Enabled {
+		t.Error("enabled should be true")
+	}
+	if len(captured.Providers) != 2 {
+		t.Fatalf("got %d providers, want 2", len(captured.Providers))
+	}
+	if captured.Providers[0].Zone != "dbl.spamhaus.org" {
+		t.Errorf("provider[0].zone = %q, want %q", captured.Providers[0].Zone, "dbl.spamhaus.org")
+	}
+	if !captured.Providers[0].Enabled {
+		t.Error("provider[0].enabled should be true")
+	}
+	if captured.Providers[1].Enabled {
+		t.Error("provider[1].enabled should be false")
+	}
+}
+
+func TestGetDnsblConfig(t *testing.T) {
+	mock := &mockRolodexDnsService{
+		getDnsblConfigFn: func(_ context.Context, req *pb.GetDnsblConfigRequest) (*pb.GetDnsblConfigResponse, error) {
+			return &pb.GetDnsblConfigResponse{
+				Enabled: true,
+				Providers: []*pb.DnsblConfig{
+					{Zone: "dbl.spamhaus.org", Enabled: true},
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock)
+
+	dnsblStatus, err := client.GetDnsblConfig(context.Background())
+	if err != nil {
+		t.Fatalf("GetDnsblConfig returned error: %v", err)
+	}
+	if !dnsblStatus.Enabled {
+		t.Error("enabled should be true")
+	}
+	if len(dnsblStatus.Providers) != 1 {
+		t.Fatalf("got %d providers, want 1", len(dnsblStatus.Providers))
+	}
+	if dnsblStatus.Providers[0].Zone != "dbl.spamhaus.org" {
+		t.Errorf("provider zone = %q, want %q", dnsblStatus.Providers[0].Zone, "dbl.spamhaus.org")
 	}
 }
 

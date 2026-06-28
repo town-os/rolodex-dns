@@ -17,6 +17,9 @@ pub struct Config {
     pub database_path: String,
     /// RBL (Realtime Blackhole List) configuration.
     pub rbl: RblSettings,
+    /// DNSBL (domain blocklist) configuration.
+    #[serde(default)]
+    pub dnsbl: DnsblSettings,
     /// DNS-over-TLS (DoT) listener configuration.
     #[serde(default)]
     pub dot: Option<DotConfig>,
@@ -245,6 +248,21 @@ pub struct RblSettings {
     /// Whether RBL checking is globally enabled.
     pub enabled: bool,
     /// List of RBL providers.
+    pub providers: Vec<RblProviderConfig>,
+}
+
+/// DNSBL (domain blocklist) settings.
+///
+/// DNSBL providers are queried by prepending the looked-up domain name to the
+/// zone (e.g. `dbl.spamhaus.org`), as opposed to RBL providers which are queried
+/// with a reversed IP. DNSBL listings take precedence over forwarded/iterative
+/// answers. Disabled with no providers by default; operators add the providers
+/// they want via config or `SetDnsblConfig`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DnsblSettings {
+    /// Whether DNSBL checking is globally enabled.
+    pub enabled: bool,
+    /// List of DNSBL providers.
     pub providers: Vec<RblProviderConfig>,
 }
 
@@ -648,8 +666,9 @@ impl Default for Config {
             database_path: "rolodex-dns.db".to_string(),
             rbl: RblSettings {
                 enabled: false,
-                providers: default_rbl_providers(),
+                providers: Vec::new(),
             },
+            dnsbl: DnsblSettings::default(),
             dot: None,
             doh: None,
             doq: None,
@@ -661,39 +680,6 @@ impl Default for Config {
             acme: None,
         }
     }
-}
-
-/// Returns the default RBL providers, matching what unbound commonly supports.
-///
-/// These are the standard DNSBL zones used for spam and malware filtering:
-/// - `zen.spamhaus.org` - Combined Spamhaus blocklist (SBL + XBL + PBL + CSS)
-/// - `bl.spamcop.net` - SpamCop blocklist
-/// - `b.barracudacentral.org` - Barracuda Reputation Block List
-/// - `dnsbl.sorbs.net` - SORBS aggregate zone
-/// - `dbl.spamhaus.org` - Spamhaus Domain Block List
-pub fn default_rbl_providers() -> Vec<RblProviderConfig> {
-    vec![
-        RblProviderConfig {
-            zone: "zen.spamhaus.org".to_string(),
-            enabled: true,
-        },
-        RblProviderConfig {
-            zone: "bl.spamcop.net".to_string(),
-            enabled: true,
-        },
-        RblProviderConfig {
-            zone: "b.barracudacentral.org".to_string(),
-            enabled: true,
-        },
-        RblProviderConfig {
-            zone: "dnsbl.sorbs.net".to_string(),
-            enabled: true,
-        },
-        RblProviderConfig {
-            zone: "dbl.spamhaus.org".to_string(),
-            enabled: true,
-        },
-    ]
 }
 
 #[cfg(test)]
@@ -711,8 +697,11 @@ mod tests {
             ]
         );
         assert_eq!(config.grpc.tcp_bind, "127.0.0.1:50051");
+        // RBL and DNSBL default to disabled with empty provider lists.
         assert!(!config.rbl.enabled);
-        assert!(!config.rbl.providers.is_empty());
+        assert!(config.rbl.providers.is_empty());
+        assert!(!config.dnsbl.enabled);
+        assert!(config.dnsbl.providers.is_empty());
         // Resolution defaults to recursive-from-roots with no custom hints.
         assert_eq!(config.resolution.mode, "recursive");
         assert!(config.resolution.root_hints.is_empty());
@@ -740,11 +729,22 @@ mod tests {
     }
 
     #[test]
-    fn test_default_rbl_providers() {
-        let providers = default_rbl_providers();
-        assert_eq!(providers.len(), 5);
-        assert!(providers.iter().all(|p| p.enabled));
-        assert!(providers.iter().any(|p| p.zone == "zen.spamhaus.org"));
+    fn test_rbl_dnsbl_default_to_empty() {
+        // Both blocklists ship empty: the server queries no external provider
+        // until an operator configures one.
+        let config = Config::default();
+        assert!(config.rbl.providers.is_empty());
+        assert!(config.dnsbl.providers.is_empty());
+    }
+
+    #[test]
+    fn test_config_without_dnsbl_section_uses_default() {
+        // Existing configs predating the dnsbl section must still parse, and
+        // default to a disabled DNSBL with no providers.
+        let yaml = "dns:\n  bind:\n    - udp: \"0.0.0.0:53\"\ngrpc:\n  tcp_bind: \"127.0.0.1:50051\"\n  unix_socket: \"\"\n  shared_secret: \"\"\nforwarders: []\ndatabase_path: \"x.db\"\nrbl:\n  enabled: false\n  providers: []\n";
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(!config.dnsbl.enabled);
+        assert!(config.dnsbl.providers.is_empty());
     }
 
     #[test]
@@ -782,40 +782,42 @@ mod tests {
     #[test]
     fn test_new_config_fields_serialization() {
         // Build a config with all new fields populated
-        let mut config = Config::default();
-        config.dot = Some(DotConfig {
-            bind: "0.0.0.0:853".to_string(),
-            tls: TlsConfig {
-                cert_path: Some("/etc/certs/dot.pem".to_string()),
-                key_path: Some("/etc/certs/dot.key".to_string()),
-                auto_self_signed: false,
+        let config = Config {
+            dot: Some(DotConfig {
+                bind: "0.0.0.0:853".to_string(),
+                tls: TlsConfig {
+                    cert_path: Some("/etc/certs/dot.pem".to_string()),
+                    key_path: Some("/etc/certs/dot.key".to_string()),
+                    auto_self_signed: false,
+                },
+            }),
+            doh: Some(DohConfig {
+                bind: "0.0.0.0:443".to_string(),
+                tls: TlsConfig::default(),
+                enable_h3: false,
+            }),
+            doq: Some(DoqConfig {
+                bind: "0.0.0.0:8853".to_string(),
+                tls: TlsConfig::default(),
+            }),
+            proxy: Some(ProxyConfig {
+                url: "socks5://127.0.0.1:1080".to_string(),
+                auth: Some("user:pass".to_string()),
+                mode: "socks5".to_string(),
+            }),
+            ttl_drift: TtlDriftSettings {
+                mode: "logarithmic".to_string(),
+                fixed_adjustment: "30s".to_string(),
+                log_multiplier: 0.5,
             },
-        });
-        config.doh = Some(DohConfig {
-            bind: "0.0.0.0:443".to_string(),
-            tls: TlsConfig::default(),
-            enable_h3: false,
-        });
-        config.doq = Some(DoqConfig {
-            bind: "0.0.0.0:8853".to_string(),
-            tls: TlsConfig::default(),
-        });
-        config.proxy = Some(ProxyConfig {
-            url: "socks5://127.0.0.1:1080".to_string(),
-            auth: Some("user:pass".to_string()),
-            mode: "socks5".to_string(),
-        });
-        config.ttl_drift = TtlDriftSettings {
-            mode: "logarithmic".to_string(),
-            fixed_adjustment: "30s".to_string(),
-            log_multiplier: 0.5,
-        };
-        config.dns64 = Dns64Config {
-            enabled: true,
-            prefix: "64:ff9b::".to_string(),
-        };
-        config.security = SecurityConfig {
-            qname_case_randomization: false,
+            dns64: Dns64Config {
+                enabled: true,
+                prefix: "64:ff9b::".to_string(),
+            },
+            security: SecurityConfig {
+                qname_case_randomization: false,
+            },
+            ..Config::default()
         };
 
         // Round-trip through YAML

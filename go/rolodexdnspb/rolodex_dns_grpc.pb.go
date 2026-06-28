@@ -25,6 +25,8 @@ const (
 	RolodexDnsService_SetForwarders_FullMethodName           = "/rolodex_dns.RolodexDnsService/SetForwarders"
 	RolodexDnsService_SetRblConfig_FullMethodName            = "/rolodex_dns.RolodexDnsService/SetRblConfig"
 	RolodexDnsService_GetRblConfig_FullMethodName            = "/rolodex_dns.RolodexDnsService/GetRblConfig"
+	RolodexDnsService_SetDnsblConfig_FullMethodName          = "/rolodex_dns.RolodexDnsService/SetDnsblConfig"
+	RolodexDnsService_GetDnsblConfig_FullMethodName          = "/rolodex_dns.RolodexDnsService/GetDnsblConfig"
 	RolodexDnsService_FlushCache_FullMethodName              = "/rolodex_dns.RolodexDnsService/FlushCache"
 	RolodexDnsService_CreateNetworkScope_FullMethodName      = "/rolodex_dns.RolodexDnsService/CreateNetworkScope"
 	RolodexDnsService_DeleteNetworkScope_FullMethodName      = "/rolodex_dns.RolodexDnsService/DeleteNetworkScope"
@@ -112,6 +114,12 @@ type RolodexDnsServiceClient interface {
 	// GetRblConfig retrieves the current RBL configuration.
 	// Path: /rolodex_dns.RolodexDnsService/GetRblConfig
 	GetRblConfig(ctx context.Context, in *GetRblConfigRequest, opts ...grpc.CallOption) (*GetRblConfigResponse, error)
+	// SetDnsblConfig configures DNSBL (domain blocklist) settings.
+	// Path: /rolodex_dns.RolodexDnsService/SetDnsblConfig
+	SetDnsblConfig(ctx context.Context, in *SetDnsblConfigRequest, opts ...grpc.CallOption) (*SetDnsblConfigResponse, error)
+	// GetDnsblConfig retrieves the current DNSBL configuration.
+	// Path: /rolodex_dns.RolodexDnsService/GetDnsblConfig
+	GetDnsblConfig(ctx context.Context, in *GetDnsblConfigRequest, opts ...grpc.CallOption) (*GetDnsblConfigResponse, error)
 	// FlushCache clears DNS and RBL caches.
 	// Path: /rolodex_dns.RolodexDnsService/FlushCache
 	FlushCache(ctx context.Context, in *FlushCacheRequest, opts ...grpc.CallOption) (*FlushCacheResponse, error)
@@ -337,6 +345,26 @@ func (c *rolodexDnsServiceClient) GetRblConfig(ctx context.Context, in *GetRblCo
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetRblConfigResponse)
 	err := c.cc.Invoke(ctx, RolodexDnsService_GetRblConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexDnsServiceClient) SetDnsblConfig(ctx context.Context, in *SetDnsblConfigRequest, opts ...grpc.CallOption) (*SetDnsblConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetDnsblConfigResponse)
+	err := c.cc.Invoke(ctx, RolodexDnsService_SetDnsblConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexDnsServiceClient) GetDnsblConfig(ctx context.Context, in *GetDnsblConfigRequest, opts ...grpc.CallOption) (*GetDnsblConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetDnsblConfigResponse)
+	err := c.cc.Invoke(ctx, RolodexDnsService_GetDnsblConfig_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -950,6 +978,12 @@ type RolodexDnsServiceServer interface {
 	// GetRblConfig retrieves the current RBL configuration.
 	// Path: /rolodex_dns.RolodexDnsService/GetRblConfig
 	GetRblConfig(context.Context, *GetRblConfigRequest) (*GetRblConfigResponse, error)
+	// SetDnsblConfig configures DNSBL (domain blocklist) settings.
+	// Path: /rolodex_dns.RolodexDnsService/SetDnsblConfig
+	SetDnsblConfig(context.Context, *SetDnsblConfigRequest) (*SetDnsblConfigResponse, error)
+	// GetDnsblConfig retrieves the current DNSBL configuration.
+	// Path: /rolodex_dns.RolodexDnsService/GetDnsblConfig
+	GetDnsblConfig(context.Context, *GetDnsblConfigRequest) (*GetDnsblConfigResponse, error)
 	// FlushCache clears DNS and RBL caches.
 	// Path: /rolodex_dns.RolodexDnsService/FlushCache
 	FlushCache(context.Context, *FlushCacheRequest) (*FlushCacheResponse, error)
@@ -1138,6 +1172,12 @@ func (UnimplementedRolodexDnsServiceServer) SetRblConfig(context.Context, *SetRb
 }
 func (UnimplementedRolodexDnsServiceServer) GetRblConfig(context.Context, *GetRblConfigRequest) (*GetRblConfigResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetRblConfig not implemented")
+}
+func (UnimplementedRolodexDnsServiceServer) SetDnsblConfig(context.Context, *SetDnsblConfigRequest) (*SetDnsblConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetDnsblConfig not implemented")
+}
+func (UnimplementedRolodexDnsServiceServer) GetDnsblConfig(context.Context, *GetDnsblConfigRequest) (*GetDnsblConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetDnsblConfig not implemented")
 }
 func (UnimplementedRolodexDnsServiceServer) FlushCache(context.Context, *FlushCacheRequest) (*FlushCacheResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FlushCache not implemented")
@@ -1438,6 +1478,42 @@ func _RolodexDnsService_GetRblConfig_Handler(srv interface{}, ctx context.Contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(RolodexDnsServiceServer).GetRblConfig(ctx, req.(*GetRblConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexDnsService_SetDnsblConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetDnsblConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexDnsServiceServer).SetDnsblConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexDnsService_SetDnsblConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexDnsServiceServer).SetDnsblConfig(ctx, req.(*SetDnsblConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexDnsService_GetDnsblConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetDnsblConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexDnsServiceServer).GetDnsblConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexDnsService_GetDnsblConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexDnsServiceServer).GetDnsblConfig(ctx, req.(*GetDnsblConfigRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2516,6 +2592,14 @@ var RolodexDnsService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetRblConfig",
 			Handler:    _RolodexDnsService_GetRblConfig_Handler,
+		},
+		{
+			MethodName: "SetDnsblConfig",
+			Handler:    _RolodexDnsService_SetDnsblConfig_Handler,
+		},
+		{
+			MethodName: "GetDnsblConfig",
+			Handler:    _RolodexDnsService_GetDnsblConfig_Handler,
 		},
 		{
 			MethodName: "FlushCache",

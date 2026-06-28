@@ -346,6 +346,56 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         }))
     }
 
+    async fn set_dnsbl_config(
+        &self,
+        request: Request<SetDnsblConfigRequest>,
+    ) -> Result<Response<SetDnsblConfigResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        let providers: Vec<RblProvider> = req
+            .providers
+            .iter()
+            .map(|p| RblProvider {
+                zone: p.zone.clone(),
+                enabled: p.enabled,
+            })
+            .collect();
+
+        self.rbl.set_dnsbl_config(req.enabled, providers).await;
+        // Blocking a domain changes what should/shouldn't be served from the
+        // DNS response cache, so flush it to avoid serving a stale answer.
+        self.dns_server.flush_cache();
+        info!("Updated DNSBL config: enabled={}", req.enabled);
+
+        Ok(Response::new(SetDnsblConfigResponse {
+            success: true,
+            message: String::new(),
+        }))
+    }
+
+    async fn get_dnsbl_config(
+        &self,
+        request: Request<GetDnsblConfigRequest>,
+    ) -> Result<Response<GetDnsblConfigResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        let (enabled, providers) = self.rbl.get_dnsbl_config().await;
+        let proto_providers = providers
+            .iter()
+            .map(|p| proto::DnsblConfig {
+                zone: p.zone.clone(),
+                enabled: p.enabled,
+            })
+            .collect();
+
+        Ok(Response::new(GetDnsblConfigResponse {
+            enabled,
+            providers: proto_providers,
+        }))
+    }
+
     async fn flush_cache(
         &self,
         request: Request<FlushCacheRequest>,
@@ -2326,6 +2376,84 @@ mod tests {
         assert!(config.enabled);
         assert_eq!(config.providers.len(), 1);
         assert_eq!(config.providers[0].zone, "test.rbl");
+    }
+
+    #[tokio::test]
+    async fn test_dnsbl_config() {
+        let service = make_test_service();
+
+        // Defaults: disabled, no providers.
+        let get_req = Request::new(GetDnsblConfigRequest {
+            auth_token: "secret123".to_string(),
+        });
+        let config = service
+            .get_dnsbl_config(get_req)
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!config.enabled);
+        assert!(config.providers.is_empty());
+
+        // Set config.
+        let set_req = Request::new(SetDnsblConfigRequest {
+            enabled: true,
+            providers: vec![
+                proto::DnsblConfig {
+                    zone: "dbl.spamhaus.org".to_string(),
+                    enabled: true,
+                },
+                proto::DnsblConfig {
+                    zone: "multi.surbl.org".to_string(),
+                    enabled: false,
+                },
+            ],
+            auth_token: "secret123".to_string(),
+        });
+        assert!(
+            service
+                .set_dnsbl_config(set_req)
+                .await
+                .unwrap()
+                .into_inner()
+                .success
+        );
+
+        // Read it back.
+        let get_req = Request::new(GetDnsblConfigRequest {
+            auth_token: "secret123".to_string(),
+        });
+        let config = service
+            .get_dnsbl_config(get_req)
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(config.enabled);
+        assert_eq!(config.providers.len(), 2);
+        assert_eq!(config.providers[0].zone, "dbl.spamhaus.org");
+        assert!(config.providers[0].enabled);
+        assert_eq!(config.providers[1].zone, "multi.surbl.org");
+        assert!(!config.providers[1].enabled);
+
+        // Setting DNSBL must not disturb the independent RBL config.
+        let rbl = service
+            .get_rbl_config(Request::new(GetRblConfigRequest {
+                auth_token: "secret123".to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!rbl.enabled);
+    }
+
+    #[tokio::test]
+    async fn test_dnsbl_config_requires_auth() {
+        let service = make_test_service();
+        let set_req = Request::new(SetDnsblConfigRequest {
+            enabled: true,
+            providers: vec![],
+            auth_token: "wrong".to_string(),
+        });
+        assert!(service.set_dnsbl_config(set_req).await.is_err());
     }
 
     #[tokio::test]

@@ -132,6 +132,31 @@ impl DnsCache {
         Vec::new()
     }
 
+    /// Looks up records in the cache, but only returns a hit when the cached
+    /// entry is a local (authoritative) record (inserted via
+    /// [`insert_local`](Self::insert_local)). Upstream-cached entries are
+    /// ignored. This lets the "local records first" stage of resolution use the
+    /// cache without short-circuiting RBL precedence over externally-resolved
+    /// answers — those are served later, after the RBL gate.
+    pub fn lookup_local_only(&self, name: &str, record_type: Option<RecordKind>) -> Vec<DnsRecord> {
+        let key = cache_key(name, record_type);
+        if let Some(entry) = self.memory.get(&key) {
+            if entry.expires_at > Instant::now() {
+                if entry.local {
+                    self.hits.fetch_add(1, Ordering::Relaxed);
+                    return (*entry.records).clone();
+                }
+                // Non-local hit: not eligible here, fall through to a miss
+                // without disturbing the entry or the hit/miss counters.
+                return Vec::new();
+            }
+            // Expired, remove it
+            drop(entry);
+            self.memory.remove(&key);
+        }
+        Vec::new()
+    }
+
     /// Inserts records into the cache.
     pub fn insert(
         &self,

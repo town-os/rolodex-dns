@@ -172,6 +172,47 @@ message GetRblConfigResponse {
   repeated RblConfig providers = 2;
 }
 
+// DnsblConfig configures a single DNSBL (domain blocklist) provider.
+//
+// Unlike an RBL provider (which is queried with a reversed IP address), a DNSBL
+// provider is queried by prepending the looked-up domain name to the zone
+// (e.g. "googleadservices.com" + "dbl.spamhaus.org" ->
+// "googleadservices.com.dbl.spamhaus.org"). DNSBL listings take precedence over
+// any externally-resolved (forwarded or iterative) answer.
+message DnsblConfig {
+  // The DNSBL zone to query (e.g. "dbl.spamhaus.org")
+  string zone = 1;
+  // Whether this DNSBL is enabled (default: true when added)
+  bool enabled = 2;
+}
+
+// SetDnsblConfigRequest configures DNSBL providers.
+message SetDnsblConfigRequest {
+  // The list of DNSBL providers to use
+  repeated DnsblConfig providers = 1;
+  // Whether DNSBL checking is globally enabled
+  bool enabled = 2;
+  // Shared secret for authentication
+  string auth_token = 3;
+}
+
+// SetDnsblConfigResponse is returned after configuring DNSBL.
+message SetDnsblConfigResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// GetDnsblConfigRequest retrieves the current DNSBL configuration.
+message GetDnsblConfigRequest {
+  string auth_token = 1;
+}
+
+// GetDnsblConfigResponse contains the current DNSBL configuration.
+message GetDnsblConfigResponse {
+  bool enabled = 1;
+  repeated DnsblConfig providers = 2;
+}
+
 // FlushCacheRequest clears the DNS and/or RBL cache.
 message FlushCacheRequest {
   // Shared secret for authentication
@@ -1078,6 +1119,14 @@ service RolodexDnsService {
   // GetRblConfig retrieves the current RBL configuration.
   // Path: /rolodex_dns.RolodexDnsService/GetRblConfig
   rpc GetRblConfig(GetRblConfigRequest) returns (GetRblConfigResponse);
+
+  // SetDnsblConfig configures DNSBL (domain blocklist) settings.
+  // Path: /rolodex_dns.RolodexDnsService/SetDnsblConfig
+  rpc SetDnsblConfig(SetDnsblConfigRequest) returns (SetDnsblConfigResponse);
+
+  // GetDnsblConfig retrieves the current DNSBL configuration.
+  // Path: /rolodex_dns.RolodexDnsService/GetDnsblConfig
+  rpc GetDnsblConfig(GetDnsblConfigRequest) returns (GetDnsblConfigResponse);
 
   // FlushCache clears DNS and RBL caches.
   // Path: /rolodex_dns.RolodexDnsService/FlushCache

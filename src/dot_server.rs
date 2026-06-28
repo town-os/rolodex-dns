@@ -87,7 +87,6 @@ async fn handle_dot_connection(
 mod tests {
     #[test]
     fn test_dot_module_exists() {
-        // Basic compilation test
-        assert!(true);
+        // Compilation smoke test: this module builds and links.
     }
 }

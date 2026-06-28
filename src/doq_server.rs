@@ -105,6 +105,6 @@ async fn handle_doq_stream(
 mod tests {
     #[test]
     fn test_doq_module_exists() {
-        assert!(true);
+        // Compilation smoke test: this module builds and links.
     }
 }

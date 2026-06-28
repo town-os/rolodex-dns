@@ -737,9 +737,9 @@ async fn test_sshfp_record_resolution() {
     // Verify the SSHFP data
     if let hickory_proto::rr::RData::SSHFP(sshfp) = answer.data() {
         // Algorithm 1 = RSA
-        assert_eq!(u8::from(sshfp.algorithm().clone()), 1);
+        assert_eq!(u8::from(sshfp.algorithm()), 1);
         // FP type 1 = SHA-1
-        assert_eq!(u8::from(sshfp.fingerprint_type().clone()), 1);
+        assert_eq!(u8::from(sshfp.fingerprint_type()), 1);
         assert_eq!(
             hex::encode(sshfp.fingerprint()),
             "aabbccdd00112233445566778899aabbccddeeff"
@@ -784,9 +784,9 @@ async fn test_tlsa_record_resolution() {
 
     // Verify the TLSA data
     if let hickory_proto::rr::RData::TLSA(tlsa) = answer.data() {
-        assert_eq!(u8::from(tlsa.cert_usage().clone()), 3);
-        assert_eq!(u8::from(tlsa.selector().clone()), 1);
-        assert_eq!(u8::from(tlsa.matching().clone()), 1);
+        assert_eq!(u8::from(tlsa.cert_usage()), 3);
+        assert_eq!(u8::from(tlsa.selector()), 1);
+        assert_eq!(u8::from(tlsa.matching()), 1);
         assert_eq!(hex::encode(tlsa.cert_data()), fake_hash);
     } else {
         panic!("expected TLSA record data");
@@ -822,8 +822,8 @@ async fn test_sshfp_ed25519_sha256() {
     assert_eq!(response.answers().len(), 1);
 
     if let hickory_proto::rr::RData::SSHFP(sshfp) = response.answers()[0].data() {
-        assert_eq!(u8::from(sshfp.algorithm().clone()), 4);
-        assert_eq!(u8::from(sshfp.fingerprint_type().clone()), 2);
+        assert_eq!(u8::from(sshfp.algorithm()), 4);
+        assert_eq!(u8::from(sshfp.fingerprint_type()), 2);
         assert_eq!(hex::encode(sshfp.fingerprint()), fp);
     } else {
         panic!("expected SSHFP record data");
@@ -2657,4 +2657,230 @@ fn make_grpc_service() -> rolodex_dns::grpc_service::RolodexDnsGrpcService {
     let rbl = make_rbl();
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
     rolodex_dns::grpc_service::RolodexDnsGrpcService::new(db, dns_server, rbl, String::new(), true)
+}
+
+// ========================================================
+// DNSBL (domain blocklist) integration
+//
+// DNSBL providers block forward domain names (queried as <name>.<zone>) and
+// take precedence over forwarded/iterative answers, while local records and
+// the IP-based RBL remain independent. These tests drive the full
+// handle_query pipeline and the gRPC programmable endpoints.
+// ========================================================
+
+use rolodex_dns::rbl::RblProvider;
+
+/// Mock resolver that reports a DNSBL hit when the queried name (the part of
+/// `<name>.<zone>` before the provider zone) starts with a blocklisted prefix.
+struct DnsblPrefixResolver {
+    blocked_prefixes: Vec<String>,
+}
+
+#[async_trait::async_trait]
+impl RblResolver for DnsblPrefixResolver {
+    async fn lookup_rbl(&self, query: &str) -> Result<Option<u32>, anyhow::Error> {
+        if self
+            .blocked_prefixes
+            .iter()
+            .any(|p| query.starts_with(p.as_str()))
+        {
+            Ok(Some(300))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+fn rcode_of(bytes: &[u8]) -> hickory_proto::op::ResponseCode {
+    Message::from_bytes(bytes).unwrap().response_code()
+}
+
+#[tokio::test]
+async fn test_dnsbl_blocks_forwarded_domain_full_pipeline() {
+    let db = Database::open_memory().unwrap();
+    // A local record that must keep resolving regardless of DNSBL state.
+    db.add_record(&DnsRecord {
+        id: None,
+        name: "gitea.default.home.".to_string(),
+        record_type: RecordKind::A,
+        value: "10.0.0.5".to_string(),
+        ttl: 300,
+        priority: 0,
+    })
+    .unwrap();
+
+    let rbl = Arc::new(RblChecker::with_resolver(
+        false,
+        vec![],
+        Arc::new(DnsblPrefixResolver {
+            blocked_prefixes: vec!["googleadservices.com.".to_string()],
+        }),
+    ));
+    rbl.set_dnsbl_config(
+        true,
+        vec![RblProvider {
+            zone: "dbl.test".to_string(),
+            enabled: true,
+        }],
+    )
+    .await;
+    let server = Arc::new(DnsServer::new(db, rbl, vec![]));
+
+    // Blocklisted external name -> NXDOMAIN (never forwarded; no forwarders set).
+    let blocked = build_dns_query("googleadservices.com.", RecordType::A);
+    assert_eq!(
+        rcode_of(&server.handle_query(&blocked).await.unwrap()),
+        hickory_proto::op::ResponseCode::NXDomain
+    );
+
+    // Local record still resolves.
+    let local = build_dns_query("gitea.default.home.", RecordType::A);
+    let local_resp = Message::from_bytes(&server.handle_query(&local).await.unwrap()).unwrap();
+    assert_eq!(
+        local_resp.response_code(),
+        hickory_proto::op::ResponseCode::NoError
+    );
+    assert_eq!(local_resp.answers().len(), 1);
+
+    // Unlisted external name is not over-blocked: SERVFAIL (no forwarders).
+    let allowed = build_dns_query("example.net.", RecordType::A);
+    assert_eq!(
+        rcode_of(&server.handle_query(&allowed).await.unwrap()),
+        hickory_proto::op::ResponseCode::ServFail
+    );
+}
+
+#[tokio::test]
+async fn test_dnsbl_disabled_does_not_block() {
+    let db = Database::open_memory().unwrap();
+    // DNSBL providers present but globally disabled.
+    let rbl = Arc::new(RblChecker::with_resolver(
+        false,
+        vec![],
+        Arc::new(DnsblPrefixResolver {
+            blocked_prefixes: vec!["googleadservices.com.".to_string()],
+        }),
+    ));
+    rbl.set_dnsbl_config(
+        false,
+        vec![RblProvider {
+            zone: "dbl.test".to_string(),
+            enabled: true,
+        }],
+    )
+    .await;
+    let server = Arc::new(DnsServer::new(db, rbl, vec![]));
+
+    // With DNSBL disabled the name is not blocked; it falls through to the
+    // (empty) forwarder set and returns SERVFAIL rather than NXDOMAIN.
+    let q = build_dns_query("googleadservices.com.", RecordType::A);
+    assert_eq!(
+        rcode_of(&server.handle_query(&q).await.unwrap()),
+        hickory_proto::op::ResponseCode::ServFail
+    );
+}
+
+#[tokio::test]
+async fn test_dnsbl_programmed_via_grpc_then_blocks() {
+    use rolodex_dns::grpc_service::proto;
+    use tonic::Request;
+
+    // The gRPC service and the DnsServer share one RblChecker, so configuring
+    // DNSBL through the management API changes live resolution.
+    let db = Database::open_memory().unwrap();
+    let rbl = Arc::new(RblChecker::with_resolver(
+        false,
+        vec![],
+        Arc::new(DnsblPrefixResolver {
+            blocked_prefixes: vec!["ads.example.".to_string()],
+        }),
+    ));
+    let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
+    let service = rolodex_dns::grpc_service::RolodexDnsGrpcService::new(
+        db,
+        dns_server.clone(),
+        rbl,
+        String::new(),
+        true,
+    );
+
+    // Before programming: not blocked (SERVFAIL, no forwarders).
+    let q = build_dns_query("ads.example.com.", RecordType::A);
+    assert_eq!(
+        rcode_of(&dns_server.handle_query(&q).await.unwrap()),
+        hickory_proto::op::ResponseCode::ServFail
+    );
+
+    // Program DNSBL via the gRPC endpoint.
+    service
+        .set_dnsbl_config(Request::new(proto::SetDnsblConfigRequest {
+            enabled: true,
+            providers: vec![proto::DnsblConfig {
+                zone: "dbl.test".to_string(),
+                enabled: true,
+            }],
+            auth_token: String::new(),
+        }))
+        .await
+        .unwrap();
+
+    // Read back through the endpoint.
+    let cfg = service
+        .get_dnsbl_config(Request::new(proto::GetDnsblConfigRequest {
+            auth_token: String::new(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(cfg.enabled);
+    assert_eq!(cfg.providers.len(), 1);
+    assert_eq!(cfg.providers[0].zone, "dbl.test");
+
+    // Now the same name is blocked.
+    assert_eq!(
+        rcode_of(&dns_server.handle_query(&q).await.unwrap()),
+        hickory_proto::op::ResponseCode::NXDomain
+    );
+}
+
+#[tokio::test]
+async fn test_resolution_with_empty_enabled_rbl_and_dnsbl() {
+    // Both blocklists globally enabled but with empty provider lists (the
+    // default). Resolution must proceed normally: local records resolve and
+    // external names are not blocked (they fall through to SERVFAIL with no
+    // forwarders rather than being turned into NXDOMAIN).
+    let db = Database::open_memory().unwrap();
+    db.add_record(&DnsRecord {
+        id: None,
+        name: "host.lan.example.".to_string(),
+        record_type: RecordKind::A,
+        value: "10.1.2.3".to_string(),
+        ttl: 300,
+        priority: 0,
+    })
+    .unwrap();
+
+    let rbl = Arc::new(RblChecker::with_resolver(
+        true, // RBL enabled, but no providers
+        vec![],
+        Arc::new(NeverListedResolver),
+    ));
+    rbl.set_dnsbl_config(true, vec![]).await; // DNSBL enabled, but no providers
+    let server = Arc::new(DnsServer::new(db, rbl, vec![]));
+
+    // Local record resolves.
+    let local = build_dns_query("host.lan.example.", RecordType::A);
+    let local_resp = Message::from_bytes(&server.handle_query(&local).await.unwrap()).unwrap();
+    assert_eq!(
+        local_resp.response_code(),
+        hickory_proto::op::ResponseCode::NoError
+    );
+    assert_eq!(local_resp.answers().len(), 1);
+
+    // External name is not blocked by the empty blocklists.
+    let ext = build_dns_query("googleadservices.com.", RecordType::A);
+    assert_eq!(
+        rcode_of(&server.handle_query(&ext).await.unwrap()),
+        hickory_proto::op::ResponseCode::ServFail
+    );
 }

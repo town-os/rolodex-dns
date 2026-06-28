@@ -8,6 +8,7 @@ Rolodex DNS is a split-horizon DNS server and forwarding resolver with remote ma
 - handle all std::result::Result in an appropriate way
 - do not use unwrap
 - do not use unsafe code
+-  never run tests yourself
 - write tests for everything, including integration and real tests
 - use make test to validate any changes
 - integration tests should not alter the host, ever
@@ -41,8 +42,9 @@ DNS queries are resolved in the following order:
 3. **Local database lookup** — The local database is queried for the requested name and type. If records exist, they are returned immediately.
 4. **CNAME chain** — If no exact type match is found locally, a CNAME lookup is attempted for the queried name. If a CNAME exists, it is returned.
 5. **Managed zone authority** — If the queried name falls under a zone that has records in the local database (determined by the last two labels of any stored FQDN), but the specific name was not found, an authoritative NXDOMAIN is returned. This prevents forwarding queries for names that should be resolved internally. Zones can also be explicitly declared authoritative via `AddAuthoritativeZone`.
-6. **DNS64 synthesis** — If DNS64 is enabled and the query is for AAAA but only A records exist upstream, AAAA records are synthesized using the configured NAT64 prefix.
-7. **Upstream forwarding** — Unmatched queries are forwarded via UDP to the configured upstream resolvers, tried in order with a 5-second timeout per attempt. If all forwarders fail or none are configured, SERVFAIL is returned.
+6. **DNSBL / local blocklist check** — Before any external resolution, the queried name (forward names only; reverse names are handled by step 2) is checked against the local RBL blocklist and, if DNSBL is enabled, against the configured DNSBL (domain blocklist) providers. If listed, an NXDOMAIN is returned. Because this runs after the local/managed-zone checks but before the upstream cache and forwarder, DNSBLs take precedence over any externally-resolved answer (forwarded, iterative, or upstream-cached) while local records always win.
+7. **DNS64 synthesis** — If DNS64 is enabled and the query is for AAAA but only A records exist upstream, AAAA records are synthesized using the configured NAT64 prefix.
+8. **Upstream forwarding** — Unmatched queries are forwarded via UDP to the configured upstream resolvers, tried in order with a 5-second timeout per attempt. If all forwarders fail or none are configured, SERVFAIL is returned.
 
 This ordering ensures the inside representation always takes priority over external DNS, allowing TLD-level and domain-level overlays that update in real time as the gRPC control plane modifies records.
 
@@ -88,11 +90,11 @@ Rolodex DNS checks IPs against DNS-based blackhole lists using the standard reve
 - **IPv4**: Octets are reversed and appended to the RBL zone (e.g., `192.168.1.100` becomes `100.1.168.192.zen.spamhaus.org`).
 - **IPv6**: Nibbles are expanded, reversed, and appended to the RBL zone.
 
-RBL checking is globally togglable and disabled by default. Individual providers can also be enabled or disabled independently.
+RBL checking is globally togglable and disabled by default, **with an empty provider list** — no external blocklist is queried until the operator adds providers via the `rbl` config section or `SetRblConfig`. Individual providers can also be enabled or disabled independently.
 
-### Default Providers
+### Commonly Used Providers
 
-These match the standard DNSBL zones used by unbound:
+The provider list ships empty; these are the standard IP DNSBL zones (as used by unbound) an operator typically adds:
 
 - `zen.spamhaus.org` — Combined Spamhaus blocklist (SBL + XBL + PBL + CSS)
 - `bl.spamcop.net` — SpamCop blocklist
@@ -112,7 +114,15 @@ The cache can be flushed via gRPC.
 
 ### Local RBL Entries
 
-In addition to DNS-based providers, Rolodex DNS supports a local RBL blocklist stored in the database. Local entries are checked alongside external providers and can block specific names or IPs with a human-readable reason. Entries are managed via `AddLocalRblEntry`, `RemoveLocalRblEntry`, and `ListLocalRblEntries`.
+In addition to DNS-based providers, Rolodex DNS supports a local RBL blocklist stored in the database. Local entries are checked alongside external providers and can block specific names or IPs with a human-readable reason. Entries are managed via `AddLocalRblEntry`, `RemoveLocalRblEntry`, and `ListLocalRblEntries`. Local entries are matched against both reverse-DNS IP lookups (step 2) and forward domain names (step 6), tolerating trailing-dot and case differences in the stored entry.
+
+## Domain Blocklists (DNSBL)
+
+While RBL providers block by **IP address** (queried with a reversed IP on reverse-DNS lookups), DNSBL providers block by **domain name**. A DNSBL lookup prepends the queried name's labels to the provider zone — e.g. `googleadservices.com` against `dbl.spamhaus.org` is queried as `googleadservices.com.dbl.spamhaus.org` — mirroring how domain blocklists such as Spamhaus DBL, SURBL, and URIBL operate.
+
+DNSBL gives blocklists **precedence over external DNS**: the check runs after local records and managed/authoritative zones (so internal data always wins) but **before** the upstream response cache and the forwarder/iterative resolver. A listed name therefore returns NXDOMAIN even if a forwarded answer was previously cached. For example, with DNSBL enabled, `googleadservices.com` is refused while a locally-defined `gitea.default.home` (e.g. planted by a package) continues to resolve.
+
+DNSBL checking is globally togglable and **disabled by default, with an empty provider list**; providers are independently enable-able. The standard domain blocklists an operator typically adds are `dbl.spamhaus.org`, `multi.surbl.org`, and `multi.uribl.com`. An enabled-but-empty DNSBL is a no-op (nothing is queried and nothing is blocked). DNSBL configuration is independent of the IP-based RBL configuration and shares the same in-memory result cache (positive results cached for the provider TTL, negatives for 5 minutes). It is configured at startup via the `dnsbl` config section and at runtime via `SetDnsblConfig`/`GetDnsblConfig`.
 
 ## Encrypted DNS Transports
 
@@ -350,6 +360,8 @@ The management API is defined in `proto/rolodex_dns.proto` under the `RolodexDns
 | `SetForwarders`       | Replaces the upstream DNS forwarder list at runtime without restart.              |
 | `SetRblConfig`        | Replaces the RBL configuration (global enable flag and provider list) at runtime. |
 | `GetRblConfig`        | Returns the current RBL configuration.                                            |
+| `SetDnsblConfig`      | Replaces the DNSBL (domain blocklist) configuration (global enable flag and provider list) at runtime. |
+| `GetDnsblConfig`      | Returns the current DNSBL configuration.                                          |
 | `FlushCache`          | Clears the RBL result cache.                                                      |
 | `AddLocalRblEntry`    | Adds a local RBL blocklist entry (name/IP and reason).                            |
 | `RemoveLocalRblEntry` | Removes a local RBL entry by name.                                                |
@@ -506,6 +518,8 @@ The `rolodex-dns-cli` binary is a command-line client for the gRPC management in
 | `set-forwarders`   | Set upstream DNS forwarders. Takes `--forwarders` (one or more `host:port` addresses).              |
 | `set-rbl-config`   | Configure RBL settings. Takes `--enabled` flag and optional `--providers` in `zone:enabled` format. |
 | `get-rbl-config`   | Display current RBL configuration.                                                                  |
+| `set-dnsbl-config` | Configure DNSBL (domain blocklist) settings. Takes `--enabled` flag and optional `--providers` in `zone:enabled` format. |
+| `get-dnsbl-config` | Display current DNSBL configuration.                                                                |
 | `flush-cache`      | Clear the RBL result cache.                                                                         |
 | `add-local-rbl`    | Add a local RBL entry. Takes `--name` and optional `--reason`.                                      |
 | `remove-local-rbl` | Remove a local RBL entry. Takes `--name`.                                                           |
@@ -632,6 +646,8 @@ An additional `WithGRPCDialOption` option allows passing custom `grpc.DialOption
 | `SetForwarders(ctx, forwarders)`        | Replaces the upstream forwarder list.                      |
 | `SetRblConfig(ctx, enabled, providers)` | Replaces the RBL configuration.                            |
 | `GetRblConfig(ctx)`                     | Returns an `RblStatus` with the current RBL configuration. |
+| `SetDnsblConfig(ctx, enabled, providers)` | Replaces the DNSBL (domain blocklist) configuration.     |
+| `GetDnsblConfig(ctx)`                   | Returns a `DnsblStatus` with the current DNSBL configuration. |
 | `FlushCache(ctx)`                       | Clears the RBL result cache.                               |
 | `AddLocalRblEntry(ctx, entry)`          | Adds a local RBL entry.                                    |
 | `RemoveLocalRblEntry(ctx, name)`        | Removes a local RBL entry.                                 |
@@ -715,6 +731,8 @@ The client automatically includes the auth token in every RPC call. All methods 
 - `DnsRecord` — DNS record with name, record type, value, TTL, and priority.
 - `RblConfig` — RBL provider configuration (zone and enabled flag).
 - `RblStatus` — RBL state returned by `GetRblConfig` (global enabled flag and provider list).
+- `DnsblConfig` — DNSBL (domain blocklist) provider configuration (zone and enabled flag).
+- `DnsblStatus` — DNSBL state returned by `GetDnsblConfig` (global enabled flag and provider list).
 - `RemoveRecordOptions` — Optional filters for `RemoveRecord` (record type, value).
 - `ListRecordsOptions` — Optional filters for `ListRecords` (name filter, record type).
 - `NetworkScope` — Network scope with name and home domain.
@@ -822,7 +840,9 @@ dns:
 | `forwarders`                        | `["8.8.8.8:53", "8.8.4.4:53"]` | Upstream DNS resolvers                                 |
 | `database_path`                     | `rolodex-dns.db`               | SQLite database file path                              |
 | `rbl.enabled`                       | `false`                        | Global RBL enable flag                                 |
-| `rbl.providers`                     | 5 default zones (see above)    | RBL provider list                                      |
+| `rbl.providers`                     | `[]` (empty)                   | RBL provider list                                      |
+| `dnsbl.enabled`                     | `false`                        | Global DNSBL (domain blocklist) enable flag            |
+| `dnsbl.providers`                   | `[]` (empty)                   | DNSBL provider list                                    |
 | `dot.bind`                          | `0.0.0.0:853`                  | DoT listener; supports interface:port (section optional) |
 | `dot.tls.cert_path`                 | (none)                         | TLS certificate path                                   |
 | `dot.tls.key_path`                  | (none)                         | TLS private key path                                   |

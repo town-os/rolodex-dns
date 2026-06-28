@@ -268,6 +268,30 @@ enum Commands {
     #[command(name = "get-rbl-config")]
     GetRblConfig,
 
+    /// Configure DNSBL (domain blocklist) settings.
+    /// Replaces the entire DNSBL configuration including the global enable
+    /// flag and all providers. DNSBL listings block forward domain names and
+    /// take precedence over forwarded/iterative answers.
+    /// gRPC path: /rolodex_dns.RolodexDnsService/SetDnsblConfig
+    #[command(name = "set-dnsbl-config")]
+    SetDnsblConfig {
+        /// Enable or disable DNSBL checking globally.
+        /// Default: false
+        #[arg(short, long)]
+        enabled: bool,
+
+        /// DNSBL provider specifications in "zone:enabled" format.
+        /// Example: --providers "dbl.spamhaus.org:true" "multi.surbl.org:false"
+        #[arg(short, long, num_args = 0..)]
+        providers: Vec<String>,
+    },
+
+    /// Retrieve the current DNSBL configuration.
+    /// Shows the global enabled state and all configured providers.
+    /// gRPC path: /rolodex_dns.RolodexDnsService/GetDnsblConfig
+    #[command(name = "get-dnsbl-config")]
+    GetDnsblConfig,
+
     /// Flush the RBL result cache.
     /// Clears all cached RBL lookup results, forcing fresh lookups
     /// for subsequent reverse DNS queries.
@@ -940,6 +964,62 @@ async fn main() -> Result<()> {
             println!("RBL enabled: {}", config.enabled);
             if config.providers.is_empty() {
                 println!("No RBL providers configured.");
+            } else {
+                println!("\nProviders:");
+                println!("{:<40} ENABLED", "ZONE");
+                println!("{}", "-".repeat(50));
+                for p in &config.providers {
+                    println!("{:<40} {}", p.zone, p.enabled);
+                }
+            }
+        }
+
+        Commands::SetDnsblConfig { enabled, providers } => {
+            let mut dnsbl_providers = Vec::new();
+            for p in &providers {
+                let parts: Vec<&str> = p.rsplitn(2, ':').collect();
+                if parts.len() != 2 {
+                    anyhow::bail!(
+                        "Invalid provider format '{}'. Expected 'zone:enabled' (e.g. 'dbl.spamhaus.org:true')",
+                        p
+                    );
+                }
+                let enabled_flag: bool = parts[0].parse().context(format!(
+                    "Invalid enabled value '{}' in provider '{}'. Expected 'true' or 'false'",
+                    parts[0], p
+                ))?;
+                dnsbl_providers.push(DnsblConfig {
+                    zone: parts[1].to_string(),
+                    enabled: enabled_flag,
+                });
+            }
+            let response = client
+                .set_dnsbl_config(SetDnsblConfigRequest {
+                    enabled,
+                    providers: dnsbl_providers,
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("set-dnsbl-config RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("DNSBL config updated (enabled: {})", enabled);
+            } else {
+                anyhow::bail!("Failed to set DNSBL config: {}", resp.message);
+            }
+        }
+
+        Commands::GetDnsblConfig => {
+            let response = client
+                .get_dnsbl_config(GetDnsblConfigRequest {
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("get-dnsbl-config RPC failed")?;
+            let config = response.into_inner();
+            println!("DNSBL enabled: {}", config.enabled);
+            if config.providers.is_empty() {
+                println!("No DNSBL providers configured.");
             } else {
                 println!("\nProviders:");
                 println!("{:<40} ENABLED", "ZONE");

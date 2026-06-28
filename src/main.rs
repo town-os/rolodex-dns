@@ -59,6 +59,18 @@ async fn main() -> Result<()> {
         .collect();
     let rbl = Arc::new(RblChecker::new(config.rbl.enabled, rbl_providers));
 
+    let dnsbl_providers: Vec<RblProvider> = config
+        .dnsbl
+        .providers
+        .iter()
+        .map(|p| RblProvider {
+            zone: p.zone.clone(),
+            enabled: p.enabled,
+        })
+        .collect();
+    rbl.set_dnsbl_config(config.dnsbl.enabled, dnsbl_providers)
+        .await;
+
     let forwarders: Vec<SocketAddr> = config
         .forwarders
         .iter()

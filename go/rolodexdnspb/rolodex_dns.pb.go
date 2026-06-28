@@ -977,6 +977,282 @@ func (x *GetRblConfigResponse) GetProviders() []*RblConfig {
 	return nil
 }
 
+// DnsblConfig configures a single DNSBL (domain blocklist) provider.
+//
+// Unlike an RBL provider (which is queried with a reversed IP address), a DNSBL
+// provider is queried by prepending the looked-up domain name to the zone
+// (e.g. "googleadservices.com" + "dbl.spamhaus.org" ->
+// "googleadservices.com.dbl.spamhaus.org"). DNSBL listings take precedence over
+// any externally-resolved (forwarded or iterative) answer.
+type DnsblConfig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The DNSBL zone to query (e.g. "dbl.spamhaus.org")
+	Zone string `protobuf:"bytes,1,opt,name=zone,proto3" json:"zone,omitempty"`
+	// Whether this DNSBL is enabled (default: true when added)
+	Enabled       bool `protobuf:"varint,2,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DnsblConfig) Reset() {
+	*x = DnsblConfig{}
+	mi := &file_rolodex_dns_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DnsblConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DnsblConfig) ProtoMessage() {}
+
+func (x *DnsblConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DnsblConfig.ProtoReflect.Descriptor instead.
+func (*DnsblConfig) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *DnsblConfig) GetZone() string {
+	if x != nil {
+		return x.Zone
+	}
+	return ""
+}
+
+func (x *DnsblConfig) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+// SetDnsblConfigRequest configures DNSBL providers.
+type SetDnsblConfigRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The list of DNSBL providers to use
+	Providers []*DnsblConfig `protobuf:"bytes,1,rep,name=providers,proto3" json:"providers,omitempty"`
+	// Whether DNSBL checking is globally enabled
+	Enabled bool `protobuf:"varint,2,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	// Shared secret for authentication
+	AuthToken     string `protobuf:"bytes,3,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetDnsblConfigRequest) Reset() {
+	*x = SetDnsblConfigRequest{}
+	mi := &file_rolodex_dns_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetDnsblConfigRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetDnsblConfigRequest) ProtoMessage() {}
+
+func (x *SetDnsblConfigRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetDnsblConfigRequest.ProtoReflect.Descriptor instead.
+func (*SetDnsblConfigRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *SetDnsblConfigRequest) GetProviders() []*DnsblConfig {
+	if x != nil {
+		return x.Providers
+	}
+	return nil
+}
+
+func (x *SetDnsblConfigRequest) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *SetDnsblConfigRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+// SetDnsblConfigResponse is returned after configuring DNSBL.
+type SetDnsblConfigResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetDnsblConfigResponse) Reset() {
+	*x = SetDnsblConfigResponse{}
+	mi := &file_rolodex_dns_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetDnsblConfigResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetDnsblConfigResponse) ProtoMessage() {}
+
+func (x *SetDnsblConfigResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetDnsblConfigResponse.ProtoReflect.Descriptor instead.
+func (*SetDnsblConfigResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *SetDnsblConfigResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *SetDnsblConfigResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+// GetDnsblConfigRequest retrieves the current DNSBL configuration.
+type GetDnsblConfigRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AuthToken     string                 `protobuf:"bytes,1,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetDnsblConfigRequest) Reset() {
+	*x = GetDnsblConfigRequest{}
+	mi := &file_rolodex_dns_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetDnsblConfigRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetDnsblConfigRequest) ProtoMessage() {}
+
+func (x *GetDnsblConfigRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetDnsblConfigRequest.ProtoReflect.Descriptor instead.
+func (*GetDnsblConfigRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *GetDnsblConfigRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+// GetDnsblConfigResponse contains the current DNSBL configuration.
+type GetDnsblConfigResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Enabled       bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	Providers     []*DnsblConfig         `protobuf:"bytes,2,rep,name=providers,proto3" json:"providers,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetDnsblConfigResponse) Reset() {
+	*x = GetDnsblConfigResponse{}
+	mi := &file_rolodex_dns_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetDnsblConfigResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetDnsblConfigResponse) ProtoMessage() {}
+
+func (x *GetDnsblConfigResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetDnsblConfigResponse.ProtoReflect.Descriptor instead.
+func (*GetDnsblConfigResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *GetDnsblConfigResponse) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *GetDnsblConfigResponse) GetProviders() []*DnsblConfig {
+	if x != nil {
+		return x.Providers
+	}
+	return nil
+}
+
 // FlushCacheRequest clears the DNS and/or RBL cache.
 type FlushCacheRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -988,7 +1264,7 @@ type FlushCacheRequest struct {
 
 func (x *FlushCacheRequest) Reset() {
 	*x = FlushCacheRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[14]
+	mi := &file_rolodex_dns_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1000,7 +1276,7 @@ func (x *FlushCacheRequest) String() string {
 func (*FlushCacheRequest) ProtoMessage() {}
 
 func (x *FlushCacheRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[14]
+	mi := &file_rolodex_dns_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1013,7 +1289,7 @@ func (x *FlushCacheRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FlushCacheRequest.ProtoReflect.Descriptor instead.
 func (*FlushCacheRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{14}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *FlushCacheRequest) GetAuthToken() string {
@@ -1034,7 +1310,7 @@ type FlushCacheResponse struct {
 
 func (x *FlushCacheResponse) Reset() {
 	*x = FlushCacheResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[15]
+	mi := &file_rolodex_dns_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1046,7 +1322,7 @@ func (x *FlushCacheResponse) String() string {
 func (*FlushCacheResponse) ProtoMessage() {}
 
 func (x *FlushCacheResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[15]
+	mi := &file_rolodex_dns_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1059,7 +1335,7 @@ func (x *FlushCacheResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FlushCacheResponse.ProtoReflect.Descriptor instead.
 func (*FlushCacheResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{15}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *FlushCacheResponse) GetSuccess() bool {
@@ -1091,7 +1367,7 @@ type NetworkScope struct {
 
 func (x *NetworkScope) Reset() {
 	*x = NetworkScope{}
-	mi := &file_rolodex_dns_proto_msgTypes[16]
+	mi := &file_rolodex_dns_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1103,7 +1379,7 @@ func (x *NetworkScope) String() string {
 func (*NetworkScope) ProtoMessage() {}
 
 func (x *NetworkScope) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[16]
+	mi := &file_rolodex_dns_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1116,7 +1392,7 @@ func (x *NetworkScope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NetworkScope.ProtoReflect.Descriptor instead.
 func (*NetworkScope) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{16}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *NetworkScope) GetName() string {
@@ -1146,7 +1422,7 @@ type CreateNetworkScopeRequest struct {
 
 func (x *CreateNetworkScopeRequest) Reset() {
 	*x = CreateNetworkScopeRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[17]
+	mi := &file_rolodex_dns_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1158,7 +1434,7 @@ func (x *CreateNetworkScopeRequest) String() string {
 func (*CreateNetworkScopeRequest) ProtoMessage() {}
 
 func (x *CreateNetworkScopeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[17]
+	mi := &file_rolodex_dns_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1171,7 +1447,7 @@ func (x *CreateNetworkScopeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateNetworkScopeRequest.ProtoReflect.Descriptor instead.
 func (*CreateNetworkScopeRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{17}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *CreateNetworkScopeRequest) GetScope() *NetworkScope {
@@ -1199,7 +1475,7 @@ type CreateNetworkScopeResponse struct {
 
 func (x *CreateNetworkScopeResponse) Reset() {
 	*x = CreateNetworkScopeResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[18]
+	mi := &file_rolodex_dns_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1211,7 +1487,7 @@ func (x *CreateNetworkScopeResponse) String() string {
 func (*CreateNetworkScopeResponse) ProtoMessage() {}
 
 func (x *CreateNetworkScopeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[18]
+	mi := &file_rolodex_dns_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1224,7 +1500,7 @@ func (x *CreateNetworkScopeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateNetworkScopeResponse.ProtoReflect.Descriptor instead.
 func (*CreateNetworkScopeResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{18}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *CreateNetworkScopeResponse) GetSuccess() bool {
@@ -1254,7 +1530,7 @@ type DeleteNetworkScopeRequest struct {
 
 func (x *DeleteNetworkScopeRequest) Reset() {
 	*x = DeleteNetworkScopeRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[19]
+	mi := &file_rolodex_dns_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1266,7 +1542,7 @@ func (x *DeleteNetworkScopeRequest) String() string {
 func (*DeleteNetworkScopeRequest) ProtoMessage() {}
 
 func (x *DeleteNetworkScopeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[19]
+	mi := &file_rolodex_dns_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1279,7 +1555,7 @@ func (x *DeleteNetworkScopeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteNetworkScopeRequest.ProtoReflect.Descriptor instead.
 func (*DeleteNetworkScopeRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{19}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *DeleteNetworkScopeRequest) GetName() string {
@@ -1307,7 +1583,7 @@ type DeleteNetworkScopeResponse struct {
 
 func (x *DeleteNetworkScopeResponse) Reset() {
 	*x = DeleteNetworkScopeResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[20]
+	mi := &file_rolodex_dns_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1319,7 +1595,7 @@ func (x *DeleteNetworkScopeResponse) String() string {
 func (*DeleteNetworkScopeResponse) ProtoMessage() {}
 
 func (x *DeleteNetworkScopeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[20]
+	mi := &file_rolodex_dns_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1332,7 +1608,7 @@ func (x *DeleteNetworkScopeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteNetworkScopeResponse.ProtoReflect.Descriptor instead.
 func (*DeleteNetworkScopeResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{20}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *DeleteNetworkScopeResponse) GetSuccess() bool {
@@ -1359,7 +1635,7 @@ type ListNetworkScopesRequest struct {
 
 func (x *ListNetworkScopesRequest) Reset() {
 	*x = ListNetworkScopesRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[21]
+	mi := &file_rolodex_dns_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1371,7 +1647,7 @@ func (x *ListNetworkScopesRequest) String() string {
 func (*ListNetworkScopesRequest) ProtoMessage() {}
 
 func (x *ListNetworkScopesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[21]
+	mi := &file_rolodex_dns_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1384,7 +1660,7 @@ func (x *ListNetworkScopesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNetworkScopesRequest.ProtoReflect.Descriptor instead.
 func (*ListNetworkScopesRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{21}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ListNetworkScopesRequest) GetAuthToken() string {
@@ -1404,7 +1680,7 @@ type ListNetworkScopesResponse struct {
 
 func (x *ListNetworkScopesResponse) Reset() {
 	*x = ListNetworkScopesResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[22]
+	mi := &file_rolodex_dns_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1416,7 +1692,7 @@ func (x *ListNetworkScopesResponse) String() string {
 func (*ListNetworkScopesResponse) ProtoMessage() {}
 
 func (x *ListNetworkScopesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[22]
+	mi := &file_rolodex_dns_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1429,7 +1705,7 @@ func (x *ListNetworkScopesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNetworkScopesResponse.ProtoReflect.Descriptor instead.
 func (*ListNetworkScopesResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{22}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ListNetworkScopesResponse) GetScopes() []*NetworkScope {
@@ -1458,7 +1734,7 @@ type JoinNetworkRequest struct {
 
 func (x *JoinNetworkRequest) Reset() {
 	*x = JoinNetworkRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[23]
+	mi := &file_rolodex_dns_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1470,7 +1746,7 @@ func (x *JoinNetworkRequest) String() string {
 func (*JoinNetworkRequest) ProtoMessage() {}
 
 func (x *JoinNetworkRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[23]
+	mi := &file_rolodex_dns_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1483,7 +1759,7 @@ func (x *JoinNetworkRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinNetworkRequest.ProtoReflect.Descriptor instead.
 func (*JoinNetworkRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{23}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *JoinNetworkRequest) GetIpAddress() string {
@@ -1525,7 +1801,7 @@ type JoinNetworkResponse struct {
 
 func (x *JoinNetworkResponse) Reset() {
 	*x = JoinNetworkResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[24]
+	mi := &file_rolodex_dns_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1537,7 +1813,7 @@ func (x *JoinNetworkResponse) String() string {
 func (*JoinNetworkResponse) ProtoMessage() {}
 
 func (x *JoinNetworkResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[24]
+	mi := &file_rolodex_dns_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1550,7 +1826,7 @@ func (x *JoinNetworkResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinNetworkResponse.ProtoReflect.Descriptor instead.
 func (*JoinNetworkResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{24}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *JoinNetworkResponse) GetSuccess() bool {
@@ -1580,7 +1856,7 @@ type LeaveNetworkRequest struct {
 
 func (x *LeaveNetworkRequest) Reset() {
 	*x = LeaveNetworkRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[25]
+	mi := &file_rolodex_dns_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1592,7 +1868,7 @@ func (x *LeaveNetworkRequest) String() string {
 func (*LeaveNetworkRequest) ProtoMessage() {}
 
 func (x *LeaveNetworkRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[25]
+	mi := &file_rolodex_dns_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1605,7 +1881,7 @@ func (x *LeaveNetworkRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaveNetworkRequest.ProtoReflect.Descriptor instead.
 func (*LeaveNetworkRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{25}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *LeaveNetworkRequest) GetIpAddress() string {
@@ -1633,7 +1909,7 @@ type LeaveNetworkResponse struct {
 
 func (x *LeaveNetworkResponse) Reset() {
 	*x = LeaveNetworkResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[26]
+	mi := &file_rolodex_dns_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1645,7 +1921,7 @@ func (x *LeaveNetworkResponse) String() string {
 func (*LeaveNetworkResponse) ProtoMessage() {}
 
 func (x *LeaveNetworkResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[26]
+	mi := &file_rolodex_dns_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1658,7 +1934,7 @@ func (x *LeaveNetworkResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaveNetworkResponse.ProtoReflect.Descriptor instead.
 func (*LeaveNetworkResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{26}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *LeaveNetworkResponse) GetSuccess() bool {
@@ -1688,7 +1964,7 @@ type GetNetworkAssociationsRequest struct {
 
 func (x *GetNetworkAssociationsRequest) Reset() {
 	*x = GetNetworkAssociationsRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[27]
+	mi := &file_rolodex_dns_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1700,7 +1976,7 @@ func (x *GetNetworkAssociationsRequest) String() string {
 func (*GetNetworkAssociationsRequest) ProtoMessage() {}
 
 func (x *GetNetworkAssociationsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[27]
+	mi := &file_rolodex_dns_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1713,7 +1989,7 @@ func (x *GetNetworkAssociationsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNetworkAssociationsRequest.ProtoReflect.Descriptor instead.
 func (*GetNetworkAssociationsRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{27}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *GetNetworkAssociationsRequest) GetScopeName() string {
@@ -1745,7 +2021,7 @@ type NetworkAssociation struct {
 
 func (x *NetworkAssociation) Reset() {
 	*x = NetworkAssociation{}
-	mi := &file_rolodex_dns_proto_msgTypes[28]
+	mi := &file_rolodex_dns_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1757,7 +2033,7 @@ func (x *NetworkAssociation) String() string {
 func (*NetworkAssociation) ProtoMessage() {}
 
 func (x *NetworkAssociation) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[28]
+	mi := &file_rolodex_dns_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1770,7 +2046,7 @@ func (x *NetworkAssociation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NetworkAssociation.ProtoReflect.Descriptor instead.
 func (*NetworkAssociation) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{28}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *NetworkAssociation) GetIpAddress() string {
@@ -1804,7 +2080,7 @@ type GetNetworkAssociationsResponse struct {
 
 func (x *GetNetworkAssociationsResponse) Reset() {
 	*x = GetNetworkAssociationsResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[29]
+	mi := &file_rolodex_dns_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1816,7 +2092,7 @@ func (x *GetNetworkAssociationsResponse) String() string {
 func (*GetNetworkAssociationsResponse) ProtoMessage() {}
 
 func (x *GetNetworkAssociationsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[29]
+	mi := &file_rolodex_dns_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1829,7 +2105,7 @@ func (x *GetNetworkAssociationsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNetworkAssociationsResponse.ProtoReflect.Descriptor instead.
 func (*GetNetworkAssociationsResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{29}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *GetNetworkAssociationsResponse) GetAssociations() []*NetworkAssociation {
@@ -1854,7 +2130,7 @@ type AddScopedRecordRequest struct {
 
 func (x *AddScopedRecordRequest) Reset() {
 	*x = AddScopedRecordRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[30]
+	mi := &file_rolodex_dns_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1866,7 +2142,7 @@ func (x *AddScopedRecordRequest) String() string {
 func (*AddScopedRecordRequest) ProtoMessage() {}
 
 func (x *AddScopedRecordRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[30]
+	mi := &file_rolodex_dns_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1879,7 +2155,7 @@ func (x *AddScopedRecordRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddScopedRecordRequest.ProtoReflect.Descriptor instead.
 func (*AddScopedRecordRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{30}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *AddScopedRecordRequest) GetScopeName() string {
@@ -1914,7 +2190,7 @@ type AddScopedRecordResponse struct {
 
 func (x *AddScopedRecordResponse) Reset() {
 	*x = AddScopedRecordResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[31]
+	mi := &file_rolodex_dns_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1926,7 +2202,7 @@ func (x *AddScopedRecordResponse) String() string {
 func (*AddScopedRecordResponse) ProtoMessage() {}
 
 func (x *AddScopedRecordResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[31]
+	mi := &file_rolodex_dns_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1939,7 +2215,7 @@ func (x *AddScopedRecordResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddScopedRecordResponse.ProtoReflect.Descriptor instead.
 func (*AddScopedRecordResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{31}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *AddScopedRecordResponse) GetSuccess() bool {
@@ -1975,7 +2251,7 @@ type RemoveScopedRecordRequest struct {
 
 func (x *RemoveScopedRecordRequest) Reset() {
 	*x = RemoveScopedRecordRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[32]
+	mi := &file_rolodex_dns_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1987,7 +2263,7 @@ func (x *RemoveScopedRecordRequest) String() string {
 func (*RemoveScopedRecordRequest) ProtoMessage() {}
 
 func (x *RemoveScopedRecordRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[32]
+	mi := &file_rolodex_dns_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2000,7 +2276,7 @@ func (x *RemoveScopedRecordRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveScopedRecordRequest.ProtoReflect.Descriptor instead.
 func (*RemoveScopedRecordRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{32}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *RemoveScopedRecordRequest) GetScopeName() string {
@@ -2050,7 +2326,7 @@ type RemoveScopedRecordResponse struct {
 
 func (x *RemoveScopedRecordResponse) Reset() {
 	*x = RemoveScopedRecordResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[33]
+	mi := &file_rolodex_dns_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2062,7 +2338,7 @@ func (x *RemoveScopedRecordResponse) String() string {
 func (*RemoveScopedRecordResponse) ProtoMessage() {}
 
 func (x *RemoveScopedRecordResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[33]
+	mi := &file_rolodex_dns_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2075,7 +2351,7 @@ func (x *RemoveScopedRecordResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveScopedRecordResponse.ProtoReflect.Descriptor instead.
 func (*RemoveScopedRecordResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{33}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *RemoveScopedRecordResponse) GetSuccess() bool {
@@ -2118,7 +2394,7 @@ type ListScopedRecordsRequest struct {
 
 func (x *ListScopedRecordsRequest) Reset() {
 	*x = ListScopedRecordsRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[34]
+	mi := &file_rolodex_dns_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2130,7 +2406,7 @@ func (x *ListScopedRecordsRequest) String() string {
 func (*ListScopedRecordsRequest) ProtoMessage() {}
 
 func (x *ListScopedRecordsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[34]
+	mi := &file_rolodex_dns_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2143,7 +2419,7 @@ func (x *ListScopedRecordsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListScopedRecordsRequest.ProtoReflect.Descriptor instead.
 func (*ListScopedRecordsRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{34}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ListScopedRecordsRequest) GetScopeName() string {
@@ -2191,7 +2467,7 @@ type ListScopedRecordsResponse struct {
 
 func (x *ListScopedRecordsResponse) Reset() {
 	*x = ListScopedRecordsResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[35]
+	mi := &file_rolodex_dns_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2203,7 +2479,7 @@ func (x *ListScopedRecordsResponse) String() string {
 func (*ListScopedRecordsResponse) ProtoMessage() {}
 
 func (x *ListScopedRecordsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[35]
+	mi := &file_rolodex_dns_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2216,7 +2492,7 @@ func (x *ListScopedRecordsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListScopedRecordsResponse.ProtoReflect.Descriptor instead.
 func (*ListScopedRecordsResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{35}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *ListScopedRecordsResponse) GetRecords() []*DnsRecord {
@@ -2239,7 +2515,7 @@ type GetSearchDomainsRequest struct {
 
 func (x *GetSearchDomainsRequest) Reset() {
 	*x = GetSearchDomainsRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[36]
+	mi := &file_rolodex_dns_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2251,7 +2527,7 @@ func (x *GetSearchDomainsRequest) String() string {
 func (*GetSearchDomainsRequest) ProtoMessage() {}
 
 func (x *GetSearchDomainsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[36]
+	mi := &file_rolodex_dns_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2264,7 +2540,7 @@ func (x *GetSearchDomainsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSearchDomainsRequest.ProtoReflect.Descriptor instead.
 func (*GetSearchDomainsRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{36}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *GetSearchDomainsRequest) GetIpAddress() string {
@@ -2292,7 +2568,7 @@ type GetSearchDomainsResponse struct {
 
 func (x *GetSearchDomainsResponse) Reset() {
 	*x = GetSearchDomainsResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[37]
+	mi := &file_rolodex_dns_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2304,7 +2580,7 @@ func (x *GetSearchDomainsResponse) String() string {
 func (*GetSearchDomainsResponse) ProtoMessage() {}
 
 func (x *GetSearchDomainsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[37]
+	mi := &file_rolodex_dns_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2317,7 +2593,7 @@ func (x *GetSearchDomainsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSearchDomainsResponse.ProtoReflect.Descriptor instead.
 func (*GetSearchDomainsResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{37}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *GetSearchDomainsResponse) GetSearchDomains() []string {
@@ -2340,7 +2616,7 @@ type AddAuthoritativeZoneRequest struct {
 
 func (x *AddAuthoritativeZoneRequest) Reset() {
 	*x = AddAuthoritativeZoneRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[38]
+	mi := &file_rolodex_dns_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2352,7 +2628,7 @@ func (x *AddAuthoritativeZoneRequest) String() string {
 func (*AddAuthoritativeZoneRequest) ProtoMessage() {}
 
 func (x *AddAuthoritativeZoneRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[38]
+	mi := &file_rolodex_dns_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2365,7 +2641,7 @@ func (x *AddAuthoritativeZoneRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddAuthoritativeZoneRequest.ProtoReflect.Descriptor instead.
 func (*AddAuthoritativeZoneRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{38}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *AddAuthoritativeZoneRequest) GetZone() string {
@@ -2393,7 +2669,7 @@ type AddAuthoritativeZoneResponse struct {
 
 func (x *AddAuthoritativeZoneResponse) Reset() {
 	*x = AddAuthoritativeZoneResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[39]
+	mi := &file_rolodex_dns_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2405,7 +2681,7 @@ func (x *AddAuthoritativeZoneResponse) String() string {
 func (*AddAuthoritativeZoneResponse) ProtoMessage() {}
 
 func (x *AddAuthoritativeZoneResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[39]
+	mi := &file_rolodex_dns_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2418,7 +2694,7 @@ func (x *AddAuthoritativeZoneResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddAuthoritativeZoneResponse.ProtoReflect.Descriptor instead.
 func (*AddAuthoritativeZoneResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{39}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *AddAuthoritativeZoneResponse) GetSuccess() bool {
@@ -2448,7 +2724,7 @@ type RemoveAuthoritativeZoneRequest struct {
 
 func (x *RemoveAuthoritativeZoneRequest) Reset() {
 	*x = RemoveAuthoritativeZoneRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[40]
+	mi := &file_rolodex_dns_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2460,7 +2736,7 @@ func (x *RemoveAuthoritativeZoneRequest) String() string {
 func (*RemoveAuthoritativeZoneRequest) ProtoMessage() {}
 
 func (x *RemoveAuthoritativeZoneRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[40]
+	mi := &file_rolodex_dns_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2473,7 +2749,7 @@ func (x *RemoveAuthoritativeZoneRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveAuthoritativeZoneRequest.ProtoReflect.Descriptor instead.
 func (*RemoveAuthoritativeZoneRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{40}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *RemoveAuthoritativeZoneRequest) GetZone() string {
@@ -2501,7 +2777,7 @@ type RemoveAuthoritativeZoneResponse struct {
 
 func (x *RemoveAuthoritativeZoneResponse) Reset() {
 	*x = RemoveAuthoritativeZoneResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[41]
+	mi := &file_rolodex_dns_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2513,7 +2789,7 @@ func (x *RemoveAuthoritativeZoneResponse) String() string {
 func (*RemoveAuthoritativeZoneResponse) ProtoMessage() {}
 
 func (x *RemoveAuthoritativeZoneResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[41]
+	mi := &file_rolodex_dns_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2526,7 +2802,7 @@ func (x *RemoveAuthoritativeZoneResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveAuthoritativeZoneResponse.ProtoReflect.Descriptor instead.
 func (*RemoveAuthoritativeZoneResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{41}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *RemoveAuthoritativeZoneResponse) GetSuccess() bool {
@@ -2553,7 +2829,7 @@ type ListAuthoritativeZonesRequest struct {
 
 func (x *ListAuthoritativeZonesRequest) Reset() {
 	*x = ListAuthoritativeZonesRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[42]
+	mi := &file_rolodex_dns_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2565,7 +2841,7 @@ func (x *ListAuthoritativeZonesRequest) String() string {
 func (*ListAuthoritativeZonesRequest) ProtoMessage() {}
 
 func (x *ListAuthoritativeZonesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[42]
+	mi := &file_rolodex_dns_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2578,7 +2854,7 @@ func (x *ListAuthoritativeZonesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAuthoritativeZonesRequest.ProtoReflect.Descriptor instead.
 func (*ListAuthoritativeZonesRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{42}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *ListAuthoritativeZonesRequest) GetAuthToken() string {
@@ -2598,7 +2874,7 @@ type ListAuthoritativeZonesResponse struct {
 
 func (x *ListAuthoritativeZonesResponse) Reset() {
 	*x = ListAuthoritativeZonesResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[43]
+	mi := &file_rolodex_dns_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2610,7 +2886,7 @@ func (x *ListAuthoritativeZonesResponse) String() string {
 func (*ListAuthoritativeZonesResponse) ProtoMessage() {}
 
 func (x *ListAuthoritativeZonesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[43]
+	mi := &file_rolodex_dns_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2623,7 +2899,7 @@ func (x *ListAuthoritativeZonesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAuthoritativeZonesResponse.ProtoReflect.Descriptor instead.
 func (*ListAuthoritativeZonesResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{43}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *ListAuthoritativeZonesResponse) GetZones() []string {
@@ -2643,7 +2919,7 @@ type GetCacheStatsRequest struct {
 
 func (x *GetCacheStatsRequest) Reset() {
 	*x = GetCacheStatsRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[44]
+	mi := &file_rolodex_dns_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2655,7 +2931,7 @@ func (x *GetCacheStatsRequest) String() string {
 func (*GetCacheStatsRequest) ProtoMessage() {}
 
 func (x *GetCacheStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[44]
+	mi := &file_rolodex_dns_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2668,7 +2944,7 @@ func (x *GetCacheStatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCacheStatsRequest.ProtoReflect.Descriptor instead.
 func (*GetCacheStatsRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{44}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *GetCacheStatsRequest) GetAuthToken() string {
@@ -2690,7 +2966,7 @@ type GetCacheStatsResponse struct {
 
 func (x *GetCacheStatsResponse) Reset() {
 	*x = GetCacheStatsResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[45]
+	mi := &file_rolodex_dns_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2702,7 +2978,7 @@ func (x *GetCacheStatsResponse) String() string {
 func (*GetCacheStatsResponse) ProtoMessage() {}
 
 func (x *GetCacheStatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[45]
+	mi := &file_rolodex_dns_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2715,7 +2991,7 @@ func (x *GetCacheStatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCacheStatsResponse.ProtoReflect.Descriptor instead.
 func (*GetCacheStatsResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{45}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *GetCacheStatsResponse) GetTotalEntries() uint64 {
@@ -2749,7 +3025,7 @@ type FlushDnsCacheRequest struct {
 
 func (x *FlushDnsCacheRequest) Reset() {
 	*x = FlushDnsCacheRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[46]
+	mi := &file_rolodex_dns_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2761,7 +3037,7 @@ func (x *FlushDnsCacheRequest) String() string {
 func (*FlushDnsCacheRequest) ProtoMessage() {}
 
 func (x *FlushDnsCacheRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[46]
+	mi := &file_rolodex_dns_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2774,7 +3050,7 @@ func (x *FlushDnsCacheRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FlushDnsCacheRequest.ProtoReflect.Descriptor instead.
 func (*FlushDnsCacheRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{46}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *FlushDnsCacheRequest) GetAuthToken() string {
@@ -2795,7 +3071,7 @@ type FlushDnsCacheResponse struct {
 
 func (x *FlushDnsCacheResponse) Reset() {
 	*x = FlushDnsCacheResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[47]
+	mi := &file_rolodex_dns_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2807,7 +3083,7 @@ func (x *FlushDnsCacheResponse) String() string {
 func (*FlushDnsCacheResponse) ProtoMessage() {}
 
 func (x *FlushDnsCacheResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[47]
+	mi := &file_rolodex_dns_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2820,7 +3096,7 @@ func (x *FlushDnsCacheResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FlushDnsCacheResponse.ProtoReflect.Descriptor instead.
 func (*FlushDnsCacheResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{47}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *FlushDnsCacheResponse) GetSuccess() bool {
@@ -2852,7 +3128,7 @@ type TtlDriftConfig struct {
 
 func (x *TtlDriftConfig) Reset() {
 	*x = TtlDriftConfig{}
-	mi := &file_rolodex_dns_proto_msgTypes[48]
+	mi := &file_rolodex_dns_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2864,7 +3140,7 @@ func (x *TtlDriftConfig) String() string {
 func (*TtlDriftConfig) ProtoMessage() {}
 
 func (x *TtlDriftConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[48]
+	mi := &file_rolodex_dns_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2877,7 +3153,7 @@ func (x *TtlDriftConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TtlDriftConfig.ProtoReflect.Descriptor instead.
 func (*TtlDriftConfig) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{48}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *TtlDriftConfig) GetMode() string {
@@ -2912,7 +3188,7 @@ type SetTtlDriftConfigRequest struct {
 
 func (x *SetTtlDriftConfigRequest) Reset() {
 	*x = SetTtlDriftConfigRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[49]
+	mi := &file_rolodex_dns_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2924,7 +3200,7 @@ func (x *SetTtlDriftConfigRequest) String() string {
 func (*SetTtlDriftConfigRequest) ProtoMessage() {}
 
 func (x *SetTtlDriftConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[49]
+	mi := &file_rolodex_dns_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2937,7 +3213,7 @@ func (x *SetTtlDriftConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetTtlDriftConfigRequest.ProtoReflect.Descriptor instead.
 func (*SetTtlDriftConfigRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{49}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *SetTtlDriftConfigRequest) GetConfig() *TtlDriftConfig {
@@ -2965,7 +3241,7 @@ type SetTtlDriftConfigResponse struct {
 
 func (x *SetTtlDriftConfigResponse) Reset() {
 	*x = SetTtlDriftConfigResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[50]
+	mi := &file_rolodex_dns_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2977,7 +3253,7 @@ func (x *SetTtlDriftConfigResponse) String() string {
 func (*SetTtlDriftConfigResponse) ProtoMessage() {}
 
 func (x *SetTtlDriftConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[50]
+	mi := &file_rolodex_dns_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2990,7 +3266,7 @@ func (x *SetTtlDriftConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetTtlDriftConfigResponse.ProtoReflect.Descriptor instead.
 func (*SetTtlDriftConfigResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{50}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *SetTtlDriftConfigResponse) GetSuccess() bool {
@@ -3017,7 +3293,7 @@ type GetTtlDriftConfigRequest struct {
 
 func (x *GetTtlDriftConfigRequest) Reset() {
 	*x = GetTtlDriftConfigRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[51]
+	mi := &file_rolodex_dns_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3029,7 +3305,7 @@ func (x *GetTtlDriftConfigRequest) String() string {
 func (*GetTtlDriftConfigRequest) ProtoMessage() {}
 
 func (x *GetTtlDriftConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[51]
+	mi := &file_rolodex_dns_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3042,7 +3318,7 @@ func (x *GetTtlDriftConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTtlDriftConfigRequest.ProtoReflect.Descriptor instead.
 func (*GetTtlDriftConfigRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{51}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *GetTtlDriftConfigRequest) GetAuthToken() string {
@@ -3062,7 +3338,7 @@ type GetTtlDriftConfigResponse struct {
 
 func (x *GetTtlDriftConfigResponse) Reset() {
 	*x = GetTtlDriftConfigResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[52]
+	mi := &file_rolodex_dns_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3074,7 +3350,7 @@ func (x *GetTtlDriftConfigResponse) String() string {
 func (*GetTtlDriftConfigResponse) ProtoMessage() {}
 
 func (x *GetTtlDriftConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[52]
+	mi := &file_rolodex_dns_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3087,7 +3363,7 @@ func (x *GetTtlDriftConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTtlDriftConfigResponse.ProtoReflect.Descriptor instead.
 func (*GetTtlDriftConfigResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{52}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *GetTtlDriftConfigResponse) GetConfig() *TtlDriftConfig {
@@ -3109,7 +3385,7 @@ type QueryLatencyStat struct {
 
 func (x *QueryLatencyStat) Reset() {
 	*x = QueryLatencyStat{}
-	mi := &file_rolodex_dns_proto_msgTypes[53]
+	mi := &file_rolodex_dns_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3121,7 +3397,7 @@ func (x *QueryLatencyStat) String() string {
 func (*QueryLatencyStat) ProtoMessage() {}
 
 func (x *QueryLatencyStat) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[53]
+	mi := &file_rolodex_dns_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3134,7 +3410,7 @@ func (x *QueryLatencyStat) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryLatencyStat.ProtoReflect.Descriptor instead.
 func (*QueryLatencyStat) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{53}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *QueryLatencyStat) GetServer() string {
@@ -3168,7 +3444,7 @@ type GetQueryLatencyStatsRequest struct {
 
 func (x *GetQueryLatencyStatsRequest) Reset() {
 	*x = GetQueryLatencyStatsRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[54]
+	mi := &file_rolodex_dns_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3180,7 +3456,7 @@ func (x *GetQueryLatencyStatsRequest) String() string {
 func (*GetQueryLatencyStatsRequest) ProtoMessage() {}
 
 func (x *GetQueryLatencyStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[54]
+	mi := &file_rolodex_dns_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3193,7 +3469,7 @@ func (x *GetQueryLatencyStatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetQueryLatencyStatsRequest.ProtoReflect.Descriptor instead.
 func (*GetQueryLatencyStatsRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{54}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *GetQueryLatencyStatsRequest) GetAuthToken() string {
@@ -3213,7 +3489,7 @@ type GetQueryLatencyStatsResponse struct {
 
 func (x *GetQueryLatencyStatsResponse) Reset() {
 	*x = GetQueryLatencyStatsResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[55]
+	mi := &file_rolodex_dns_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3225,7 +3501,7 @@ func (x *GetQueryLatencyStatsResponse) String() string {
 func (*GetQueryLatencyStatsResponse) ProtoMessage() {}
 
 func (x *GetQueryLatencyStatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[55]
+	mi := &file_rolodex_dns_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3238,7 +3514,7 @@ func (x *GetQueryLatencyStatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetQueryLatencyStatsResponse.ProtoReflect.Descriptor instead.
 func (*GetQueryLatencyStatsResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{55}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *GetQueryLatencyStatsResponse) GetStats() []*QueryLatencyStat {
@@ -3261,7 +3537,7 @@ type LocalRblEntry struct {
 
 func (x *LocalRblEntry) Reset() {
 	*x = LocalRblEntry{}
-	mi := &file_rolodex_dns_proto_msgTypes[56]
+	mi := &file_rolodex_dns_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3273,7 +3549,7 @@ func (x *LocalRblEntry) String() string {
 func (*LocalRblEntry) ProtoMessage() {}
 
 func (x *LocalRblEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[56]
+	mi := &file_rolodex_dns_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3286,7 +3562,7 @@ func (x *LocalRblEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LocalRblEntry.ProtoReflect.Descriptor instead.
 func (*LocalRblEntry) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{56}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *LocalRblEntry) GetName() string {
@@ -3314,7 +3590,7 @@ type AddLocalRblEntryRequest struct {
 
 func (x *AddLocalRblEntryRequest) Reset() {
 	*x = AddLocalRblEntryRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[57]
+	mi := &file_rolodex_dns_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3326,7 +3602,7 @@ func (x *AddLocalRblEntryRequest) String() string {
 func (*AddLocalRblEntryRequest) ProtoMessage() {}
 
 func (x *AddLocalRblEntryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[57]
+	mi := &file_rolodex_dns_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3339,7 +3615,7 @@ func (x *AddLocalRblEntryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddLocalRblEntryRequest.ProtoReflect.Descriptor instead.
 func (*AddLocalRblEntryRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{57}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *AddLocalRblEntryRequest) GetEntry() *LocalRblEntry {
@@ -3367,7 +3643,7 @@ type AddLocalRblEntryResponse struct {
 
 func (x *AddLocalRblEntryResponse) Reset() {
 	*x = AddLocalRblEntryResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[58]
+	mi := &file_rolodex_dns_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3379,7 +3655,7 @@ func (x *AddLocalRblEntryResponse) String() string {
 func (*AddLocalRblEntryResponse) ProtoMessage() {}
 
 func (x *AddLocalRblEntryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[58]
+	mi := &file_rolodex_dns_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3392,7 +3668,7 @@ func (x *AddLocalRblEntryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddLocalRblEntryResponse.ProtoReflect.Descriptor instead.
 func (*AddLocalRblEntryResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{58}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *AddLocalRblEntryResponse) GetSuccess() bool {
@@ -3420,7 +3696,7 @@ type RemoveLocalRblEntryRequest struct {
 
 func (x *RemoveLocalRblEntryRequest) Reset() {
 	*x = RemoveLocalRblEntryRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[59]
+	mi := &file_rolodex_dns_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3432,7 +3708,7 @@ func (x *RemoveLocalRblEntryRequest) String() string {
 func (*RemoveLocalRblEntryRequest) ProtoMessage() {}
 
 func (x *RemoveLocalRblEntryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[59]
+	mi := &file_rolodex_dns_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3445,7 +3721,7 @@ func (x *RemoveLocalRblEntryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveLocalRblEntryRequest.ProtoReflect.Descriptor instead.
 func (*RemoveLocalRblEntryRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{59}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *RemoveLocalRblEntryRequest) GetName() string {
@@ -3473,7 +3749,7 @@ type RemoveLocalRblEntryResponse struct {
 
 func (x *RemoveLocalRblEntryResponse) Reset() {
 	*x = RemoveLocalRblEntryResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[60]
+	mi := &file_rolodex_dns_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3485,7 +3761,7 @@ func (x *RemoveLocalRblEntryResponse) String() string {
 func (*RemoveLocalRblEntryResponse) ProtoMessage() {}
 
 func (x *RemoveLocalRblEntryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[60]
+	mi := &file_rolodex_dns_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3498,7 +3774,7 @@ func (x *RemoveLocalRblEntryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveLocalRblEntryResponse.ProtoReflect.Descriptor instead.
 func (*RemoveLocalRblEntryResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{60}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *RemoveLocalRblEntryResponse) GetSuccess() bool {
@@ -3525,7 +3801,7 @@ type ListLocalRblEntriesRequest struct {
 
 func (x *ListLocalRblEntriesRequest) Reset() {
 	*x = ListLocalRblEntriesRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[61]
+	mi := &file_rolodex_dns_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3537,7 +3813,7 @@ func (x *ListLocalRblEntriesRequest) String() string {
 func (*ListLocalRblEntriesRequest) ProtoMessage() {}
 
 func (x *ListLocalRblEntriesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[61]
+	mi := &file_rolodex_dns_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3550,7 +3826,7 @@ func (x *ListLocalRblEntriesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListLocalRblEntriesRequest.ProtoReflect.Descriptor instead.
 func (*ListLocalRblEntriesRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{61}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *ListLocalRblEntriesRequest) GetAuthToken() string {
@@ -3570,7 +3846,7 @@ type ListLocalRblEntriesResponse struct {
 
 func (x *ListLocalRblEntriesResponse) Reset() {
 	*x = ListLocalRblEntriesResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[62]
+	mi := &file_rolodex_dns_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3582,7 +3858,7 @@ func (x *ListLocalRblEntriesResponse) String() string {
 func (*ListLocalRblEntriesResponse) ProtoMessage() {}
 
 func (x *ListLocalRblEntriesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[62]
+	mi := &file_rolodex_dns_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3595,7 +3871,7 @@ func (x *ListLocalRblEntriesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListLocalRblEntriesResponse.ProtoReflect.Descriptor instead.
 func (*ListLocalRblEntriesResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{62}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *ListLocalRblEntriesResponse) GetEntries() []*LocalRblEntry {
@@ -3617,7 +3893,7 @@ type TlsConfig struct {
 
 func (x *TlsConfig) Reset() {
 	*x = TlsConfig{}
-	mi := &file_rolodex_dns_proto_msgTypes[63]
+	mi := &file_rolodex_dns_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3629,7 +3905,7 @@ func (x *TlsConfig) String() string {
 func (*TlsConfig) ProtoMessage() {}
 
 func (x *TlsConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[63]
+	mi := &file_rolodex_dns_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3642,7 +3918,7 @@ func (x *TlsConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TlsConfig.ProtoReflect.Descriptor instead.
 func (*TlsConfig) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{63}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *TlsConfig) GetCertPath() string {
@@ -3677,7 +3953,7 @@ type DotConfig struct {
 
 func (x *DotConfig) Reset() {
 	*x = DotConfig{}
-	mi := &file_rolodex_dns_proto_msgTypes[64]
+	mi := &file_rolodex_dns_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3689,7 +3965,7 @@ func (x *DotConfig) String() string {
 func (*DotConfig) ProtoMessage() {}
 
 func (x *DotConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[64]
+	mi := &file_rolodex_dns_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3702,7 +3978,7 @@ func (x *DotConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DotConfig.ProtoReflect.Descriptor instead.
 func (*DotConfig) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{64}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *DotConfig) GetBind() string {
@@ -3730,7 +4006,7 @@ type SetDotConfigRequest struct {
 
 func (x *SetDotConfigRequest) Reset() {
 	*x = SetDotConfigRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[65]
+	mi := &file_rolodex_dns_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3742,7 +4018,7 @@ func (x *SetDotConfigRequest) String() string {
 func (*SetDotConfigRequest) ProtoMessage() {}
 
 func (x *SetDotConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[65]
+	mi := &file_rolodex_dns_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3755,7 +4031,7 @@ func (x *SetDotConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetDotConfigRequest.ProtoReflect.Descriptor instead.
 func (*SetDotConfigRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{65}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *SetDotConfigRequest) GetConfig() *DotConfig {
@@ -3783,7 +4059,7 @@ type SetDotConfigResponse struct {
 
 func (x *SetDotConfigResponse) Reset() {
 	*x = SetDotConfigResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[66]
+	mi := &file_rolodex_dns_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3795,7 +4071,7 @@ func (x *SetDotConfigResponse) String() string {
 func (*SetDotConfigResponse) ProtoMessage() {}
 
 func (x *SetDotConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[66]
+	mi := &file_rolodex_dns_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3808,7 +4084,7 @@ func (x *SetDotConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetDotConfigResponse.ProtoReflect.Descriptor instead.
 func (*SetDotConfigResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{66}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *SetDotConfigResponse) GetSuccess() bool {
@@ -3835,7 +4111,7 @@ type GetDotConfigRequest struct {
 
 func (x *GetDotConfigRequest) Reset() {
 	*x = GetDotConfigRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[67]
+	mi := &file_rolodex_dns_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3847,7 +4123,7 @@ func (x *GetDotConfigRequest) String() string {
 func (*GetDotConfigRequest) ProtoMessage() {}
 
 func (x *GetDotConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[67]
+	mi := &file_rolodex_dns_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3860,7 +4136,7 @@ func (x *GetDotConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDotConfigRequest.ProtoReflect.Descriptor instead.
 func (*GetDotConfigRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{67}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *GetDotConfigRequest) GetAuthToken() string {
@@ -3880,7 +4156,7 @@ type GetDotConfigResponse struct {
 
 func (x *GetDotConfigResponse) Reset() {
 	*x = GetDotConfigResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[68]
+	mi := &file_rolodex_dns_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3892,7 +4168,7 @@ func (x *GetDotConfigResponse) String() string {
 func (*GetDotConfigResponse) ProtoMessage() {}
 
 func (x *GetDotConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[68]
+	mi := &file_rolodex_dns_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3905,7 +4181,7 @@ func (x *GetDotConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDotConfigResponse.ProtoReflect.Descriptor instead.
 func (*GetDotConfigResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{68}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *GetDotConfigResponse) GetConfig() *DotConfig {
@@ -3927,7 +4203,7 @@ type DohConfig struct {
 
 func (x *DohConfig) Reset() {
 	*x = DohConfig{}
-	mi := &file_rolodex_dns_proto_msgTypes[69]
+	mi := &file_rolodex_dns_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3939,7 +4215,7 @@ func (x *DohConfig) String() string {
 func (*DohConfig) ProtoMessage() {}
 
 func (x *DohConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[69]
+	mi := &file_rolodex_dns_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3952,7 +4228,7 @@ func (x *DohConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DohConfig.ProtoReflect.Descriptor instead.
 func (*DohConfig) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{69}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *DohConfig) GetBind() string {
@@ -3987,7 +4263,7 @@ type SetDohConfigRequest struct {
 
 func (x *SetDohConfigRequest) Reset() {
 	*x = SetDohConfigRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[70]
+	mi := &file_rolodex_dns_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3999,7 +4275,7 @@ func (x *SetDohConfigRequest) String() string {
 func (*SetDohConfigRequest) ProtoMessage() {}
 
 func (x *SetDohConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[70]
+	mi := &file_rolodex_dns_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4012,7 +4288,7 @@ func (x *SetDohConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetDohConfigRequest.ProtoReflect.Descriptor instead.
 func (*SetDohConfigRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{70}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *SetDohConfigRequest) GetConfig() *DohConfig {
@@ -4040,7 +4316,7 @@ type SetDohConfigResponse struct {
 
 func (x *SetDohConfigResponse) Reset() {
 	*x = SetDohConfigResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[71]
+	mi := &file_rolodex_dns_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4052,7 +4328,7 @@ func (x *SetDohConfigResponse) String() string {
 func (*SetDohConfigResponse) ProtoMessage() {}
 
 func (x *SetDohConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[71]
+	mi := &file_rolodex_dns_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4065,7 +4341,7 @@ func (x *SetDohConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetDohConfigResponse.ProtoReflect.Descriptor instead.
 func (*SetDohConfigResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{71}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *SetDohConfigResponse) GetSuccess() bool {
@@ -4092,7 +4368,7 @@ type GetDohConfigRequest struct {
 
 func (x *GetDohConfigRequest) Reset() {
 	*x = GetDohConfigRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[72]
+	mi := &file_rolodex_dns_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4104,7 +4380,7 @@ func (x *GetDohConfigRequest) String() string {
 func (*GetDohConfigRequest) ProtoMessage() {}
 
 func (x *GetDohConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[72]
+	mi := &file_rolodex_dns_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4117,7 +4393,7 @@ func (x *GetDohConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDohConfigRequest.ProtoReflect.Descriptor instead.
 func (*GetDohConfigRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{72}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *GetDohConfigRequest) GetAuthToken() string {
@@ -4137,7 +4413,7 @@ type GetDohConfigResponse struct {
 
 func (x *GetDohConfigResponse) Reset() {
 	*x = GetDohConfigResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[73]
+	mi := &file_rolodex_dns_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4149,7 +4425,7 @@ func (x *GetDohConfigResponse) String() string {
 func (*GetDohConfigResponse) ProtoMessage() {}
 
 func (x *GetDohConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[73]
+	mi := &file_rolodex_dns_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4162,7 +4438,7 @@ func (x *GetDohConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDohConfigResponse.ProtoReflect.Descriptor instead.
 func (*GetDohConfigResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{73}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{78}
 }
 
 func (x *GetDohConfigResponse) GetConfig() *DohConfig {
@@ -4183,7 +4459,7 @@ type DoqConfig struct {
 
 func (x *DoqConfig) Reset() {
 	*x = DoqConfig{}
-	mi := &file_rolodex_dns_proto_msgTypes[74]
+	mi := &file_rolodex_dns_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4195,7 +4471,7 @@ func (x *DoqConfig) String() string {
 func (*DoqConfig) ProtoMessage() {}
 
 func (x *DoqConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[74]
+	mi := &file_rolodex_dns_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4208,7 +4484,7 @@ func (x *DoqConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DoqConfig.ProtoReflect.Descriptor instead.
 func (*DoqConfig) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{74}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{79}
 }
 
 func (x *DoqConfig) GetBind() string {
@@ -4236,7 +4512,7 @@ type SetDoqConfigRequest struct {
 
 func (x *SetDoqConfigRequest) Reset() {
 	*x = SetDoqConfigRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[75]
+	mi := &file_rolodex_dns_proto_msgTypes[80]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4248,7 +4524,7 @@ func (x *SetDoqConfigRequest) String() string {
 func (*SetDoqConfigRequest) ProtoMessage() {}
 
 func (x *SetDoqConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[75]
+	mi := &file_rolodex_dns_proto_msgTypes[80]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4261,7 +4537,7 @@ func (x *SetDoqConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetDoqConfigRequest.ProtoReflect.Descriptor instead.
 func (*SetDoqConfigRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{75}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{80}
 }
 
 func (x *SetDoqConfigRequest) GetConfig() *DoqConfig {
@@ -4289,7 +4565,7 @@ type SetDoqConfigResponse struct {
 
 func (x *SetDoqConfigResponse) Reset() {
 	*x = SetDoqConfigResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[76]
+	mi := &file_rolodex_dns_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4301,7 +4577,7 @@ func (x *SetDoqConfigResponse) String() string {
 func (*SetDoqConfigResponse) ProtoMessage() {}
 
 func (x *SetDoqConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[76]
+	mi := &file_rolodex_dns_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4314,7 +4590,7 @@ func (x *SetDoqConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetDoqConfigResponse.ProtoReflect.Descriptor instead.
 func (*SetDoqConfigResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{76}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{81}
 }
 
 func (x *SetDoqConfigResponse) GetSuccess() bool {
@@ -4341,7 +4617,7 @@ type GetDoqConfigRequest struct {
 
 func (x *GetDoqConfigRequest) Reset() {
 	*x = GetDoqConfigRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[77]
+	mi := &file_rolodex_dns_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4353,7 +4629,7 @@ func (x *GetDoqConfigRequest) String() string {
 func (*GetDoqConfigRequest) ProtoMessage() {}
 
 func (x *GetDoqConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[77]
+	mi := &file_rolodex_dns_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4366,7 +4642,7 @@ func (x *GetDoqConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDoqConfigRequest.ProtoReflect.Descriptor instead.
 func (*GetDoqConfigRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{77}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *GetDoqConfigRequest) GetAuthToken() string {
@@ -4386,7 +4662,7 @@ type GetDoqConfigResponse struct {
 
 func (x *GetDoqConfigResponse) Reset() {
 	*x = GetDoqConfigResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[78]
+	mi := &file_rolodex_dns_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4398,7 +4674,7 @@ func (x *GetDoqConfigResponse) String() string {
 func (*GetDoqConfigResponse) ProtoMessage() {}
 
 func (x *GetDoqConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[78]
+	mi := &file_rolodex_dns_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4411,7 +4687,7 @@ func (x *GetDoqConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDoqConfigResponse.ProtoReflect.Descriptor instead.
 func (*GetDoqConfigResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{78}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{83}
 }
 
 func (x *GetDoqConfigResponse) GetConfig() *DoqConfig {
@@ -4436,7 +4712,7 @@ type ProxyConfig struct {
 
 func (x *ProxyConfig) Reset() {
 	*x = ProxyConfig{}
-	mi := &file_rolodex_dns_proto_msgTypes[79]
+	mi := &file_rolodex_dns_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4448,7 +4724,7 @@ func (x *ProxyConfig) String() string {
 func (*ProxyConfig) ProtoMessage() {}
 
 func (x *ProxyConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[79]
+	mi := &file_rolodex_dns_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4461,7 +4737,7 @@ func (x *ProxyConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProxyConfig.ProtoReflect.Descriptor instead.
 func (*ProxyConfig) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{79}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{84}
 }
 
 func (x *ProxyConfig) GetUrl() string {
@@ -4496,7 +4772,7 @@ type SetProxyConfigRequest struct {
 
 func (x *SetProxyConfigRequest) Reset() {
 	*x = SetProxyConfigRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[80]
+	mi := &file_rolodex_dns_proto_msgTypes[85]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4508,7 +4784,7 @@ func (x *SetProxyConfigRequest) String() string {
 func (*SetProxyConfigRequest) ProtoMessage() {}
 
 func (x *SetProxyConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[80]
+	mi := &file_rolodex_dns_proto_msgTypes[85]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4521,7 +4797,7 @@ func (x *SetProxyConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetProxyConfigRequest.ProtoReflect.Descriptor instead.
 func (*SetProxyConfigRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{80}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{85}
 }
 
 func (x *SetProxyConfigRequest) GetConfig() *ProxyConfig {
@@ -4549,7 +4825,7 @@ type SetProxyConfigResponse struct {
 
 func (x *SetProxyConfigResponse) Reset() {
 	*x = SetProxyConfigResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[81]
+	mi := &file_rolodex_dns_proto_msgTypes[86]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4561,7 +4837,7 @@ func (x *SetProxyConfigResponse) String() string {
 func (*SetProxyConfigResponse) ProtoMessage() {}
 
 func (x *SetProxyConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[81]
+	mi := &file_rolodex_dns_proto_msgTypes[86]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4574,7 +4850,7 @@ func (x *SetProxyConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetProxyConfigResponse.ProtoReflect.Descriptor instead.
 func (*SetProxyConfigResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{81}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{86}
 }
 
 func (x *SetProxyConfigResponse) GetSuccess() bool {
@@ -4601,7 +4877,7 @@ type GetProxyConfigRequest struct {
 
 func (x *GetProxyConfigRequest) Reset() {
 	*x = GetProxyConfigRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[82]
+	mi := &file_rolodex_dns_proto_msgTypes[87]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4613,7 +4889,7 @@ func (x *GetProxyConfigRequest) String() string {
 func (*GetProxyConfigRequest) ProtoMessage() {}
 
 func (x *GetProxyConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[82]
+	mi := &file_rolodex_dns_proto_msgTypes[87]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4626,7 +4902,7 @@ func (x *GetProxyConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProxyConfigRequest.ProtoReflect.Descriptor instead.
 func (*GetProxyConfigRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{82}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{87}
 }
 
 func (x *GetProxyConfigRequest) GetAuthToken() string {
@@ -4646,7 +4922,7 @@ type GetProxyConfigResponse struct {
 
 func (x *GetProxyConfigResponse) Reset() {
 	*x = GetProxyConfigResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[83]
+	mi := &file_rolodex_dns_proto_msgTypes[88]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4658,7 +4934,7 @@ func (x *GetProxyConfigResponse) String() string {
 func (*GetProxyConfigResponse) ProtoMessage() {}
 
 func (x *GetProxyConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[83]
+	mi := &file_rolodex_dns_proto_msgTypes[88]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4671,7 +4947,7 @@ func (x *GetProxyConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProxyConfigResponse.ProtoReflect.Descriptor instead.
 func (*GetProxyConfigResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{83}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{88}
 }
 
 func (x *GetProxyConfigResponse) GetConfig() *ProxyConfig {
@@ -4699,7 +4975,7 @@ type DnssecKey struct {
 
 func (x *DnssecKey) Reset() {
 	*x = DnssecKey{}
-	mi := &file_rolodex_dns_proto_msgTypes[84]
+	mi := &file_rolodex_dns_proto_msgTypes[89]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4711,7 +4987,7 @@ func (x *DnssecKey) String() string {
 func (*DnssecKey) ProtoMessage() {}
 
 func (x *DnssecKey) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[84]
+	mi := &file_rolodex_dns_proto_msgTypes[89]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4724,7 +5000,7 @@ func (x *DnssecKey) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DnssecKey.ProtoReflect.Descriptor instead.
 func (*DnssecKey) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{84}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{89}
 }
 
 func (x *DnssecKey) GetId() int64 {
@@ -4803,7 +5079,7 @@ type GenerateDnssecKeyRequest struct {
 
 func (x *GenerateDnssecKeyRequest) Reset() {
 	*x = GenerateDnssecKeyRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[85]
+	mi := &file_rolodex_dns_proto_msgTypes[90]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4815,7 +5091,7 @@ func (x *GenerateDnssecKeyRequest) String() string {
 func (*GenerateDnssecKeyRequest) ProtoMessage() {}
 
 func (x *GenerateDnssecKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[85]
+	mi := &file_rolodex_dns_proto_msgTypes[90]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4828,7 +5104,7 @@ func (x *GenerateDnssecKeyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerateDnssecKeyRequest.ProtoReflect.Descriptor instead.
 func (*GenerateDnssecKeyRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{85}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{90}
 }
 
 func (x *GenerateDnssecKeyRequest) GetZone() string {
@@ -4871,7 +5147,7 @@ type GenerateDnssecKeyResponse struct {
 
 func (x *GenerateDnssecKeyResponse) Reset() {
 	*x = GenerateDnssecKeyResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[86]
+	mi := &file_rolodex_dns_proto_msgTypes[91]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4883,7 +5159,7 @@ func (x *GenerateDnssecKeyResponse) String() string {
 func (*GenerateDnssecKeyResponse) ProtoMessage() {}
 
 func (x *GenerateDnssecKeyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[86]
+	mi := &file_rolodex_dns_proto_msgTypes[91]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4896,7 +5172,7 @@ func (x *GenerateDnssecKeyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerateDnssecKeyResponse.ProtoReflect.Descriptor instead.
 func (*GenerateDnssecKeyResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{86}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{91}
 }
 
 func (x *GenerateDnssecKeyResponse) GetSuccess() bool {
@@ -4931,7 +5207,7 @@ type ListDnssecKeysRequest struct {
 
 func (x *ListDnssecKeysRequest) Reset() {
 	*x = ListDnssecKeysRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[87]
+	mi := &file_rolodex_dns_proto_msgTypes[92]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4943,7 +5219,7 @@ func (x *ListDnssecKeysRequest) String() string {
 func (*ListDnssecKeysRequest) ProtoMessage() {}
 
 func (x *ListDnssecKeysRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[87]
+	mi := &file_rolodex_dns_proto_msgTypes[92]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4956,7 +5232,7 @@ func (x *ListDnssecKeysRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDnssecKeysRequest.ProtoReflect.Descriptor instead.
 func (*ListDnssecKeysRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{87}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{92}
 }
 
 func (x *ListDnssecKeysRequest) GetZone() string {
@@ -4983,7 +5259,7 @@ type ListDnssecKeysResponse struct {
 
 func (x *ListDnssecKeysResponse) Reset() {
 	*x = ListDnssecKeysResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[88]
+	mi := &file_rolodex_dns_proto_msgTypes[93]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4995,7 +5271,7 @@ func (x *ListDnssecKeysResponse) String() string {
 func (*ListDnssecKeysResponse) ProtoMessage() {}
 
 func (x *ListDnssecKeysResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[88]
+	mi := &file_rolodex_dns_proto_msgTypes[93]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5008,7 +5284,7 @@ func (x *ListDnssecKeysResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDnssecKeysResponse.ProtoReflect.Descriptor instead.
 func (*ListDnssecKeysResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{88}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{93}
 }
 
 func (x *ListDnssecKeysResponse) GetKeys() []*DnssecKey {
@@ -5029,7 +5305,7 @@ type DeleteDnssecKeyRequest struct {
 
 func (x *DeleteDnssecKeyRequest) Reset() {
 	*x = DeleteDnssecKeyRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[89]
+	mi := &file_rolodex_dns_proto_msgTypes[94]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5041,7 +5317,7 @@ func (x *DeleteDnssecKeyRequest) String() string {
 func (*DeleteDnssecKeyRequest) ProtoMessage() {}
 
 func (x *DeleteDnssecKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[89]
+	mi := &file_rolodex_dns_proto_msgTypes[94]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5054,7 +5330,7 @@ func (x *DeleteDnssecKeyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteDnssecKeyRequest.ProtoReflect.Descriptor instead.
 func (*DeleteDnssecKeyRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{89}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{94}
 }
 
 func (x *DeleteDnssecKeyRequest) GetKeyId() int64 {
@@ -5082,7 +5358,7 @@ type DeleteDnssecKeyResponse struct {
 
 func (x *DeleteDnssecKeyResponse) Reset() {
 	*x = DeleteDnssecKeyResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[90]
+	mi := &file_rolodex_dns_proto_msgTypes[95]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5094,7 +5370,7 @@ func (x *DeleteDnssecKeyResponse) String() string {
 func (*DeleteDnssecKeyResponse) ProtoMessage() {}
 
 func (x *DeleteDnssecKeyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[90]
+	mi := &file_rolodex_dns_proto_msgTypes[95]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5107,7 +5383,7 @@ func (x *DeleteDnssecKeyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteDnssecKeyResponse.ProtoReflect.Descriptor instead.
 func (*DeleteDnssecKeyResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{90}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{95}
 }
 
 func (x *DeleteDnssecKeyResponse) GetSuccess() bool {
@@ -5135,7 +5411,7 @@ type GetDsRecordsRequest struct {
 
 func (x *GetDsRecordsRequest) Reset() {
 	*x = GetDsRecordsRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[91]
+	mi := &file_rolodex_dns_proto_msgTypes[96]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5147,7 +5423,7 @@ func (x *GetDsRecordsRequest) String() string {
 func (*GetDsRecordsRequest) ProtoMessage() {}
 
 func (x *GetDsRecordsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[91]
+	mi := &file_rolodex_dns_proto_msgTypes[96]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5160,7 +5436,7 @@ func (x *GetDsRecordsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDsRecordsRequest.ProtoReflect.Descriptor instead.
 func (*GetDsRecordsRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{91}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{96}
 }
 
 func (x *GetDsRecordsRequest) GetZone() string {
@@ -5187,7 +5463,7 @@ type GetDsRecordsResponse struct {
 
 func (x *GetDsRecordsResponse) Reset() {
 	*x = GetDsRecordsResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[92]
+	mi := &file_rolodex_dns_proto_msgTypes[97]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5199,7 +5475,7 @@ func (x *GetDsRecordsResponse) String() string {
 func (*GetDsRecordsResponse) ProtoMessage() {}
 
 func (x *GetDsRecordsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[92]
+	mi := &file_rolodex_dns_proto_msgTypes[97]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5212,7 +5488,7 @@ func (x *GetDsRecordsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDsRecordsResponse.ProtoReflect.Descriptor instead.
 func (*GetDsRecordsResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{92}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{97}
 }
 
 func (x *GetDsRecordsResponse) GetDsRecords() []string {
@@ -5233,7 +5509,7 @@ type SignZoneRequest struct {
 
 func (x *SignZoneRequest) Reset() {
 	*x = SignZoneRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[93]
+	mi := &file_rolodex_dns_proto_msgTypes[98]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5245,7 +5521,7 @@ func (x *SignZoneRequest) String() string {
 func (*SignZoneRequest) ProtoMessage() {}
 
 func (x *SignZoneRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[93]
+	mi := &file_rolodex_dns_proto_msgTypes[98]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5258,7 +5534,7 @@ func (x *SignZoneRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignZoneRequest.ProtoReflect.Descriptor instead.
 func (*SignZoneRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{93}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{98}
 }
 
 func (x *SignZoneRequest) GetZone() string {
@@ -5286,7 +5562,7 @@ type SignZoneResponse struct {
 
 func (x *SignZoneResponse) Reset() {
 	*x = SignZoneResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[94]
+	mi := &file_rolodex_dns_proto_msgTypes[99]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5298,7 +5574,7 @@ func (x *SignZoneResponse) String() string {
 func (*SignZoneResponse) ProtoMessage() {}
 
 func (x *SignZoneResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[94]
+	mi := &file_rolodex_dns_proto_msgTypes[99]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5311,7 +5587,7 @@ func (x *SignZoneResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignZoneResponse.ProtoReflect.Descriptor instead.
 func (*SignZoneResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{94}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{99}
 }
 
 func (x *SignZoneResponse) GetSuccess() bool {
@@ -5345,7 +5621,7 @@ type GenerateTlsaRecordRequest struct {
 
 func (x *GenerateTlsaRecordRequest) Reset() {
 	*x = GenerateTlsaRecordRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[95]
+	mi := &file_rolodex_dns_proto_msgTypes[100]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5357,7 +5633,7 @@ func (x *GenerateTlsaRecordRequest) String() string {
 func (*GenerateTlsaRecordRequest) ProtoMessage() {}
 
 func (x *GenerateTlsaRecordRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[95]
+	mi := &file_rolodex_dns_proto_msgTypes[100]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5370,7 +5646,7 @@ func (x *GenerateTlsaRecordRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerateTlsaRecordRequest.ProtoReflect.Descriptor instead.
 func (*GenerateTlsaRecordRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{95}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{100}
 }
 
 func (x *GenerateTlsaRecordRequest) GetDomain() string {
@@ -5441,7 +5717,7 @@ type GenerateTlsaRecordResponse struct {
 
 func (x *GenerateTlsaRecordResponse) Reset() {
 	*x = GenerateTlsaRecordResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[96]
+	mi := &file_rolodex_dns_proto_msgTypes[101]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5453,7 +5729,7 @@ func (x *GenerateTlsaRecordResponse) String() string {
 func (*GenerateTlsaRecordResponse) ProtoMessage() {}
 
 func (x *GenerateTlsaRecordResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[96]
+	mi := &file_rolodex_dns_proto_msgTypes[101]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5466,7 +5742,7 @@ func (x *GenerateTlsaRecordResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerateTlsaRecordResponse.ProtoReflect.Descriptor instead.
 func (*GenerateTlsaRecordResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{96}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{101}
 }
 
 func (x *GenerateTlsaRecordResponse) GetSuccess() bool {
@@ -5501,7 +5777,7 @@ type ListTlsaRecordsRequest struct {
 
 func (x *ListTlsaRecordsRequest) Reset() {
 	*x = ListTlsaRecordsRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[97]
+	mi := &file_rolodex_dns_proto_msgTypes[102]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5513,7 +5789,7 @@ func (x *ListTlsaRecordsRequest) String() string {
 func (*ListTlsaRecordsRequest) ProtoMessage() {}
 
 func (x *ListTlsaRecordsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[97]
+	mi := &file_rolodex_dns_proto_msgTypes[102]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5526,7 +5802,7 @@ func (x *ListTlsaRecordsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTlsaRecordsRequest.ProtoReflect.Descriptor instead.
 func (*ListTlsaRecordsRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{97}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{102}
 }
 
 func (x *ListTlsaRecordsRequest) GetDomain() string {
@@ -5553,7 +5829,7 @@ type ListTlsaRecordsResponse struct {
 
 func (x *ListTlsaRecordsResponse) Reset() {
 	*x = ListTlsaRecordsResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[98]
+	mi := &file_rolodex_dns_proto_msgTypes[103]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5565,7 +5841,7 @@ func (x *ListTlsaRecordsResponse) String() string {
 func (*ListTlsaRecordsResponse) ProtoMessage() {}
 
 func (x *ListTlsaRecordsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[98]
+	mi := &file_rolodex_dns_proto_msgTypes[103]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5578,7 +5854,7 @@ func (x *ListTlsaRecordsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTlsaRecordsResponse.ProtoReflect.Descriptor instead.
 func (*ListTlsaRecordsResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{98}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{103}
 }
 
 func (x *ListTlsaRecordsResponse) GetRecords() []*DnsRecord {
@@ -5599,7 +5875,7 @@ type GenerateDaneRootCaRequest struct {
 
 func (x *GenerateDaneRootCaRequest) Reset() {
 	*x = GenerateDaneRootCaRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[99]
+	mi := &file_rolodex_dns_proto_msgTypes[104]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5611,7 +5887,7 @@ func (x *GenerateDaneRootCaRequest) String() string {
 func (*GenerateDaneRootCaRequest) ProtoMessage() {}
 
 func (x *GenerateDaneRootCaRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[99]
+	mi := &file_rolodex_dns_proto_msgTypes[104]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5624,7 +5900,7 @@ func (x *GenerateDaneRootCaRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerateDaneRootCaRequest.ProtoReflect.Descriptor instead.
 func (*GenerateDaneRootCaRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{99}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{104}
 }
 
 func (x *GenerateDaneRootCaRequest) GetName() string {
@@ -5653,7 +5929,7 @@ type GenerateDaneRootCaResponse struct {
 
 func (x *GenerateDaneRootCaResponse) Reset() {
 	*x = GenerateDaneRootCaResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[100]
+	mi := &file_rolodex_dns_proto_msgTypes[105]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5665,7 +5941,7 @@ func (x *GenerateDaneRootCaResponse) String() string {
 func (*GenerateDaneRootCaResponse) ProtoMessage() {}
 
 func (x *GenerateDaneRootCaResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[100]
+	mi := &file_rolodex_dns_proto_msgTypes[105]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5678,7 +5954,7 @@ func (x *GenerateDaneRootCaResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerateDaneRootCaResponse.ProtoReflect.Descriptor instead.
 func (*GenerateDaneRootCaResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{100}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{105}
 }
 
 func (x *GenerateDaneRootCaResponse) GetSuccess() bool {
@@ -5714,7 +5990,7 @@ type RequestAcmeCertRequest struct {
 
 func (x *RequestAcmeCertRequest) Reset() {
 	*x = RequestAcmeCertRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[101]
+	mi := &file_rolodex_dns_proto_msgTypes[106]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5726,7 +6002,7 @@ func (x *RequestAcmeCertRequest) String() string {
 func (*RequestAcmeCertRequest) ProtoMessage() {}
 
 func (x *RequestAcmeCertRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[101]
+	mi := &file_rolodex_dns_proto_msgTypes[106]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5739,7 +6015,7 @@ func (x *RequestAcmeCertRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RequestAcmeCertRequest.ProtoReflect.Descriptor instead.
 func (*RequestAcmeCertRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{101}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{106}
 }
 
 func (x *RequestAcmeCertRequest) GetDomain() string {
@@ -5774,7 +6050,7 @@ type RequestAcmeCertResponse struct {
 
 func (x *RequestAcmeCertResponse) Reset() {
 	*x = RequestAcmeCertResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[102]
+	mi := &file_rolodex_dns_proto_msgTypes[107]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5786,7 +6062,7 @@ func (x *RequestAcmeCertResponse) String() string {
 func (*RequestAcmeCertResponse) ProtoMessage() {}
 
 func (x *RequestAcmeCertResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[102]
+	mi := &file_rolodex_dns_proto_msgTypes[107]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5799,7 +6075,7 @@ func (x *RequestAcmeCertResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RequestAcmeCertResponse.ProtoReflect.Descriptor instead.
 func (*RequestAcmeCertResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{102}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{107}
 }
 
 func (x *RequestAcmeCertResponse) GetSuccess() bool {
@@ -5827,7 +6103,7 @@ type GetAcmeStatusRequest struct {
 
 func (x *GetAcmeStatusRequest) Reset() {
 	*x = GetAcmeStatusRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[103]
+	mi := &file_rolodex_dns_proto_msgTypes[108]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5839,7 +6115,7 @@ func (x *GetAcmeStatusRequest) String() string {
 func (*GetAcmeStatusRequest) ProtoMessage() {}
 
 func (x *GetAcmeStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[103]
+	mi := &file_rolodex_dns_proto_msgTypes[108]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5852,7 +6128,7 @@ func (x *GetAcmeStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAcmeStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetAcmeStatusRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{103}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{108}
 }
 
 func (x *GetAcmeStatusRequest) GetDomain() string {
@@ -5881,7 +6157,7 @@ type GetAcmeStatusResponse struct {
 
 func (x *GetAcmeStatusResponse) Reset() {
 	*x = GetAcmeStatusResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[104]
+	mi := &file_rolodex_dns_proto_msgTypes[109]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5893,7 +6169,7 @@ func (x *GetAcmeStatusResponse) String() string {
 func (*GetAcmeStatusResponse) ProtoMessage() {}
 
 func (x *GetAcmeStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[104]
+	mi := &file_rolodex_dns_proto_msgTypes[109]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5906,7 +6182,7 @@ func (x *GetAcmeStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAcmeStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetAcmeStatusResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{104}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{109}
 }
 
 func (x *GetAcmeStatusResponse) GetStatus() string {
@@ -5941,7 +6217,7 @@ type EnsureZoneCaRequest struct {
 
 func (x *EnsureZoneCaRequest) Reset() {
 	*x = EnsureZoneCaRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[105]
+	mi := &file_rolodex_dns_proto_msgTypes[110]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5953,7 +6229,7 @@ func (x *EnsureZoneCaRequest) String() string {
 func (*EnsureZoneCaRequest) ProtoMessage() {}
 
 func (x *EnsureZoneCaRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[105]
+	mi := &file_rolodex_dns_proto_msgTypes[110]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5966,7 +6242,7 @@ func (x *EnsureZoneCaRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnsureZoneCaRequest.ProtoReflect.Descriptor instead.
 func (*EnsureZoneCaRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{105}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{110}
 }
 
 func (x *EnsureZoneCaRequest) GetZone() string {
@@ -5996,7 +6272,7 @@ type EnsureZoneCaResponse struct {
 
 func (x *EnsureZoneCaResponse) Reset() {
 	*x = EnsureZoneCaResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[106]
+	mi := &file_rolodex_dns_proto_msgTypes[111]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6008,7 +6284,7 @@ func (x *EnsureZoneCaResponse) String() string {
 func (*EnsureZoneCaResponse) ProtoMessage() {}
 
 func (x *EnsureZoneCaResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[106]
+	mi := &file_rolodex_dns_proto_msgTypes[111]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6021,7 +6297,7 @@ func (x *EnsureZoneCaResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnsureZoneCaResponse.ProtoReflect.Descriptor instead.
 func (*EnsureZoneCaResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{106}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{111}
 }
 
 func (x *EnsureZoneCaResponse) GetSuccess() bool {
@@ -6063,7 +6339,7 @@ type CreateEabCredentialRequest struct {
 
 func (x *CreateEabCredentialRequest) Reset() {
 	*x = CreateEabCredentialRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[107]
+	mi := &file_rolodex_dns_proto_msgTypes[112]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6075,7 +6351,7 @@ func (x *CreateEabCredentialRequest) String() string {
 func (*CreateEabCredentialRequest) ProtoMessage() {}
 
 func (x *CreateEabCredentialRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[107]
+	mi := &file_rolodex_dns_proto_msgTypes[112]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6088,7 +6364,7 @@ func (x *CreateEabCredentialRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateEabCredentialRequest.ProtoReflect.Descriptor instead.
 func (*CreateEabCredentialRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{107}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{112}
 }
 
 func (x *CreateEabCredentialRequest) GetZone() string {
@@ -6119,7 +6395,7 @@ type CreateEabCredentialResponse struct {
 
 func (x *CreateEabCredentialResponse) Reset() {
 	*x = CreateEabCredentialResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[108]
+	mi := &file_rolodex_dns_proto_msgTypes[113]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6131,7 +6407,7 @@ func (x *CreateEabCredentialResponse) String() string {
 func (*CreateEabCredentialResponse) ProtoMessage() {}
 
 func (x *CreateEabCredentialResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[108]
+	mi := &file_rolodex_dns_proto_msgTypes[113]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6144,7 +6420,7 @@ func (x *CreateEabCredentialResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateEabCredentialResponse.ProtoReflect.Descriptor instead.
 func (*CreateEabCredentialResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{108}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{113}
 }
 
 func (x *CreateEabCredentialResponse) GetSuccess() bool {
@@ -6193,7 +6469,7 @@ type RemoveEabCredentialRequest struct {
 
 func (x *RemoveEabCredentialRequest) Reset() {
 	*x = RemoveEabCredentialRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[109]
+	mi := &file_rolodex_dns_proto_msgTypes[114]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6205,7 +6481,7 @@ func (x *RemoveEabCredentialRequest) String() string {
 func (*RemoveEabCredentialRequest) ProtoMessage() {}
 
 func (x *RemoveEabCredentialRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[109]
+	mi := &file_rolodex_dns_proto_msgTypes[114]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6218,7 +6494,7 @@ func (x *RemoveEabCredentialRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveEabCredentialRequest.ProtoReflect.Descriptor instead.
 func (*RemoveEabCredentialRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{109}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{114}
 }
 
 func (x *RemoveEabCredentialRequest) GetKid() string {
@@ -6246,7 +6522,7 @@ type RemoveEabCredentialResponse struct {
 
 func (x *RemoveEabCredentialResponse) Reset() {
 	*x = RemoveEabCredentialResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[110]
+	mi := &file_rolodex_dns_proto_msgTypes[115]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6258,7 +6534,7 @@ func (x *RemoveEabCredentialResponse) String() string {
 func (*RemoveEabCredentialResponse) ProtoMessage() {}
 
 func (x *RemoveEabCredentialResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[110]
+	mi := &file_rolodex_dns_proto_msgTypes[115]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6271,7 +6547,7 @@ func (x *RemoveEabCredentialResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveEabCredentialResponse.ProtoReflect.Descriptor instead.
 func (*RemoveEabCredentialResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{110}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{115}
 }
 
 func (x *RemoveEabCredentialResponse) GetSuccess() bool {
@@ -6301,7 +6577,7 @@ type AcmeAccountInfo struct {
 
 func (x *AcmeAccountInfo) Reset() {
 	*x = AcmeAccountInfo{}
-	mi := &file_rolodex_dns_proto_msgTypes[111]
+	mi := &file_rolodex_dns_proto_msgTypes[116]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6313,7 +6589,7 @@ func (x *AcmeAccountInfo) String() string {
 func (*AcmeAccountInfo) ProtoMessage() {}
 
 func (x *AcmeAccountInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[111]
+	mi := &file_rolodex_dns_proto_msgTypes[116]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6326,7 +6602,7 @@ func (x *AcmeAccountInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AcmeAccountInfo.ProtoReflect.Descriptor instead.
 func (*AcmeAccountInfo) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{111}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{116}
 }
 
 func (x *AcmeAccountInfo) GetAccountId() string {
@@ -6367,7 +6643,7 @@ type ListAcmeAccountsRequest struct {
 
 func (x *ListAcmeAccountsRequest) Reset() {
 	*x = ListAcmeAccountsRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[112]
+	mi := &file_rolodex_dns_proto_msgTypes[117]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6379,7 +6655,7 @@ func (x *ListAcmeAccountsRequest) String() string {
 func (*ListAcmeAccountsRequest) ProtoMessage() {}
 
 func (x *ListAcmeAccountsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[112]
+	mi := &file_rolodex_dns_proto_msgTypes[117]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6392,7 +6668,7 @@ func (x *ListAcmeAccountsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAcmeAccountsRequest.ProtoReflect.Descriptor instead.
 func (*ListAcmeAccountsRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{112}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{117}
 }
 
 func (x *ListAcmeAccountsRequest) GetAuthToken() string {
@@ -6412,7 +6688,7 @@ type ListAcmeAccountsResponse struct {
 
 func (x *ListAcmeAccountsResponse) Reset() {
 	*x = ListAcmeAccountsResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[113]
+	mi := &file_rolodex_dns_proto_msgTypes[118]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6424,7 +6700,7 @@ func (x *ListAcmeAccountsResponse) String() string {
 func (*ListAcmeAccountsResponse) ProtoMessage() {}
 
 func (x *ListAcmeAccountsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[113]
+	mi := &file_rolodex_dns_proto_msgTypes[118]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6437,7 +6713,7 @@ func (x *ListAcmeAccountsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAcmeAccountsResponse.ProtoReflect.Descriptor instead.
 func (*ListAcmeAccountsResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{113}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{118}
 }
 
 func (x *ListAcmeAccountsResponse) GetAccounts() []*AcmeAccountInfo {
@@ -6460,7 +6736,7 @@ type AcmeCertificateInfo struct {
 
 func (x *AcmeCertificateInfo) Reset() {
 	*x = AcmeCertificateInfo{}
-	mi := &file_rolodex_dns_proto_msgTypes[114]
+	mi := &file_rolodex_dns_proto_msgTypes[119]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6472,7 +6748,7 @@ func (x *AcmeCertificateInfo) String() string {
 func (*AcmeCertificateInfo) ProtoMessage() {}
 
 func (x *AcmeCertificateInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[114]
+	mi := &file_rolodex_dns_proto_msgTypes[119]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6485,7 +6761,7 @@ func (x *AcmeCertificateInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AcmeCertificateInfo.ProtoReflect.Descriptor instead.
 func (*AcmeCertificateInfo) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{114}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{119}
 }
 
 func (x *AcmeCertificateInfo) GetId() int64 {
@@ -6527,7 +6803,7 @@ type ListAcmeCertificatesRequest struct {
 
 func (x *ListAcmeCertificatesRequest) Reset() {
 	*x = ListAcmeCertificatesRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[115]
+	mi := &file_rolodex_dns_proto_msgTypes[120]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6539,7 +6815,7 @@ func (x *ListAcmeCertificatesRequest) String() string {
 func (*ListAcmeCertificatesRequest) ProtoMessage() {}
 
 func (x *ListAcmeCertificatesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[115]
+	mi := &file_rolodex_dns_proto_msgTypes[120]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6552,7 +6828,7 @@ func (x *ListAcmeCertificatesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAcmeCertificatesRequest.ProtoReflect.Descriptor instead.
 func (*ListAcmeCertificatesRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{115}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{120}
 }
 
 func (x *ListAcmeCertificatesRequest) GetZone() string {
@@ -6579,7 +6855,7 @@ type ListAcmeCertificatesResponse struct {
 
 func (x *ListAcmeCertificatesResponse) Reset() {
 	*x = ListAcmeCertificatesResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[116]
+	mi := &file_rolodex_dns_proto_msgTypes[121]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6591,7 +6867,7 @@ func (x *ListAcmeCertificatesResponse) String() string {
 func (*ListAcmeCertificatesResponse) ProtoMessage() {}
 
 func (x *ListAcmeCertificatesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[116]
+	mi := &file_rolodex_dns_proto_msgTypes[121]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6604,7 +6880,7 @@ func (x *ListAcmeCertificatesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAcmeCertificatesResponse.ProtoReflect.Descriptor instead.
 func (*ListAcmeCertificatesResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{116}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{121}
 }
 
 func (x *ListAcmeCertificatesResponse) GetCertificates() []*AcmeCertificateInfo {
@@ -6626,7 +6902,7 @@ type Dns64Config struct {
 
 func (x *Dns64Config) Reset() {
 	*x = Dns64Config{}
-	mi := &file_rolodex_dns_proto_msgTypes[117]
+	mi := &file_rolodex_dns_proto_msgTypes[122]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6638,7 +6914,7 @@ func (x *Dns64Config) String() string {
 func (*Dns64Config) ProtoMessage() {}
 
 func (x *Dns64Config) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[117]
+	mi := &file_rolodex_dns_proto_msgTypes[122]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6651,7 +6927,7 @@ func (x *Dns64Config) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Dns64Config.ProtoReflect.Descriptor instead.
 func (*Dns64Config) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{117}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{122}
 }
 
 func (x *Dns64Config) GetEnabled() bool {
@@ -6679,7 +6955,7 @@ type SetDns64ConfigRequest struct {
 
 func (x *SetDns64ConfigRequest) Reset() {
 	*x = SetDns64ConfigRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[118]
+	mi := &file_rolodex_dns_proto_msgTypes[123]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6691,7 +6967,7 @@ func (x *SetDns64ConfigRequest) String() string {
 func (*SetDns64ConfigRequest) ProtoMessage() {}
 
 func (x *SetDns64ConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[118]
+	mi := &file_rolodex_dns_proto_msgTypes[123]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6704,7 +6980,7 @@ func (x *SetDns64ConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetDns64ConfigRequest.ProtoReflect.Descriptor instead.
 func (*SetDns64ConfigRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{118}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{123}
 }
 
 func (x *SetDns64ConfigRequest) GetConfig() *Dns64Config {
@@ -6732,7 +7008,7 @@ type SetDns64ConfigResponse struct {
 
 func (x *SetDns64ConfigResponse) Reset() {
 	*x = SetDns64ConfigResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[119]
+	mi := &file_rolodex_dns_proto_msgTypes[124]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6744,7 +7020,7 @@ func (x *SetDns64ConfigResponse) String() string {
 func (*SetDns64ConfigResponse) ProtoMessage() {}
 
 func (x *SetDns64ConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[119]
+	mi := &file_rolodex_dns_proto_msgTypes[124]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6757,7 +7033,7 @@ func (x *SetDns64ConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetDns64ConfigResponse.ProtoReflect.Descriptor instead.
 func (*SetDns64ConfigResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{119}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{124}
 }
 
 func (x *SetDns64ConfigResponse) GetSuccess() bool {
@@ -6784,7 +7060,7 @@ type GetDns64ConfigRequest struct {
 
 func (x *GetDns64ConfigRequest) Reset() {
 	*x = GetDns64ConfigRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[120]
+	mi := &file_rolodex_dns_proto_msgTypes[125]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6796,7 +7072,7 @@ func (x *GetDns64ConfigRequest) String() string {
 func (*GetDns64ConfigRequest) ProtoMessage() {}
 
 func (x *GetDns64ConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[120]
+	mi := &file_rolodex_dns_proto_msgTypes[125]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6809,7 +7085,7 @@ func (x *GetDns64ConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDns64ConfigRequest.ProtoReflect.Descriptor instead.
 func (*GetDns64ConfigRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{120}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{125}
 }
 
 func (x *GetDns64ConfigRequest) GetAuthToken() string {
@@ -6829,7 +7105,7 @@ type GetDns64ConfigResponse struct {
 
 func (x *GetDns64ConfigResponse) Reset() {
 	*x = GetDns64ConfigResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[121]
+	mi := &file_rolodex_dns_proto_msgTypes[126]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6841,7 +7117,7 @@ func (x *GetDns64ConfigResponse) String() string {
 func (*GetDns64ConfigResponse) ProtoMessage() {}
 
 func (x *GetDns64ConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[121]
+	mi := &file_rolodex_dns_proto_msgTypes[126]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6854,7 +7130,7 @@ func (x *GetDns64ConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDns64ConfigResponse.ProtoReflect.Descriptor instead.
 func (*GetDns64ConfigResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{121}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{126}
 }
 
 func (x *GetDns64ConfigResponse) GetConfig() *Dns64Config {
@@ -6880,7 +7156,7 @@ type DhcpPool struct {
 
 func (x *DhcpPool) Reset() {
 	*x = DhcpPool{}
-	mi := &file_rolodex_dns_proto_msgTypes[122]
+	mi := &file_rolodex_dns_proto_msgTypes[127]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6892,7 +7168,7 @@ func (x *DhcpPool) String() string {
 func (*DhcpPool) ProtoMessage() {}
 
 func (x *DhcpPool) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[122]
+	mi := &file_rolodex_dns_proto_msgTypes[127]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6905,7 +7181,7 @@ func (x *DhcpPool) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DhcpPool.ProtoReflect.Descriptor instead.
 func (*DhcpPool) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{122}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{127}
 }
 
 func (x *DhcpPool) GetId() int64 {
@@ -6967,7 +7243,7 @@ type AddDhcpPoolRequest struct {
 
 func (x *AddDhcpPoolRequest) Reset() {
 	*x = AddDhcpPoolRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[123]
+	mi := &file_rolodex_dns_proto_msgTypes[128]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6979,7 +7255,7 @@ func (x *AddDhcpPoolRequest) String() string {
 func (*AddDhcpPoolRequest) ProtoMessage() {}
 
 func (x *AddDhcpPoolRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[123]
+	mi := &file_rolodex_dns_proto_msgTypes[128]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6992,7 +7268,7 @@ func (x *AddDhcpPoolRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddDhcpPoolRequest.ProtoReflect.Descriptor instead.
 func (*AddDhcpPoolRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{123}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{128}
 }
 
 func (x *AddDhcpPoolRequest) GetPool() *DhcpPool {
@@ -7019,7 +7295,7 @@ type AddDhcpPoolResponse struct {
 
 func (x *AddDhcpPoolResponse) Reset() {
 	*x = AddDhcpPoolResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[124]
+	mi := &file_rolodex_dns_proto_msgTypes[129]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7031,7 +7307,7 @@ func (x *AddDhcpPoolResponse) String() string {
 func (*AddDhcpPoolResponse) ProtoMessage() {}
 
 func (x *AddDhcpPoolResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[124]
+	mi := &file_rolodex_dns_proto_msgTypes[129]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7044,7 +7320,7 @@ func (x *AddDhcpPoolResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddDhcpPoolResponse.ProtoReflect.Descriptor instead.
 func (*AddDhcpPoolResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{124}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{129}
 }
 
 func (x *AddDhcpPoolResponse) GetSuccess() bool {
@@ -7071,7 +7347,7 @@ type RemoveDhcpPoolRequest struct {
 
 func (x *RemoveDhcpPoolRequest) Reset() {
 	*x = RemoveDhcpPoolRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[125]
+	mi := &file_rolodex_dns_proto_msgTypes[130]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7083,7 +7359,7 @@ func (x *RemoveDhcpPoolRequest) String() string {
 func (*RemoveDhcpPoolRequest) ProtoMessage() {}
 
 func (x *RemoveDhcpPoolRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[125]
+	mi := &file_rolodex_dns_proto_msgTypes[130]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7096,7 +7372,7 @@ func (x *RemoveDhcpPoolRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveDhcpPoolRequest.ProtoReflect.Descriptor instead.
 func (*RemoveDhcpPoolRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{125}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{130}
 }
 
 func (x *RemoveDhcpPoolRequest) GetPoolId() int64 {
@@ -7123,7 +7399,7 @@ type RemoveDhcpPoolResponse struct {
 
 func (x *RemoveDhcpPoolResponse) Reset() {
 	*x = RemoveDhcpPoolResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[126]
+	mi := &file_rolodex_dns_proto_msgTypes[131]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7135,7 +7411,7 @@ func (x *RemoveDhcpPoolResponse) String() string {
 func (*RemoveDhcpPoolResponse) ProtoMessage() {}
 
 func (x *RemoveDhcpPoolResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[126]
+	mi := &file_rolodex_dns_proto_msgTypes[131]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7148,7 +7424,7 @@ func (x *RemoveDhcpPoolResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveDhcpPoolResponse.ProtoReflect.Descriptor instead.
 func (*RemoveDhcpPoolResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{126}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{131}
 }
 
 func (x *RemoveDhcpPoolResponse) GetSuccess() bool {
@@ -7175,7 +7451,7 @@ type ListDhcpPoolsRequest struct {
 
 func (x *ListDhcpPoolsRequest) Reset() {
 	*x = ListDhcpPoolsRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[127]
+	mi := &file_rolodex_dns_proto_msgTypes[132]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7187,7 +7463,7 @@ func (x *ListDhcpPoolsRequest) String() string {
 func (*ListDhcpPoolsRequest) ProtoMessage() {}
 
 func (x *ListDhcpPoolsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[127]
+	mi := &file_rolodex_dns_proto_msgTypes[132]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7200,7 +7476,7 @@ func (x *ListDhcpPoolsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDhcpPoolsRequest.ProtoReflect.Descriptor instead.
 func (*ListDhcpPoolsRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{127}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{132}
 }
 
 func (x *ListDhcpPoolsRequest) GetScopeName() string {
@@ -7226,7 +7502,7 @@ type ListDhcpPoolsResponse struct {
 
 func (x *ListDhcpPoolsResponse) Reset() {
 	*x = ListDhcpPoolsResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[128]
+	mi := &file_rolodex_dns_proto_msgTypes[133]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7238,7 +7514,7 @@ func (x *ListDhcpPoolsResponse) String() string {
 func (*ListDhcpPoolsResponse) ProtoMessage() {}
 
 func (x *ListDhcpPoolsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[128]
+	mi := &file_rolodex_dns_proto_msgTypes[133]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7251,7 +7527,7 @@ func (x *ListDhcpPoolsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDhcpPoolsResponse.ProtoReflect.Descriptor instead.
 func (*ListDhcpPoolsResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{128}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{133}
 }
 
 func (x *ListDhcpPoolsResponse) GetPools() []*DhcpPool {
@@ -7277,7 +7553,7 @@ type DhcpLease struct {
 
 func (x *DhcpLease) Reset() {
 	*x = DhcpLease{}
-	mi := &file_rolodex_dns_proto_msgTypes[129]
+	mi := &file_rolodex_dns_proto_msgTypes[134]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7289,7 +7565,7 @@ func (x *DhcpLease) String() string {
 func (*DhcpLease) ProtoMessage() {}
 
 func (x *DhcpLease) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[129]
+	mi := &file_rolodex_dns_proto_msgTypes[134]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7302,7 +7578,7 @@ func (x *DhcpLease) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DhcpLease.ProtoReflect.Descriptor instead.
 func (*DhcpLease) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{129}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{134}
 }
 
 func (x *DhcpLease) GetMac() string {
@@ -7364,7 +7640,7 @@ type ListDhcpLeasesRequest struct {
 
 func (x *ListDhcpLeasesRequest) Reset() {
 	*x = ListDhcpLeasesRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[130]
+	mi := &file_rolodex_dns_proto_msgTypes[135]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7376,7 +7652,7 @@ func (x *ListDhcpLeasesRequest) String() string {
 func (*ListDhcpLeasesRequest) ProtoMessage() {}
 
 func (x *ListDhcpLeasesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[130]
+	mi := &file_rolodex_dns_proto_msgTypes[135]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7389,7 +7665,7 @@ func (x *ListDhcpLeasesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDhcpLeasesRequest.ProtoReflect.Descriptor instead.
 func (*ListDhcpLeasesRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{130}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{135}
 }
 
 func (x *ListDhcpLeasesRequest) GetScopeName() string {
@@ -7415,7 +7691,7 @@ type ListDhcpLeasesResponse struct {
 
 func (x *ListDhcpLeasesResponse) Reset() {
 	*x = ListDhcpLeasesResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[131]
+	mi := &file_rolodex_dns_proto_msgTypes[136]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7427,7 +7703,7 @@ func (x *ListDhcpLeasesResponse) String() string {
 func (*ListDhcpLeasesResponse) ProtoMessage() {}
 
 func (x *ListDhcpLeasesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[131]
+	mi := &file_rolodex_dns_proto_msgTypes[136]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7440,7 +7716,7 @@ func (x *ListDhcpLeasesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDhcpLeasesResponse.ProtoReflect.Descriptor instead.
 func (*ListDhcpLeasesResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{131}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{136}
 }
 
 func (x *ListDhcpLeasesResponse) GetLeases() []*DhcpLease {
@@ -7460,7 +7736,7 @@ type DeleteDhcpLeaseRequest struct {
 
 func (x *DeleteDhcpLeaseRequest) Reset() {
 	*x = DeleteDhcpLeaseRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[132]
+	mi := &file_rolodex_dns_proto_msgTypes[137]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7472,7 +7748,7 @@ func (x *DeleteDhcpLeaseRequest) String() string {
 func (*DeleteDhcpLeaseRequest) ProtoMessage() {}
 
 func (x *DeleteDhcpLeaseRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[132]
+	mi := &file_rolodex_dns_proto_msgTypes[137]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7485,7 +7761,7 @@ func (x *DeleteDhcpLeaseRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteDhcpLeaseRequest.ProtoReflect.Descriptor instead.
 func (*DeleteDhcpLeaseRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{132}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{137}
 }
 
 func (x *DeleteDhcpLeaseRequest) GetMac() string {
@@ -7512,7 +7788,7 @@ type DeleteDhcpLeaseResponse struct {
 
 func (x *DeleteDhcpLeaseResponse) Reset() {
 	*x = DeleteDhcpLeaseResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[133]
+	mi := &file_rolodex_dns_proto_msgTypes[138]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7524,7 +7800,7 @@ func (x *DeleteDhcpLeaseResponse) String() string {
 func (*DeleteDhcpLeaseResponse) ProtoMessage() {}
 
 func (x *DeleteDhcpLeaseResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[133]
+	mi := &file_rolodex_dns_proto_msgTypes[138]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7537,7 +7813,7 @@ func (x *DeleteDhcpLeaseResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteDhcpLeaseResponse.ProtoReflect.Descriptor instead.
 func (*DeleteDhcpLeaseResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{133}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{138}
 }
 
 func (x *DeleteDhcpLeaseResponse) GetSuccess() bool {
@@ -7566,7 +7842,7 @@ type ScopeRblProvider struct {
 
 func (x *ScopeRblProvider) Reset() {
 	*x = ScopeRblProvider{}
-	mi := &file_rolodex_dns_proto_msgTypes[134]
+	mi := &file_rolodex_dns_proto_msgTypes[139]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7578,7 +7854,7 @@ func (x *ScopeRblProvider) String() string {
 func (*ScopeRblProvider) ProtoMessage() {}
 
 func (x *ScopeRblProvider) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[134]
+	mi := &file_rolodex_dns_proto_msgTypes[139]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7591,7 +7867,7 @@ func (x *ScopeRblProvider) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScopeRblProvider.ProtoReflect.Descriptor instead.
 func (*ScopeRblProvider) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{134}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{139}
 }
 
 func (x *ScopeRblProvider) GetScopeName() string {
@@ -7625,7 +7901,7 @@ type AddScopeRblProviderRequest struct {
 
 func (x *AddScopeRblProviderRequest) Reset() {
 	*x = AddScopeRblProviderRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[135]
+	mi := &file_rolodex_dns_proto_msgTypes[140]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7637,7 +7913,7 @@ func (x *AddScopeRblProviderRequest) String() string {
 func (*AddScopeRblProviderRequest) ProtoMessage() {}
 
 func (x *AddScopeRblProviderRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[135]
+	mi := &file_rolodex_dns_proto_msgTypes[140]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7650,7 +7926,7 @@ func (x *AddScopeRblProviderRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddScopeRblProviderRequest.ProtoReflect.Descriptor instead.
 func (*AddScopeRblProviderRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{135}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{140}
 }
 
 func (x *AddScopeRblProviderRequest) GetProvider() *ScopeRblProvider {
@@ -7677,7 +7953,7 @@ type AddScopeRblProviderResponse struct {
 
 func (x *AddScopeRblProviderResponse) Reset() {
 	*x = AddScopeRblProviderResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[136]
+	mi := &file_rolodex_dns_proto_msgTypes[141]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7689,7 +7965,7 @@ func (x *AddScopeRblProviderResponse) String() string {
 func (*AddScopeRblProviderResponse) ProtoMessage() {}
 
 func (x *AddScopeRblProviderResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[136]
+	mi := &file_rolodex_dns_proto_msgTypes[141]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7702,7 +7978,7 @@ func (x *AddScopeRblProviderResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddScopeRblProviderResponse.ProtoReflect.Descriptor instead.
 func (*AddScopeRblProviderResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{136}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{141}
 }
 
 func (x *AddScopeRblProviderResponse) GetSuccess() bool {
@@ -7730,7 +8006,7 @@ type RemoveScopeRblProviderRequest struct {
 
 func (x *RemoveScopeRblProviderRequest) Reset() {
 	*x = RemoveScopeRblProviderRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[137]
+	mi := &file_rolodex_dns_proto_msgTypes[142]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7742,7 +8018,7 @@ func (x *RemoveScopeRblProviderRequest) String() string {
 func (*RemoveScopeRblProviderRequest) ProtoMessage() {}
 
 func (x *RemoveScopeRblProviderRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[137]
+	mi := &file_rolodex_dns_proto_msgTypes[142]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7755,7 +8031,7 @@ func (x *RemoveScopeRblProviderRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveScopeRblProviderRequest.ProtoReflect.Descriptor instead.
 func (*RemoveScopeRblProviderRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{137}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{142}
 }
 
 func (x *RemoveScopeRblProviderRequest) GetScopeName() string {
@@ -7789,7 +8065,7 @@ type RemoveScopeRblProviderResponse struct {
 
 func (x *RemoveScopeRblProviderResponse) Reset() {
 	*x = RemoveScopeRblProviderResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[138]
+	mi := &file_rolodex_dns_proto_msgTypes[143]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7801,7 +8077,7 @@ func (x *RemoveScopeRblProviderResponse) String() string {
 func (*RemoveScopeRblProviderResponse) ProtoMessage() {}
 
 func (x *RemoveScopeRblProviderResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[138]
+	mi := &file_rolodex_dns_proto_msgTypes[143]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7814,7 +8090,7 @@ func (x *RemoveScopeRblProviderResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveScopeRblProviderResponse.ProtoReflect.Descriptor instead.
 func (*RemoveScopeRblProviderResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{138}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{143}
 }
 
 func (x *RemoveScopeRblProviderResponse) GetSuccess() bool {
@@ -7841,7 +8117,7 @@ type ListScopeRblProvidersRequest struct {
 
 func (x *ListScopeRblProvidersRequest) Reset() {
 	*x = ListScopeRblProvidersRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[139]
+	mi := &file_rolodex_dns_proto_msgTypes[144]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7853,7 +8129,7 @@ func (x *ListScopeRblProvidersRequest) String() string {
 func (*ListScopeRblProvidersRequest) ProtoMessage() {}
 
 func (x *ListScopeRblProvidersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[139]
+	mi := &file_rolodex_dns_proto_msgTypes[144]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7866,7 +8142,7 @@ func (x *ListScopeRblProvidersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListScopeRblProvidersRequest.ProtoReflect.Descriptor instead.
 func (*ListScopeRblProvidersRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{139}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{144}
 }
 
 func (x *ListScopeRblProvidersRequest) GetScopeName() string {
@@ -7892,7 +8168,7 @@ type ListScopeRblProvidersResponse struct {
 
 func (x *ListScopeRblProvidersResponse) Reset() {
 	*x = ListScopeRblProvidersResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[140]
+	mi := &file_rolodex_dns_proto_msgTypes[145]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7904,7 +8180,7 @@ func (x *ListScopeRblProvidersResponse) String() string {
 func (*ListScopeRblProvidersResponse) ProtoMessage() {}
 
 func (x *ListScopeRblProvidersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[140]
+	mi := &file_rolodex_dns_proto_msgTypes[145]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7917,7 +8193,7 @@ func (x *ListScopeRblProvidersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListScopeRblProvidersResponse.ProtoReflect.Descriptor instead.
 func (*ListScopeRblProvidersResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{140}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{145}
 }
 
 func (x *ListScopeRblProvidersResponse) GetProviders() []*ScopeRblProvider {
@@ -7940,7 +8216,7 @@ type DhcpCertOption struct {
 
 func (x *DhcpCertOption) Reset() {
 	*x = DhcpCertOption{}
-	mi := &file_rolodex_dns_proto_msgTypes[141]
+	mi := &file_rolodex_dns_proto_msgTypes[146]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7952,7 +8228,7 @@ func (x *DhcpCertOption) String() string {
 func (*DhcpCertOption) ProtoMessage() {}
 
 func (x *DhcpCertOption) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[141]
+	mi := &file_rolodex_dns_proto_msgTypes[146]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7965,7 +8241,7 @@ func (x *DhcpCertOption) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DhcpCertOption.ProtoReflect.Descriptor instead.
 func (*DhcpCertOption) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{141}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{146}
 }
 
 func (x *DhcpCertOption) GetScopeName() string {
@@ -8006,7 +8282,7 @@ type SetDhcpCertOptionRequest struct {
 
 func (x *SetDhcpCertOptionRequest) Reset() {
 	*x = SetDhcpCertOptionRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[142]
+	mi := &file_rolodex_dns_proto_msgTypes[147]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8018,7 +8294,7 @@ func (x *SetDhcpCertOptionRequest) String() string {
 func (*SetDhcpCertOptionRequest) ProtoMessage() {}
 
 func (x *SetDhcpCertOptionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[142]
+	mi := &file_rolodex_dns_proto_msgTypes[147]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8031,7 +8307,7 @@ func (x *SetDhcpCertOptionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetDhcpCertOptionRequest.ProtoReflect.Descriptor instead.
 func (*SetDhcpCertOptionRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{142}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{147}
 }
 
 func (x *SetDhcpCertOptionRequest) GetOption() *DhcpCertOption {
@@ -8058,7 +8334,7 @@ type SetDhcpCertOptionResponse struct {
 
 func (x *SetDhcpCertOptionResponse) Reset() {
 	*x = SetDhcpCertOptionResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[143]
+	mi := &file_rolodex_dns_proto_msgTypes[148]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8070,7 +8346,7 @@ func (x *SetDhcpCertOptionResponse) String() string {
 func (*SetDhcpCertOptionResponse) ProtoMessage() {}
 
 func (x *SetDhcpCertOptionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[143]
+	mi := &file_rolodex_dns_proto_msgTypes[148]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8083,7 +8359,7 @@ func (x *SetDhcpCertOptionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetDhcpCertOptionResponse.ProtoReflect.Descriptor instead.
 func (*SetDhcpCertOptionResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{143}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{148}
 }
 
 func (x *SetDhcpCertOptionResponse) GetSuccess() bool {
@@ -8111,7 +8387,7 @@ type RemoveDhcpCertOptionRequest struct {
 
 func (x *RemoveDhcpCertOptionRequest) Reset() {
 	*x = RemoveDhcpCertOptionRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[144]
+	mi := &file_rolodex_dns_proto_msgTypes[149]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8123,7 +8399,7 @@ func (x *RemoveDhcpCertOptionRequest) String() string {
 func (*RemoveDhcpCertOptionRequest) ProtoMessage() {}
 
 func (x *RemoveDhcpCertOptionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[144]
+	mi := &file_rolodex_dns_proto_msgTypes[149]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8136,7 +8412,7 @@ func (x *RemoveDhcpCertOptionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveDhcpCertOptionRequest.ProtoReflect.Descriptor instead.
 func (*RemoveDhcpCertOptionRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{144}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{149}
 }
 
 func (x *RemoveDhcpCertOptionRequest) GetScopeName() string {
@@ -8170,7 +8446,7 @@ type RemoveDhcpCertOptionResponse struct {
 
 func (x *RemoveDhcpCertOptionResponse) Reset() {
 	*x = RemoveDhcpCertOptionResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[145]
+	mi := &file_rolodex_dns_proto_msgTypes[150]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8182,7 +8458,7 @@ func (x *RemoveDhcpCertOptionResponse) String() string {
 func (*RemoveDhcpCertOptionResponse) ProtoMessage() {}
 
 func (x *RemoveDhcpCertOptionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[145]
+	mi := &file_rolodex_dns_proto_msgTypes[150]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8195,7 +8471,7 @@ func (x *RemoveDhcpCertOptionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveDhcpCertOptionResponse.ProtoReflect.Descriptor instead.
 func (*RemoveDhcpCertOptionResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{145}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{150}
 }
 
 func (x *RemoveDhcpCertOptionResponse) GetSuccess() bool {
@@ -8222,7 +8498,7 @@ type ListDhcpCertOptionsRequest struct {
 
 func (x *ListDhcpCertOptionsRequest) Reset() {
 	*x = ListDhcpCertOptionsRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[146]
+	mi := &file_rolodex_dns_proto_msgTypes[151]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8234,7 +8510,7 @@ func (x *ListDhcpCertOptionsRequest) String() string {
 func (*ListDhcpCertOptionsRequest) ProtoMessage() {}
 
 func (x *ListDhcpCertOptionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[146]
+	mi := &file_rolodex_dns_proto_msgTypes[151]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8247,7 +8523,7 @@ func (x *ListDhcpCertOptionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDhcpCertOptionsRequest.ProtoReflect.Descriptor instead.
 func (*ListDhcpCertOptionsRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{146}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{151}
 }
 
 func (x *ListDhcpCertOptionsRequest) GetScopeName() string {
@@ -8273,7 +8549,7 @@ type ListDhcpCertOptionsResponse struct {
 
 func (x *ListDhcpCertOptionsResponse) Reset() {
 	*x = ListDhcpCertOptionsResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[147]
+	mi := &file_rolodex_dns_proto_msgTypes[152]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8285,7 +8561,7 @@ func (x *ListDhcpCertOptionsResponse) String() string {
 func (*ListDhcpCertOptionsResponse) ProtoMessage() {}
 
 func (x *ListDhcpCertOptionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[147]
+	mi := &file_rolodex_dns_proto_msgTypes[152]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8298,7 +8574,7 @@ func (x *ListDhcpCertOptionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDhcpCertOptionsResponse.ProtoReflect.Descriptor instead.
 func (*ListDhcpCertOptionsResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{147}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{152}
 }
 
 func (x *ListDhcpCertOptionsResponse) GetOptions() []*DhcpCertOption {
@@ -8372,7 +8648,24 @@ const file_rolodex_dns_proto_rawDesc = "" +
 	"auth_token\x18\x01 \x01(\tR\tauthToken\"f\n" +
 	"\x14GetRblConfigResponse\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x124\n" +
-	"\tproviders\x18\x02 \x03(\v2\x16.rolodex_dns.RblConfigR\tproviders\"2\n" +
+	"\tproviders\x18\x02 \x03(\v2\x16.rolodex_dns.RblConfigR\tproviders\";\n" +
+	"\vDnsblConfig\x12\x12\n" +
+	"\x04zone\x18\x01 \x01(\tR\x04zone\x12\x18\n" +
+	"\aenabled\x18\x02 \x01(\bR\aenabled\"\x88\x01\n" +
+	"\x15SetDnsblConfigRequest\x126\n" +
+	"\tproviders\x18\x01 \x03(\v2\x18.rolodex_dns.DnsblConfigR\tproviders\x12\x18\n" +
+	"\aenabled\x18\x02 \x01(\bR\aenabled\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x03 \x01(\tR\tauthToken\"L\n" +
+	"\x16SetDnsblConfigResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"6\n" +
+	"\x15GetDnsblConfigRequest\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x01 \x01(\tR\tauthToken\"j\n" +
+	"\x16GetDnsblConfigResponse\x12\x18\n" +
+	"\aenabled\x18\x01 \x01(\bR\aenabled\x126\n" +
+	"\tproviders\x18\x02 \x03(\v2\x18.rolodex_dns.DnsblConfigR\tproviders\"2\n" +
 	"\x11FlushCacheRequest\x12\x1d\n" +
 	"\n" +
 	"auth_token\x18\x01 \x01(\tR\tauthToken\"H\n" +
@@ -8926,14 +9219,16 @@ const file_rolodex_dns_proto_rawDesc = "" +
 	"\x05NSEC3\x10\x13\x12\x0e\n" +
 	"\n" +
 	"NSEC3PARAM\x10\x14\x12\b\n" +
-	"\x04CERT\x10\x152\xdf/\n" +
+	"\x04CERT\x10\x152\x951\n" +
 	"\x11RolodexDnsService\x12J\n" +
 	"\tAddRecord\x12\x1d.rolodex_dns.AddRecordRequest\x1a\x1e.rolodex_dns.AddRecordResponse\x12S\n" +
 	"\fRemoveRecord\x12 .rolodex_dns.RemoveRecordRequest\x1a!.rolodex_dns.RemoveRecordResponse\x12P\n" +
 	"\vListRecords\x12\x1f.rolodex_dns.ListRecordsRequest\x1a .rolodex_dns.ListRecordsResponse\x12T\n" +
 	"\rSetForwarders\x12 .rolodex_dns.SetForwarderRequest\x1a!.rolodex_dns.SetForwarderResponse\x12S\n" +
 	"\fSetRblConfig\x12 .rolodex_dns.SetRblConfigRequest\x1a!.rolodex_dns.SetRblConfigResponse\x12S\n" +
-	"\fGetRblConfig\x12 .rolodex_dns.GetRblConfigRequest\x1a!.rolodex_dns.GetRblConfigResponse\x12M\n" +
+	"\fGetRblConfig\x12 .rolodex_dns.GetRblConfigRequest\x1a!.rolodex_dns.GetRblConfigResponse\x12Y\n" +
+	"\x0eSetDnsblConfig\x12\".rolodex_dns.SetDnsblConfigRequest\x1a#.rolodex_dns.SetDnsblConfigResponse\x12Y\n" +
+	"\x0eGetDnsblConfig\x12\".rolodex_dns.GetDnsblConfigRequest\x1a#.rolodex_dns.GetDnsblConfigResponse\x12M\n" +
 	"\n" +
 	"FlushCache\x12\x1e.rolodex_dns.FlushCacheRequest\x1a\x1f.rolodex_dns.FlushCacheResponse\x12e\n" +
 	"\x12CreateNetworkScope\x12&.rolodex_dns.CreateNetworkScopeRequest\x1a'.rolodex_dns.CreateNetworkScopeResponse\x12e\n" +
@@ -9007,7 +9302,7 @@ func file_rolodex_dns_proto_rawDescGZIP() []byte {
 }
 
 var file_rolodex_dns_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_rolodex_dns_proto_msgTypes = make([]protoimpl.MessageInfo, 148)
+var file_rolodex_dns_proto_msgTypes = make([]protoimpl.MessageInfo, 153)
 var file_rolodex_dns_proto_goTypes = []any{
 	(RecordType)(0),                         // 0: rolodex_dns.RecordType
 	(*DnsRecord)(nil),                       // 1: rolodex_dns.DnsRecord
@@ -9024,140 +9319,145 @@ var file_rolodex_dns_proto_goTypes = []any{
 	(*SetRblConfigResponse)(nil),            // 12: rolodex_dns.SetRblConfigResponse
 	(*GetRblConfigRequest)(nil),             // 13: rolodex_dns.GetRblConfigRequest
 	(*GetRblConfigResponse)(nil),            // 14: rolodex_dns.GetRblConfigResponse
-	(*FlushCacheRequest)(nil),               // 15: rolodex_dns.FlushCacheRequest
-	(*FlushCacheResponse)(nil),              // 16: rolodex_dns.FlushCacheResponse
-	(*NetworkScope)(nil),                    // 17: rolodex_dns.NetworkScope
-	(*CreateNetworkScopeRequest)(nil),       // 18: rolodex_dns.CreateNetworkScopeRequest
-	(*CreateNetworkScopeResponse)(nil),      // 19: rolodex_dns.CreateNetworkScopeResponse
-	(*DeleteNetworkScopeRequest)(nil),       // 20: rolodex_dns.DeleteNetworkScopeRequest
-	(*DeleteNetworkScopeResponse)(nil),      // 21: rolodex_dns.DeleteNetworkScopeResponse
-	(*ListNetworkScopesRequest)(nil),        // 22: rolodex_dns.ListNetworkScopesRequest
-	(*ListNetworkScopesResponse)(nil),       // 23: rolodex_dns.ListNetworkScopesResponse
-	(*JoinNetworkRequest)(nil),              // 24: rolodex_dns.JoinNetworkRequest
-	(*JoinNetworkResponse)(nil),             // 25: rolodex_dns.JoinNetworkResponse
-	(*LeaveNetworkRequest)(nil),             // 26: rolodex_dns.LeaveNetworkRequest
-	(*LeaveNetworkResponse)(nil),            // 27: rolodex_dns.LeaveNetworkResponse
-	(*GetNetworkAssociationsRequest)(nil),   // 28: rolodex_dns.GetNetworkAssociationsRequest
-	(*NetworkAssociation)(nil),              // 29: rolodex_dns.NetworkAssociation
-	(*GetNetworkAssociationsResponse)(nil),  // 30: rolodex_dns.GetNetworkAssociationsResponse
-	(*AddScopedRecordRequest)(nil),          // 31: rolodex_dns.AddScopedRecordRequest
-	(*AddScopedRecordResponse)(nil),         // 32: rolodex_dns.AddScopedRecordResponse
-	(*RemoveScopedRecordRequest)(nil),       // 33: rolodex_dns.RemoveScopedRecordRequest
-	(*RemoveScopedRecordResponse)(nil),      // 34: rolodex_dns.RemoveScopedRecordResponse
-	(*ListScopedRecordsRequest)(nil),        // 35: rolodex_dns.ListScopedRecordsRequest
-	(*ListScopedRecordsResponse)(nil),       // 36: rolodex_dns.ListScopedRecordsResponse
-	(*GetSearchDomainsRequest)(nil),         // 37: rolodex_dns.GetSearchDomainsRequest
-	(*GetSearchDomainsResponse)(nil),        // 38: rolodex_dns.GetSearchDomainsResponse
-	(*AddAuthoritativeZoneRequest)(nil),     // 39: rolodex_dns.AddAuthoritativeZoneRequest
-	(*AddAuthoritativeZoneResponse)(nil),    // 40: rolodex_dns.AddAuthoritativeZoneResponse
-	(*RemoveAuthoritativeZoneRequest)(nil),  // 41: rolodex_dns.RemoveAuthoritativeZoneRequest
-	(*RemoveAuthoritativeZoneResponse)(nil), // 42: rolodex_dns.RemoveAuthoritativeZoneResponse
-	(*ListAuthoritativeZonesRequest)(nil),   // 43: rolodex_dns.ListAuthoritativeZonesRequest
-	(*ListAuthoritativeZonesResponse)(nil),  // 44: rolodex_dns.ListAuthoritativeZonesResponse
-	(*GetCacheStatsRequest)(nil),            // 45: rolodex_dns.GetCacheStatsRequest
-	(*GetCacheStatsResponse)(nil),           // 46: rolodex_dns.GetCacheStatsResponse
-	(*FlushDnsCacheRequest)(nil),            // 47: rolodex_dns.FlushDnsCacheRequest
-	(*FlushDnsCacheResponse)(nil),           // 48: rolodex_dns.FlushDnsCacheResponse
-	(*TtlDriftConfig)(nil),                  // 49: rolodex_dns.TtlDriftConfig
-	(*SetTtlDriftConfigRequest)(nil),        // 50: rolodex_dns.SetTtlDriftConfigRequest
-	(*SetTtlDriftConfigResponse)(nil),       // 51: rolodex_dns.SetTtlDriftConfigResponse
-	(*GetTtlDriftConfigRequest)(nil),        // 52: rolodex_dns.GetTtlDriftConfigRequest
-	(*GetTtlDriftConfigResponse)(nil),       // 53: rolodex_dns.GetTtlDriftConfigResponse
-	(*QueryLatencyStat)(nil),                // 54: rolodex_dns.QueryLatencyStat
-	(*GetQueryLatencyStatsRequest)(nil),     // 55: rolodex_dns.GetQueryLatencyStatsRequest
-	(*GetQueryLatencyStatsResponse)(nil),    // 56: rolodex_dns.GetQueryLatencyStatsResponse
-	(*LocalRblEntry)(nil),                   // 57: rolodex_dns.LocalRblEntry
-	(*AddLocalRblEntryRequest)(nil),         // 58: rolodex_dns.AddLocalRblEntryRequest
-	(*AddLocalRblEntryResponse)(nil),        // 59: rolodex_dns.AddLocalRblEntryResponse
-	(*RemoveLocalRblEntryRequest)(nil),      // 60: rolodex_dns.RemoveLocalRblEntryRequest
-	(*RemoveLocalRblEntryResponse)(nil),     // 61: rolodex_dns.RemoveLocalRblEntryResponse
-	(*ListLocalRblEntriesRequest)(nil),      // 62: rolodex_dns.ListLocalRblEntriesRequest
-	(*ListLocalRblEntriesResponse)(nil),     // 63: rolodex_dns.ListLocalRblEntriesResponse
-	(*TlsConfig)(nil),                       // 64: rolodex_dns.TlsConfig
-	(*DotConfig)(nil),                       // 65: rolodex_dns.DotConfig
-	(*SetDotConfigRequest)(nil),             // 66: rolodex_dns.SetDotConfigRequest
-	(*SetDotConfigResponse)(nil),            // 67: rolodex_dns.SetDotConfigResponse
-	(*GetDotConfigRequest)(nil),             // 68: rolodex_dns.GetDotConfigRequest
-	(*GetDotConfigResponse)(nil),            // 69: rolodex_dns.GetDotConfigResponse
-	(*DohConfig)(nil),                       // 70: rolodex_dns.DohConfig
-	(*SetDohConfigRequest)(nil),             // 71: rolodex_dns.SetDohConfigRequest
-	(*SetDohConfigResponse)(nil),            // 72: rolodex_dns.SetDohConfigResponse
-	(*GetDohConfigRequest)(nil),             // 73: rolodex_dns.GetDohConfigRequest
-	(*GetDohConfigResponse)(nil),            // 74: rolodex_dns.GetDohConfigResponse
-	(*DoqConfig)(nil),                       // 75: rolodex_dns.DoqConfig
-	(*SetDoqConfigRequest)(nil),             // 76: rolodex_dns.SetDoqConfigRequest
-	(*SetDoqConfigResponse)(nil),            // 77: rolodex_dns.SetDoqConfigResponse
-	(*GetDoqConfigRequest)(nil),             // 78: rolodex_dns.GetDoqConfigRequest
-	(*GetDoqConfigResponse)(nil),            // 79: rolodex_dns.GetDoqConfigResponse
-	(*ProxyConfig)(nil),                     // 80: rolodex_dns.ProxyConfig
-	(*SetProxyConfigRequest)(nil),           // 81: rolodex_dns.SetProxyConfigRequest
-	(*SetProxyConfigResponse)(nil),          // 82: rolodex_dns.SetProxyConfigResponse
-	(*GetProxyConfigRequest)(nil),           // 83: rolodex_dns.GetProxyConfigRequest
-	(*GetProxyConfigResponse)(nil),          // 84: rolodex_dns.GetProxyConfigResponse
-	(*DnssecKey)(nil),                       // 85: rolodex_dns.DnssecKey
-	(*GenerateDnssecKeyRequest)(nil),        // 86: rolodex_dns.GenerateDnssecKeyRequest
-	(*GenerateDnssecKeyResponse)(nil),       // 87: rolodex_dns.GenerateDnssecKeyResponse
-	(*ListDnssecKeysRequest)(nil),           // 88: rolodex_dns.ListDnssecKeysRequest
-	(*ListDnssecKeysResponse)(nil),          // 89: rolodex_dns.ListDnssecKeysResponse
-	(*DeleteDnssecKeyRequest)(nil),          // 90: rolodex_dns.DeleteDnssecKeyRequest
-	(*DeleteDnssecKeyResponse)(nil),         // 91: rolodex_dns.DeleteDnssecKeyResponse
-	(*GetDsRecordsRequest)(nil),             // 92: rolodex_dns.GetDsRecordsRequest
-	(*GetDsRecordsResponse)(nil),            // 93: rolodex_dns.GetDsRecordsResponse
-	(*SignZoneRequest)(nil),                 // 94: rolodex_dns.SignZoneRequest
-	(*SignZoneResponse)(nil),                // 95: rolodex_dns.SignZoneResponse
-	(*GenerateTlsaRecordRequest)(nil),       // 96: rolodex_dns.GenerateTlsaRecordRequest
-	(*GenerateTlsaRecordResponse)(nil),      // 97: rolodex_dns.GenerateTlsaRecordResponse
-	(*ListTlsaRecordsRequest)(nil),          // 98: rolodex_dns.ListTlsaRecordsRequest
-	(*ListTlsaRecordsResponse)(nil),         // 99: rolodex_dns.ListTlsaRecordsResponse
-	(*GenerateDaneRootCaRequest)(nil),       // 100: rolodex_dns.GenerateDaneRootCaRequest
-	(*GenerateDaneRootCaResponse)(nil),      // 101: rolodex_dns.GenerateDaneRootCaResponse
-	(*RequestAcmeCertRequest)(nil),          // 102: rolodex_dns.RequestAcmeCertRequest
-	(*RequestAcmeCertResponse)(nil),         // 103: rolodex_dns.RequestAcmeCertResponse
-	(*GetAcmeStatusRequest)(nil),            // 104: rolodex_dns.GetAcmeStatusRequest
-	(*GetAcmeStatusResponse)(nil),           // 105: rolodex_dns.GetAcmeStatusResponse
-	(*EnsureZoneCaRequest)(nil),             // 106: rolodex_dns.EnsureZoneCaRequest
-	(*EnsureZoneCaResponse)(nil),            // 107: rolodex_dns.EnsureZoneCaResponse
-	(*CreateEabCredentialRequest)(nil),      // 108: rolodex_dns.CreateEabCredentialRequest
-	(*CreateEabCredentialResponse)(nil),     // 109: rolodex_dns.CreateEabCredentialResponse
-	(*RemoveEabCredentialRequest)(nil),      // 110: rolodex_dns.RemoveEabCredentialRequest
-	(*RemoveEabCredentialResponse)(nil),     // 111: rolodex_dns.RemoveEabCredentialResponse
-	(*AcmeAccountInfo)(nil),                 // 112: rolodex_dns.AcmeAccountInfo
-	(*ListAcmeAccountsRequest)(nil),         // 113: rolodex_dns.ListAcmeAccountsRequest
-	(*ListAcmeAccountsResponse)(nil),        // 114: rolodex_dns.ListAcmeAccountsResponse
-	(*AcmeCertificateInfo)(nil),             // 115: rolodex_dns.AcmeCertificateInfo
-	(*ListAcmeCertificatesRequest)(nil),     // 116: rolodex_dns.ListAcmeCertificatesRequest
-	(*ListAcmeCertificatesResponse)(nil),    // 117: rolodex_dns.ListAcmeCertificatesResponse
-	(*Dns64Config)(nil),                     // 118: rolodex_dns.Dns64Config
-	(*SetDns64ConfigRequest)(nil),           // 119: rolodex_dns.SetDns64ConfigRequest
-	(*SetDns64ConfigResponse)(nil),          // 120: rolodex_dns.SetDns64ConfigResponse
-	(*GetDns64ConfigRequest)(nil),           // 121: rolodex_dns.GetDns64ConfigRequest
-	(*GetDns64ConfigResponse)(nil),          // 122: rolodex_dns.GetDns64ConfigResponse
-	(*DhcpPool)(nil),                        // 123: rolodex_dns.DhcpPool
-	(*AddDhcpPoolRequest)(nil),              // 124: rolodex_dns.AddDhcpPoolRequest
-	(*AddDhcpPoolResponse)(nil),             // 125: rolodex_dns.AddDhcpPoolResponse
-	(*RemoveDhcpPoolRequest)(nil),           // 126: rolodex_dns.RemoveDhcpPoolRequest
-	(*RemoveDhcpPoolResponse)(nil),          // 127: rolodex_dns.RemoveDhcpPoolResponse
-	(*ListDhcpPoolsRequest)(nil),            // 128: rolodex_dns.ListDhcpPoolsRequest
-	(*ListDhcpPoolsResponse)(nil),           // 129: rolodex_dns.ListDhcpPoolsResponse
-	(*DhcpLease)(nil),                       // 130: rolodex_dns.DhcpLease
-	(*ListDhcpLeasesRequest)(nil),           // 131: rolodex_dns.ListDhcpLeasesRequest
-	(*ListDhcpLeasesResponse)(nil),          // 132: rolodex_dns.ListDhcpLeasesResponse
-	(*DeleteDhcpLeaseRequest)(nil),          // 133: rolodex_dns.DeleteDhcpLeaseRequest
-	(*DeleteDhcpLeaseResponse)(nil),         // 134: rolodex_dns.DeleteDhcpLeaseResponse
-	(*ScopeRblProvider)(nil),                // 135: rolodex_dns.ScopeRblProvider
-	(*AddScopeRblProviderRequest)(nil),      // 136: rolodex_dns.AddScopeRblProviderRequest
-	(*AddScopeRblProviderResponse)(nil),     // 137: rolodex_dns.AddScopeRblProviderResponse
-	(*RemoveScopeRblProviderRequest)(nil),   // 138: rolodex_dns.RemoveScopeRblProviderRequest
-	(*RemoveScopeRblProviderResponse)(nil),  // 139: rolodex_dns.RemoveScopeRblProviderResponse
-	(*ListScopeRblProvidersRequest)(nil),    // 140: rolodex_dns.ListScopeRblProvidersRequest
-	(*ListScopeRblProvidersResponse)(nil),   // 141: rolodex_dns.ListScopeRblProvidersResponse
-	(*DhcpCertOption)(nil),                  // 142: rolodex_dns.DhcpCertOption
-	(*SetDhcpCertOptionRequest)(nil),        // 143: rolodex_dns.SetDhcpCertOptionRequest
-	(*SetDhcpCertOptionResponse)(nil),       // 144: rolodex_dns.SetDhcpCertOptionResponse
-	(*RemoveDhcpCertOptionRequest)(nil),     // 145: rolodex_dns.RemoveDhcpCertOptionRequest
-	(*RemoveDhcpCertOptionResponse)(nil),    // 146: rolodex_dns.RemoveDhcpCertOptionResponse
-	(*ListDhcpCertOptionsRequest)(nil),      // 147: rolodex_dns.ListDhcpCertOptionsRequest
-	(*ListDhcpCertOptionsResponse)(nil),     // 148: rolodex_dns.ListDhcpCertOptionsResponse
+	(*DnsblConfig)(nil),                     // 15: rolodex_dns.DnsblConfig
+	(*SetDnsblConfigRequest)(nil),           // 16: rolodex_dns.SetDnsblConfigRequest
+	(*SetDnsblConfigResponse)(nil),          // 17: rolodex_dns.SetDnsblConfigResponse
+	(*GetDnsblConfigRequest)(nil),           // 18: rolodex_dns.GetDnsblConfigRequest
+	(*GetDnsblConfigResponse)(nil),          // 19: rolodex_dns.GetDnsblConfigResponse
+	(*FlushCacheRequest)(nil),               // 20: rolodex_dns.FlushCacheRequest
+	(*FlushCacheResponse)(nil),              // 21: rolodex_dns.FlushCacheResponse
+	(*NetworkScope)(nil),                    // 22: rolodex_dns.NetworkScope
+	(*CreateNetworkScopeRequest)(nil),       // 23: rolodex_dns.CreateNetworkScopeRequest
+	(*CreateNetworkScopeResponse)(nil),      // 24: rolodex_dns.CreateNetworkScopeResponse
+	(*DeleteNetworkScopeRequest)(nil),       // 25: rolodex_dns.DeleteNetworkScopeRequest
+	(*DeleteNetworkScopeResponse)(nil),      // 26: rolodex_dns.DeleteNetworkScopeResponse
+	(*ListNetworkScopesRequest)(nil),        // 27: rolodex_dns.ListNetworkScopesRequest
+	(*ListNetworkScopesResponse)(nil),       // 28: rolodex_dns.ListNetworkScopesResponse
+	(*JoinNetworkRequest)(nil),              // 29: rolodex_dns.JoinNetworkRequest
+	(*JoinNetworkResponse)(nil),             // 30: rolodex_dns.JoinNetworkResponse
+	(*LeaveNetworkRequest)(nil),             // 31: rolodex_dns.LeaveNetworkRequest
+	(*LeaveNetworkResponse)(nil),            // 32: rolodex_dns.LeaveNetworkResponse
+	(*GetNetworkAssociationsRequest)(nil),   // 33: rolodex_dns.GetNetworkAssociationsRequest
+	(*NetworkAssociation)(nil),              // 34: rolodex_dns.NetworkAssociation
+	(*GetNetworkAssociationsResponse)(nil),  // 35: rolodex_dns.GetNetworkAssociationsResponse
+	(*AddScopedRecordRequest)(nil),          // 36: rolodex_dns.AddScopedRecordRequest
+	(*AddScopedRecordResponse)(nil),         // 37: rolodex_dns.AddScopedRecordResponse
+	(*RemoveScopedRecordRequest)(nil),       // 38: rolodex_dns.RemoveScopedRecordRequest
+	(*RemoveScopedRecordResponse)(nil),      // 39: rolodex_dns.RemoveScopedRecordResponse
+	(*ListScopedRecordsRequest)(nil),        // 40: rolodex_dns.ListScopedRecordsRequest
+	(*ListScopedRecordsResponse)(nil),       // 41: rolodex_dns.ListScopedRecordsResponse
+	(*GetSearchDomainsRequest)(nil),         // 42: rolodex_dns.GetSearchDomainsRequest
+	(*GetSearchDomainsResponse)(nil),        // 43: rolodex_dns.GetSearchDomainsResponse
+	(*AddAuthoritativeZoneRequest)(nil),     // 44: rolodex_dns.AddAuthoritativeZoneRequest
+	(*AddAuthoritativeZoneResponse)(nil),    // 45: rolodex_dns.AddAuthoritativeZoneResponse
+	(*RemoveAuthoritativeZoneRequest)(nil),  // 46: rolodex_dns.RemoveAuthoritativeZoneRequest
+	(*RemoveAuthoritativeZoneResponse)(nil), // 47: rolodex_dns.RemoveAuthoritativeZoneResponse
+	(*ListAuthoritativeZonesRequest)(nil),   // 48: rolodex_dns.ListAuthoritativeZonesRequest
+	(*ListAuthoritativeZonesResponse)(nil),  // 49: rolodex_dns.ListAuthoritativeZonesResponse
+	(*GetCacheStatsRequest)(nil),            // 50: rolodex_dns.GetCacheStatsRequest
+	(*GetCacheStatsResponse)(nil),           // 51: rolodex_dns.GetCacheStatsResponse
+	(*FlushDnsCacheRequest)(nil),            // 52: rolodex_dns.FlushDnsCacheRequest
+	(*FlushDnsCacheResponse)(nil),           // 53: rolodex_dns.FlushDnsCacheResponse
+	(*TtlDriftConfig)(nil),                  // 54: rolodex_dns.TtlDriftConfig
+	(*SetTtlDriftConfigRequest)(nil),        // 55: rolodex_dns.SetTtlDriftConfigRequest
+	(*SetTtlDriftConfigResponse)(nil),       // 56: rolodex_dns.SetTtlDriftConfigResponse
+	(*GetTtlDriftConfigRequest)(nil),        // 57: rolodex_dns.GetTtlDriftConfigRequest
+	(*GetTtlDriftConfigResponse)(nil),       // 58: rolodex_dns.GetTtlDriftConfigResponse
+	(*QueryLatencyStat)(nil),                // 59: rolodex_dns.QueryLatencyStat
+	(*GetQueryLatencyStatsRequest)(nil),     // 60: rolodex_dns.GetQueryLatencyStatsRequest
+	(*GetQueryLatencyStatsResponse)(nil),    // 61: rolodex_dns.GetQueryLatencyStatsResponse
+	(*LocalRblEntry)(nil),                   // 62: rolodex_dns.LocalRblEntry
+	(*AddLocalRblEntryRequest)(nil),         // 63: rolodex_dns.AddLocalRblEntryRequest
+	(*AddLocalRblEntryResponse)(nil),        // 64: rolodex_dns.AddLocalRblEntryResponse
+	(*RemoveLocalRblEntryRequest)(nil),      // 65: rolodex_dns.RemoveLocalRblEntryRequest
+	(*RemoveLocalRblEntryResponse)(nil),     // 66: rolodex_dns.RemoveLocalRblEntryResponse
+	(*ListLocalRblEntriesRequest)(nil),      // 67: rolodex_dns.ListLocalRblEntriesRequest
+	(*ListLocalRblEntriesResponse)(nil),     // 68: rolodex_dns.ListLocalRblEntriesResponse
+	(*TlsConfig)(nil),                       // 69: rolodex_dns.TlsConfig
+	(*DotConfig)(nil),                       // 70: rolodex_dns.DotConfig
+	(*SetDotConfigRequest)(nil),             // 71: rolodex_dns.SetDotConfigRequest
+	(*SetDotConfigResponse)(nil),            // 72: rolodex_dns.SetDotConfigResponse
+	(*GetDotConfigRequest)(nil),             // 73: rolodex_dns.GetDotConfigRequest
+	(*GetDotConfigResponse)(nil),            // 74: rolodex_dns.GetDotConfigResponse
+	(*DohConfig)(nil),                       // 75: rolodex_dns.DohConfig
+	(*SetDohConfigRequest)(nil),             // 76: rolodex_dns.SetDohConfigRequest
+	(*SetDohConfigResponse)(nil),            // 77: rolodex_dns.SetDohConfigResponse
+	(*GetDohConfigRequest)(nil),             // 78: rolodex_dns.GetDohConfigRequest
+	(*GetDohConfigResponse)(nil),            // 79: rolodex_dns.GetDohConfigResponse
+	(*DoqConfig)(nil),                       // 80: rolodex_dns.DoqConfig
+	(*SetDoqConfigRequest)(nil),             // 81: rolodex_dns.SetDoqConfigRequest
+	(*SetDoqConfigResponse)(nil),            // 82: rolodex_dns.SetDoqConfigResponse
+	(*GetDoqConfigRequest)(nil),             // 83: rolodex_dns.GetDoqConfigRequest
+	(*GetDoqConfigResponse)(nil),            // 84: rolodex_dns.GetDoqConfigResponse
+	(*ProxyConfig)(nil),                     // 85: rolodex_dns.ProxyConfig
+	(*SetProxyConfigRequest)(nil),           // 86: rolodex_dns.SetProxyConfigRequest
+	(*SetProxyConfigResponse)(nil),          // 87: rolodex_dns.SetProxyConfigResponse
+	(*GetProxyConfigRequest)(nil),           // 88: rolodex_dns.GetProxyConfigRequest
+	(*GetProxyConfigResponse)(nil),          // 89: rolodex_dns.GetProxyConfigResponse
+	(*DnssecKey)(nil),                       // 90: rolodex_dns.DnssecKey
+	(*GenerateDnssecKeyRequest)(nil),        // 91: rolodex_dns.GenerateDnssecKeyRequest
+	(*GenerateDnssecKeyResponse)(nil),       // 92: rolodex_dns.GenerateDnssecKeyResponse
+	(*ListDnssecKeysRequest)(nil),           // 93: rolodex_dns.ListDnssecKeysRequest
+	(*ListDnssecKeysResponse)(nil),          // 94: rolodex_dns.ListDnssecKeysResponse
+	(*DeleteDnssecKeyRequest)(nil),          // 95: rolodex_dns.DeleteDnssecKeyRequest
+	(*DeleteDnssecKeyResponse)(nil),         // 96: rolodex_dns.DeleteDnssecKeyResponse
+	(*GetDsRecordsRequest)(nil),             // 97: rolodex_dns.GetDsRecordsRequest
+	(*GetDsRecordsResponse)(nil),            // 98: rolodex_dns.GetDsRecordsResponse
+	(*SignZoneRequest)(nil),                 // 99: rolodex_dns.SignZoneRequest
+	(*SignZoneResponse)(nil),                // 100: rolodex_dns.SignZoneResponse
+	(*GenerateTlsaRecordRequest)(nil),       // 101: rolodex_dns.GenerateTlsaRecordRequest
+	(*GenerateTlsaRecordResponse)(nil),      // 102: rolodex_dns.GenerateTlsaRecordResponse
+	(*ListTlsaRecordsRequest)(nil),          // 103: rolodex_dns.ListTlsaRecordsRequest
+	(*ListTlsaRecordsResponse)(nil),         // 104: rolodex_dns.ListTlsaRecordsResponse
+	(*GenerateDaneRootCaRequest)(nil),       // 105: rolodex_dns.GenerateDaneRootCaRequest
+	(*GenerateDaneRootCaResponse)(nil),      // 106: rolodex_dns.GenerateDaneRootCaResponse
+	(*RequestAcmeCertRequest)(nil),          // 107: rolodex_dns.RequestAcmeCertRequest
+	(*RequestAcmeCertResponse)(nil),         // 108: rolodex_dns.RequestAcmeCertResponse
+	(*GetAcmeStatusRequest)(nil),            // 109: rolodex_dns.GetAcmeStatusRequest
+	(*GetAcmeStatusResponse)(nil),           // 110: rolodex_dns.GetAcmeStatusResponse
+	(*EnsureZoneCaRequest)(nil),             // 111: rolodex_dns.EnsureZoneCaRequest
+	(*EnsureZoneCaResponse)(nil),            // 112: rolodex_dns.EnsureZoneCaResponse
+	(*CreateEabCredentialRequest)(nil),      // 113: rolodex_dns.CreateEabCredentialRequest
+	(*CreateEabCredentialResponse)(nil),     // 114: rolodex_dns.CreateEabCredentialResponse
+	(*RemoveEabCredentialRequest)(nil),      // 115: rolodex_dns.RemoveEabCredentialRequest
+	(*RemoveEabCredentialResponse)(nil),     // 116: rolodex_dns.RemoveEabCredentialResponse
+	(*AcmeAccountInfo)(nil),                 // 117: rolodex_dns.AcmeAccountInfo
+	(*ListAcmeAccountsRequest)(nil),         // 118: rolodex_dns.ListAcmeAccountsRequest
+	(*ListAcmeAccountsResponse)(nil),        // 119: rolodex_dns.ListAcmeAccountsResponse
+	(*AcmeCertificateInfo)(nil),             // 120: rolodex_dns.AcmeCertificateInfo
+	(*ListAcmeCertificatesRequest)(nil),     // 121: rolodex_dns.ListAcmeCertificatesRequest
+	(*ListAcmeCertificatesResponse)(nil),    // 122: rolodex_dns.ListAcmeCertificatesResponse
+	(*Dns64Config)(nil),                     // 123: rolodex_dns.Dns64Config
+	(*SetDns64ConfigRequest)(nil),           // 124: rolodex_dns.SetDns64ConfigRequest
+	(*SetDns64ConfigResponse)(nil),          // 125: rolodex_dns.SetDns64ConfigResponse
+	(*GetDns64ConfigRequest)(nil),           // 126: rolodex_dns.GetDns64ConfigRequest
+	(*GetDns64ConfigResponse)(nil),          // 127: rolodex_dns.GetDns64ConfigResponse
+	(*DhcpPool)(nil),                        // 128: rolodex_dns.DhcpPool
+	(*AddDhcpPoolRequest)(nil),              // 129: rolodex_dns.AddDhcpPoolRequest
+	(*AddDhcpPoolResponse)(nil),             // 130: rolodex_dns.AddDhcpPoolResponse
+	(*RemoveDhcpPoolRequest)(nil),           // 131: rolodex_dns.RemoveDhcpPoolRequest
+	(*RemoveDhcpPoolResponse)(nil),          // 132: rolodex_dns.RemoveDhcpPoolResponse
+	(*ListDhcpPoolsRequest)(nil),            // 133: rolodex_dns.ListDhcpPoolsRequest
+	(*ListDhcpPoolsResponse)(nil),           // 134: rolodex_dns.ListDhcpPoolsResponse
+	(*DhcpLease)(nil),                       // 135: rolodex_dns.DhcpLease
+	(*ListDhcpLeasesRequest)(nil),           // 136: rolodex_dns.ListDhcpLeasesRequest
+	(*ListDhcpLeasesResponse)(nil),          // 137: rolodex_dns.ListDhcpLeasesResponse
+	(*DeleteDhcpLeaseRequest)(nil),          // 138: rolodex_dns.DeleteDhcpLeaseRequest
+	(*DeleteDhcpLeaseResponse)(nil),         // 139: rolodex_dns.DeleteDhcpLeaseResponse
+	(*ScopeRblProvider)(nil),                // 140: rolodex_dns.ScopeRblProvider
+	(*AddScopeRblProviderRequest)(nil),      // 141: rolodex_dns.AddScopeRblProviderRequest
+	(*AddScopeRblProviderResponse)(nil),     // 142: rolodex_dns.AddScopeRblProviderResponse
+	(*RemoveScopeRblProviderRequest)(nil),   // 143: rolodex_dns.RemoveScopeRblProviderRequest
+	(*RemoveScopeRblProviderResponse)(nil),  // 144: rolodex_dns.RemoveScopeRblProviderResponse
+	(*ListScopeRblProvidersRequest)(nil),    // 145: rolodex_dns.ListScopeRblProvidersRequest
+	(*ListScopeRblProvidersResponse)(nil),   // 146: rolodex_dns.ListScopeRblProvidersResponse
+	(*DhcpCertOption)(nil),                  // 147: rolodex_dns.DhcpCertOption
+	(*SetDhcpCertOptionRequest)(nil),        // 148: rolodex_dns.SetDhcpCertOptionRequest
+	(*SetDhcpCertOptionResponse)(nil),       // 149: rolodex_dns.SetDhcpCertOptionResponse
+	(*RemoveDhcpCertOptionRequest)(nil),     // 150: rolodex_dns.RemoveDhcpCertOptionRequest
+	(*RemoveDhcpCertOptionResponse)(nil),    // 151: rolodex_dns.RemoveDhcpCertOptionResponse
+	(*ListDhcpCertOptionsRequest)(nil),      // 152: rolodex_dns.ListDhcpCertOptionsRequest
+	(*ListDhcpCertOptionsResponse)(nil),     // 153: rolodex_dns.ListDhcpCertOptionsResponse
 }
 var file_rolodex_dns_proto_depIdxs = []int32{
 	0,   // 0: rolodex_dns.DnsRecord.record_type:type_name -> rolodex_dns.RecordType
@@ -9167,176 +9467,182 @@ var file_rolodex_dns_proto_depIdxs = []int32{
 	1,   // 4: rolodex_dns.ListRecordsResponse.records:type_name -> rolodex_dns.DnsRecord
 	10,  // 5: rolodex_dns.SetRblConfigRequest.providers:type_name -> rolodex_dns.RblConfig
 	10,  // 6: rolodex_dns.GetRblConfigResponse.providers:type_name -> rolodex_dns.RblConfig
-	17,  // 7: rolodex_dns.CreateNetworkScopeRequest.scope:type_name -> rolodex_dns.NetworkScope
-	17,  // 8: rolodex_dns.ListNetworkScopesResponse.scopes:type_name -> rolodex_dns.NetworkScope
-	29,  // 9: rolodex_dns.GetNetworkAssociationsResponse.associations:type_name -> rolodex_dns.NetworkAssociation
-	1,   // 10: rolodex_dns.AddScopedRecordRequest.record:type_name -> rolodex_dns.DnsRecord
-	0,   // 11: rolodex_dns.RemoveScopedRecordRequest.record_type:type_name -> rolodex_dns.RecordType
-	0,   // 12: rolodex_dns.ListScopedRecordsRequest.record_type_filter:type_name -> rolodex_dns.RecordType
-	1,   // 13: rolodex_dns.ListScopedRecordsResponse.records:type_name -> rolodex_dns.DnsRecord
-	49,  // 14: rolodex_dns.SetTtlDriftConfigRequest.config:type_name -> rolodex_dns.TtlDriftConfig
-	49,  // 15: rolodex_dns.GetTtlDriftConfigResponse.config:type_name -> rolodex_dns.TtlDriftConfig
-	54,  // 16: rolodex_dns.GetQueryLatencyStatsResponse.stats:type_name -> rolodex_dns.QueryLatencyStat
-	57,  // 17: rolodex_dns.AddLocalRblEntryRequest.entry:type_name -> rolodex_dns.LocalRblEntry
-	57,  // 18: rolodex_dns.ListLocalRblEntriesResponse.entries:type_name -> rolodex_dns.LocalRblEntry
-	64,  // 19: rolodex_dns.DotConfig.tls:type_name -> rolodex_dns.TlsConfig
-	65,  // 20: rolodex_dns.SetDotConfigRequest.config:type_name -> rolodex_dns.DotConfig
-	65,  // 21: rolodex_dns.GetDotConfigResponse.config:type_name -> rolodex_dns.DotConfig
-	64,  // 22: rolodex_dns.DohConfig.tls:type_name -> rolodex_dns.TlsConfig
-	70,  // 23: rolodex_dns.SetDohConfigRequest.config:type_name -> rolodex_dns.DohConfig
-	70,  // 24: rolodex_dns.GetDohConfigResponse.config:type_name -> rolodex_dns.DohConfig
-	64,  // 25: rolodex_dns.DoqConfig.tls:type_name -> rolodex_dns.TlsConfig
-	75,  // 26: rolodex_dns.SetDoqConfigRequest.config:type_name -> rolodex_dns.DoqConfig
-	75,  // 27: rolodex_dns.GetDoqConfigResponse.config:type_name -> rolodex_dns.DoqConfig
-	80,  // 28: rolodex_dns.SetProxyConfigRequest.config:type_name -> rolodex_dns.ProxyConfig
-	80,  // 29: rolodex_dns.GetProxyConfigResponse.config:type_name -> rolodex_dns.ProxyConfig
-	85,  // 30: rolodex_dns.GenerateDnssecKeyResponse.key:type_name -> rolodex_dns.DnssecKey
-	85,  // 31: rolodex_dns.ListDnssecKeysResponse.keys:type_name -> rolodex_dns.DnssecKey
-	1,   // 32: rolodex_dns.ListTlsaRecordsResponse.records:type_name -> rolodex_dns.DnsRecord
-	112, // 33: rolodex_dns.ListAcmeAccountsResponse.accounts:type_name -> rolodex_dns.AcmeAccountInfo
-	115, // 34: rolodex_dns.ListAcmeCertificatesResponse.certificates:type_name -> rolodex_dns.AcmeCertificateInfo
-	118, // 35: rolodex_dns.SetDns64ConfigRequest.config:type_name -> rolodex_dns.Dns64Config
-	118, // 36: rolodex_dns.GetDns64ConfigResponse.config:type_name -> rolodex_dns.Dns64Config
-	123, // 37: rolodex_dns.AddDhcpPoolRequest.pool:type_name -> rolodex_dns.DhcpPool
-	123, // 38: rolodex_dns.ListDhcpPoolsResponse.pools:type_name -> rolodex_dns.DhcpPool
-	130, // 39: rolodex_dns.ListDhcpLeasesResponse.leases:type_name -> rolodex_dns.DhcpLease
-	135, // 40: rolodex_dns.AddScopeRblProviderRequest.provider:type_name -> rolodex_dns.ScopeRblProvider
-	135, // 41: rolodex_dns.ListScopeRblProvidersResponse.providers:type_name -> rolodex_dns.ScopeRblProvider
-	142, // 42: rolodex_dns.SetDhcpCertOptionRequest.option:type_name -> rolodex_dns.DhcpCertOption
-	142, // 43: rolodex_dns.ListDhcpCertOptionsResponse.options:type_name -> rolodex_dns.DhcpCertOption
-	2,   // 44: rolodex_dns.RolodexDnsService.AddRecord:input_type -> rolodex_dns.AddRecordRequest
-	4,   // 45: rolodex_dns.RolodexDnsService.RemoveRecord:input_type -> rolodex_dns.RemoveRecordRequest
-	6,   // 46: rolodex_dns.RolodexDnsService.ListRecords:input_type -> rolodex_dns.ListRecordsRequest
-	8,   // 47: rolodex_dns.RolodexDnsService.SetForwarders:input_type -> rolodex_dns.SetForwarderRequest
-	11,  // 48: rolodex_dns.RolodexDnsService.SetRblConfig:input_type -> rolodex_dns.SetRblConfigRequest
-	13,  // 49: rolodex_dns.RolodexDnsService.GetRblConfig:input_type -> rolodex_dns.GetRblConfigRequest
-	15,  // 50: rolodex_dns.RolodexDnsService.FlushCache:input_type -> rolodex_dns.FlushCacheRequest
-	18,  // 51: rolodex_dns.RolodexDnsService.CreateNetworkScope:input_type -> rolodex_dns.CreateNetworkScopeRequest
-	20,  // 52: rolodex_dns.RolodexDnsService.DeleteNetworkScope:input_type -> rolodex_dns.DeleteNetworkScopeRequest
-	22,  // 53: rolodex_dns.RolodexDnsService.ListNetworkScopes:input_type -> rolodex_dns.ListNetworkScopesRequest
-	24,  // 54: rolodex_dns.RolodexDnsService.JoinNetwork:input_type -> rolodex_dns.JoinNetworkRequest
-	26,  // 55: rolodex_dns.RolodexDnsService.LeaveNetwork:input_type -> rolodex_dns.LeaveNetworkRequest
-	28,  // 56: rolodex_dns.RolodexDnsService.GetNetworkAssociations:input_type -> rolodex_dns.GetNetworkAssociationsRequest
-	31,  // 57: rolodex_dns.RolodexDnsService.AddScopedRecord:input_type -> rolodex_dns.AddScopedRecordRequest
-	33,  // 58: rolodex_dns.RolodexDnsService.RemoveScopedRecord:input_type -> rolodex_dns.RemoveScopedRecordRequest
-	35,  // 59: rolodex_dns.RolodexDnsService.ListScopedRecords:input_type -> rolodex_dns.ListScopedRecordsRequest
-	37,  // 60: rolodex_dns.RolodexDnsService.GetSearchDomains:input_type -> rolodex_dns.GetSearchDomainsRequest
-	39,  // 61: rolodex_dns.RolodexDnsService.AddAuthoritativeZone:input_type -> rolodex_dns.AddAuthoritativeZoneRequest
-	41,  // 62: rolodex_dns.RolodexDnsService.RemoveAuthoritativeZone:input_type -> rolodex_dns.RemoveAuthoritativeZoneRequest
-	43,  // 63: rolodex_dns.RolodexDnsService.ListAuthoritativeZones:input_type -> rolodex_dns.ListAuthoritativeZonesRequest
-	45,  // 64: rolodex_dns.RolodexDnsService.GetCacheStats:input_type -> rolodex_dns.GetCacheStatsRequest
-	47,  // 65: rolodex_dns.RolodexDnsService.FlushDnsCache:input_type -> rolodex_dns.FlushDnsCacheRequest
-	50,  // 66: rolodex_dns.RolodexDnsService.SetTtlDriftConfig:input_type -> rolodex_dns.SetTtlDriftConfigRequest
-	52,  // 67: rolodex_dns.RolodexDnsService.GetTtlDriftConfig:input_type -> rolodex_dns.GetTtlDriftConfigRequest
-	55,  // 68: rolodex_dns.RolodexDnsService.GetQueryLatencyStats:input_type -> rolodex_dns.GetQueryLatencyStatsRequest
-	58,  // 69: rolodex_dns.RolodexDnsService.AddLocalRblEntry:input_type -> rolodex_dns.AddLocalRblEntryRequest
-	60,  // 70: rolodex_dns.RolodexDnsService.RemoveLocalRblEntry:input_type -> rolodex_dns.RemoveLocalRblEntryRequest
-	62,  // 71: rolodex_dns.RolodexDnsService.ListLocalRblEntries:input_type -> rolodex_dns.ListLocalRblEntriesRequest
-	66,  // 72: rolodex_dns.RolodexDnsService.SetDotConfig:input_type -> rolodex_dns.SetDotConfigRequest
-	68,  // 73: rolodex_dns.RolodexDnsService.GetDotConfig:input_type -> rolodex_dns.GetDotConfigRequest
-	71,  // 74: rolodex_dns.RolodexDnsService.SetDohConfig:input_type -> rolodex_dns.SetDohConfigRequest
-	73,  // 75: rolodex_dns.RolodexDnsService.GetDohConfig:input_type -> rolodex_dns.GetDohConfigRequest
-	76,  // 76: rolodex_dns.RolodexDnsService.SetDoqConfig:input_type -> rolodex_dns.SetDoqConfigRequest
-	78,  // 77: rolodex_dns.RolodexDnsService.GetDoqConfig:input_type -> rolodex_dns.GetDoqConfigRequest
-	81,  // 78: rolodex_dns.RolodexDnsService.SetProxyConfig:input_type -> rolodex_dns.SetProxyConfigRequest
-	83,  // 79: rolodex_dns.RolodexDnsService.GetProxyConfig:input_type -> rolodex_dns.GetProxyConfigRequest
-	86,  // 80: rolodex_dns.RolodexDnsService.GenerateDnssecKey:input_type -> rolodex_dns.GenerateDnssecKeyRequest
-	88,  // 81: rolodex_dns.RolodexDnsService.ListDnssecKeys:input_type -> rolodex_dns.ListDnssecKeysRequest
-	90,  // 82: rolodex_dns.RolodexDnsService.DeleteDnssecKey:input_type -> rolodex_dns.DeleteDnssecKeyRequest
-	92,  // 83: rolodex_dns.RolodexDnsService.GetDsRecords:input_type -> rolodex_dns.GetDsRecordsRequest
-	94,  // 84: rolodex_dns.RolodexDnsService.SignZone:input_type -> rolodex_dns.SignZoneRequest
-	96,  // 85: rolodex_dns.RolodexDnsService.GenerateTlsaRecord:input_type -> rolodex_dns.GenerateTlsaRecordRequest
-	98,  // 86: rolodex_dns.RolodexDnsService.ListTlsaRecords:input_type -> rolodex_dns.ListTlsaRecordsRequest
-	100, // 87: rolodex_dns.RolodexDnsService.GenerateDaneRootCa:input_type -> rolodex_dns.GenerateDaneRootCaRequest
-	102, // 88: rolodex_dns.RolodexDnsService.RequestAcmeCert:input_type -> rolodex_dns.RequestAcmeCertRequest
-	104, // 89: rolodex_dns.RolodexDnsService.GetAcmeStatus:input_type -> rolodex_dns.GetAcmeStatusRequest
-	119, // 90: rolodex_dns.RolodexDnsService.SetDns64Config:input_type -> rolodex_dns.SetDns64ConfigRequest
-	121, // 91: rolodex_dns.RolodexDnsService.GetDns64Config:input_type -> rolodex_dns.GetDns64ConfigRequest
-	124, // 92: rolodex_dns.RolodexDnsService.AddDhcpPool:input_type -> rolodex_dns.AddDhcpPoolRequest
-	126, // 93: rolodex_dns.RolodexDnsService.RemoveDhcpPool:input_type -> rolodex_dns.RemoveDhcpPoolRequest
-	128, // 94: rolodex_dns.RolodexDnsService.ListDhcpPools:input_type -> rolodex_dns.ListDhcpPoolsRequest
-	131, // 95: rolodex_dns.RolodexDnsService.ListDhcpLeases:input_type -> rolodex_dns.ListDhcpLeasesRequest
-	133, // 96: rolodex_dns.RolodexDnsService.DeleteDhcpLease:input_type -> rolodex_dns.DeleteDhcpLeaseRequest
-	136, // 97: rolodex_dns.RolodexDnsService.AddScopeRblProvider:input_type -> rolodex_dns.AddScopeRblProviderRequest
-	138, // 98: rolodex_dns.RolodexDnsService.RemoveScopeRblProvider:input_type -> rolodex_dns.RemoveScopeRblProviderRequest
-	140, // 99: rolodex_dns.RolodexDnsService.ListScopeRblProviders:input_type -> rolodex_dns.ListScopeRblProvidersRequest
-	143, // 100: rolodex_dns.RolodexDnsService.SetDhcpCertOption:input_type -> rolodex_dns.SetDhcpCertOptionRequest
-	145, // 101: rolodex_dns.RolodexDnsService.RemoveDhcpCertOption:input_type -> rolodex_dns.RemoveDhcpCertOptionRequest
-	147, // 102: rolodex_dns.RolodexDnsService.ListDhcpCertOptions:input_type -> rolodex_dns.ListDhcpCertOptionsRequest
-	106, // 103: rolodex_dns.RolodexDnsService.EnsureZoneCa:input_type -> rolodex_dns.EnsureZoneCaRequest
-	108, // 104: rolodex_dns.RolodexDnsService.CreateEabCredential:input_type -> rolodex_dns.CreateEabCredentialRequest
-	110, // 105: rolodex_dns.RolodexDnsService.RemoveEabCredential:input_type -> rolodex_dns.RemoveEabCredentialRequest
-	113, // 106: rolodex_dns.RolodexDnsService.ListAcmeAccounts:input_type -> rolodex_dns.ListAcmeAccountsRequest
-	116, // 107: rolodex_dns.RolodexDnsService.ListAcmeCertificates:input_type -> rolodex_dns.ListAcmeCertificatesRequest
-	3,   // 108: rolodex_dns.RolodexDnsService.AddRecord:output_type -> rolodex_dns.AddRecordResponse
-	5,   // 109: rolodex_dns.RolodexDnsService.RemoveRecord:output_type -> rolodex_dns.RemoveRecordResponse
-	7,   // 110: rolodex_dns.RolodexDnsService.ListRecords:output_type -> rolodex_dns.ListRecordsResponse
-	9,   // 111: rolodex_dns.RolodexDnsService.SetForwarders:output_type -> rolodex_dns.SetForwarderResponse
-	12,  // 112: rolodex_dns.RolodexDnsService.SetRblConfig:output_type -> rolodex_dns.SetRblConfigResponse
-	14,  // 113: rolodex_dns.RolodexDnsService.GetRblConfig:output_type -> rolodex_dns.GetRblConfigResponse
-	16,  // 114: rolodex_dns.RolodexDnsService.FlushCache:output_type -> rolodex_dns.FlushCacheResponse
-	19,  // 115: rolodex_dns.RolodexDnsService.CreateNetworkScope:output_type -> rolodex_dns.CreateNetworkScopeResponse
-	21,  // 116: rolodex_dns.RolodexDnsService.DeleteNetworkScope:output_type -> rolodex_dns.DeleteNetworkScopeResponse
-	23,  // 117: rolodex_dns.RolodexDnsService.ListNetworkScopes:output_type -> rolodex_dns.ListNetworkScopesResponse
-	25,  // 118: rolodex_dns.RolodexDnsService.JoinNetwork:output_type -> rolodex_dns.JoinNetworkResponse
-	27,  // 119: rolodex_dns.RolodexDnsService.LeaveNetwork:output_type -> rolodex_dns.LeaveNetworkResponse
-	30,  // 120: rolodex_dns.RolodexDnsService.GetNetworkAssociations:output_type -> rolodex_dns.GetNetworkAssociationsResponse
-	32,  // 121: rolodex_dns.RolodexDnsService.AddScopedRecord:output_type -> rolodex_dns.AddScopedRecordResponse
-	34,  // 122: rolodex_dns.RolodexDnsService.RemoveScopedRecord:output_type -> rolodex_dns.RemoveScopedRecordResponse
-	36,  // 123: rolodex_dns.RolodexDnsService.ListScopedRecords:output_type -> rolodex_dns.ListScopedRecordsResponse
-	38,  // 124: rolodex_dns.RolodexDnsService.GetSearchDomains:output_type -> rolodex_dns.GetSearchDomainsResponse
-	40,  // 125: rolodex_dns.RolodexDnsService.AddAuthoritativeZone:output_type -> rolodex_dns.AddAuthoritativeZoneResponse
-	42,  // 126: rolodex_dns.RolodexDnsService.RemoveAuthoritativeZone:output_type -> rolodex_dns.RemoveAuthoritativeZoneResponse
-	44,  // 127: rolodex_dns.RolodexDnsService.ListAuthoritativeZones:output_type -> rolodex_dns.ListAuthoritativeZonesResponse
-	46,  // 128: rolodex_dns.RolodexDnsService.GetCacheStats:output_type -> rolodex_dns.GetCacheStatsResponse
-	48,  // 129: rolodex_dns.RolodexDnsService.FlushDnsCache:output_type -> rolodex_dns.FlushDnsCacheResponse
-	51,  // 130: rolodex_dns.RolodexDnsService.SetTtlDriftConfig:output_type -> rolodex_dns.SetTtlDriftConfigResponse
-	53,  // 131: rolodex_dns.RolodexDnsService.GetTtlDriftConfig:output_type -> rolodex_dns.GetTtlDriftConfigResponse
-	56,  // 132: rolodex_dns.RolodexDnsService.GetQueryLatencyStats:output_type -> rolodex_dns.GetQueryLatencyStatsResponse
-	59,  // 133: rolodex_dns.RolodexDnsService.AddLocalRblEntry:output_type -> rolodex_dns.AddLocalRblEntryResponse
-	61,  // 134: rolodex_dns.RolodexDnsService.RemoveLocalRblEntry:output_type -> rolodex_dns.RemoveLocalRblEntryResponse
-	63,  // 135: rolodex_dns.RolodexDnsService.ListLocalRblEntries:output_type -> rolodex_dns.ListLocalRblEntriesResponse
-	67,  // 136: rolodex_dns.RolodexDnsService.SetDotConfig:output_type -> rolodex_dns.SetDotConfigResponse
-	69,  // 137: rolodex_dns.RolodexDnsService.GetDotConfig:output_type -> rolodex_dns.GetDotConfigResponse
-	72,  // 138: rolodex_dns.RolodexDnsService.SetDohConfig:output_type -> rolodex_dns.SetDohConfigResponse
-	74,  // 139: rolodex_dns.RolodexDnsService.GetDohConfig:output_type -> rolodex_dns.GetDohConfigResponse
-	77,  // 140: rolodex_dns.RolodexDnsService.SetDoqConfig:output_type -> rolodex_dns.SetDoqConfigResponse
-	79,  // 141: rolodex_dns.RolodexDnsService.GetDoqConfig:output_type -> rolodex_dns.GetDoqConfigResponse
-	82,  // 142: rolodex_dns.RolodexDnsService.SetProxyConfig:output_type -> rolodex_dns.SetProxyConfigResponse
-	84,  // 143: rolodex_dns.RolodexDnsService.GetProxyConfig:output_type -> rolodex_dns.GetProxyConfigResponse
-	87,  // 144: rolodex_dns.RolodexDnsService.GenerateDnssecKey:output_type -> rolodex_dns.GenerateDnssecKeyResponse
-	89,  // 145: rolodex_dns.RolodexDnsService.ListDnssecKeys:output_type -> rolodex_dns.ListDnssecKeysResponse
-	91,  // 146: rolodex_dns.RolodexDnsService.DeleteDnssecKey:output_type -> rolodex_dns.DeleteDnssecKeyResponse
-	93,  // 147: rolodex_dns.RolodexDnsService.GetDsRecords:output_type -> rolodex_dns.GetDsRecordsResponse
-	95,  // 148: rolodex_dns.RolodexDnsService.SignZone:output_type -> rolodex_dns.SignZoneResponse
-	97,  // 149: rolodex_dns.RolodexDnsService.GenerateTlsaRecord:output_type -> rolodex_dns.GenerateTlsaRecordResponse
-	99,  // 150: rolodex_dns.RolodexDnsService.ListTlsaRecords:output_type -> rolodex_dns.ListTlsaRecordsResponse
-	101, // 151: rolodex_dns.RolodexDnsService.GenerateDaneRootCa:output_type -> rolodex_dns.GenerateDaneRootCaResponse
-	103, // 152: rolodex_dns.RolodexDnsService.RequestAcmeCert:output_type -> rolodex_dns.RequestAcmeCertResponse
-	105, // 153: rolodex_dns.RolodexDnsService.GetAcmeStatus:output_type -> rolodex_dns.GetAcmeStatusResponse
-	120, // 154: rolodex_dns.RolodexDnsService.SetDns64Config:output_type -> rolodex_dns.SetDns64ConfigResponse
-	122, // 155: rolodex_dns.RolodexDnsService.GetDns64Config:output_type -> rolodex_dns.GetDns64ConfigResponse
-	125, // 156: rolodex_dns.RolodexDnsService.AddDhcpPool:output_type -> rolodex_dns.AddDhcpPoolResponse
-	127, // 157: rolodex_dns.RolodexDnsService.RemoveDhcpPool:output_type -> rolodex_dns.RemoveDhcpPoolResponse
-	129, // 158: rolodex_dns.RolodexDnsService.ListDhcpPools:output_type -> rolodex_dns.ListDhcpPoolsResponse
-	132, // 159: rolodex_dns.RolodexDnsService.ListDhcpLeases:output_type -> rolodex_dns.ListDhcpLeasesResponse
-	134, // 160: rolodex_dns.RolodexDnsService.DeleteDhcpLease:output_type -> rolodex_dns.DeleteDhcpLeaseResponse
-	137, // 161: rolodex_dns.RolodexDnsService.AddScopeRblProvider:output_type -> rolodex_dns.AddScopeRblProviderResponse
-	139, // 162: rolodex_dns.RolodexDnsService.RemoveScopeRblProvider:output_type -> rolodex_dns.RemoveScopeRblProviderResponse
-	141, // 163: rolodex_dns.RolodexDnsService.ListScopeRblProviders:output_type -> rolodex_dns.ListScopeRblProvidersResponse
-	144, // 164: rolodex_dns.RolodexDnsService.SetDhcpCertOption:output_type -> rolodex_dns.SetDhcpCertOptionResponse
-	146, // 165: rolodex_dns.RolodexDnsService.RemoveDhcpCertOption:output_type -> rolodex_dns.RemoveDhcpCertOptionResponse
-	148, // 166: rolodex_dns.RolodexDnsService.ListDhcpCertOptions:output_type -> rolodex_dns.ListDhcpCertOptionsResponse
-	107, // 167: rolodex_dns.RolodexDnsService.EnsureZoneCa:output_type -> rolodex_dns.EnsureZoneCaResponse
-	109, // 168: rolodex_dns.RolodexDnsService.CreateEabCredential:output_type -> rolodex_dns.CreateEabCredentialResponse
-	111, // 169: rolodex_dns.RolodexDnsService.RemoveEabCredential:output_type -> rolodex_dns.RemoveEabCredentialResponse
-	114, // 170: rolodex_dns.RolodexDnsService.ListAcmeAccounts:output_type -> rolodex_dns.ListAcmeAccountsResponse
-	117, // 171: rolodex_dns.RolodexDnsService.ListAcmeCertificates:output_type -> rolodex_dns.ListAcmeCertificatesResponse
-	108, // [108:172] is the sub-list for method output_type
-	44,  // [44:108] is the sub-list for method input_type
-	44,  // [44:44] is the sub-list for extension type_name
-	44,  // [44:44] is the sub-list for extension extendee
-	0,   // [0:44] is the sub-list for field type_name
+	15,  // 7: rolodex_dns.SetDnsblConfigRequest.providers:type_name -> rolodex_dns.DnsblConfig
+	15,  // 8: rolodex_dns.GetDnsblConfigResponse.providers:type_name -> rolodex_dns.DnsblConfig
+	22,  // 9: rolodex_dns.CreateNetworkScopeRequest.scope:type_name -> rolodex_dns.NetworkScope
+	22,  // 10: rolodex_dns.ListNetworkScopesResponse.scopes:type_name -> rolodex_dns.NetworkScope
+	34,  // 11: rolodex_dns.GetNetworkAssociationsResponse.associations:type_name -> rolodex_dns.NetworkAssociation
+	1,   // 12: rolodex_dns.AddScopedRecordRequest.record:type_name -> rolodex_dns.DnsRecord
+	0,   // 13: rolodex_dns.RemoveScopedRecordRequest.record_type:type_name -> rolodex_dns.RecordType
+	0,   // 14: rolodex_dns.ListScopedRecordsRequest.record_type_filter:type_name -> rolodex_dns.RecordType
+	1,   // 15: rolodex_dns.ListScopedRecordsResponse.records:type_name -> rolodex_dns.DnsRecord
+	54,  // 16: rolodex_dns.SetTtlDriftConfigRequest.config:type_name -> rolodex_dns.TtlDriftConfig
+	54,  // 17: rolodex_dns.GetTtlDriftConfigResponse.config:type_name -> rolodex_dns.TtlDriftConfig
+	59,  // 18: rolodex_dns.GetQueryLatencyStatsResponse.stats:type_name -> rolodex_dns.QueryLatencyStat
+	62,  // 19: rolodex_dns.AddLocalRblEntryRequest.entry:type_name -> rolodex_dns.LocalRblEntry
+	62,  // 20: rolodex_dns.ListLocalRblEntriesResponse.entries:type_name -> rolodex_dns.LocalRblEntry
+	69,  // 21: rolodex_dns.DotConfig.tls:type_name -> rolodex_dns.TlsConfig
+	70,  // 22: rolodex_dns.SetDotConfigRequest.config:type_name -> rolodex_dns.DotConfig
+	70,  // 23: rolodex_dns.GetDotConfigResponse.config:type_name -> rolodex_dns.DotConfig
+	69,  // 24: rolodex_dns.DohConfig.tls:type_name -> rolodex_dns.TlsConfig
+	75,  // 25: rolodex_dns.SetDohConfigRequest.config:type_name -> rolodex_dns.DohConfig
+	75,  // 26: rolodex_dns.GetDohConfigResponse.config:type_name -> rolodex_dns.DohConfig
+	69,  // 27: rolodex_dns.DoqConfig.tls:type_name -> rolodex_dns.TlsConfig
+	80,  // 28: rolodex_dns.SetDoqConfigRequest.config:type_name -> rolodex_dns.DoqConfig
+	80,  // 29: rolodex_dns.GetDoqConfigResponse.config:type_name -> rolodex_dns.DoqConfig
+	85,  // 30: rolodex_dns.SetProxyConfigRequest.config:type_name -> rolodex_dns.ProxyConfig
+	85,  // 31: rolodex_dns.GetProxyConfigResponse.config:type_name -> rolodex_dns.ProxyConfig
+	90,  // 32: rolodex_dns.GenerateDnssecKeyResponse.key:type_name -> rolodex_dns.DnssecKey
+	90,  // 33: rolodex_dns.ListDnssecKeysResponse.keys:type_name -> rolodex_dns.DnssecKey
+	1,   // 34: rolodex_dns.ListTlsaRecordsResponse.records:type_name -> rolodex_dns.DnsRecord
+	117, // 35: rolodex_dns.ListAcmeAccountsResponse.accounts:type_name -> rolodex_dns.AcmeAccountInfo
+	120, // 36: rolodex_dns.ListAcmeCertificatesResponse.certificates:type_name -> rolodex_dns.AcmeCertificateInfo
+	123, // 37: rolodex_dns.SetDns64ConfigRequest.config:type_name -> rolodex_dns.Dns64Config
+	123, // 38: rolodex_dns.GetDns64ConfigResponse.config:type_name -> rolodex_dns.Dns64Config
+	128, // 39: rolodex_dns.AddDhcpPoolRequest.pool:type_name -> rolodex_dns.DhcpPool
+	128, // 40: rolodex_dns.ListDhcpPoolsResponse.pools:type_name -> rolodex_dns.DhcpPool
+	135, // 41: rolodex_dns.ListDhcpLeasesResponse.leases:type_name -> rolodex_dns.DhcpLease
+	140, // 42: rolodex_dns.AddScopeRblProviderRequest.provider:type_name -> rolodex_dns.ScopeRblProvider
+	140, // 43: rolodex_dns.ListScopeRblProvidersResponse.providers:type_name -> rolodex_dns.ScopeRblProvider
+	147, // 44: rolodex_dns.SetDhcpCertOptionRequest.option:type_name -> rolodex_dns.DhcpCertOption
+	147, // 45: rolodex_dns.ListDhcpCertOptionsResponse.options:type_name -> rolodex_dns.DhcpCertOption
+	2,   // 46: rolodex_dns.RolodexDnsService.AddRecord:input_type -> rolodex_dns.AddRecordRequest
+	4,   // 47: rolodex_dns.RolodexDnsService.RemoveRecord:input_type -> rolodex_dns.RemoveRecordRequest
+	6,   // 48: rolodex_dns.RolodexDnsService.ListRecords:input_type -> rolodex_dns.ListRecordsRequest
+	8,   // 49: rolodex_dns.RolodexDnsService.SetForwarders:input_type -> rolodex_dns.SetForwarderRequest
+	11,  // 50: rolodex_dns.RolodexDnsService.SetRblConfig:input_type -> rolodex_dns.SetRblConfigRequest
+	13,  // 51: rolodex_dns.RolodexDnsService.GetRblConfig:input_type -> rolodex_dns.GetRblConfigRequest
+	16,  // 52: rolodex_dns.RolodexDnsService.SetDnsblConfig:input_type -> rolodex_dns.SetDnsblConfigRequest
+	18,  // 53: rolodex_dns.RolodexDnsService.GetDnsblConfig:input_type -> rolodex_dns.GetDnsblConfigRequest
+	20,  // 54: rolodex_dns.RolodexDnsService.FlushCache:input_type -> rolodex_dns.FlushCacheRequest
+	23,  // 55: rolodex_dns.RolodexDnsService.CreateNetworkScope:input_type -> rolodex_dns.CreateNetworkScopeRequest
+	25,  // 56: rolodex_dns.RolodexDnsService.DeleteNetworkScope:input_type -> rolodex_dns.DeleteNetworkScopeRequest
+	27,  // 57: rolodex_dns.RolodexDnsService.ListNetworkScopes:input_type -> rolodex_dns.ListNetworkScopesRequest
+	29,  // 58: rolodex_dns.RolodexDnsService.JoinNetwork:input_type -> rolodex_dns.JoinNetworkRequest
+	31,  // 59: rolodex_dns.RolodexDnsService.LeaveNetwork:input_type -> rolodex_dns.LeaveNetworkRequest
+	33,  // 60: rolodex_dns.RolodexDnsService.GetNetworkAssociations:input_type -> rolodex_dns.GetNetworkAssociationsRequest
+	36,  // 61: rolodex_dns.RolodexDnsService.AddScopedRecord:input_type -> rolodex_dns.AddScopedRecordRequest
+	38,  // 62: rolodex_dns.RolodexDnsService.RemoveScopedRecord:input_type -> rolodex_dns.RemoveScopedRecordRequest
+	40,  // 63: rolodex_dns.RolodexDnsService.ListScopedRecords:input_type -> rolodex_dns.ListScopedRecordsRequest
+	42,  // 64: rolodex_dns.RolodexDnsService.GetSearchDomains:input_type -> rolodex_dns.GetSearchDomainsRequest
+	44,  // 65: rolodex_dns.RolodexDnsService.AddAuthoritativeZone:input_type -> rolodex_dns.AddAuthoritativeZoneRequest
+	46,  // 66: rolodex_dns.RolodexDnsService.RemoveAuthoritativeZone:input_type -> rolodex_dns.RemoveAuthoritativeZoneRequest
+	48,  // 67: rolodex_dns.RolodexDnsService.ListAuthoritativeZones:input_type -> rolodex_dns.ListAuthoritativeZonesRequest
+	50,  // 68: rolodex_dns.RolodexDnsService.GetCacheStats:input_type -> rolodex_dns.GetCacheStatsRequest
+	52,  // 69: rolodex_dns.RolodexDnsService.FlushDnsCache:input_type -> rolodex_dns.FlushDnsCacheRequest
+	55,  // 70: rolodex_dns.RolodexDnsService.SetTtlDriftConfig:input_type -> rolodex_dns.SetTtlDriftConfigRequest
+	57,  // 71: rolodex_dns.RolodexDnsService.GetTtlDriftConfig:input_type -> rolodex_dns.GetTtlDriftConfigRequest
+	60,  // 72: rolodex_dns.RolodexDnsService.GetQueryLatencyStats:input_type -> rolodex_dns.GetQueryLatencyStatsRequest
+	63,  // 73: rolodex_dns.RolodexDnsService.AddLocalRblEntry:input_type -> rolodex_dns.AddLocalRblEntryRequest
+	65,  // 74: rolodex_dns.RolodexDnsService.RemoveLocalRblEntry:input_type -> rolodex_dns.RemoveLocalRblEntryRequest
+	67,  // 75: rolodex_dns.RolodexDnsService.ListLocalRblEntries:input_type -> rolodex_dns.ListLocalRblEntriesRequest
+	71,  // 76: rolodex_dns.RolodexDnsService.SetDotConfig:input_type -> rolodex_dns.SetDotConfigRequest
+	73,  // 77: rolodex_dns.RolodexDnsService.GetDotConfig:input_type -> rolodex_dns.GetDotConfigRequest
+	76,  // 78: rolodex_dns.RolodexDnsService.SetDohConfig:input_type -> rolodex_dns.SetDohConfigRequest
+	78,  // 79: rolodex_dns.RolodexDnsService.GetDohConfig:input_type -> rolodex_dns.GetDohConfigRequest
+	81,  // 80: rolodex_dns.RolodexDnsService.SetDoqConfig:input_type -> rolodex_dns.SetDoqConfigRequest
+	83,  // 81: rolodex_dns.RolodexDnsService.GetDoqConfig:input_type -> rolodex_dns.GetDoqConfigRequest
+	86,  // 82: rolodex_dns.RolodexDnsService.SetProxyConfig:input_type -> rolodex_dns.SetProxyConfigRequest
+	88,  // 83: rolodex_dns.RolodexDnsService.GetProxyConfig:input_type -> rolodex_dns.GetProxyConfigRequest
+	91,  // 84: rolodex_dns.RolodexDnsService.GenerateDnssecKey:input_type -> rolodex_dns.GenerateDnssecKeyRequest
+	93,  // 85: rolodex_dns.RolodexDnsService.ListDnssecKeys:input_type -> rolodex_dns.ListDnssecKeysRequest
+	95,  // 86: rolodex_dns.RolodexDnsService.DeleteDnssecKey:input_type -> rolodex_dns.DeleteDnssecKeyRequest
+	97,  // 87: rolodex_dns.RolodexDnsService.GetDsRecords:input_type -> rolodex_dns.GetDsRecordsRequest
+	99,  // 88: rolodex_dns.RolodexDnsService.SignZone:input_type -> rolodex_dns.SignZoneRequest
+	101, // 89: rolodex_dns.RolodexDnsService.GenerateTlsaRecord:input_type -> rolodex_dns.GenerateTlsaRecordRequest
+	103, // 90: rolodex_dns.RolodexDnsService.ListTlsaRecords:input_type -> rolodex_dns.ListTlsaRecordsRequest
+	105, // 91: rolodex_dns.RolodexDnsService.GenerateDaneRootCa:input_type -> rolodex_dns.GenerateDaneRootCaRequest
+	107, // 92: rolodex_dns.RolodexDnsService.RequestAcmeCert:input_type -> rolodex_dns.RequestAcmeCertRequest
+	109, // 93: rolodex_dns.RolodexDnsService.GetAcmeStatus:input_type -> rolodex_dns.GetAcmeStatusRequest
+	124, // 94: rolodex_dns.RolodexDnsService.SetDns64Config:input_type -> rolodex_dns.SetDns64ConfigRequest
+	126, // 95: rolodex_dns.RolodexDnsService.GetDns64Config:input_type -> rolodex_dns.GetDns64ConfigRequest
+	129, // 96: rolodex_dns.RolodexDnsService.AddDhcpPool:input_type -> rolodex_dns.AddDhcpPoolRequest
+	131, // 97: rolodex_dns.RolodexDnsService.RemoveDhcpPool:input_type -> rolodex_dns.RemoveDhcpPoolRequest
+	133, // 98: rolodex_dns.RolodexDnsService.ListDhcpPools:input_type -> rolodex_dns.ListDhcpPoolsRequest
+	136, // 99: rolodex_dns.RolodexDnsService.ListDhcpLeases:input_type -> rolodex_dns.ListDhcpLeasesRequest
+	138, // 100: rolodex_dns.RolodexDnsService.DeleteDhcpLease:input_type -> rolodex_dns.DeleteDhcpLeaseRequest
+	141, // 101: rolodex_dns.RolodexDnsService.AddScopeRblProvider:input_type -> rolodex_dns.AddScopeRblProviderRequest
+	143, // 102: rolodex_dns.RolodexDnsService.RemoveScopeRblProvider:input_type -> rolodex_dns.RemoveScopeRblProviderRequest
+	145, // 103: rolodex_dns.RolodexDnsService.ListScopeRblProviders:input_type -> rolodex_dns.ListScopeRblProvidersRequest
+	148, // 104: rolodex_dns.RolodexDnsService.SetDhcpCertOption:input_type -> rolodex_dns.SetDhcpCertOptionRequest
+	150, // 105: rolodex_dns.RolodexDnsService.RemoveDhcpCertOption:input_type -> rolodex_dns.RemoveDhcpCertOptionRequest
+	152, // 106: rolodex_dns.RolodexDnsService.ListDhcpCertOptions:input_type -> rolodex_dns.ListDhcpCertOptionsRequest
+	111, // 107: rolodex_dns.RolodexDnsService.EnsureZoneCa:input_type -> rolodex_dns.EnsureZoneCaRequest
+	113, // 108: rolodex_dns.RolodexDnsService.CreateEabCredential:input_type -> rolodex_dns.CreateEabCredentialRequest
+	115, // 109: rolodex_dns.RolodexDnsService.RemoveEabCredential:input_type -> rolodex_dns.RemoveEabCredentialRequest
+	118, // 110: rolodex_dns.RolodexDnsService.ListAcmeAccounts:input_type -> rolodex_dns.ListAcmeAccountsRequest
+	121, // 111: rolodex_dns.RolodexDnsService.ListAcmeCertificates:input_type -> rolodex_dns.ListAcmeCertificatesRequest
+	3,   // 112: rolodex_dns.RolodexDnsService.AddRecord:output_type -> rolodex_dns.AddRecordResponse
+	5,   // 113: rolodex_dns.RolodexDnsService.RemoveRecord:output_type -> rolodex_dns.RemoveRecordResponse
+	7,   // 114: rolodex_dns.RolodexDnsService.ListRecords:output_type -> rolodex_dns.ListRecordsResponse
+	9,   // 115: rolodex_dns.RolodexDnsService.SetForwarders:output_type -> rolodex_dns.SetForwarderResponse
+	12,  // 116: rolodex_dns.RolodexDnsService.SetRblConfig:output_type -> rolodex_dns.SetRblConfigResponse
+	14,  // 117: rolodex_dns.RolodexDnsService.GetRblConfig:output_type -> rolodex_dns.GetRblConfigResponse
+	17,  // 118: rolodex_dns.RolodexDnsService.SetDnsblConfig:output_type -> rolodex_dns.SetDnsblConfigResponse
+	19,  // 119: rolodex_dns.RolodexDnsService.GetDnsblConfig:output_type -> rolodex_dns.GetDnsblConfigResponse
+	21,  // 120: rolodex_dns.RolodexDnsService.FlushCache:output_type -> rolodex_dns.FlushCacheResponse
+	24,  // 121: rolodex_dns.RolodexDnsService.CreateNetworkScope:output_type -> rolodex_dns.CreateNetworkScopeResponse
+	26,  // 122: rolodex_dns.RolodexDnsService.DeleteNetworkScope:output_type -> rolodex_dns.DeleteNetworkScopeResponse
+	28,  // 123: rolodex_dns.RolodexDnsService.ListNetworkScopes:output_type -> rolodex_dns.ListNetworkScopesResponse
+	30,  // 124: rolodex_dns.RolodexDnsService.JoinNetwork:output_type -> rolodex_dns.JoinNetworkResponse
+	32,  // 125: rolodex_dns.RolodexDnsService.LeaveNetwork:output_type -> rolodex_dns.LeaveNetworkResponse
+	35,  // 126: rolodex_dns.RolodexDnsService.GetNetworkAssociations:output_type -> rolodex_dns.GetNetworkAssociationsResponse
+	37,  // 127: rolodex_dns.RolodexDnsService.AddScopedRecord:output_type -> rolodex_dns.AddScopedRecordResponse
+	39,  // 128: rolodex_dns.RolodexDnsService.RemoveScopedRecord:output_type -> rolodex_dns.RemoveScopedRecordResponse
+	41,  // 129: rolodex_dns.RolodexDnsService.ListScopedRecords:output_type -> rolodex_dns.ListScopedRecordsResponse
+	43,  // 130: rolodex_dns.RolodexDnsService.GetSearchDomains:output_type -> rolodex_dns.GetSearchDomainsResponse
+	45,  // 131: rolodex_dns.RolodexDnsService.AddAuthoritativeZone:output_type -> rolodex_dns.AddAuthoritativeZoneResponse
+	47,  // 132: rolodex_dns.RolodexDnsService.RemoveAuthoritativeZone:output_type -> rolodex_dns.RemoveAuthoritativeZoneResponse
+	49,  // 133: rolodex_dns.RolodexDnsService.ListAuthoritativeZones:output_type -> rolodex_dns.ListAuthoritativeZonesResponse
+	51,  // 134: rolodex_dns.RolodexDnsService.GetCacheStats:output_type -> rolodex_dns.GetCacheStatsResponse
+	53,  // 135: rolodex_dns.RolodexDnsService.FlushDnsCache:output_type -> rolodex_dns.FlushDnsCacheResponse
+	56,  // 136: rolodex_dns.RolodexDnsService.SetTtlDriftConfig:output_type -> rolodex_dns.SetTtlDriftConfigResponse
+	58,  // 137: rolodex_dns.RolodexDnsService.GetTtlDriftConfig:output_type -> rolodex_dns.GetTtlDriftConfigResponse
+	61,  // 138: rolodex_dns.RolodexDnsService.GetQueryLatencyStats:output_type -> rolodex_dns.GetQueryLatencyStatsResponse
+	64,  // 139: rolodex_dns.RolodexDnsService.AddLocalRblEntry:output_type -> rolodex_dns.AddLocalRblEntryResponse
+	66,  // 140: rolodex_dns.RolodexDnsService.RemoveLocalRblEntry:output_type -> rolodex_dns.RemoveLocalRblEntryResponse
+	68,  // 141: rolodex_dns.RolodexDnsService.ListLocalRblEntries:output_type -> rolodex_dns.ListLocalRblEntriesResponse
+	72,  // 142: rolodex_dns.RolodexDnsService.SetDotConfig:output_type -> rolodex_dns.SetDotConfigResponse
+	74,  // 143: rolodex_dns.RolodexDnsService.GetDotConfig:output_type -> rolodex_dns.GetDotConfigResponse
+	77,  // 144: rolodex_dns.RolodexDnsService.SetDohConfig:output_type -> rolodex_dns.SetDohConfigResponse
+	79,  // 145: rolodex_dns.RolodexDnsService.GetDohConfig:output_type -> rolodex_dns.GetDohConfigResponse
+	82,  // 146: rolodex_dns.RolodexDnsService.SetDoqConfig:output_type -> rolodex_dns.SetDoqConfigResponse
+	84,  // 147: rolodex_dns.RolodexDnsService.GetDoqConfig:output_type -> rolodex_dns.GetDoqConfigResponse
+	87,  // 148: rolodex_dns.RolodexDnsService.SetProxyConfig:output_type -> rolodex_dns.SetProxyConfigResponse
+	89,  // 149: rolodex_dns.RolodexDnsService.GetProxyConfig:output_type -> rolodex_dns.GetProxyConfigResponse
+	92,  // 150: rolodex_dns.RolodexDnsService.GenerateDnssecKey:output_type -> rolodex_dns.GenerateDnssecKeyResponse
+	94,  // 151: rolodex_dns.RolodexDnsService.ListDnssecKeys:output_type -> rolodex_dns.ListDnssecKeysResponse
+	96,  // 152: rolodex_dns.RolodexDnsService.DeleteDnssecKey:output_type -> rolodex_dns.DeleteDnssecKeyResponse
+	98,  // 153: rolodex_dns.RolodexDnsService.GetDsRecords:output_type -> rolodex_dns.GetDsRecordsResponse
+	100, // 154: rolodex_dns.RolodexDnsService.SignZone:output_type -> rolodex_dns.SignZoneResponse
+	102, // 155: rolodex_dns.RolodexDnsService.GenerateTlsaRecord:output_type -> rolodex_dns.GenerateTlsaRecordResponse
+	104, // 156: rolodex_dns.RolodexDnsService.ListTlsaRecords:output_type -> rolodex_dns.ListTlsaRecordsResponse
+	106, // 157: rolodex_dns.RolodexDnsService.GenerateDaneRootCa:output_type -> rolodex_dns.GenerateDaneRootCaResponse
+	108, // 158: rolodex_dns.RolodexDnsService.RequestAcmeCert:output_type -> rolodex_dns.RequestAcmeCertResponse
+	110, // 159: rolodex_dns.RolodexDnsService.GetAcmeStatus:output_type -> rolodex_dns.GetAcmeStatusResponse
+	125, // 160: rolodex_dns.RolodexDnsService.SetDns64Config:output_type -> rolodex_dns.SetDns64ConfigResponse
+	127, // 161: rolodex_dns.RolodexDnsService.GetDns64Config:output_type -> rolodex_dns.GetDns64ConfigResponse
+	130, // 162: rolodex_dns.RolodexDnsService.AddDhcpPool:output_type -> rolodex_dns.AddDhcpPoolResponse
+	132, // 163: rolodex_dns.RolodexDnsService.RemoveDhcpPool:output_type -> rolodex_dns.RemoveDhcpPoolResponse
+	134, // 164: rolodex_dns.RolodexDnsService.ListDhcpPools:output_type -> rolodex_dns.ListDhcpPoolsResponse
+	137, // 165: rolodex_dns.RolodexDnsService.ListDhcpLeases:output_type -> rolodex_dns.ListDhcpLeasesResponse
+	139, // 166: rolodex_dns.RolodexDnsService.DeleteDhcpLease:output_type -> rolodex_dns.DeleteDhcpLeaseResponse
+	142, // 167: rolodex_dns.RolodexDnsService.AddScopeRblProvider:output_type -> rolodex_dns.AddScopeRblProviderResponse
+	144, // 168: rolodex_dns.RolodexDnsService.RemoveScopeRblProvider:output_type -> rolodex_dns.RemoveScopeRblProviderResponse
+	146, // 169: rolodex_dns.RolodexDnsService.ListScopeRblProviders:output_type -> rolodex_dns.ListScopeRblProvidersResponse
+	149, // 170: rolodex_dns.RolodexDnsService.SetDhcpCertOption:output_type -> rolodex_dns.SetDhcpCertOptionResponse
+	151, // 171: rolodex_dns.RolodexDnsService.RemoveDhcpCertOption:output_type -> rolodex_dns.RemoveDhcpCertOptionResponse
+	153, // 172: rolodex_dns.RolodexDnsService.ListDhcpCertOptions:output_type -> rolodex_dns.ListDhcpCertOptionsResponse
+	112, // 173: rolodex_dns.RolodexDnsService.EnsureZoneCa:output_type -> rolodex_dns.EnsureZoneCaResponse
+	114, // 174: rolodex_dns.RolodexDnsService.CreateEabCredential:output_type -> rolodex_dns.CreateEabCredentialResponse
+	116, // 175: rolodex_dns.RolodexDnsService.RemoveEabCredential:output_type -> rolodex_dns.RemoveEabCredentialResponse
+	119, // 176: rolodex_dns.RolodexDnsService.ListAcmeAccounts:output_type -> rolodex_dns.ListAcmeAccountsResponse
+	122, // 177: rolodex_dns.RolodexDnsService.ListAcmeCertificates:output_type -> rolodex_dns.ListAcmeCertificatesResponse
+	112, // [112:178] is the sub-list for method output_type
+	46,  // [46:112] is the sub-list for method input_type
+	46,  // [46:46] is the sub-list for extension type_name
+	46,  // [46:46] is the sub-list for extension extendee
+	0,   // [0:46] is the sub-list for field type_name
 }
 
 func init() { file_rolodex_dns_proto_init() }
@@ -9350,7 +9656,7 @@ func file_rolodex_dns_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_rolodex_dns_proto_rawDesc), len(file_rolodex_dns_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   148,
+			NumMessages:   153,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

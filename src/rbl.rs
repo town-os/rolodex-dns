@@ -91,9 +91,15 @@ impl RblResolver for HickoryRblResolver {
 pub struct RblChecker {
     /// Whether RBL checking is globally enabled.
     enabled: AtomicBool,
-    /// Configured RBL providers.
+    /// Configured RBL providers (IP blocklists, queried with a reversed IP).
     providers: ArcSwap<Vec<RblProvider>>,
-    /// Cache of RBL lookup results keyed by "<ip>/<zone>".
+    /// Whether DNSBL (domain blocklist) checking is globally enabled.
+    dnsbl_enabled: AtomicBool,
+    /// Configured DNSBL providers (domain blocklists, queried with the name
+    /// prepended to the zone). These are kept separate from `providers` because
+    /// the two query forms are different and a zone is one or the other.
+    dnsbl_providers: ArcSwap<Vec<RblProvider>>,
+    /// Cache of RBL/DNSBL lookup results keyed by "<ip-or-name>/<zone>".
     cache: Arc<DashMap<String, CacheEntry>>,
     /// DNS resolver for RBL lookups.
     resolver: Arc<dyn RblResolver>,
@@ -106,6 +112,9 @@ impl RblChecker {
     }
 
     /// Creates a new RBL checker with a custom resolver (for testing).
+    ///
+    /// DNSBL checking starts disabled with no providers; configure it via
+    /// [`set_dnsbl_config`](Self::set_dnsbl_config).
     pub fn with_resolver(
         enabled: bool,
         providers: Vec<RblProvider>,
@@ -114,6 +123,8 @@ impl RblChecker {
         Self {
             enabled: AtomicBool::new(enabled),
             providers: ArcSwap::from_pointee(providers),
+            dnsbl_enabled: AtomicBool::new(false),
+            dnsbl_providers: ArcSwap::from_pointee(Vec::new()),
             cache: Arc::new(DashMap::new()),
             resolver,
         }
@@ -182,6 +193,95 @@ impl RblChecker {
         false
     }
 
+    /// Checks if a domain name is listed in any enabled DNSBL provider.
+    ///
+    /// This is the domain-blocklist counterpart to [`is_listed`](Self::is_listed):
+    /// rather than reversing an IP, the query name's labels are prepended to the
+    /// provider zone (e.g. `googleadservices.com` + `dbl.spamhaus.org` ->
+    /// `googleadservices.com.dbl.spamhaus.org`).
+    ///
+    /// Returns true if the name is blacklisted and should be blocked (NXDOMAIN).
+    /// Used to give DNSBLs precedence over externally-resolved (forwarded or
+    /// iterative) answers.
+    pub async fn is_name_listed(&self, name: &str) -> bool {
+        if !self.dnsbl_enabled.load(Ordering::Relaxed) {
+            return false;
+        }
+
+        let normalized = normalize_rbl_name(name);
+        if normalized.is_empty() {
+            return false;
+        }
+
+        let providers = self.dnsbl_providers.load();
+        for provider in providers.iter() {
+            if !provider.enabled {
+                continue;
+            }
+            if self.provider_lists_name(&normalized, &provider.zone).await {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Checks a single provider for a domain-name listing, using and populating
+    /// the same result cache as the IP-based path (keyed by `<name>/<zone>`).
+    async fn provider_lists_name(&self, normalized_name: &str, zone: &str) -> bool {
+        let query = format!("{normalized_name}.{zone}");
+        let cache_key = format!("{normalized_name}/{zone}");
+
+        // Check cache first
+        if let Some(entry) = self.cache.get(&cache_key) {
+            if entry.expires_at > Instant::now() {
+                if entry.listed {
+                    debug!("RBL cache hit: {} is listed in {}", normalized_name, zone);
+                }
+                return entry.listed;
+            }
+            // Expired, drop the reference before removing
+            drop(entry);
+            self.cache.remove(&cache_key);
+        }
+
+        match self.resolver.lookup_rbl(&query).await {
+            Ok(Some(ttl)) => {
+                debug!(
+                    "RBL hit: {} listed in {} (TTL: {})",
+                    normalized_name, zone, ttl
+                );
+                self.cache.insert(
+                    cache_key,
+                    CacheEntry {
+                        listed: true,
+                        expires_at: Instant::now() + Duration::from_secs(ttl as u64),
+                    },
+                );
+                true
+            }
+            Ok(None) => {
+                debug!("RBL miss: {} not listed in {}", normalized_name, zone);
+                // Cache negative results for 5 minutes
+                self.cache.insert(
+                    cache_key,
+                    CacheEntry {
+                        listed: false,
+                        expires_at: Instant::now() + Duration::from_secs(300),
+                    },
+                );
+                false
+            }
+            Err(e) => {
+                warn!(
+                    "RBL name lookup failed for {} in {}: {}",
+                    normalized_name, zone, e
+                );
+                false
+            }
+        }
+    }
+
     /// Updates the RBL configuration.
     pub async fn set_config(&self, enabled: bool, providers: Vec<RblProvider>) {
         self.enabled.store(enabled, Ordering::Relaxed);
@@ -193,6 +293,27 @@ impl RblChecker {
         let enabled = self.enabled.load(Ordering::Relaxed);
         let providers = self.providers.load();
         (enabled, providers.as_ref().clone())
+    }
+
+    /// Updates the DNSBL (domain blocklist) configuration. The shared result
+    /// cache is flushed so that newly added/removed providers take effect
+    /// immediately rather than serving a stale not-listed verdict.
+    pub async fn set_dnsbl_config(&self, enabled: bool, providers: Vec<RblProvider>) {
+        self.dnsbl_enabled.store(enabled, Ordering::Relaxed);
+        self.dnsbl_providers.store(Arc::new(providers));
+        self.cache.clear();
+    }
+
+    /// Returns the current DNSBL configuration.
+    pub async fn get_dnsbl_config(&self) -> (bool, Vec<RblProvider>) {
+        let enabled = self.dnsbl_enabled.load(Ordering::Relaxed);
+        let providers = self.dnsbl_providers.load();
+        (enabled, providers.as_ref().clone())
+    }
+
+    /// Returns whether DNSBL checking is enabled.
+    pub async fn is_dnsbl_enabled(&self) -> bool {
+        self.dnsbl_enabled.load(Ordering::Relaxed)
     }
 
     /// Flushes the RBL cache.
@@ -270,6 +391,13 @@ impl RblChecker {
 
         false
     }
+}
+
+/// Normalizes a domain name for RBL lookups: lowercased with the trailing
+/// dot stripped, so that `GoogleAdServices.com.` and `googleadservices.com`
+/// produce the same query and cache key.
+pub fn normalize_rbl_name(name: &str) -> String {
+    name.trim_end_matches('.').to_ascii_lowercase()
 }
 
 /// Builds an RBL DNS query for an IP address.
@@ -495,6 +623,134 @@ mod tests {
         assert!(enabled);
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].zone, "new.rbl");
+    }
+
+    #[test]
+    fn test_normalize_rbl_name() {
+        assert_eq!(normalize_rbl_name("Example.COM."), "example.com");
+        assert_eq!(normalize_rbl_name("example.com"), "example.com");
+        assert_eq!(normalize_rbl_name("."), "");
+    }
+
+    /// Builds a checker with DNSBL enabled and a single `dbl.test` provider.
+    async fn dnsbl_checker(resolver: Arc<dyn RblResolver>) -> RblChecker {
+        let checker = RblChecker::with_resolver(false, vec![], resolver);
+        checker
+            .set_dnsbl_config(
+                true,
+                vec![RblProvider {
+                    zone: "dbl.test".to_string(),
+                    enabled: true,
+                }],
+            )
+            .await;
+        checker
+    }
+
+    #[tokio::test]
+    async fn test_is_name_listed_listed() {
+        let checker = dnsbl_checker(Arc::new(MockResolver::new(true))).await;
+        assert!(checker.is_name_listed("googleadservices.com.").await);
+    }
+
+    #[tokio::test]
+    async fn test_is_name_listed_not_listed() {
+        let checker = dnsbl_checker(Arc::new(MockResolver::new(false))).await;
+        assert!(!checker.is_name_listed("example.com.").await);
+    }
+
+    #[tokio::test]
+    async fn test_is_name_listed_disabled() {
+        // DNSBL globally disabled: even a listed name is not reported.
+        let checker = RblChecker::with_resolver(false, vec![], Arc::new(MockResolver::new(true)));
+        checker
+            .set_dnsbl_config(
+                false,
+                vec![RblProvider {
+                    zone: "dbl.test".to_string(),
+                    enabled: true,
+                }],
+            )
+            .await;
+        assert!(!checker.is_name_listed("googleadservices.com.").await);
+    }
+
+    #[tokio::test]
+    async fn test_is_name_listed_independent_of_rbl() {
+        // RBL is enabled but DNSBL is not configured: domain checks must not
+        // fall back to the IP-based RBL provider list.
+        let checker = RblChecker::with_resolver(
+            true,
+            vec![RblProvider {
+                zone: "test.rbl".to_string(),
+                enabled: true,
+            }],
+            Arc::new(MockResolver::new(true)),
+        );
+        assert!(!checker.is_name_listed("googleadservices.com.").await);
+    }
+
+    #[tokio::test]
+    async fn test_is_name_listed_caches() {
+        let resolver = Arc::new(CountingResolver::new(true));
+        let checker = dnsbl_checker(resolver.clone()).await;
+        // Trailing-dot and case differences normalize to the same cache key.
+        assert!(checker.is_name_listed("Ads.Example.com.").await);
+        assert_eq!(resolver.count(), 1);
+        assert!(checker.is_name_listed("ads.example.com").await);
+        assert_eq!(resolver.count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_enabled_but_empty_rbl_is_noop() {
+        // RBL globally enabled with no providers: nothing is queried and the
+        // resolver is never consulted, so no IP is listed.
+        let resolver = Arc::new(CountingResolver::new(true));
+        let checker = RblChecker::with_resolver(true, vec![], resolver.clone());
+        let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+        assert!(!checker.is_listed(&ip).await);
+        assert_eq!(resolver.count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_enabled_but_empty_dnsbl_is_noop() {
+        // DNSBL globally enabled with no providers: nothing is queried.
+        let resolver = Arc::new(CountingResolver::new(true));
+        let checker = RblChecker::with_resolver(false, vec![], resolver.clone());
+        checker.set_dnsbl_config(true, vec![]).await;
+        assert!(!checker.is_name_listed("googleadservices.com.").await);
+        assert_eq!(resolver.count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_dnsbl_get_set_config() {
+        let checker = RblChecker::with_resolver(false, vec![], Arc::new(MockResolver::new(true)));
+
+        let (enabled, providers) = checker.get_dnsbl_config().await;
+        assert!(!enabled);
+        assert!(providers.is_empty());
+        assert!(!checker.is_dnsbl_enabled().await);
+
+        checker
+            .set_dnsbl_config(
+                true,
+                vec![RblProvider {
+                    zone: "dbl.spamhaus.org".to_string(),
+                    enabled: true,
+                }],
+            )
+            .await;
+
+        let (enabled, providers) = checker.get_dnsbl_config().await;
+        assert!(enabled);
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].zone, "dbl.spamhaus.org");
+        assert!(checker.is_dnsbl_enabled().await);
+
+        // DNSBL config is independent of the IP-based RBL config.
+        let (rbl_enabled, rbl_providers) = checker.get_config().await;
+        assert!(!rbl_enabled);
+        assert!(rbl_providers.is_empty());
     }
 
     #[tokio::test]

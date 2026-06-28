@@ -90,6 +90,9 @@ type DnsRecord = pb.DnsRecord
 // RblConfig represents a single RBL (Realtime Blackhole List) provider configuration.
 type RblConfig = pb.RblConfig
 
+// DnsblConfig represents a single DNSBL (domain blocklist) provider configuration.
+type DnsblConfig = pb.DnsblConfig
+
 // CacheStats represents DNS cache statistics.
 type CacheStats = pb.GetCacheStatsResponse
 
@@ -412,6 +415,56 @@ func (c *Client) GetRblConfig(ctx context.Context) (*RblStatus, error) {
 		return nil, fmt.Errorf("rolodex-dns: get rbl config: %w", err)
 	}
 	return &RblStatus{
+		Enabled:   resp.Enabled,
+		Providers: resp.Providers,
+	}, nil
+}
+
+// SetDnsblConfig configures DNSBL (domain blocklist) settings on the Rolodex DNS
+// server. This replaces the entire DNSBL configuration.
+//
+// DNSBL providers block forward domain names (queried as <name>.<zone>, e.g.
+// dbl.spamhaus.org) and take precedence over forwarded/iterative answers.
+//
+// Parameters:
+//   - enabled: whether DNSBL checking is globally enabled (default: false when first configured)
+//   - providers: list of DNSBL provider configurations, each with a zone name and enabled flag
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/SetDnsblConfig
+func (c *Client) SetDnsblConfig(ctx context.Context, enabled bool, providers []*DnsblConfig) error {
+	resp, err := c.rpc.SetDnsblConfig(ctx, &pb.SetDnsblConfigRequest{
+		Enabled:   enabled,
+		Providers: providers,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex-dns: set dnsbl config: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex-dns: set dnsbl config: %s", resp.Message)
+	}
+	return nil
+}
+
+// DnsblStatus holds the current DNSBL configuration returned by [Client.GetDnsblConfig].
+type DnsblStatus struct {
+	// Enabled indicates whether DNSBL checking is globally enabled.
+	Enabled bool
+	// Providers lists the configured DNSBL providers.
+	Providers []*DnsblConfig
+}
+
+// GetDnsblConfig retrieves the current DNSBL configuration from the Rolodex DNS server.
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/GetDnsblConfig
+func (c *Client) GetDnsblConfig(ctx context.Context) (*DnsblStatus, error) {
+	resp, err := c.rpc.GetDnsblConfig(ctx, &pb.GetDnsblConfigRequest{
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex-dns: get dnsbl config: %w", err)
+	}
+	return &DnsblStatus{
 		Enabled:   resp.Enabled,
 		Providers: resp.Providers,
 	}, nil
