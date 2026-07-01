@@ -517,20 +517,48 @@ impl Default for DhcpConfig {
 
 /// Upstream resolution strategy.
 ///
-/// In `recursive` mode (the default) the server resolves names iteratively
-/// starting at the root servers, never contacting a recursive upstream. In
-/// `forward` mode it forwards unmatched queries to the configured
-/// `forwarders`, matching the legacy behavior.
+/// Modes:
+/// - `auto` (the default): a resilient fallback chain — resolve iteratively from
+///   the root servers first, then, if that fails (e.g. a network that filters
+///   outbound port 53), fall back in order to (1) DoT/DoH to the configured
+///   `secure_upstreams` over an encrypted transport that bypasses :53 filtering,
+///   (2) the configured plaintext `forwarders` (the local/DHCP resolver), and
+///   (3) the plaintext `public_fallback` resolvers over :53 as a last resort.
+/// - `recursive`: iterative from the root servers only, never contacting an
+///   upstream.
+/// - `forward`: forward unmatched queries to the configured `forwarders` only
+///   (legacy behavior).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolutionConfig {
-    /// Resolution mode: `recursive` (iterative from the root servers) or
-    /// `forward` (forward to the configured upstream resolvers).
+    /// Resolution mode: `auto` (root-first fallback chain), `recursive`
+    /// (iterative from the roots only), or `forward` (configured forwarders only).
     #[serde(default = "default_resolution_mode")]
     pub mode: String,
-    /// Optional override for the root server hints used in recursive mode.
+    /// Optional override for the root server hints used in recursive/auto mode.
     /// When empty, the built-in IANA root server addresses are used.
     #[serde(default)]
     pub root_hints: Vec<String>,
+    /// Encrypted (DoH/DoT) upstreams tried in `auto` mode after root recursion
+    /// fails — chosen because they use ports (443/853) that survive :53 filtering.
+    /// Defaults to Cloudflare and Google over **DoH (:443)**, which looks like
+    /// ordinary HTTPS and survives DPI that also blocks DoT's :853.
+    #[serde(default = "default_secure_upstreams")]
+    pub secure_upstreams: Vec<SecureUpstreamConfig>,
+    /// Plaintext public resolvers (`ip:port`, Do53) tried LAST in `auto` mode.
+    /// Defaults to Cloudflare/Google on :53.
+    #[serde(default = "default_public_fallback")]
+    pub public_fallback: Vec<String>,
+    /// `auto` mode: how many consecutive deciding queries must resolve via a
+    /// *different* tier than the current active one before the active tier is
+    /// switched. Keeps a single flaky query from thrashing the method (and the
+    /// cache). Default 3.
+    #[serde(default = "default_switch_grace_failures")]
+    pub switch_grace_failures: u32,
+    /// `auto` mode: once degraded to a lower tier, how often (seconds) to retry
+    /// the full chain from the top so a recovered, more-preferred tier can be
+    /// reclaimed. Default 60.
+    #[serde(default = "default_recovery_probe_secs")]
+    pub recovery_probe_secs: u64,
 }
 
 impl Default for ResolutionConfig {
@@ -538,8 +566,31 @@ impl Default for ResolutionConfig {
         Self {
             mode: default_resolution_mode(),
             root_hints: Vec::new(),
+            secure_upstreams: default_secure_upstreams(),
+            public_fallback: default_public_fallback(),
+            switch_grace_failures: default_switch_grace_failures(),
+            recovery_probe_secs: default_recovery_probe_secs(),
         }
     }
+}
+
+/// A single encrypted upstream (DoH/DoT) used in `auto` mode. The `addr` is
+/// dialed by IP:port (so it needs no prior DNS), and `hostname` is the TLS SNI /
+/// certificate name validated against it (both Cloudflare's and Google's certs
+/// include their resolver IPs as SANs, so dialing by IP still verifies).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecureUpstreamConfig {
+    /// Transport: `https` (DoH, RFC 8484, :443 — preferred) or `tls` (DoT, RFC 7858, :853).
+    #[serde(default = "default_secure_transport")]
+    pub transport: String,
+    /// Upstream socket address, dialed directly, e.g. `1.1.1.1:443`.
+    pub addr: String,
+    /// TLS server name to send as SNI and validate the certificate against,
+    /// e.g. `cloudflare-dns.com` for 1.1.1.1 or `dns.google` for 8.8.8.8.
+    pub hostname: String,
+    /// DoH request path (ignored for DoT). Defaults to `/dns-query`.
+    #[serde(default = "default_doh_path")]
+    pub path: String,
 }
 
 /// Security-related configuration options.
@@ -563,7 +614,45 @@ fn default_true() -> bool {
 }
 
 fn default_resolution_mode() -> String {
-    "recursive".to_string()
+    "auto".to_string()
+}
+
+fn default_secure_transport() -> String {
+    "https".to_string()
+}
+
+fn default_doh_path() -> String {
+    "/dns-query".to_string()
+}
+
+fn default_secure_upstreams() -> Vec<SecureUpstreamConfig> {
+    // DoH over :443 preferred (survives DPI that blocks DoT's :853).
+    vec![
+        SecureUpstreamConfig {
+            transport: "https".to_string(),
+            addr: "1.1.1.1:443".to_string(),
+            hostname: "cloudflare-dns.com".to_string(),
+            path: "/dns-query".to_string(),
+        },
+        SecureUpstreamConfig {
+            transport: "https".to_string(),
+            addr: "8.8.8.8:443".to_string(),
+            hostname: "dns.google".to_string(),
+            path: "/dns-query".to_string(),
+        },
+    ]
+}
+
+fn default_public_fallback() -> Vec<String> {
+    vec!["1.1.1.1:53".to_string(), "8.8.8.8:53".to_string()]
+}
+
+fn default_switch_grace_failures() -> u32 {
+    3
+}
+
+fn default_recovery_probe_secs() -> u64 {
+    60
 }
 
 fn default_dot_bind() -> String {
@@ -702,19 +791,33 @@ mod tests {
         assert!(config.rbl.providers.is_empty());
         assert!(!config.dnsbl.enabled);
         assert!(config.dnsbl.providers.is_empty());
-        // Resolution defaults to recursive-from-roots with no custom hints.
-        assert_eq!(config.resolution.mode, "recursive");
+        // Resolution defaults to the auto fallback chain with no custom hints,
+        // and ships built-in secure (DoT) and public (:53) fallback upstreams.
+        assert_eq!(config.resolution.mode, "auto");
         assert!(config.resolution.root_hints.is_empty());
+        assert_eq!(config.resolution.secure_upstreams.len(), 2);
+        assert_eq!(
+            config.resolution.public_fallback,
+            vec!["1.1.1.1:53", "8.8.8.8:53"]
+        );
     }
 
     #[test]
     fn test_resolution_config_defaults_when_omitted() {
         // A YAML document without a `resolution:` section must default to
-        // recursive mode (the field is `#[serde(default)]`).
+        // auto mode (the field is `#[serde(default)]`).
         let yaml = "dns:\n  bind:\n    - udp: \"0.0.0.0:53\"\ngrpc:\n  tcp_bind: \"127.0.0.1:50051\"\n  unix_socket: \"\"\n  shared_secret: \"\"\nforwarders: []\ndatabase_path: \"x.db\"\nrbl:\n  enabled: false\n  providers: []\n";
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(config.resolution.mode, "recursive");
+        assert_eq!(config.resolution.mode, "auto");
         assert!(config.resolution.root_hints.is_empty());
+        // Secure + public fallbacks are populated by their serde defaults.
+        assert_eq!(config.resolution.secure_upstreams.len(), 2);
+        assert_eq!(config.resolution.secure_upstreams[0].addr, "1.1.1.1:443");
+        assert_eq!(
+            config.resolution.secure_upstreams[0].hostname,
+            "cloudflare-dns.com"
+        );
+        assert_eq!(config.resolution.secure_upstreams[0].transport, "https");
     }
 
     #[test]

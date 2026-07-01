@@ -4,7 +4,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// A cached RBL lookup result.
 #[derive(Debug, Clone)]
@@ -103,6 +103,13 @@ pub struct RblChecker {
     cache: Arc<DashMap<String, CacheEntry>>,
     /// DNS resolver for RBL lookups.
     resolver: Arc<dyn RblResolver>,
+    /// Whether outbound plaintext DNS (:53) — which RBL/DNSBL lookups require —
+    /// is currently usable. When false, the resolver-backed RBL and DNSBL checks
+    /// are SKIPPED entirely (they would only time out and add latency on a
+    /// network that filters :53). Updated by a background probe; the local
+    /// DB-backed RBL is unaffected. Defaults to true so behavior is unchanged
+    /// until a probe says otherwise.
+    resolver_available: AtomicBool,
 }
 
 impl RblChecker {
@@ -127,6 +134,30 @@ impl RblChecker {
             dnsbl_providers: ArcSwap::from_pointee(Vec::new()),
             cache: Arc::new(DashMap::new()),
             resolver,
+            resolver_available: AtomicBool::new(true),
+        }
+    }
+
+    /// Whether resolver-backed RBL/DNSBL lookups are currently usable (outbound
+    /// :53 reachable).
+    pub fn resolver_available(&self) -> bool {
+        self.resolver_available.load(Ordering::Relaxed)
+    }
+
+    /// Updates the resolver-availability flag, logging a prominent flag on every
+    /// transition so an operator can see when blocklists are dropped/restored.
+    pub fn set_resolver_available(&self, available: bool) {
+        let previous = self.resolver_available.swap(available, Ordering::Relaxed);
+        if previous == available {
+            return;
+        }
+        if available {
+            info!("RBL/DNSBL re-enabled: outbound DNS port 53 is reachable again");
+        } else {
+            warn!(
+                "RBL/DNSBL DISABLED: outbound DNS port 53 appears filtered — skipping all \
+                 resolver-backed blocklist lookups (local DB-backed RBL still applies)"
+            );
         }
     }
 
@@ -134,6 +165,10 @@ impl RblChecker {
     /// Returns true if the IP is blacklisted and should be blocked (NXDOMAIN).
     pub async fn is_listed(&self, ip: &IpAddr) -> bool {
         if !self.enabled.load(Ordering::Relaxed) {
+            return false;
+        }
+        // Outbound :53 is filtered — skip the doomed lookups (see the flag field).
+        if !self.resolver_available.load(Ordering::Relaxed) {
             return false;
         }
 
@@ -205,6 +240,10 @@ impl RblChecker {
     /// iterative) answers.
     pub async fn is_name_listed(&self, name: &str) -> bool {
         if !self.dnsbl_enabled.load(Ordering::Relaxed) {
+            return false;
+        }
+        // Outbound :53 is filtered — skip the doomed lookups (see the flag field).
+        if !self.resolver_available.load(Ordering::Relaxed) {
             return false;
         }
 
@@ -400,6 +439,58 @@ pub fn normalize_rbl_name(name: &str) -> String {
     name.trim_end_matches('.').to_ascii_lowercase()
 }
 
+/// Probes whether outbound **plaintext DNS on port 53** works, by sending a UDP
+/// query for a stable name to public resolvers and awaiting any reply. This is
+/// the transport RBL/DNSBL lookups depend on; when it fails, those lookups only
+/// time out and add latency, so [`RblChecker::set_resolver_available`] is driven
+/// off this to skip them. Deliberately a *direct* :53 test (not via the system
+/// resolver) so it reflects raw :53 reachability, not a DoH-backed fallback.
+pub async fn probe_public_dns53() -> bool {
+    use hickory_proto::op::{Message, MessageType, OpCode, Query};
+    use hickory_proto::rr::{DNSClass, Name, RecordType};
+    use hickory_proto::serialize::binary::BinEncodable;
+
+    let mut msg = Message::new();
+    msg.set_id(0x5311);
+    msg.set_message_type(MessageType::Query);
+    msg.set_op_code(OpCode::Query);
+    msg.set_recursion_desired(true);
+    let mut q = Query::new();
+    // A name that always resolves, so a reply means :53 works (not NXDOMAIN).
+    let Ok(name) = Name::from_ascii("one.one.one.one.") else {
+        return false;
+    };
+    q.set_name(name);
+    q.set_query_type(RecordType::A);
+    q.set_query_class(DNSClass::IN);
+    msg.add_query(q);
+    let Ok(query) = msg.to_bytes() else {
+        return false;
+    };
+
+    for target in ["1.1.1.1:53", "8.8.8.8:53"] {
+        if probe_dns53_target(&query, target).await {
+            return true;
+        }
+    }
+    false
+}
+
+/// Sends one UDP :53 query to `target` and reports whether a reply arrived.
+async fn probe_dns53_target(query: &[u8], target: &str) -> bool {
+    let Ok(socket) = tokio::net::UdpSocket::bind("0.0.0.0:0").await else {
+        return false;
+    };
+    if socket.send_to(query, target).await.is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 512];
+    matches!(
+        tokio::time::timeout(Duration::from_secs(2), socket.recv(&mut buf)).await,
+        Ok(Ok(n)) if n > 0
+    )
+}
+
 /// Builds an RBL DNS query for an IP address.
 ///
 /// For IPv4: reverses the octets and appends the zone.
@@ -513,6 +604,53 @@ mod tests {
             self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if self.listed { Ok(Some(300)) } else { Ok(None) }
         }
+    }
+
+    #[tokio::test]
+    async fn test_resolver_unavailable_skips_lookups() {
+        let counting = Arc::new(CountingResolver::new(true)); // would list everything
+        let checker = RblChecker::with_resolver(
+            true,
+            vec![RblProvider {
+                zone: "test.rbl".to_string(),
+                enabled: true,
+            }],
+            counting.clone(),
+        );
+        checker
+            .set_dnsbl_config(
+                true,
+                vec![RblProvider {
+                    zone: "dbl.test".to_string(),
+                    enabled: true,
+                }],
+            )
+            .await;
+
+        // :53 down → both IP-RBL and DNSBL checks are skipped: no lookups issued,
+        // nothing reported as listed.
+        checker.set_resolver_available(false);
+        assert!(
+            !checker
+                .is_listed(&IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)))
+                .await
+        );
+        assert!(!checker.is_name_listed("evil.example.com").await);
+        assert_eq!(
+            counting.count(),
+            0,
+            "no lookups should be attempted while :53 is down"
+        );
+
+        // :53 recovers → lookups resume and the (listed) resolver blocks again.
+        checker.set_resolver_available(true);
+        assert!(
+            checker
+                .is_listed(&IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)))
+                .await
+        );
+        assert!(checker.is_name_listed("evil.example.com").await);
+        assert!(counting.count() >= 1);
     }
 
     #[tokio::test]

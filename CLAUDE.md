@@ -8,7 +8,7 @@ Rolodex DNS is a split-horizon DNS server and forwarding resolver with remote ma
 - handle all std::result::Result in an appropriate way
 - do not use unwrap
 - do not use unsafe code
--  never run tests yourself
+- never run tests yourself
 - write tests for everything, including integration and real tests
 - use make test to validate any changes
 - integration tests should not alter the host, ever

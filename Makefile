@@ -45,6 +45,7 @@ rust-integration-test: build ## Run each Rust integration test file
 	cargo test --test cli_integration_test
 	cargo test --test dhcp_integration_test
 	cargo test --test acme_issuer_test
+	cargo test --test auto_resolution_test
 
 build: ## Compile debug binaries (rolodex-dns + rolodex-dns-cli)
 	cargo build

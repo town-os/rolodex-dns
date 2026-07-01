@@ -71,6 +71,20 @@ async fn main() -> Result<()> {
     rbl.set_dnsbl_config(config.dnsbl.enabled, dnsbl_providers)
         .await;
 
+    // RBL/DNSBL lookups go out over plaintext :53. On a network that filters :53
+    // they only time out and add latency, so gate them on a live :53 probe:
+    // disable the resolver-backed blocklists (with a logged flag) when :53 is
+    // down, re-enable when it recovers. Only run when a blocklist is configured.
+    if config.rbl.enabled || config.dnsbl.enabled {
+        let rbl_probe = rbl.clone();
+        tokio::spawn(async move {
+            loop {
+                rbl_probe.set_resolver_available(rolodex_dns::rbl::probe_public_dns53().await);
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            }
+        });
+    }
+
     let forwarders: Vec<SocketAddr> = config
         .forwarders
         .iter()
@@ -109,17 +123,63 @@ async fn main() -> Result<()> {
         config.security.qname_case_randomization,
     ));
 
-    // Configure upstream resolution mode (recursive-from-roots by default).
+    // Configure upstream resolution mode (auto fallback chain by default).
     let resolution_mode = match config.resolution.mode.to_ascii_lowercase().as_str() {
         "forward" => ResolutionMode::Forward,
-        "recursive" | "" => ResolutionMode::Recursive,
+        "recursive" => ResolutionMode::Recursive,
+        "auto" | "" => ResolutionMode::Auto,
         other => {
-            warn!("Unknown resolution mode '{}', using recursive", other);
-            ResolutionMode::Recursive
+            warn!("Unknown resolution mode '{}', using auto", other);
+            ResolutionMode::Auto
         }
     };
     dns_server.set_resolution_mode(resolution_mode);
     info!("Upstream resolution mode: {:?}", resolution_mode);
+
+    // Auto mode: build the secure (DoT) tier, the public :53 last-resort tier,
+    // and the switch tuning. Bad entries are warned about and skipped so a typo
+    // can't take resolution down.
+    let secure_upstreams: Vec<_> = config
+        .resolution
+        .secure_upstreams
+        .iter()
+        .filter_map(
+            |c| match rolodex_dns::secure_client::SecureUpstream::from_config(c) {
+                Ok(u) => Some(u),
+                Err(e) => {
+                    warn!("Skipping secure upstream: {}", e);
+                    None
+                }
+            },
+        )
+        .collect();
+    let public_fallback: Vec<SocketAddr> = config
+        .resolution
+        .public_fallback
+        .iter()
+        .filter_map(|f| match f.parse() {
+            Ok(a) => Some(a),
+            Err(e) => {
+                warn!("Skipping public fallback '{}': {}", f, e);
+                None
+            }
+        })
+        .collect();
+    if resolution_mode == ResolutionMode::Auto {
+        info!(
+            "Auto resolution: {} secure (DoH/DoT) upstream(s), {} public fallback(s), grace={} failures, recovery probe every {}s",
+            secure_upstreams.len(),
+            public_fallback.len(),
+            config.resolution.switch_grace_failures,
+            config.resolution.recovery_probe_secs,
+        );
+    }
+    dns_server.set_secure_upstreams(secure_upstreams);
+    dns_server.set_public_fallback(public_fallback);
+    dns_server.set_auto_params(
+        config.resolution.switch_grace_failures,
+        config.resolution.recovery_probe_secs,
+    );
 
     // Apply custom root hints if provided.
     if !config.resolution.root_hints.is_empty() {

@@ -10,7 +10,7 @@ use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use rand::Rng;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use tokio::net::{TcpListener, UdpSocket};
 use tracing::{debug, error, info, warn};
 
@@ -19,11 +19,27 @@ const FORWARD_POOL_SIZE: usize = 8;
 /// Upstream resolution strategy for queries not satisfied locally.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolutionMode {
-    /// Resolve iteratively starting at the root servers (default).
+    /// Resolve iteratively starting at the root servers.
     Recursive,
     /// Forward to the configured upstream resolvers.
     Forward,
+    /// Resilient fallback chain (default): roots → DoH/DoT → local forwarder →
+    /// public :53, with a sticky active tier (see the auto-resolution methods).
+    Auto,
 }
+
+/// Ordered resolution tiers used by [`ResolutionMode::Auto`]. Lower index = more
+/// preferred. The numeric order is also the trust order, so a *smaller* winning
+/// index than the active tier is a recovery (safe) and a *larger* one is a
+/// degrade (gated behind the failure grace period).
+const TIER_ROOTS: usize = 0;
+const TIER_SECURE: usize = 1;
+const TIER_LOCAL: usize = 2;
+const TIER_PUBLIC: usize = 3;
+const TIER_COUNT: usize = 4;
+
+/// Per-upstream timeout for the secure (DoH/DoT) tier.
+const SECURE_TIER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Maximum UDP DNS message size.
 const MAX_UDP_SIZE: usize = 4096;
@@ -55,10 +71,25 @@ pub struct DnsServer {
     forward_sockets: Vec<Arc<tokio::sync::Mutex<Option<UdpSocket>>>>,
     /// Round-robin index for the forward socket pool.
     forward_socket_idx: AtomicUsize,
-    /// Upstream resolution strategy (recursive-from-roots or forward).
+    /// Upstream resolution strategy (recursive-from-roots, forward, or auto).
     resolution_mode: Arc<ArcSwap<ResolutionMode>>,
-    /// Iterative resolver used in recursive mode.
+    /// Iterative resolver used in recursive/auto mode.
     resolver: Arc<ArcSwap<crate::resolver::IterativeResolver>>,
+    /// Encrypted (DoH/DoT) upstreams for the auto-mode secure tier.
+    secure_upstreams: Arc<ArcSwap<Vec<crate::secure_client::SecureUpstream>>>,
+    /// Plaintext public resolvers for the auto-mode last-resort tier.
+    public_fallback: Arc<ArcSwap<Vec<SocketAddr>>>,
+    /// Auto mode: index of the currently committed resolution tier.
+    active_tier: AtomicUsize,
+    /// Auto mode: consecutive deciding queries whose winner deviated from the
+    /// active tier (drives the sticky switch — see `note_auto_winner`).
+    deviation_streak: AtomicUsize,
+    /// Auto mode: unix-seconds timestamp of the last top-of-chain recovery probe.
+    last_probe: AtomicU64,
+    /// Auto mode: consecutive-failure grace before committing a downward switch.
+    switch_grace_failures: AtomicU32,
+    /// Auto mode: how often (seconds) to probe the full chain from the top.
+    recovery_probe_secs: AtomicU64,
 }
 
 impl DnsServer {
@@ -83,6 +114,13 @@ impl DnsServer {
             resolver: Arc::new(ArcSwap::from_pointee(
                 crate::resolver::IterativeResolver::with_defaults(),
             )),
+            secure_upstreams: Arc::new(ArcSwap::from_pointee(Vec::new())),
+            public_fallback: Arc::new(ArcSwap::from_pointee(Vec::new())),
+            active_tier: AtomicUsize::new(TIER_ROOTS),
+            deviation_streak: AtomicUsize::new(0),
+            last_probe: AtomicU64::new(0),
+            switch_grace_failures: AtomicU32::new(3),
+            recovery_probe_secs: AtomicU64::new(60),
         }
     }
 
@@ -115,6 +153,13 @@ impl DnsServer {
             resolver: Arc::new(ArcSwap::from_pointee(
                 crate::resolver::IterativeResolver::with_defaults(),
             )),
+            secure_upstreams: Arc::new(ArcSwap::from_pointee(Vec::new())),
+            public_fallback: Arc::new(ArcSwap::from_pointee(Vec::new())),
+            active_tier: AtomicUsize::new(TIER_ROOTS),
+            deviation_streak: AtomicUsize::new(0),
+            last_probe: AtomicU64::new(0),
+            switch_grace_failures: AtomicU32::new(3),
+            recovery_probe_secs: AtomicU64::new(60),
         }
     }
 
@@ -128,10 +173,35 @@ impl DnsServer {
         **self.resolution_mode.load()
     }
 
+    /// Returns the auto-mode currently committed tier index (0=roots, 1=secure,
+    /// 2=local forwarder, 3=public). Useful for diagnostics and tests.
+    pub fn active_tier(&self) -> usize {
+        self.active_tier.load(Ordering::Relaxed)
+    }
+
     /// Replaces the root hints used by the iterative resolver.
     pub fn set_root_hints(&self, hints: Vec<IpAddr>) {
         self.resolver
             .store(Arc::new(crate::resolver::IterativeResolver::new(hints)));
+    }
+
+    /// Sets the auto-mode encrypted (DoH/DoT) upstreams (the secure tier).
+    pub fn set_secure_upstreams(&self, upstreams: Vec<crate::secure_client::SecureUpstream>) {
+        self.secure_upstreams.store(Arc::new(upstreams));
+    }
+
+    /// Sets the auto-mode plaintext public resolvers (the last-resort tier).
+    pub fn set_public_fallback(&self, targets: Vec<SocketAddr>) {
+        self.public_fallback.store(Arc::new(targets));
+    }
+
+    /// Sets the auto-mode tuning: failure grace before a downward switch, and how
+    /// often to probe the full chain from the top to reclaim a recovered tier.
+    pub fn set_auto_params(&self, switch_grace_failures: u32, recovery_probe_secs: u64) {
+        self.switch_grace_failures
+            .store(switch_grace_failures, Ordering::Relaxed);
+        self.recovery_probe_secs
+            .store(recovery_probe_secs, Ordering::Relaxed);
     }
 
     /// Sets the TTL drift configuration.
@@ -875,7 +945,186 @@ impl DnsServer {
         match **self.resolution_mode.load() {
             ResolutionMode::Forward => self.forward_query(query_data).await,
             ResolutionMode::Recursive => self.iterative_query(query_data, edns_ctx).await,
+            ResolutionMode::Auto => self.auto_resolve(query_data, edns_ctx).await,
         }
+    }
+
+    /// Resolves via the resilient fallback chain: roots → secure (DoH/DoT) →
+    /// local forwarder → public :53. A sticky `active_tier` is tried first (so a
+    /// network that filters :53 doesn't pay the root/timeout on every query);
+    /// lower tiers below it provide the actual answer when it fails. Periodically
+    /// a query probes the whole chain from the top to reclaim a recovered tier.
+    /// The committed tier changes only after a grace period of failures (or
+    /// immediately on recovery), and every committed change flushes the cache
+    /// first to avoid serving answers cached under a different upstream.
+    async fn auto_resolve(
+        &self,
+        query_data: &[u8],
+        edns_ctx: Option<&crate::edns::EdnsContext>,
+    ) -> Result<Vec<u8>> {
+        let message = match hickory_proto::op::Message::from_bytes(query_data) {
+            Ok(m) => m,
+            Err(_) => return Ok(make_error_response(query_data, ResponseCode::FormErr)),
+        };
+        if message.queries().is_empty() {
+            return Ok(make_error_response(query_data, ResponseCode::FormErr));
+        }
+
+        let start = self.auto_start_tier();
+        for tier in start..TIER_COUNT {
+            if let Some(response) = self.try_tier(tier, query_data, &message, edns_ctx).await {
+                // Commit any tier change (flushing the cache first) BEFORE caching
+                // this answer, so the fresh answer survives the flush.
+                self.note_auto_winner(tier);
+                self.cache_from_wire(&response);
+                return Ok(response);
+            }
+        }
+        Ok(make_error_response(query_data, ResponseCode::ServFail))
+    }
+
+    /// Picks the tier a query starts at: normally the sticky `active_tier`, but
+    /// once every `recovery_probe_secs` (when degraded below roots) it starts at
+    /// the top so a recovered, more-preferred tier can be detected. The
+    /// compare-exchange ensures only one concurrent query probes per interval.
+    fn auto_start_tier(&self) -> usize {
+        let active = self.active_tier.load(Ordering::Relaxed);
+        if active == TIER_ROOTS {
+            return TIER_ROOTS;
+        }
+        let now = unix_now_secs();
+        let probe_secs = self.recovery_probe_secs.load(Ordering::Relaxed);
+        let last = self.last_probe.load(Ordering::Relaxed);
+        if now.saturating_sub(last) >= probe_secs
+            && self
+                .last_probe
+                .compare_exchange(last, now, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+        {
+            TIER_ROOTS
+        } else {
+            active
+        }
+    }
+
+    /// Records which tier answered and, if it deviates from the active tier,
+    /// updates the sticky tier — immediately on recovery (winner more preferred
+    /// than active) or after `switch_grace_failures` consecutive failures on
+    /// degrade (winner less preferred). Any committed change flushes the cache
+    /// first so cross-tier answers can't linger (cache-poisoning guard).
+    fn note_auto_winner(&self, winner: usize) {
+        let active = self.active_tier.load(Ordering::Relaxed);
+        if winner == active {
+            self.deviation_streak.store(0, Ordering::Relaxed);
+        } else if winner < active {
+            // Recovery: a more-preferred (more-trusted) tier answered. Safe
+            // direction — switch immediately.
+            self.flush_cache();
+            self.active_tier.store(winner, Ordering::Relaxed);
+            self.deviation_streak.store(0, Ordering::Relaxed);
+            info!(
+                "auto resolution recovered to tier {} (was {}); cache flushed",
+                winner, active
+            );
+        } else {
+            // Degrade: the active tier failed and a lower tier answered. Only
+            // commit the switch after the failure grace period.
+            let grace = self.switch_grace_failures.load(Ordering::Relaxed).max(1);
+            let streak = self.deviation_streak.fetch_add(1, Ordering::Relaxed) + 1;
+            if streak >= grace as usize {
+                self.flush_cache();
+                self.active_tier.store(winner, Ordering::Relaxed);
+                self.deviation_streak.store(0, Ordering::Relaxed);
+                warn!(
+                    "auto resolution degraded to tier {} after {} failures (was {}); cache flushed",
+                    winner, streak, active
+                );
+            }
+        }
+    }
+
+    /// Attempts a single resolution tier, returning the raw wire response only if
+    /// it is definitive (transport succeeded and rcode is NoError/NXDomain).
+    async fn try_tier(
+        &self,
+        tier: usize,
+        query_data: &[u8],
+        message: &hickory_proto::op::Message,
+        edns_ctx: Option<&crate::edns::EdnsContext>,
+    ) -> Option<Vec<u8>> {
+        match tier {
+            TIER_ROOTS => self.tier_roots(message, edns_ctx).await,
+            TIER_SECURE => self.tier_secure(query_data).await,
+            TIER_LOCAL => {
+                let targets = self.forwarders.load();
+                self.tier_forward(query_data, &targets).await
+            }
+            TIER_PUBLIC => {
+                let targets = self.public_fallback.load();
+                self.tier_forward(query_data, &targets).await
+            }
+            _ => None,
+        }
+    }
+
+    /// Roots tier: iterative resolution from the root servers.
+    async fn tier_roots(
+        &self,
+        message: &hickory_proto::op::Message,
+        edns_ctx: Option<&crate::edns::EdnsContext>,
+    ) -> Option<Vec<u8>> {
+        let question = message.queries().first()?;
+        let resolver = self.resolver.load_full();
+        match resolver
+            .resolve(
+                question.name(),
+                question.query_type(),
+                question.query_class(),
+            )
+            .await
+        {
+            Ok(res) if matches!(res.rcode, ResponseCode::NoError | ResponseCode::NXDomain) => Some(
+                build_response_edns(message, res.rcode, res.answers, false, edns_ctx),
+            ),
+            Ok(_) => None,
+            Err(e) => {
+                debug!("auto: root recursion for {} failed: {}", question.name(), e);
+                None
+            }
+        }
+    }
+
+    /// Secure tier: DoH/DoT to each configured encrypted upstream in order
+    /// (DoH first by default — :443 survives filtering that blocks DoT's :853).
+    async fn tier_secure(&self, query_data: &[u8]) -> Option<Vec<u8>> {
+        let upstreams = self.secure_upstreams.load();
+        for up in upstreams.iter() {
+            match crate::secure_client::query(query_data, up, SECURE_TIER_TIMEOUT).await {
+                Ok(resp) if response_is_definitive(&resp) => return Some(resp),
+                Ok(_) => continue,
+                Err(e) => {
+                    debug!("auto: secure upstream {} failed: {}", up.label, e);
+                    continue;
+                }
+            }
+        }
+        None
+    }
+
+    /// Forwarding tier: plaintext Do53 to each target in order (used for both the
+    /// local-forwarder and public-fallback tiers).
+    async fn tier_forward(&self, query_data: &[u8], targets: &[SocketAddr]) -> Option<Vec<u8>> {
+        for target in targets {
+            match self.forward_one(query_data, target).await {
+                Ok(resp) if response_is_definitive(&resp) => return Some(resp),
+                Ok(_) => continue,
+                Err(e) => {
+                    debug!("auto: forward to {} failed: {}", target, e);
+                    continue;
+                }
+            }
+        }
+        None
     }
 
     /// Resolves a query iteratively starting at the root servers.
@@ -957,27 +1206,11 @@ impl DnsServer {
             return Ok(make_error_response(query_data, ResponseCode::ServFail));
         }
 
-        let proxy = self.proxy_config.load();
-
         // Try each forwarder in order
         for forwarder in forwarders.iter() {
-            let result = if let Some(ref proxy_cfg) = **proxy {
-                // Forward through proxy (TCP tunneled)
-                crate::doh_proxy::forward_via_proxy(query_data, forwarder, proxy_cfg).await
-            } else {
-                // Direct UDP forwarding
-                self.forward_udp(query_data, forwarder).await
-            };
-            match result {
+            match self.forward_one(query_data, forwarder).await {
                 Ok(response) => {
-                    // Parse upstream response and insert answers into the cache.
-                    if self.dns_cache.is_some()
-                        && let Ok(upstream_msg) = hickory_proto::op::Message::from_bytes(&response)
-                        && upstream_msg.response_code() == ResponseCode::NoError
-                        && !upstream_msg.answers().is_empty()
-                    {
-                        self.cache_answers(upstream_msg.answers());
-                    }
+                    self.cache_from_wire(&response);
                     return Ok(response);
                 }
                 Err(e) => {
@@ -988,6 +1221,29 @@ impl DnsServer {
         }
 
         Ok(make_error_response(query_data, ResponseCode::ServFail))
+    }
+
+    /// Sends one query to one upstream over Do53, tunneling through the proxy if
+    /// one is configured.
+    async fn forward_one(&self, query_data: &[u8], target: &SocketAddr) -> Result<Vec<u8>> {
+        let proxy = self.proxy_config.load();
+        if let Some(ref proxy_cfg) = **proxy {
+            crate::doh_proxy::forward_via_proxy(query_data, target, proxy_cfg).await
+        } else {
+            self.forward_udp(query_data, target).await
+        }
+    }
+
+    /// Inserts a raw wire response's answers into the cache when it carries a
+    /// positive answer (NoError with at least one record).
+    fn cache_from_wire(&self, response: &[u8]) {
+        if self.dns_cache.is_some()
+            && let Ok(msg) = hickory_proto::op::Message::from_bytes(response)
+            && msg.response_code() == ResponseCode::NoError
+            && !msg.answers().is_empty()
+        {
+            self.cache_answers(msg.answers());
+        }
     }
 
     async fn forward_udp(&self, query_data: &[u8], target: &SocketAddr) -> Result<Vec<u8>> {
@@ -1042,6 +1298,27 @@ impl DnsServer {
         }
 
         Ok(buf)
+    }
+}
+
+/// Current wall-clock time in unix seconds (0 if the clock is before the epoch).
+fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Whether a raw wire response is a definitive answer for auto-mode tier
+/// selection: it parses and its rcode is NoError or NXDomain (an authoritative
+/// yes/no). ServFail/Refused/unparseable are treated as "try the next tier".
+fn response_is_definitive(response: &[u8]) -> bool {
+    match hickory_proto::op::Message::from_bytes(response) {
+        Ok(msg) => matches!(
+            msg.response_code(),
+            ResponseCode::NoError | ResponseCode::NXDomain
+        ),
+        Err(_) => false,
     }
 }
 
@@ -2147,6 +2424,126 @@ mod tests {
         assert_eq!(server.get_resolution_mode(), ResolutionMode::Forward);
         server.set_resolution_mode(ResolutionMode::Recursive);
         assert_eq!(server.get_resolution_mode(), ResolutionMode::Recursive);
+    }
+
+    fn response_with_rcode(rcode: ResponseCode) -> Vec<u8> {
+        let mut m = Message::new();
+        m.set_id(1);
+        m.set_message_type(MessageType::Response);
+        m.set_response_code(rcode);
+        m.to_bytes().unwrap()
+    }
+
+    #[test]
+    fn test_response_is_definitive() {
+        // NoError and NXDomain are authoritative yes/no answers.
+        assert!(response_is_definitive(&response_with_rcode(
+            ResponseCode::NoError
+        )));
+        assert!(response_is_definitive(&response_with_rcode(
+            ResponseCode::NXDomain
+        )));
+        // ServFail/Refused mean "couldn't answer" — fall through to the next tier.
+        assert!(!response_is_definitive(&response_with_rcode(
+            ResponseCode::ServFail
+        )));
+        assert!(!response_is_definitive(&response_with_rcode(
+            ResponseCode::Refused
+        )));
+        // Garbage never parses.
+        assert!(!response_is_definitive(&[0u8, 1]));
+    }
+
+    // Auto mode: a downward (degrade) switch only commits after the failure
+    // grace period; the active tier stays put until then.
+    #[tokio::test]
+    async fn test_auto_switch_respects_grace() {
+        let db = Database::open_memory().unwrap();
+        let server = make_test_server(db);
+        server.set_auto_params(3, 60);
+        assert_eq!(server.active_tier(), TIER_ROOTS);
+
+        // Two deviations (roots failing, local answering) — below grace, no switch.
+        server.note_auto_winner(TIER_LOCAL);
+        assert_eq!(server.active_tier(), TIER_ROOTS);
+        server.note_auto_winner(TIER_LOCAL);
+        assert_eq!(server.active_tier(), TIER_ROOTS);
+        // Third consecutive deviation reaches grace — switch commits.
+        server.note_auto_winner(TIER_LOCAL);
+        assert_eq!(server.active_tier(), TIER_LOCAL);
+    }
+
+    // A single success on the active tier resets the deviation streak, so a
+    // lone flap can never accumulate into a switch.
+    #[tokio::test]
+    async fn test_auto_flap_does_not_switch() {
+        let db = Database::open_memory().unwrap();
+        let server = make_test_server(db);
+        server.set_auto_params(3, 60);
+        server.note_auto_winner(TIER_LOCAL); // deviation
+        server.note_auto_winner(TIER_ROOTS); // active answered — resets streak
+        server.note_auto_winner(TIER_LOCAL); // deviation (streak restarts at 1)
+        server.note_auto_winner(TIER_LOCAL); // 2
+        assert_eq!(server.active_tier(), TIER_ROOTS); // still not switched
+    }
+
+    // Auto mode: recovery to a more-preferred tier is immediate and flushes the
+    // cache first (cross-tier poisoning guard).
+    #[tokio::test]
+    async fn test_auto_recovery_immediate_and_flushes_cache() {
+        let db = Database::open_memory().unwrap();
+        let cache = Arc::new(crate::dns_cache::DnsCache::new(db.clone()));
+        let rbl = Arc::new(RblChecker::with_resolver(
+            false,
+            vec![],
+            Arc::new(NeverListedResolver),
+        ));
+        let server =
+            DnsServer::new_with_options(db.clone(), rbl, vec![], Some(cache.clone()), None, false);
+
+        // Pretend we had degraded to the local tier and cached an answer there.
+        server.active_tier.store(TIER_LOCAL, Ordering::Relaxed);
+        cache.insert(
+            "cached.example.",
+            Some(RecordKind::A),
+            vec![DnsRecord {
+                id: None,
+                name: "cached.example.".to_string(),
+                record_type: RecordKind::A,
+                value: "10.0.0.1".to_string(),
+                ttl: 300,
+                priority: 0,
+            }],
+            300,
+        );
+        assert_eq!(cache.stats().total_entries, 1);
+
+        // Roots (more preferred) answered again → immediate switch up + flush.
+        server.note_auto_winner(TIER_ROOTS);
+        assert_eq!(server.active_tier(), TIER_ROOTS);
+        assert_eq!(cache.stats().total_entries, 0);
+    }
+
+    // Auto mode: once degraded, the start tier is the sticky active tier, except
+    // for a periodic probe from the top to reclaim a recovered tier.
+    #[tokio::test]
+    async fn test_auto_start_tier_probes_periodically() {
+        let db = Database::open_memory().unwrap();
+        let server = make_test_server(db);
+
+        // At the top there is nothing to probe for.
+        assert_eq!(server.auto_start_tier(), TIER_ROOTS);
+
+        // Degraded, with a recent probe: start at the sticky active tier (fast).
+        server.active_tier.store(TIER_LOCAL, Ordering::Relaxed);
+        server.set_auto_params(3, 3600);
+        server.last_probe.store(unix_now_secs(), Ordering::Relaxed);
+        assert_eq!(server.auto_start_tier(), TIER_LOCAL);
+
+        // Probe interval elapsed: start from the top once, then revert to sticky.
+        server.last_probe.store(0, Ordering::Relaxed);
+        assert_eq!(server.auto_start_tier(), TIER_ROOTS);
+        assert_eq!(server.auto_start_tier(), TIER_LOCAL);
     }
 
     #[tokio::test]

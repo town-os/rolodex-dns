@@ -21,5 +21,6 @@ pub mod grpc_service;
 pub mod portal;
 pub mod rbl;
 pub mod resolver;
+pub mod secure_client;
 pub mod tls;
 pub mod ttl_drift;
