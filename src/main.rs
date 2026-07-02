@@ -10,7 +10,7 @@ use rolodex_dns::dns_server::DnsServer;
 use rolodex_dns::dns_server::ResolutionMode;
 use rolodex_dns::grpc_service::RolodexDnsGrpcService;
 use rolodex_dns::grpc_service::proto::rolodex_dns_service_server::RolodexDnsServiceServer;
-use rolodex_dns::rbl::{RblChecker, RblProvider};
+use rolodex_dns::rbl::{RblChecker, RblProvider, RecursiveRblResolver};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::net::UnixListener;
@@ -48,6 +48,22 @@ async fn main() -> Result<()> {
 
     let db = Database::open(&config.database_path).context("failed to open database")?;
 
+    // Upstreams for both the main resolver and the RBL/DNSBL resolver. Parsed
+    // here (before the RBL checker) so blocklist lookups can resolve the same way
+    // rolodex does — from the roots, then the forwarder — instead of via the
+    // local stub (which points back at rolodex and loops; see RecursiveRblResolver).
+    let forwarders: Vec<SocketAddr> = config
+        .forwarders
+        .iter()
+        .filter_map(|f| f.parse().ok())
+        .collect();
+    let root_hint_ips: Vec<IpAddr> = config
+        .resolution
+        .root_hints
+        .iter()
+        .filter_map(|h| h.parse().ok())
+        .collect();
+
     let rbl_providers: Vec<RblProvider> = config
         .rbl
         .providers
@@ -57,7 +73,14 @@ async fn main() -> Result<()> {
             enabled: p.enabled,
         })
         .collect();
-    let rbl = Arc::new(RblChecker::new(config.rbl.enabled, rbl_providers));
+    let rbl = Arc::new(RblChecker::with_resolver(
+        config.rbl.enabled,
+        rbl_providers,
+        Arc::new(RecursiveRblResolver::new(
+            root_hint_ips.clone(),
+            forwarders.clone(),
+        )),
+    ));
 
     let dnsbl_providers: Vec<RblProvider> = config
         .dnsbl
@@ -84,12 +107,6 @@ async fn main() -> Result<()> {
             }
         });
     }
-
-    let forwarders: Vec<SocketAddr> = config
-        .forwarders
-        .iter()
-        .filter_map(|f| f.parse().ok())
-        .collect();
 
     // Initialize DNS cache (load_from_disk happens automatically in new())
     let dns_cache = Arc::new(DnsCache::new(db.clone()));
@@ -181,20 +198,12 @@ async fn main() -> Result<()> {
         config.resolution.recovery_probe_secs,
     );
 
-    // Apply custom root hints if provided.
-    if !config.resolution.root_hints.is_empty() {
-        let hints: Vec<IpAddr> = config
-            .resolution
-            .root_hints
-            .iter()
-            .filter_map(|h| h.parse().ok())
-            .collect();
-        if hints.is_empty() {
-            warn!("No valid root hints parsed from config; using built-in root hints");
-        } else {
-            info!("Using {} custom root hint(s)", hints.len());
-            dns_server.set_root_hints(hints);
-        }
+    // Apply custom root hints if provided (parsed once, above).
+    if !root_hint_ips.is_empty() {
+        info!("Using {} custom root hint(s)", root_hint_ips.len());
+        dns_server.set_root_hints(root_hint_ips);
+    } else if !config.resolution.root_hints.is_empty() {
+        warn!("No valid root hints parsed from config; using built-in root hints");
     }
 
     // Apply proxy configuration if set

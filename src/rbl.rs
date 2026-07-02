@@ -1,6 +1,6 @@
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -78,6 +78,141 @@ impl RblResolver for HickoryRblResolver {
                 Ok(None)
             }
         }
+    }
+}
+
+/// RBL/DNSBL resolver that resolves blocklist queries the way rolodex resolves
+/// everything else — **recursively from the root servers**, with the configured
+/// forwarder(s) as a fallback — instead of via the system resolver.
+///
+/// This matters for correctness, not just policy. The system resolver is
+/// `/etc/resolv.conf`, which on Town OS points at systemd-resolved → rolodex
+/// itself. Resolving a blocklist name (`<name>.<zone>`) through that path
+/// re-enters rolodex's own query handler, which runs the DNSBL check *again* on
+/// the blocklist lookup, appends the zone once more (`<name>.<zone>.<zone>…`),
+/// and loops forever — the process spins emitting ever-longer names and never
+/// answers the original query. Recursing from the roots (or forwarding to a real
+/// upstream) never touches the local resolver, so there is no loop.
+pub struct RecursiveRblResolver {
+    /// Iterative (root-recursive) resolver — the primary path.
+    resolver: crate::resolver::IterativeResolver,
+    /// Upstream forwarders to fall back to when root recursion can't reach an
+    /// answer (e.g. a network that filters outbound :53 to the roots but permits
+    /// a local/host-proxied forwarder). Tried in order.
+    forwarders: Vec<SocketAddr>,
+    /// Per-query timeout for the forwarder fallback.
+    timeout: Duration,
+}
+
+impl RecursiveRblResolver {
+    /// Builds a resolver recursing from `root_hints` (built-in roots when empty),
+    /// falling back to `forwarders`.
+    pub fn new(root_hints: Vec<IpAddr>, forwarders: Vec<SocketAddr>) -> Self {
+        Self {
+            resolver: crate::resolver::IterativeResolver::new(root_hints),
+            forwarders,
+            timeout: Duration::from_secs(5),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RblResolver for RecursiveRblResolver {
+    async fn lookup_rbl(&self, query: &str) -> Result<Option<u32>, anyhow::Error> {
+        use hickory_proto::op::ResponseCode;
+        use hickory_proto::rr::{DNSClass, Name, RecordType};
+
+        let name = match Name::from_ascii(query) {
+            Ok(n) => n,
+            Err(e) => {
+                debug!("RBL: skipping unparseable name {}: {}", query, e);
+                return Ok(None);
+            }
+        };
+
+        // 1. Recurse from the roots. This uses its own sockets to the root and
+        //    authoritative servers — it never queries the local stub, so the
+        //    DNSBL check is not re-triggered and cannot loop.
+        match self
+            .resolver
+            .resolve(&name, RecordType::A, DNSClass::IN)
+            .await
+        {
+            Ok(res) => match res.rcode {
+                ResponseCode::NoError => return Ok(first_a_ttl(&res.answers)),
+                ResponseCode::NXDomain => return Ok(None),
+                // ServFail/Refused/etc. are not definitive — try a forwarder.
+                other => debug!(
+                    "RBL roots lookup for {} returned {:?}; trying forwarder",
+                    query, other
+                ),
+            },
+            Err(e) => debug!(
+                "RBL roots lookup for {} failed: {}; trying forwarder",
+                query, e
+            ),
+        }
+
+        // 2. Forwarder fallback (a real upstream, still never the local stub).
+        for fwd in &self.forwarders {
+            match query_forwarder_a(&name, *fwd, self.timeout).await {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    debug!("RBL forwarder {} lookup for {} failed: {}", fwd, query, e);
+                    continue;
+                }
+            }
+        }
+
+        // Nothing resolved it — fail open (never block on a resolution failure).
+        Ok(None)
+    }
+}
+
+/// Returns the TTL of the first A record in `answers`, or `None` when there is
+/// none — a listed name resolves to an A record (typically `127.0.0.x`), so its
+/// presence is what "listed" means and its absence (NODATA) means "not listed".
+fn first_a_ttl(answers: &[hickory_proto::rr::Record]) -> Option<u32> {
+    answers
+        .iter()
+        .find(|r| r.record_type() == hickory_proto::rr::RecordType::A)
+        .map(|r| r.ttl())
+}
+
+/// Resolves `name`/A against a single forwarder over UDP and classifies it:
+/// `Ok(Some(ttl))` listed, `Ok(None)` definitively not listed (NXDOMAIN/NODATA),
+/// `Err` when the forwarder gave no usable answer (so the caller tries the next).
+async fn query_forwarder_a(
+    name: &hickory_proto::rr::Name,
+    forwarder: SocketAddr,
+    timeout: Duration,
+) -> Result<Option<u32>, anyhow::Error> {
+    use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
+    use hickory_proto::rr::{DNSClass, RecordType};
+    use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
+
+    let mut msg = Message::new();
+    msg.set_message_type(MessageType::Query);
+    msg.set_op_code(OpCode::Query);
+    msg.set_recursion_desired(true);
+    let mut q = Query::new();
+    q.set_name(name.clone());
+    q.set_query_type(RecordType::A);
+    q.set_query_class(DNSClass::IN);
+    msg.add_query(q);
+    let query = msg.to_bytes()?;
+
+    let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+    socket.send_to(&query, forwarder).await?;
+    let mut buf = [0u8; 1500];
+    let n = tokio::time::timeout(timeout, socket.recv(&mut buf))
+        .await
+        .map_err(|_| anyhow::anyhow!("forwarder {} timed out", forwarder))??;
+    let resp = Message::from_bytes(&buf[..n])?;
+    match resp.response_code() {
+        ResponseCode::NoError => Ok(first_a_ttl(resp.answers())),
+        ResponseCode::NXDomain => Ok(None),
+        other => anyhow::bail!("forwarder {} returned {:?}", forwarder, other),
     }
 }
 
@@ -651,6 +786,76 @@ mod tests {
         );
         assert!(checker.is_name_listed("evil.example.com").await);
         assert!(counting.count() >= 1);
+    }
+
+    #[tokio::test]
+    async fn recursive_rbl_forwarder_classifies_listed_and_not_listed() {
+        use hickory_proto::op::{Message, MessageType, OpCode, ResponseCode};
+        use hickory_proto::rr::{Name, RData, Record, rdata};
+        use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
+
+        // Mock forwarder: A? for a name containing "listed" -> 127.0.0.2 (TTL 111);
+        // anything else -> NXDOMAIN.
+        let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = sock.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 2048];
+            loop {
+                let (n, src) = match sock.recv_from(&mut buf).await {
+                    Ok(v) => v,
+                    Err(_) => break,
+                };
+                let Ok(req) = Message::from_bytes(&buf[..n]) else {
+                    continue;
+                };
+                let mut resp = Message::new();
+                resp.set_id(req.id());
+                resp.set_message_type(MessageType::Response);
+                resp.set_op_code(OpCode::Query);
+                for q in req.queries() {
+                    resp.add_query(q.clone());
+                }
+                let q0 = req.queries().first().cloned();
+                let listed = q0
+                    .as_ref()
+                    .map(|q| q.name().to_ascii().contains("listed"))
+                    .unwrap_or(false);
+                if let (true, Some(q)) = (listed, q0) {
+                    resp.set_response_code(ResponseCode::NoError);
+                    resp.add_answer(Record::from_rdata(
+                        q.name().clone(),
+                        111,
+                        RData::A(rdata::A(Ipv4Addr::new(127, 0, 0, 2))),
+                    ));
+                } else {
+                    resp.set_response_code(ResponseCode::NXDomain);
+                }
+                let _ = sock.send_to(&resp.to_bytes().unwrap(), src).await;
+            }
+        });
+
+        // Exercises the forwarder-fallback path directly (fast; no roots/network).
+        let listed = query_forwarder_a(
+            &Name::from_ascii("evil.listed.example.").unwrap(),
+            addr,
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            listed,
+            Some(111),
+            "listed name must resolve to an A → Some(ttl)"
+        );
+
+        let clean = query_forwarder_a(
+            &Name::from_ascii("good.example.").unwrap(),
+            addr,
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(clean, None, "NXDOMAIN → not listed");
     }
 
     #[tokio::test]
