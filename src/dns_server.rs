@@ -38,8 +38,11 @@ const TIER_LOCAL: usize = 2;
 const TIER_PUBLIC: usize = 3;
 const TIER_COUNT: usize = 4;
 
-/// Per-upstream timeout for the secure (DoH/DoT) tier.
-const SECURE_TIER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Per-upstream timeout for the secure (DoH/DoT) tier. Short so a wedged/slow
+/// encrypted upstream fails over to the next upstream (and then the next tier)
+/// quickly; a Cloudflare/Google :443 handshake+query completes well within this
+/// even on poor WiFi.
+const SECURE_TIER_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// Maximum UDP DNS message size.
 const MAX_UDP_SIZE: usize = 4096;
@@ -1085,6 +1088,39 @@ impl DnsServer {
         Ok(make_error_response(query_data, ResponseCode::ServFail))
     }
 
+    /// Pre-warms the auto-resolution chain at startup so the first *client*
+    /// query doesn't pay the cold-tier cost. The sticky `active_tier` begins at
+    /// [`TIER_ROOTS`]; on a network that filters plaintext :53 the root tier is
+    /// unreachable and only degrades to the secure (DoH/DoT) tier after
+    /// `switch_grace_failures` real-query failures — so without this the first
+    /// several client queries each eat a root timeout before falling through to
+    /// DoH. Issuing a few canary resolutions here drives that degrade (and
+    /// completes the secure upstream's TCP+TLS handshake) before traffic
+    /// arrives. It is a no-op outside auto mode, and on a healthy network where
+    /// the roots answer it leaves the tier at roots (a couple of throwaway
+    /// lookups). Fire-and-forget: spawn it, never block startup on it.
+    pub async fn prewarm_auto(&self) {
+        if !matches!(**self.resolution_mode.load(), ResolutionMode::Auto) {
+            return;
+        }
+        let Some(query) = build_canary_query() else {
+            return;
+        };
+        // Enough attempts to commit a degrade past dead roots (grace consecutive
+        // deviations), plus one; bounded so a fully-offline host can't spin.
+        let grace = self.switch_grace_failures.load(Ordering::Relaxed).max(1);
+        for _ in 0..grace.saturating_add(1) {
+            if self.active_tier() != TIER_ROOTS {
+                break;
+            }
+            let _ = self.upstream_resolve(&query, None).await;
+        }
+        info!(
+            "auto resolution pre-warm complete: committed tier {}",
+            self.active_tier()
+        );
+    }
+
     /// Picks the tier a query starts at: normally the sticky `active_tier`, but
     /// once every `recovery_probe_secs` (when degraded below roots) it starts at
     /// the top so a recovered, more-preferred tier can be detected. The
@@ -1375,8 +1411,12 @@ impl DnsServer {
         socket.send_to(&send_data, target).await?;
 
         let mut buf = vec![0u8; MAX_UDP_SIZE];
-        let timeout =
-            tokio::time::timeout(std::time::Duration::from_secs(5), socket.recv(&mut buf));
+        // Short: a filtered/black-holed forwarder must fail fast so the auto
+        // chain moves on rather than stalling the query for seconds.
+        let timeout = tokio::time::timeout(
+            std::time::Duration::from_millis(1500),
+            socket.recv(&mut buf),
+        );
         let len = timeout
             .await
             .context("forwarder timeout")?
@@ -1677,6 +1717,25 @@ fn build_response_ex(
     }
 
     response.to_bytes().unwrap_or_default()
+}
+
+/// Builds a wire A-record query for a stable, always-resolvable public name,
+/// used by [`DnsServer::prewarm_auto`] to exercise the auto-tier machinery at
+/// startup. The answer is irrelevant — the query just needs to run the real
+/// resolution path so the sticky tier can commit past a filtered :53.
+fn build_canary_query() -> Option<Vec<u8>> {
+    use hickory_proto::op::{Message, Query};
+    let mut msg = Message::new();
+    msg.set_id(0)
+        .set_message_type(MessageType::Query)
+        .set_op_code(OpCode::Query)
+        .set_recursion_desired(true);
+    let mut q = Query::new();
+    q.set_name(Name::from_ascii("one.one.one.one.").ok()?)
+        .set_query_type(RecordType::A)
+        .set_query_class(DNSClass::IN);
+    msg.add_query(q);
+    msg.to_bytes().ok()
 }
 
 /// Creates an error response preserving the query ID.
@@ -3495,5 +3554,15 @@ mod tests {
         } else {
             panic!("expected A record, not CNAME");
         }
+    }
+
+    #[test]
+    fn build_canary_query_is_a_valid_recursive_a_query() {
+        let bytes = build_canary_query().expect("canary query builds");
+        let msg = Message::from_bytes(&bytes).expect("canary query parses");
+        let q = msg.queries().first().expect("has a question");
+        assert_eq!(q.query_type(), RecordType::A);
+        assert_eq!(q.name().to_ascii(), "one.one.one.one.");
+        assert!(msg.recursion_desired());
     }
 }

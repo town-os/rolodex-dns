@@ -224,6 +224,18 @@ async fn main() -> Result<()> {
         dns_server.set_proxy_config(Some(runtime_proxy));
     }
 
+    // Pre-warm the auto-resolution chain so the first *client* query doesn't pay
+    // the cold-tier discovery cost: on a :53-filtered network this drives the
+    // sticky tier past the dead roots to DoH and completes the TLS handshake
+    // before traffic arrives. Fire-and-forget so it never delays startup; a
+    // no-op in non-auto modes and on networks where the roots answer.
+    if resolution_mode == ResolutionMode::Auto {
+        let warm_server = Arc::clone(&dns_server);
+        tokio::spawn(async move {
+            warm_server.prewarm_auto().await;
+        });
+    }
+
     // Spawn DNS UDP servers
     for addr in config.dns.udp_addrs() {
         let resolved = rolodex_dns::config::resolve_bind_addrs(addr)

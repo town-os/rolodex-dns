@@ -255,3 +255,44 @@ async fn secure_live_query_public() {
     }
     panic!("no secure upstream reachable; last error: {last_err:?}");
 }
+
+// prewarm_auto drives the sticky tier past dead roots at startup, so the first
+// *client* query lands on the already-committed working tier instead of eating
+// the root timeout. With roots forced to fail (loopback hint) and the secure
+// tier empty, the canary resolutions commit the degrade to the local forwarder.
+#[tokio::test]
+async fn prewarm_commits_degrade_past_dead_roots() {
+    let local = spawn_mock_upstream(ResponseCode::NoError, Some(Ipv4Addr::new(10, 9, 9, 9))).await;
+    let server = make_auto_server(vec![local], vec![]);
+    assert_eq!(server.active_tier(), TIER_ROOTS); // starts at roots
+
+    server.prewarm_auto().await;
+
+    // The warm-up ran the canary through the chain grace times, committing the
+    // switch — so a real client query would now start at the working tier.
+    assert_eq!(server.active_tier(), TIER_LOCAL);
+}
+
+// prewarm_auto is a no-op outside auto mode: it must not touch the sticky tier.
+#[tokio::test]
+async fn prewarm_is_noop_in_non_auto_mode() {
+    let local = spawn_mock_upstream(ResponseCode::NoError, Some(Ipv4Addr::new(10, 9, 9, 9))).await;
+    let server = make_auto_server(vec![local], vec![]);
+    server.set_resolution_mode(ResolutionMode::Forward);
+
+    server.prewarm_auto().await;
+
+    assert_eq!(server.active_tier(), TIER_ROOTS); // untouched
+}
+
+// A fully-offline host (every tier dead) must not spin or panic in the warm-up:
+// nothing answers, so no tier commits and the sticky tier stays at roots.
+#[tokio::test]
+async fn prewarm_bounded_when_all_tiers_dead() {
+    // No forwarders, no public, empty secure, roots point at loopback (refused).
+    let server = make_auto_server(vec![], vec![]);
+
+    server.prewarm_auto().await; // returns promptly; the harness would hang if it spun
+
+    assert_eq!(server.active_tier(), TIER_ROOTS);
+}

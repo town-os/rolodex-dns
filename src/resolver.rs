@@ -26,8 +26,11 @@ use tracing::debug;
 
 /// Maximum UDP DNS message size we are willing to receive.
 const MAX_UDP_SIZE: usize = 4096;
-/// Per-nameserver query timeout.
-const DEFAULT_QUERY_TIMEOUT_SECS: u64 = 5;
+/// Per-nameserver query timeout. Deliberately short: a black-holed :53 (e.g. a
+/// network that filters outbound plaintext DNS) must fail fast so the `auto`
+/// chain falls through to the DoH/DoT tier instead of hanging seconds per hop.
+/// Healthy root/TLD/authoritative servers answer well under this.
+const DEFAULT_QUERY_TIMEOUT_MS: u64 = 1500;
 /// Maximum number of delegation hops within a single name resolution.
 const MAX_REFERRALS: usize = 30;
 /// Maximum number of CNAME indirections we will follow.
@@ -105,7 +108,7 @@ impl IterativeResolver {
         };
         Self {
             root_hints,
-            timeout: Duration::from_secs(DEFAULT_QUERY_TIMEOUT_SECS),
+            timeout: Duration::from_millis(DEFAULT_QUERY_TIMEOUT_MS),
             port: 53,
         }
     }
