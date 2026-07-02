@@ -41,6 +41,10 @@ pub struct Config {
     /// Security settings.
     #[serde(default)]
     pub security: SecurityConfig,
+    /// Address-family answer preference (probe v4/v6 routability; suppress a
+    /// family the host can't reach so clients fall back to the working stack).
+    #[serde(default)]
+    pub address_family: AddressFamilyConfig,
     /// DHCP server configuration (disabled when absent).
     #[serde(default)]
     pub dhcp: Option<DhcpConfig>,
@@ -609,6 +613,81 @@ impl Default for SecurityConfig {
     }
 }
 
+/// Address-family answer preference. In `auto` mode a background probe (see
+/// `probe.rs`) periodically tests real IPv4/IPv6 internet routability and
+/// suppresses A or AAAA answers for a family the host cannot reach — so a client
+/// isn't handed an address in a dead family and stall on it. `off` always
+/// answers both families (legacy behavior); `force4` / `force6` pin a single
+/// family (mainly for testing) without probing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddressFamilyConfig {
+    /// `auto` (probe and suppress), `off` (answer both, always), `force4`
+    /// (IPv4 only), or `force6` (IPv6 only).
+    #[serde(default = "default_address_family_mode")]
+    pub mode: String,
+    /// Seconds between routability probes in `auto` mode.
+    #[serde(default = "default_af_probe_interval_secs")]
+    pub probe_interval_secs: u64,
+    /// Consecutive failed probe cycles before a previously-up family is marked
+    /// unreachable (debounce against flaps). Recovery is immediate on the first
+    /// success. The very first probe at startup is decisive (no grace) so a boot
+    /// onto a dead-family link suppresses it from the first query.
+    #[serde(default = "default_af_fail_threshold")]
+    pub fail_threshold: u32,
+    /// Per-target TCP-connect timeout (seconds) for each probe.
+    #[serde(default = "default_af_probe_timeout_secs")]
+    pub probe_timeout_secs: u64,
+    /// `ip:port` targets probed for IPv4 reachability (TCP connect; first success
+    /// marks IPv4 up). Use literal IPs on :443. Defaults to public anycast
+    /// resolvers — :443 because it is what real traffic uses and survives the
+    /// :53/:853 filtering some networks impose.
+    #[serde(default = "default_af_targets_v4")]
+    pub targets_v4: Vec<String>,
+    /// `[ip]:port` targets probed for IPv6 reachability.
+    #[serde(default = "default_af_targets_v6")]
+    pub targets_v6: Vec<String>,
+}
+
+impl Default for AddressFamilyConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_address_family_mode(),
+            probe_interval_secs: default_af_probe_interval_secs(),
+            fail_threshold: default_af_fail_threshold(),
+            probe_timeout_secs: default_af_probe_timeout_secs(),
+            targets_v4: default_af_targets_v4(),
+            targets_v6: default_af_targets_v6(),
+        }
+    }
+}
+
+fn default_address_family_mode() -> String {
+    "auto".to_string()
+}
+
+fn default_af_probe_interval_secs() -> u64 {
+    30
+}
+
+fn default_af_fail_threshold() -> u32 {
+    2
+}
+
+fn default_af_probe_timeout_secs() -> u64 {
+    2
+}
+
+fn default_af_targets_v4() -> Vec<String> {
+    vec!["1.1.1.1:443".to_string(), "8.8.8.8:443".to_string()]
+}
+
+fn default_af_targets_v6() -> Vec<String> {
+    vec![
+        "[2606:4700:4700::1111]:443".to_string(),
+        "[2001:4860:4860::8888]:443".to_string(),
+    ]
+}
+
 fn default_true() -> bool {
     true
 }
@@ -765,6 +844,7 @@ impl Default for Config {
             ttl_drift: TtlDriftSettings::default(),
             dns64: Dns64Config::default(),
             security: SecurityConfig::default(),
+            address_family: AddressFamilyConfig::default(),
             dhcp: None,
             acme: None,
         }

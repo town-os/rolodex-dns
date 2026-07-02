@@ -198,6 +198,11 @@ async fn main() -> Result<()> {
         config.resolution.recovery_probe_secs,
     );
 
+    // Address-family answer preference: apply the configured mode and, in auto,
+    // spawn the routability probe so rolodex stops handing clients addresses in a
+    // family the host can't route (which otherwise stalls the connection).
+    rolodex_dns::probe::start(Arc::clone(&dns_server), &config.address_family).await;
+
     // Apply custom root hints if provided (parsed once, above).
     if !root_hint_ips.is_empty() {
         info!("Using {} custom root hint(s)", root_hint_ips.len());

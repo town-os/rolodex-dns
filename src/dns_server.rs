@@ -10,7 +10,7 @@ use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use rand::Rng;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use tokio::net::{TcpListener, UdpSocket};
 use tracing::{debug, error, info, warn};
 
@@ -90,6 +90,13 @@ pub struct DnsServer {
     switch_grace_failures: AtomicU32,
     /// Auto mode: how often (seconds) to probe the full chain from the top.
     recovery_probe_secs: AtomicU64,
+    /// Whether to return IPv4 (A) answers. Cleared by the routability probe when
+    /// the host cannot reach the IPv4 internet, so clients aren't handed
+    /// addresses in a family that would stall (see `probe.rs`). Default true.
+    answer_v4: AtomicBool,
+    /// Whether to return IPv6 (AAAA) answers. Cleared by the routability probe
+    /// when the host cannot reach the IPv6 internet. Default true.
+    answer_v6: AtomicBool,
 }
 
 impl DnsServer {
@@ -121,6 +128,8 @@ impl DnsServer {
             last_probe: AtomicU64::new(0),
             switch_grace_failures: AtomicU32::new(3),
             recovery_probe_secs: AtomicU64::new(60),
+            answer_v4: AtomicBool::new(true),
+            answer_v6: AtomicBool::new(true),
         }
     }
 
@@ -160,6 +169,8 @@ impl DnsServer {
             last_probe: AtomicU64::new(0),
             switch_grace_failures: AtomicU32::new(3),
             recovery_probe_secs: AtomicU64::new(60),
+            answer_v4: AtomicBool::new(true),
+            answer_v6: AtomicBool::new(true),
         }
     }
 
@@ -202,6 +213,66 @@ impl DnsServer {
             .store(switch_grace_failures, Ordering::Relaxed);
         self.recovery_probe_secs
             .store(recovery_probe_secs, Ordering::Relaxed);
+    }
+
+    /// Sets which address families are returned in answers. The routability
+    /// probe (`probe.rs`) calls this to suppress a family the host can't reach,
+    /// so clients fall back to the family that works instead of stalling on a
+    /// dead one. `false` for a family turns A/AAAA answers of that type into
+    /// NODATA (see `build_response_edns`).
+    pub fn set_answer_families(&self, v4: bool, v6: bool) {
+        self.answer_v4.store(v4, Ordering::Relaxed);
+        self.answer_v6.store(v6, Ordering::Relaxed);
+    }
+
+    /// Returns the currently answered address families as `(v4, v6)`.
+    pub fn answer_families(&self) -> (bool, bool) {
+        (
+            self.answer_v4.load(Ordering::Relaxed),
+            self.answer_v6.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Drops A/AAAA answer records of any address family currently suppressed by
+    /// the routability probe, so a client isn't handed an address in a family
+    /// the host can't route (which stalls the connection). Applied at the single
+    /// response exit (`handle_query`/`handle_query_from`), so it covers every
+    /// answer source — local, cache, recursive, and raw upstream forwarders.
+    ///
+    /// Only the ANSWER section is filtered: that is what stub clients resolve
+    /// addresses from. Emptying the answer for an A/AAAA query leaves NoError
+    /// with no records — NODATA — the correct "no address in this family" signal
+    /// that makes getaddrinfo fall back to the other family. When both families
+    /// are enabled (the common case) this is a no-op that returns the bytes
+    /// untouched.
+    fn apply_family_filter(&self, response: Vec<u8>) -> Vec<u8> {
+        let (v4, v6) = self.answer_families();
+        if v4 && v6 {
+            return response;
+        }
+        let mut msg = match hickory_proto::op::Message::from_bytes(&response) {
+            Ok(m) => m,
+            Err(_) => return response,
+        };
+        let answers = msg.take_answers();
+        let before = answers.len();
+        let kept: Vec<Record> = answers
+            .into_iter()
+            .filter(|r| match r.record_type() {
+                RecordType::A => v4,
+                RecordType::AAAA => v6,
+                _ => true,
+            })
+            .collect();
+        if kept.len() == before {
+            // Nothing suppressed for this query; return the original bytes as-is
+            // (msg is discarded — no need to re-serialize).
+            return response;
+        }
+        for r in kept {
+            msg.add_answer(r);
+        }
+        msg.to_bytes().unwrap_or(response)
     }
 
     /// Sets the TTL drift configuration.
@@ -347,7 +418,8 @@ impl DnsServer {
     /// This is a convenience method that does not enforce network scoping.
     /// Used for tests where source IP context is not available.
     pub async fn handle_query(&self, query_data: &[u8]) -> Result<Vec<u8>> {
-        self.resolve_query(query_data, None).await
+        let response = self.resolve_query(query_data, None).await?;
+        Ok(self.apply_family_filter(response))
     }
 
     /// Handles a raw DNS query with source IP context for network scoping.
@@ -357,7 +429,8 @@ impl DnsServer {
     /// REFUSED responses. When no network scopes are defined, the server
     /// operates in legacy mode without scope enforcement.
     pub async fn handle_query_from(&self, query_data: &[u8], source_ip: IpAddr) -> Result<Vec<u8>> {
-        self.resolve_query(query_data, Some(source_ip)).await
+        let response = self.resolve_query(query_data, Some(source_ip)).await?;
+        Ok(self.apply_family_filter(response))
     }
 
     /// Core DNS resolution logic with optional network scope context.
@@ -835,6 +908,35 @@ impl DnsServer {
                         ));
                     }
                 }
+            }
+        }
+
+        // Normalize the cache-filling (first) response so it is byte-identical to
+        // what a later cache HIT returns: serve the freshly-cached records through
+        // the same build_response_edns path as the cache-hit branch above, instead
+        // of the raw upstream wire bytes. This makes cold and warm answers uniform
+        // and gives the address-family filter a single, consistent shape.
+        //
+        // Skipped when the client set the DNSSEC-OK (DO) bit: the cache/build path
+        // carries only the answer section (no RRSIGs), so a validating client must
+        // get the raw upstream response untouched. Also falls back to raw when
+        // nothing cacheable landed (cache disabled, or a negative/uncacheable
+        // answer) — those can't be reconstructed from the positive cache anyway.
+        let dnssec_requested = edns_ctx.as_ref().is_some_and(|c| c.dnssec_ok);
+        if forward_result.is_ok()
+            && !dnssec_requested
+            && let Some(ref cache) = self.dns_cache
+        {
+            let cached = cache.lookup(&qname, record_kind);
+            if !cached.is_empty() {
+                let dns_records = cached.iter().filter_map(db_record_to_dns_record).collect();
+                return Ok(build_response_edns(
+                    &message,
+                    ResponseCode::NoError,
+                    dns_records,
+                    false,
+                    edns_ctx.as_ref(),
+                ));
             }
         }
 
@@ -1920,6 +2022,132 @@ mod tests {
 
         assert_eq!(response.response_code(), ResponseCode::NoError);
         assert_eq!(response.answers().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_family_filter_suppresses_aaaa_as_nodata() {
+        let db = Database::open_memory().unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "dual.local.".to_string(),
+            record_type: RecordKind::AAAA,
+            value: "2001:db8::1".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "dual.local.".to_string(),
+            record_type: RecordKind::A,
+            value: "192.0.2.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        let server = make_test_server(db);
+        // Simulate the routability probe deciding IPv6 is unroutable.
+        server.set_answer_families(true, false);
+
+        // AAAA query -> NODATA (NoError, no answers), so getaddrinfo falls back to A.
+        let aaaa = build_query("dual.local.", RecordType::AAAA);
+        let resp = Message::from_bytes(&server.handle_query(&aaaa).await.unwrap()).unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert_eq!(resp.answers().len(), 0, "AAAA must be suppressed to NODATA");
+
+        // The A query for the same name is unaffected.
+        let a = build_query("dual.local.", RecordType::A);
+        let resp = Message::from_bytes(&server.handle_query(&a).await.unwrap()).unwrap();
+        assert_eq!(resp.answers().len(), 1);
+        assert!(matches!(resp.answers()[0].data(), RData::A(_)));
+    }
+
+    #[tokio::test]
+    async fn test_family_filter_suppresses_a_as_nodata() {
+        // Symmetric case: a v6-only host suppresses A answers.
+        let db = Database::open_memory().unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "v4.local.".to_string(),
+            record_type: RecordKind::A,
+            value: "192.0.2.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        let server = make_test_server(db);
+        server.set_answer_families(false, true);
+
+        let a = build_query("v4.local.", RecordType::A);
+        let resp = Message::from_bytes(&server.handle_query(&a).await.unwrap()).unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert_eq!(resp.answers().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_family_filter_noop_when_both_enabled() {
+        // Regression: both families enabled (the default) returns answers
+        // untouched — same behavior as before the feature existed.
+        let db = Database::open_memory().unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "v6.local.".to_string(),
+            record_type: RecordKind::AAAA,
+            value: "2001:db8::1".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        let server = make_test_server(db);
+        assert_eq!(server.answer_families(), (true, true));
+        let aaaa = build_query("v6.local.", RecordType::AAAA);
+        let resp = Message::from_bytes(&server.handle_query(&aaaa).await.unwrap()).unwrap();
+        assert_eq!(resp.answers().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_apply_family_filter_strips_from_raw_wire() {
+        // Directly exercise the wire-level filter, which is what covers raw
+        // upstream (forwarder/secure) answers that never pass through
+        // build_response_edns.
+        let server = make_test_server(Database::open_memory().unwrap());
+
+        // A response carrying both an A and an AAAA answer, as an upstream
+        // recursive/forward answer would.
+        let mut msg = Message::new();
+        msg.set_id(42);
+        msg.set_message_type(MessageType::Response);
+        msg.set_op_code(OpCode::Query);
+        msg.set_response_code(ResponseCode::NoError);
+        let mut q = hickory_proto::op::Query::new();
+        q.set_name(Name::from_ascii("dual.example.").unwrap());
+        q.set_query_type(RecordType::A);
+        q.set_query_class(DNSClass::IN);
+        msg.add_query(q);
+        msg.add_answer(Record::from_rdata(
+            Name::from_ascii("dual.example.").unwrap(),
+            300,
+            RData::A(rdata::A(Ipv4Addr::new(192, 0, 2, 1))),
+        ));
+        msg.add_answer(Record::from_rdata(
+            Name::from_ascii("dual.example.").unwrap(),
+            300,
+            RData::AAAA(rdata::AAAA(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1))),
+        ));
+        let wire = msg.to_bytes().unwrap();
+
+        // v6 down: AAAA dropped, A kept.
+        server.set_answer_families(true, false);
+        let filtered = Message::from_bytes(&server.apply_family_filter(wire.clone())).unwrap();
+        assert_eq!(filtered.answers().len(), 1);
+        assert!(matches!(filtered.answers()[0].data(), RData::A(_)));
+
+        // Both families up: untouched, byte-identical.
+        server.set_answer_families(true, true);
+        assert_eq!(server.apply_family_filter(wire.clone()), wire);
     }
 
     #[tokio::test]
