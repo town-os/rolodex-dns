@@ -167,15 +167,41 @@ async fn auto_commits_switch_after_grace() {
     assert_eq!(server.active_tier(), TIER_LOCAL);
 }
 
+/// Preflight for the live secure test: can we open a TCP connection to any of
+/// the candidate DoH/DoT endpoints (the `host:port` in `addrs`)? A TCP connect to
+/// 1.1.1.1 / 8.8.8.8 on :443/:853 is enough to tell "we have outbound network to
+/// a public resolver" from "offline", so the test can skip in the latter case
+/// instead of failing.
+async fn any_secure_endpoint_reachable(addrs: &[&str]) -> bool {
+    for addr in addrs {
+        let connected = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            tokio::net::TcpStream::connect(addr),
+        )
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .is_some();
+        if connected {
+            eprintln!("preflight: {addr} reachable");
+            return true;
+        }
+        eprintln!("preflight: {addr} unreachable");
+    }
+    false
+}
+
 // Live smoke test of the encrypted (secure) client against the default public
 // resolvers, in the order the secure tier prefers them: DoH (:443) first, then
 // DoT (:853). Passes if ANY succeeds — mirroring `tier_secure`, so a network
 // that DPI-blocks one provider/transport (observed: some filter 1.1.1.1:853 at
 // the TLS layer while :443 DoH works) still validates the client via another.
-// Ignored by default (needs outbound network). Run with:
-//   cargo test --test auto_resolution_test -- --ignored secure_live
+// Runs in the normal suite but is reachability-gated: it first probes whether
+// 1.1.1.1 / 8.8.8.8 are reachable on the DoH/DoT ports and, if none are (e.g.
+// offline CI), logs a skip and returns rather than failing. When at least one is
+// reachable it must resolve, so the client is genuinely exercised on any network
+// that has outbound :443/:853.
 #[tokio::test]
-#[ignore = "requires network access to a public DoH/DoT resolver"]
 async fn secure_live_query_public() {
     use rolodex_dns::config::SecureUpstreamConfig;
     use rolodex_dns::secure_client::{SecureUpstream, query};
@@ -186,6 +212,17 @@ async fn secure_live_query_public() {
         ("https", "8.8.8.8:443", "dns.google"),
         ("tls", "8.8.8.8:853", "dns.google"),
     ];
+
+    // Test 1.1.1.1 / 8.8.8.8 reachability before running; skip (don't fail) when
+    // there is no outbound network to a public DoH/DoT resolver.
+    let addrs: Vec<&str> = candidates.iter().map(|(_, addr, _)| *addr).collect();
+    if !any_secure_endpoint_reachable(&addrs).await {
+        eprintln!(
+            "skipping secure_live_query_public: no public DoH/DoT endpoint reachable (offline?)"
+        );
+        return;
+    }
+
     let dns_query = build_query("example.com.", RecordType::A);
 
     let mut last_err = None;
