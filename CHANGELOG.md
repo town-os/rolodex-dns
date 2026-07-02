@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.3.0 (2026-07-02)
+
+### New Features
+
+- **Resilient `auto` upstream resolution with a DoH-preferred secure tier** — the resolver now follows a tiered fallback chain (roots → DoH/DoT → local forwarder → public :53) instead of roots-only, so it keeps resolving on networks that filter outbound :53 (and DoT's :853). DoH on :443 is preferred. A sticky active tier avoids per-query timeouts on dead tiers, a periodic recovery probe reclaims a tier once it comes back, tier switches are gated behind a failure grace period, and every committed switch flushes the DNS cache as a cross-tier cache-poisoning guard. Configured via the `resolution` section (`mode = auto`, `secure_upstreams`, `public_fallback`, `switch_grace_failures`, `recovery_probe_secs`).
+- **Address-family routability probe** — a new `address_family` config section and background probe periodically TCP-connect to public v4/v6 targets on :443 to test real internet reachability. In `auto` mode (default) the server stops returning A or AAAA answers for a family the host cannot reach, so clients fall back to the working stack instead of stalling on a dead-family address. `off` always answers both families (legacy); `force4`/`force6` pin one family without probing. A failure threshold debounces flaps, recovery is immediate on the first success, and the first probe at boot is decisive (no grace) so a boot onto a dead-family link suppresses it from the first query.
+
+### Bug Fixes
+
+- **RBL/DNSBL lookups no longer loop through the local stub.** Blocklist queries (`<name>.<zone>`) previously went out via the system resolver, which on a typical host pointed back at rolodex itself — re-entering the query handler, getting DNSBL-checked again, appending the zone once more, and looping forever (`<name>.<zone>.<zone>…`), wedging all resolution. The `RecursiveRblResolver` now resolves blocklist names the same way rolodex resolves everything else: recursively from the roots on its own sockets (never the local stub), falling back to the configured forwarder over UDP when the roots aren't reachable. Total failure fails open (treated as not-listed).
+- **RBL/DNSBL checks skip resolver-backed providers when outbound :53 is filtered** (detected by a background probe), so a filtered network doesn't stall resolution; local database-backed RBL entries are unaffected.
+
+### Performance
+
+- **Fire-and-forget async cache filling for RBL/DNSBL checks** — blocklist cache population no longer blocks the resolution path.
+
+### Infrastructure
+
+- **Reproducible-image guarantees** — `make/build.sh` computes `SOURCE_REV` (git short HEAD, `+dirty` when the tree is modified) and threads it into both image builds: the builder stage references it right before `cargo build` so a changed commit always invalidates the compile layer (no stale binary shipped from a reused cache layer), and the runtime image stamps `org.opencontainers.image.revision` so a pushed image self-identifies via `skopeo inspect`.
+
+### Code Quality
+
+- The live DoH/DoT upstream test is now reachability-gated instead of unconditionally ignored, so it actually exercises the secure tier where the network allows it.
+
 ## v0.2.4 (2026-06-28)
 
 ### New Features
