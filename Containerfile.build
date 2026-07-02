@@ -13,5 +13,11 @@ COPY Cargo.toml Cargo.lock build.rs /src/
 COPY proto/ /src/proto/
 COPY src/ /src/src/
 COPY benches/ /src/benches/
-RUN cargo build --release ${CARGO_JOBS:+--jobs ${CARGO_JOBS}} \
+# Source revision (passed by make/build.sh). Declared here, right before the
+# compile, and referenced in the RUN so a changed commit invalidates the cargo
+# layer even if the COPY hashes above were ever reused from a stale cache — the
+# build can never ship a binary older than the checked-out source.
+ARG SOURCE_REV=unknown
+RUN echo "building rolodex-dns @ ${SOURCE_REV}" \
+    && cargo build --release ${CARGO_JOBS:+--jobs ${CARGO_JOBS}} \
     && strip target/release/rolodex-dns target/release/rolodex-dns-cli

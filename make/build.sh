@@ -15,10 +15,19 @@ case "$1" in
     NETWORK_FLAG=""
     [ -n "${BUILD_NETWORK}" ] && NETWORK_FLAG="--network=${BUILD_NETWORK}"
 
+    # Exact source revision baked into both images. A changed commit busts the
+    # compile layer (so the binary is always fresh when the code changes), and it
+    # is recorded as an image label so a stale build/re-push is detectable. The
+    # +dirty suffix flags any uncommitted change in the working tree.
+    SOURCE_REV="$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
+    [ -z "$(git status --porcelain 2>/dev/null)" ] || SOURCE_REV="${SOURCE_REV}+dirty"
+    substep "Source revision: ${SOURCE_REV}"
+
     step "Building build image (${ARCH})"
     mkdir -p .cache/cargo-registry .cache/cargo-git
     ${SUDO} podman build ${NETWORK_FLAG} \
       --build-arg "CARGO_JOBS=${CARGO_BUILD_JOBS:-}" \
+      --build-arg "SOURCE_REV=${SOURCE_REV}" \
       --volume "$(pwd)/.cache/cargo-registry:/usr/local/cargo/registry:z" \
       --volume "$(pwd)/.cache/cargo-git:/usr/local/cargo/git:z" \
       -t "${PODMAN_BUILD_IMAGE}-${ARCH}" -f Containerfile.build .
@@ -26,6 +35,7 @@ case "$1" in
     step "Building release image (${ARCH})"
     ${SUDO} podman build ${NETWORK_FLAG} --pull=never \
       --build-arg "BUILD_IMAGE=${PODMAN_BUILD_IMAGE}-${ARCH}" \
+      --build-arg "SOURCE_REV=${SOURCE_REV}" \
       -t "${RELEASE_IMAGE}:${IMAGE_TAG:-latest}-${ARCH}" -f Containerfile .
     ;;
   push-arch)
