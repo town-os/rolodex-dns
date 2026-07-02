@@ -220,6 +220,32 @@ async fn test_grpc_set_forwarders() {
 // Integration: RBL config via gRPC -> affects DNS resolution
 // ========================================================
 
+/// RBL/DNSBL fills are fire-and-forget: the first query for a listed name primes
+/// the blocklist cache and is not blocked yet. Poll (re-querying) until the block
+/// lands (NXDOMAIN), then return that response for assertions.
+async fn poll_until_blocked(
+    dns_server: &Arc<DnsServer>,
+    query: &[u8],
+    source: Option<std::net::IpAddr>,
+) -> hickory_proto::op::Message {
+    for _ in 0..200 {
+        let bytes = match source {
+            Some(ip) => dns_server.handle_query_from(query, ip).await.unwrap(),
+            None => dns_server.handle_query(query).await.unwrap(),
+        };
+        let resp = hickory_proto::op::Message::from_bytes(&bytes).unwrap();
+        if resp.response_code() == hickory_proto::op::ResponseCode::NXDomain {
+            return resp;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    let bytes = match source {
+        Some(ip) => dns_server.handle_query_from(query, ip).await.unwrap(),
+        None => dns_server.handle_query(query).await.unwrap(),
+    };
+    hickory_proto::op::Message::from_bytes(&bytes).unwrap()
+}
+
 #[tokio::test]
 async fn test_rbl_integration() {
     let db = Database::open_memory().unwrap();
@@ -240,10 +266,9 @@ async fn test_rbl_integration() {
         false,
     );
 
-    // Query for a reverse DNS name should be blocked
+    // Query for a reverse DNS name should be blocked (once the async fill lands)
     let query = build_dns_query("4.3.2.1.in-addr.arpa.", hickory_proto::rr::RecordType::PTR);
-    let resp_bytes = dns_server.handle_query(&query).await.unwrap();
-    let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
+    let resp = poll_until_blocked(&dns_server, &query, None).await;
     assert_eq!(
         resp.response_code(),
         hickory_proto::op::ResponseCode::NXDomain
@@ -1713,13 +1738,9 @@ async fn test_rbl_with_scoping() {
     })
     .unwrap();
 
-    // Reverse DNS query from scoped IP should be blocked by RBL
+    // Reverse DNS query from scoped IP should be blocked by RBL (async fill).
     let query = build_dns_query("4.3.2.1.in-addr.arpa.", hickory_proto::rr::RecordType::PTR);
-    let resp_bytes = dns_server
-        .handle_query_from(&query, "192.168.1.1".parse().unwrap())
-        .await
-        .unwrap();
-    let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
+    let resp = poll_until_blocked(&dns_server, &query, Some("192.168.1.1".parse().unwrap())).await;
     assert_eq!(
         resp.response_code(),
         hickory_proto::op::ResponseCode::NXDomain

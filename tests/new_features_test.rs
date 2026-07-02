@@ -2695,6 +2695,23 @@ fn rcode_of(bytes: &[u8]) -> hickory_proto::op::ResponseCode {
     Message::from_bytes(bytes).unwrap().response_code()
 }
 
+/// RBL/DNSBL fills are fire-and-forget: the first query for a listed name primes
+/// the blocklist cache and is not blocked yet. Poll until the block lands
+/// (NXDOMAIN), returning the final rcode for the assertion.
+async fn poll_until_nxdomain(
+    server: &Arc<DnsServer>,
+    query: &[u8],
+) -> hickory_proto::op::ResponseCode {
+    for _ in 0..200 {
+        let rc = rcode_of(&server.handle_query(query).await.unwrap());
+        if rc == hickory_proto::op::ResponseCode::NXDomain {
+            return rc;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    rcode_of(&server.handle_query(query).await.unwrap())
+}
+
 #[tokio::test]
 async fn test_dnsbl_blocks_forwarded_domain_full_pipeline() {
     let db = Database::open_memory().unwrap();
@@ -2726,10 +2743,11 @@ async fn test_dnsbl_blocks_forwarded_domain_full_pipeline() {
     .await;
     let server = Arc::new(DnsServer::new(db, rbl, vec![]));
 
-    // Blocklisted external name -> NXDOMAIN (never forwarded; no forwarders set).
+    // Blocklisted external name -> NXDOMAIN (never forwarded; no forwarders set),
+    // once the async DNSBL fill lands.
     let blocked = build_dns_query("googleadservices.com.", RecordType::A);
     assert_eq!(
-        rcode_of(&server.handle_query(&blocked).await.unwrap()),
+        poll_until_nxdomain(&server, &blocked).await,
         hickory_proto::op::ResponseCode::NXDomain
     );
 
@@ -2836,9 +2854,9 @@ async fn test_dnsbl_programmed_via_grpc_then_blocks() {
     assert_eq!(cfg.providers.len(), 1);
     assert_eq!(cfg.providers[0].zone, "dbl.test");
 
-    // Now the same name is blocked.
+    // Now the same name is blocked (once the async fill lands).
     assert_eq!(
-        rcode_of(&dns_server.handle_query(&q).await.unwrap()),
+        poll_until_nxdomain(&dns_server, &q).await,
         hickory_proto::op::ResponseCode::NXDomain
     );
 }

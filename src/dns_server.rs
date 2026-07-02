@@ -2066,14 +2066,44 @@ mod tests {
         }
     }
 
+    /// RBL/DNSBL fills are fire-and-forget: the first query for a listed name
+    /// primes the blocklist cache and is not blocked yet (it falls through — to
+    /// ServFail with no forwarders, or to a cached/local answer). These helpers
+    /// poll until the block lands (NXDOMAIN) so tests assert the eventual state.
+    async fn query_until_blocked(server: &Arc<DnsServer>, query: &[u8]) -> Message {
+        for _ in 0..200 {
+            let resp = Message::from_bytes(&server.handle_query(query).await.unwrap()).unwrap();
+            if resp.response_code() == ResponseCode::NXDomain {
+                return resp;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        Message::from_bytes(&server.handle_query(query).await.unwrap()).unwrap()
+    }
+
+    async fn query_from_until_blocked(
+        server: &Arc<DnsServer>,
+        query: &[u8],
+        source: std::net::IpAddr,
+    ) -> Message {
+        for _ in 0..200 {
+            let resp = Message::from_bytes(&server.handle_query_from(query, source).await.unwrap())
+                .unwrap();
+            if resp.response_code() == ResponseCode::NXDomain {
+                return resp;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        Message::from_bytes(&server.handle_query_from(query, source).await.unwrap()).unwrap()
+    }
+
     #[tokio::test]
     async fn test_rbl_blocks_reverse_dns() {
         let db = Database::open_memory().unwrap();
         let server = make_test_server_with_rbl(db, true);
-        // Query for a reverse DNS name
+        // Query for a reverse DNS name (blocked once the async RBL fill lands).
         let query = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
-        let response_bytes = server.handle_query(&query).await.unwrap();
-        let response = Message::from_bytes(&response_bytes).unwrap();
+        let response = query_until_blocked(&server, &query).await;
 
         assert_eq!(response.response_code(), ResponseCode::NXDomain);
     }
@@ -2106,8 +2136,7 @@ mod tests {
         // forwarders configured an unblocked external name would SERVFAIL, so
         // NXDOMAIN proves the RBL fired before forwarding.
         let blocked = build_query("googleadservices.com.", RecordType::A);
-        let blocked_resp =
-            Message::from_bytes(&server.handle_query(&blocked).await.unwrap()).unwrap();
+        let blocked_resp = query_until_blocked(&server, &blocked).await;
         assert_eq!(blocked_resp.response_code(), ResponseCode::NXDomain);
         assert!(blocked_resp.answers().is_empty());
 
@@ -2175,7 +2204,7 @@ mod tests {
         ));
 
         let query = build_query("ads.tracker.example.", RecordType::A);
-        let resp = Message::from_bytes(&server.handle_query(&query).await.unwrap()).unwrap();
+        let resp = query_until_blocked(&server, &query).await;
         assert_eq!(resp.response_code(), ResponseCode::NXDomain);
         assert!(resp.answers().is_empty());
     }
@@ -2796,11 +2825,7 @@ mod tests {
 
         let server = make_test_server_with_rbl(db, true);
         let query = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
-        let resp_bytes = server
-            .handle_query_from(&query, "192.168.1.1".parse().unwrap())
-            .await
-            .unwrap();
-        let resp = Message::from_bytes(&resp_bytes).unwrap();
+        let resp = query_from_until_blocked(&server, &query, "192.168.1.1".parse().unwrap()).await;
         assert_eq!(resp.response_code(), ResponseCode::NXDomain);
     }
 

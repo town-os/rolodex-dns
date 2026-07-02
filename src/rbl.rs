@@ -245,6 +245,12 @@ pub struct RblChecker {
     /// DB-backed RBL is unaffected. Defaults to true so behavior is unchanged
     /// until a probe says otherwise.
     resolver_available: AtomicBool,
+    /// Cache keys with an async fill currently in flight. RBL/DNSBL lookups are
+    /// fire-and-forget: on a cache miss the query is answered immediately and the
+    /// verdict is resolved in the background, then served from cache on a later
+    /// query. This set dedups concurrent misses for the same `<ip-or-name>/<zone>`
+    /// so they don't fan out duplicate lookups.
+    inflight: Arc<DashMap<String, ()>>,
 }
 
 impl RblChecker {
@@ -270,6 +276,7 @@ impl RblChecker {
             cache: Arc::new(DashMap::new()),
             resolver,
             resolver_available: AtomicBool::new(true),
+            inflight: Arc::new(DashMap::new()),
         }
     }
 
@@ -308,46 +315,81 @@ impl RblChecker {
         }
 
         let providers = self.providers.load();
-        for provider in providers.iter() {
-            if !provider.enabled {
-                continue;
+        let lookups = providers
+            .iter()
+            .filter(|p| p.enabled)
+            .map(|p| (format!("{}/{}", ip, p.zone), build_rbl_query(ip, &p.zone)));
+        self.check_cached_or_fill(lookups)
+    }
+
+    /// Returns the cached verdict for `cache_key`: `Some(true)` fresh positive,
+    /// `Some(false)` fresh negative, `None` if absent or expired (expired entries
+    /// are evicted). Never performs a network lookup.
+    fn cached_verdict(&self, cache_key: &str) -> Option<bool> {
+        if let Some(entry) = self.cache.get(cache_key) {
+            if entry.expires_at > Instant::now() {
+                return Some(entry.listed);
             }
+            // Expired: drop the reference before removing.
+            drop(entry);
+            self.cache.remove(cache_key);
+        }
+        None
+    }
 
-            let query = build_rbl_query(ip, &provider.zone);
-            let cache_key = format!("{}/{}", ip, provider.zone);
-
-            // Check cache first
-            if let Some(entry) = self.cache.get(&cache_key) {
-                if entry.expires_at > Instant::now() {
-                    if entry.listed {
-                        debug!("RBL cache hit: {} is listed in {}", ip, provider.zone);
-                        return true;
-                    }
-                    continue;
-                }
-                // Expired, drop the reference before removing
-                drop(entry);
-                self.cache.remove(&cache_key);
+    /// Cache-only verdict across a set of `(cache_key, query)` provider lookups,
+    /// with fire-and-forget async fill of any misses.
+    ///
+    /// Returns `true` as soon as any provider has a fresh **positive** in cache —
+    /// a warm listing blocks immediately, and we never wait for the other
+    /// providers ("first positive wins, don't wait for all of them"). For any
+    /// provider without a cached verdict, an async fill is fired (see
+    /// [`fill_cache_async`](Self::fill_cache_async)); the current query is NOT
+    /// blocked on the network — a cold name is allowed now and its verdict is
+    /// served from cache on a later query once the lookup lands.
+    fn check_cached_or_fill(&self, lookups: impl IntoIterator<Item = (String, String)>) -> bool {
+        let mut misses = Vec::new();
+        for (cache_key, query) in lookups {
+            match self.cached_verdict(&cache_key) {
+                Some(true) => return true, // warm positive → block now
+                Some(false) => {}          // warm negative → nothing to do
+                None => misses.push((cache_key, query)),
             }
+        }
+        // No warm positive: answer now, fill the cold verdicts in the background.
+        for (cache_key, query) in misses {
+            self.fill_cache_async(cache_key, query);
+        }
+        false
+    }
 
-            // Perform DNS lookup
-            match self.resolver.lookup_rbl(&query).await {
+    /// Fire-and-forget: unless a fill for `cache_key` is already in flight, spawn
+    /// a background task that resolves `query` and populates the result cache
+    /// (positive with the RBL TTL, negative for 5 minutes; errors are left
+    /// uncached so the next query retries). The hot path never awaits this.
+    fn fill_cache_async(&self, cache_key: String, query: String) {
+        // Dedup: if a lookup for this key is already running, don't fan out.
+        if self.inflight.insert(cache_key.clone(), ()).is_some() {
+            return;
+        }
+        let resolver = self.resolver.clone();
+        let cache = self.cache.clone();
+        let inflight = self.inflight.clone();
+        tokio::spawn(async move {
+            match resolver.lookup_rbl(&query).await {
                 Ok(Some(ttl)) => {
-                    debug!("RBL hit: {} listed in {} (TTL: {})", ip, provider.zone, ttl);
-                    self.cache.insert(
-                        cache_key,
+                    debug!("RBL async fill: {} listed (TTL: {})", query, ttl);
+                    cache.insert(
+                        cache_key.clone(),
                         CacheEntry {
                             listed: true,
                             expires_at: Instant::now() + Duration::from_secs(ttl as u64),
                         },
                     );
-                    return true;
                 }
                 Ok(None) => {
-                    debug!("RBL miss: {} not listed in {}", ip, provider.zone);
-                    // Cache negative results for 5 minutes
-                    self.cache.insert(
-                        cache_key,
+                    cache.insert(
+                        cache_key.clone(),
                         CacheEntry {
                             listed: false,
                             expires_at: Instant::now() + Duration::from_secs(300),
@@ -355,12 +397,11 @@ impl RblChecker {
                     );
                 }
                 Err(e) => {
-                    warn!("RBL lookup failed for {} in {}: {}", ip, provider.zone, e);
+                    debug!("RBL async lookup failed for {}: {}", query, e);
                 }
             }
-        }
-
-        false
+            inflight.remove(&cache_key);
+        });
     }
 
     /// Checks if a domain name is listed in any enabled DNSBL provider.
@@ -388,72 +429,13 @@ impl RblChecker {
         }
 
         let providers = self.dnsbl_providers.load();
-        for provider in providers.iter() {
-            if !provider.enabled {
-                continue;
-            }
-            if self.provider_lists_name(&normalized, &provider.zone).await {
-                return true;
-            }
-        }
-
-        false
-    }
-
-    /// Checks a single provider for a domain-name listing, using and populating
-    /// the same result cache as the IP-based path (keyed by `<name>/<zone>`).
-    async fn provider_lists_name(&self, normalized_name: &str, zone: &str) -> bool {
-        let query = format!("{normalized_name}.{zone}");
-        let cache_key = format!("{normalized_name}/{zone}");
-
-        // Check cache first
-        if let Some(entry) = self.cache.get(&cache_key) {
-            if entry.expires_at > Instant::now() {
-                if entry.listed {
-                    debug!("RBL cache hit: {} is listed in {}", normalized_name, zone);
-                }
-                return entry.listed;
-            }
-            // Expired, drop the reference before removing
-            drop(entry);
-            self.cache.remove(&cache_key);
-        }
-
-        match self.resolver.lookup_rbl(&query).await {
-            Ok(Some(ttl)) => {
-                debug!(
-                    "RBL hit: {} listed in {} (TTL: {})",
-                    normalized_name, zone, ttl
-                );
-                self.cache.insert(
-                    cache_key,
-                    CacheEntry {
-                        listed: true,
-                        expires_at: Instant::now() + Duration::from_secs(ttl as u64),
-                    },
-                );
-                true
-            }
-            Ok(None) => {
-                debug!("RBL miss: {} not listed in {}", normalized_name, zone);
-                // Cache negative results for 5 minutes
-                self.cache.insert(
-                    cache_key,
-                    CacheEntry {
-                        listed: false,
-                        expires_at: Instant::now() + Duration::from_secs(300),
-                    },
-                );
-                false
-            }
-            Err(e) => {
-                warn!(
-                    "RBL name lookup failed for {} in {}: {}",
-                    normalized_name, zone, e
-                );
-                false
-            }
-        }
+        let lookups = providers.iter().filter(|p| p.enabled).map(|p| {
+            (
+                format!("{}/{}", normalized, p.zone),
+                format!("{}.{}", normalized, p.zone),
+            )
+        });
+        self.check_cached_or_fill(lookups)
     }
 
     /// Updates the RBL configuration.
@@ -508,62 +490,12 @@ impl RblChecker {
             return true;
         }
 
-        // Check extra per-scope providers
-        for provider in extra {
-            if !provider.enabled {
-                continue;
-            }
-
-            let query = build_rbl_query(ip, &provider.zone);
-            let cache_key = format!("{}/{}", ip, provider.zone);
-
-            // Check cache
-            if let Some(entry) = self.cache.get(&cache_key) {
-                if entry.expires_at > Instant::now() {
-                    if entry.listed {
-                        debug!("Scope RBL cache hit: {} is listed in {}", ip, provider.zone);
-                        return true;
-                    }
-                    continue;
-                }
-                drop(entry);
-                self.cache.remove(&cache_key);
-            }
-
-            match self.resolver.lookup_rbl(&query).await {
-                Ok(Some(ttl)) => {
-                    debug!(
-                        "Scope RBL hit: {} listed in {} (TTL: {})",
-                        ip, provider.zone, ttl
-                    );
-                    self.cache.insert(
-                        cache_key,
-                        CacheEntry {
-                            listed: true,
-                            expires_at: Instant::now() + Duration::from_secs(ttl as u64),
-                        },
-                    );
-                    return true;
-                }
-                Ok(None) => {
-                    self.cache.insert(
-                        cache_key,
-                        CacheEntry {
-                            listed: false,
-                            expires_at: Instant::now() + Duration::from_secs(300),
-                        },
-                    );
-                }
-                Err(e) => {
-                    warn!(
-                        "Scope RBL lookup failed for {} in {}: {}",
-                        ip, provider.zone, e
-                    );
-                }
-            }
-        }
-
-        false
+        // Check extra per-scope providers (same cache-first, fire-and-forget fill).
+        let lookups = extra
+            .iter()
+            .filter(|p| p.enabled)
+            .map(|p| (format!("{}/{}", ip, p.zone), build_rbl_query(ip, &p.zone)));
+        self.check_cached_or_fill(lookups)
     }
 }
 
@@ -741,6 +673,30 @@ mod tests {
         }
     }
 
+    /// RBL/DNSBL fills are fire-and-forget: the first check on a cold name primes
+    /// the cache and returns not-listed; the verdict is served once the async
+    /// lookup lands. These helpers poll until the block takes effect (or give up),
+    /// so tests can assert the eventual listed state deterministically.
+    async fn eventually_listed_ip(checker: &RblChecker, ip: &IpAddr) -> bool {
+        for _ in 0..200 {
+            if checker.is_listed(ip).await {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        false
+    }
+
+    async fn eventually_listed_name(checker: &RblChecker, name: &str) -> bool {
+        for _ in 0..200 {
+            if checker.is_name_listed(name).await {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        false
+    }
+
     #[tokio::test]
     async fn test_resolver_unavailable_skips_lookups() {
         let counting = Arc::new(CountingResolver::new(true)); // would list everything
@@ -777,14 +733,11 @@ mod tests {
             "no lookups should be attempted while :53 is down"
         );
 
-        // :53 recovers → lookups resume and the (listed) resolver blocks again.
+        // :53 recovers → lookups resume and the (listed) resolver blocks again
+        // (once the async fill lands).
         checker.set_resolver_available(true);
-        assert!(
-            checker
-                .is_listed(&IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)))
-                .await
-        );
-        assert!(checker.is_name_listed("evil.example.com").await);
+        assert!(eventually_listed_ip(&checker, &IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4))).await);
+        assert!(eventually_listed_name(&checker, "evil.example.com").await);
         assert!(counting.count() >= 1);
     }
 
@@ -883,7 +836,7 @@ mod tests {
             Arc::new(MockResolver::new(true)),
         );
         let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
-        assert!(checker.is_listed(&ip).await);
+        assert!(eventually_listed_ip(&checker, &ip).await);
     }
 
     #[tokio::test]
@@ -913,11 +866,12 @@ mod tests {
         );
         let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
 
-        // First lookup should hit the resolver
-        assert!(checker.is_listed(&ip).await);
+        // The async fill hits the resolver exactly once (dedup guard), then the
+        // verdict is cached.
+        assert!(eventually_listed_ip(&checker, &ip).await);
         assert_eq!(resolver.count(), 1);
 
-        // Second lookup should be cached
+        // Second lookup should be served from cache — no new resolver call.
         assert!(checker.is_listed(&ip).await);
         assert_eq!(resolver.count(), 1);
     }
@@ -935,12 +889,13 @@ mod tests {
         );
         let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
 
-        assert!(checker.is_listed(&ip).await);
+        assert!(eventually_listed_ip(&checker, &ip).await);
         assert_eq!(resolver.count(), 1);
 
         checker.flush_cache().await;
 
-        assert!(checker.is_listed(&ip).await);
+        // After a flush the verdict must be resolved again (fresh async fill).
+        assert!(eventually_listed_ip(&checker, &ip).await);
         assert_eq!(resolver.count(), 2);
     }
 
@@ -993,7 +948,7 @@ mod tests {
     #[tokio::test]
     async fn test_is_name_listed_listed() {
         let checker = dnsbl_checker(Arc::new(MockResolver::new(true))).await;
-        assert!(checker.is_name_listed("googleadservices.com.").await);
+        assert!(eventually_listed_name(&checker, "googleadservices.com.").await);
     }
 
     #[tokio::test]
@@ -1037,8 +992,9 @@ mod tests {
     async fn test_is_name_listed_caches() {
         let resolver = Arc::new(CountingResolver::new(true));
         let checker = dnsbl_checker(resolver.clone()).await;
-        // Trailing-dot and case differences normalize to the same cache key.
-        assert!(checker.is_name_listed("Ads.Example.com.").await);
+        // Trailing-dot and case differences normalize to the same cache key, so
+        // the async fill runs once and the second (normalized) lookup is cached.
+        assert!(eventually_listed_name(&checker, "Ads.Example.com.").await);
         assert_eq!(resolver.count(), 1);
         assert!(checker.is_name_listed("ads.example.com").await);
         assert_eq!(resolver.count(), 1);
