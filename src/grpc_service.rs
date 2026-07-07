@@ -440,6 +440,16 @@ impl RolodexDnsService for RolodexDnsGrpcService {
 
         match self.db.create_network_scope(&db_scope) {
             Ok(_) => {
+                // Register any additional owned TLDs supplied at creation time.
+                for tld in &scope.tlds {
+                    if let Err(e) = self.db.add_scope_tld(&scope.name, tld) {
+                        return Ok(Response::new(CreateNetworkScopeResponse {
+                            success: false,
+                            message: format!("scope created but tld '{}' failed: {}", tld, e),
+                        }));
+                    }
+                }
+                self.dns_server.flush_cache();
                 info!("Created network scope: {}", scope.name);
                 Ok(Response::new(CreateNetworkScopeResponse {
                     success: true,
@@ -492,13 +502,17 @@ impl RolodexDnsService for RolodexDnsGrpcService {
 
         match self.db.list_network_scopes() {
             Ok(scopes) => {
-                let proto_scopes = scopes
-                    .iter()
-                    .map(|s| proto::NetworkScope {
+                let mut proto_scopes = Vec::with_capacity(scopes.len());
+                for s in &scopes {
+                    let tlds = self.db.list_scope_tlds(&s.name).map_err(|e| {
+                        Status::internal(format!("failed to list scope tlds: {}", e))
+                    })?;
+                    proto_scopes.push(proto::NetworkScope {
                         name: s.name.clone(),
                         home_domain: s.home_domain.clone(),
-                    })
-                    .collect();
+                        tlds,
+                    });
+                }
                 Ok(Response::new(ListNetworkScopesResponse {
                     scopes: proto_scopes,
                 }))
@@ -1899,6 +1913,133 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     }
 
     // ================================================================
+    // Scope TLDs (per-network owned zones, partitioned across networks)
+    // ================================================================
+
+    async fn add_scope_tld(
+        &self,
+        request: Request<AddScopeTldRequest>,
+    ) -> Result<Response<AddScopeTldResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        if req.scope_name.is_empty() {
+            return Err(Status::invalid_argument("scope_name is required"));
+        }
+        if req.tld.is_empty() {
+            return Err(Status::invalid_argument("tld is required"));
+        }
+        match self.db.add_scope_tld(&req.scope_name, &req.tld) {
+            Ok(_) => {
+                self.dns_server.flush_cache();
+                info!("Added TLD {} to scope {}", req.tld, req.scope_name);
+                Ok(Response::new(AddScopeTldResponse {
+                    success: true,
+                    message: String::new(),
+                }))
+            }
+            Err(e) => Ok(Response::new(AddScopeTldResponse {
+                success: false,
+                message: e.to_string(),
+            })),
+        }
+    }
+
+    async fn remove_scope_tld(
+        &self,
+        request: Request<RemoveScopeTldRequest>,
+    ) -> Result<Response<RemoveScopeTldResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        if req.scope_name.is_empty() {
+            return Err(Status::invalid_argument("scope_name is required"));
+        }
+        match self.db.remove_scope_tld(&req.scope_name, &req.tld) {
+            Ok(true) => {
+                self.dns_server.flush_cache();
+                info!("Removed TLD {} from scope {}", req.tld, req.scope_name);
+                Ok(Response::new(RemoveScopeTldResponse {
+                    success: true,
+                    message: String::new(),
+                }))
+            }
+            Ok(false) => Ok(Response::new(RemoveScopeTldResponse {
+                success: false,
+                message: format!("tld '{}' not found in scope '{}'", req.tld, req.scope_name),
+            })),
+            Err(e) => Ok(Response::new(RemoveScopeTldResponse {
+                success: false,
+                message: e.to_string(),
+            })),
+        }
+    }
+
+    async fn list_scope_tlds(
+        &self,
+        request: Request<ListScopeTldsRequest>,
+    ) -> Result<Response<ListScopeTldsResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        if req.scope_name.is_empty() {
+            return Err(Status::invalid_argument("scope_name is required"));
+        }
+        match self.db.list_all_owned_tlds(&req.scope_name) {
+            Ok(tlds) => Ok(Response::new(ListScopeTldsResponse { tlds })),
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+
+    async fn set_scope_tld_forwarders(
+        &self,
+        request: Request<SetScopeTldForwardersRequest>,
+    ) -> Result<Response<SetScopeTldForwardersResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        if req.scope_name.is_empty() {
+            return Err(Status::invalid_argument("scope_name is required"));
+        }
+        if req.tld.is_empty() {
+            return Err(Status::invalid_argument("tld is required"));
+        }
+        match self
+            .db
+            .set_scope_tld_forwarders(&req.scope_name, &req.tld, &req.forwarders)
+        {
+            Ok(_) => {
+                self.dns_server.flush_cache();
+                info!(
+                    "Set {} peer forwarder(s) for scope {} tld {}",
+                    req.forwarders.len(),
+                    req.scope_name,
+                    req.tld
+                );
+                Ok(Response::new(SetScopeTldForwardersResponse {
+                    success: true,
+                    message: String::new(),
+                }))
+            }
+            Err(e) => Ok(Response::new(SetScopeTldForwardersResponse {
+                success: false,
+                message: e.to_string(),
+            })),
+        }
+    }
+
+    async fn list_scope_tld_forwarders(
+        &self,
+        request: Request<ListScopeTldForwardersRequest>,
+    ) -> Result<Response<ListScopeTldForwardersResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        if req.scope_name.is_empty() {
+            return Err(Status::invalid_argument("scope_name is required"));
+        }
+        match self.db.list_scope_tld_forwarders(&req.scope_name, &req.tld) {
+            Ok(forwarders) => Ok(Response::new(ListScopeTldForwardersResponse { forwarders })),
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+
+    // ================================================================
     // DHCP Certificate Options
     // ================================================================
 
@@ -2518,6 +2659,7 @@ mod tests {
             scope: Some(proto::NetworkScope {
                 name: "office".to_string(),
                 home_domain: "office.home".to_string(),
+                tlds: Vec::new(),
             }),
             auth_token: "secret123".to_string(),
         });
@@ -2541,6 +2683,7 @@ mod tests {
             scope: Some(proto::NetworkScope {
                 name: "lab".to_string(),
                 home_domain: String::new(), // Should default to lab.home
+                tlds: Vec::new(),
             }),
             auth_token: "secret123".to_string(),
         });
@@ -2564,6 +2707,7 @@ mod tests {
             scope: Some(proto::NetworkScope {
                 name: "temp".to_string(),
                 home_domain: "temp.home".to_string(),
+                tlds: Vec::new(),
             }),
             auth_token: "secret123".to_string(),
         });
@@ -2594,6 +2738,7 @@ mod tests {
             scope: Some(proto::NetworkScope {
                 name: "mynet".to_string(),
                 home_domain: "mynet.home".to_string(),
+                tlds: Vec::new(),
             }),
             auth_token: "secret123".to_string(),
         });
@@ -2645,6 +2790,7 @@ mod tests {
             scope: Some(proto::NetworkScope {
                 name: "recscope".to_string(),
                 home_domain: "recscope.home".to_string(),
+                tlds: Vec::new(),
             }),
             auth_token: "secret123".to_string(),
         });
@@ -2688,6 +2834,7 @@ mod tests {
             scope: Some(proto::NetworkScope {
                 name: "rmscope".to_string(),
                 home_domain: "rmscope.home".to_string(),
+                tlds: Vec::new(),
             }),
             auth_token: "secret123".to_string(),
         });
@@ -2729,6 +2876,7 @@ mod tests {
             scope: Some(proto::NetworkScope {
                 name: "searchnet".to_string(),
                 home_domain: "searchnet.home".to_string(),
+                tlds: Vec::new(),
             }),
             auth_token: "secret123".to_string(),
         });
@@ -2762,6 +2910,7 @@ mod tests {
             scope: Some(proto::NetworkScope {
                 name: "ttlnet".to_string(),
                 home_domain: "ttlnet.home".to_string(),
+                tlds: Vec::new(),
             }),
             auth_token: "secret123".to_string(),
         });
@@ -2793,6 +2942,7 @@ mod tests {
             scope: Some(proto::NetworkScope {
                 name: "auth-test".to_string(),
                 home_domain: "auth.home".to_string(),
+                tlds: Vec::new(),
             }),
             auth_token: "wrong".to_string(),
         });

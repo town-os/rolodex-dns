@@ -233,6 +233,11 @@ message NetworkScope {
   // The reserved .home domain for this scope (e.g. "office.home.")
   // If empty on creation, defaults to "<name>.home."
   string home_domain = 2;
+  // Additional TLDs (owned zones) this scope is authoritative for, beyond the
+  // implicit home_domain. Each TLD is globally unique to a single scope. On
+  // CreateNetworkScope these are registered as owned TLDs; ListNetworkScopes
+  // populates them. e.g. ["office.", "corp."].
+  repeated string tlds = 3;
 }
 
 // CreateNetworkScopeRequest creates a new network scope.
@@ -1050,6 +1055,76 @@ message ListScopeRblProvidersResponse {
 }
 
 // ================================================================
+// Scope TLDs (per-network owned zones, partitioned across networks)
+// ================================================================
+
+// AddScopeTldRequest registers a TLD as owned by a network scope. TLDs are
+// globally unique: registering a TLD already owned by another scope fails.
+message AddScopeTldRequest {
+  string scope_name = 1;
+  // The TLD/owned zone (e.g. "office."). Normalized to lowercase trailing-dot.
+  string tld = 2;
+  string auth_token = 3;
+}
+
+message AddScopeTldResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// RemoveScopeTldRequest removes a TLD ownership from a scope.
+message RemoveScopeTldRequest {
+  string scope_name = 1;
+  string tld = 2;
+  string auth_token = 3;
+}
+
+message RemoveScopeTldResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// ListScopeTldsRequest lists the TLDs owned by a scope (excluding the implicit
+// home_domain).
+message ListScopeTldsRequest {
+  string scope_name = 1;
+  string auth_token = 2;
+}
+
+message ListScopeTldsResponse {
+  repeated string tlds = 1;
+}
+
+// SetScopeTldForwardersRequest replaces the peer forwarders for a scope's TLD.
+// These are the overlay addresses of other network members running rolodex that
+// are authoritative for records under the shared TLD. Queries under the owning
+// scope's TLD that have no local scoped record are forwarded here before the
+// server returns an authoritative NXDOMAIN. Separate from the global forwarders.
+message SetScopeTldForwardersRequest {
+  string scope_name = 1;
+  string tld = 2;
+  // Forwarder addresses as "ip:port" (e.g. "10.90.12.2:53").
+  repeated string forwarders = 3;
+  string auth_token = 4;
+}
+
+message SetScopeTldForwardersResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// ListScopeTldForwardersRequest lists the peer forwarders for a scope's TLD.
+message ListScopeTldForwardersRequest {
+  string scope_name = 1;
+  string tld = 2;
+  string auth_token = 3;
+}
+
+message ListScopeTldForwardersResponse {
+  repeated string forwarders = 1;
+}
+
+// ================================================================
 // DHCP Certificate Options
 // ================================================================
 
@@ -1332,6 +1407,25 @@ service RolodexDnsService {
 
   // ListScopeRblProviders lists RBL providers for a specific scope.
   rpc ListScopeRblProviders(ListScopeRblProvidersRequest) returns (ListScopeRblProvidersResponse);
+
+  // ================================================================
+  // Scope TLDs (per-network owned zones, partitioned across networks)
+  // ================================================================
+
+  // AddScopeTld registers a globally-unique TLD as owned by a scope.
+  rpc AddScopeTld(AddScopeTldRequest) returns (AddScopeTldResponse);
+
+  // RemoveScopeTld removes a TLD ownership from a scope.
+  rpc RemoveScopeTld(RemoveScopeTldRequest) returns (RemoveScopeTldResponse);
+
+  // ListScopeTlds lists the TLDs owned by a scope.
+  rpc ListScopeTlds(ListScopeTldsRequest) returns (ListScopeTldsResponse);
+
+  // SetScopeTldForwarders replaces the peer forwarders for a scope's TLD.
+  rpc SetScopeTldForwarders(SetScopeTldForwardersRequest) returns (SetScopeTldForwardersResponse);
+
+  // ListScopeTldForwarders lists the peer forwarders for a scope's TLD.
+  rpc ListScopeTldForwarders(ListScopeTldForwardersRequest) returns (ListScopeTldForwardersResponse);
 
   // ================================================================
   // DHCP Certificate Options

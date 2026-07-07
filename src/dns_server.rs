@@ -629,6 +629,51 @@ impl DnsServer {
                 return Ok(dname_result);
             }
 
+            // Per-network TLD partition. If the query falls under a TLD owned by
+            // some network scope, the namespace is partitioned: it is answered
+            // only within the owning network and never leaks to upstream DNS.
+            if let Some((owner, owned_tld)) = self.db.find_tld_owner(&qname) {
+                if owner == *scope {
+                    // Owned by the querying network. Local scoped records were
+                    // already checked above and missed. Try this TLD's peer
+                    // forwarders (other rolodex boxes on this overlay), then fall
+                    // back to an authoritative NXDOMAIN — never forward upstream.
+                    let peers = self.db.get_tld_forwarders_cached(scope, &owned_tld);
+                    if !peers.is_empty()
+                        && let Some(resp) = self.forward_to_tld_peers(query_data, &peers).await
+                    {
+                        debug!(
+                            "Scoped TLD peer answer for {} (scope {} tld {})",
+                            qname, scope, owned_tld
+                        );
+                        return Ok(resp);
+                    }
+                    debug!(
+                        "Scoped authoritative NXDOMAIN for {} (scope {} owns tld {}, no local/peer answer)",
+                        qname, scope, owned_tld
+                    );
+                    return Ok(build_response_edns(
+                        &message,
+                        ResponseCode::NXDomain,
+                        vec![],
+                        true,
+                        edns_ctx.as_ref(),
+                    ));
+                }
+                // Owned by a DIFFERENT network — hide it from this network.
+                debug!(
+                    "Hiding {} from scope {} (owned by scope {} tld {})",
+                    qname, scope, owner, owned_tld
+                );
+                return Ok(build_response_edns(
+                    &message,
+                    ResponseCode::NXDomain,
+                    vec![],
+                    true,
+                    edns_ctx.as_ref(),
+                ));
+            }
+
             // Check if name falls under a scoped managed zone
             if let Ok(zones) = self.db.get_scoped_managed_zones(scope) {
                 let normalized_qname = crate::db::normalize_name(&qname);
@@ -1359,6 +1404,31 @@ impl DnsServer {
         }
 
         Ok(make_error_response(query_data, ResponseCode::ServFail))
+    }
+
+    /// Forwards a query to a network's per-TLD peer rolodex servers (other
+    /// members of the same overlay that are authoritative for records under the
+    /// shared TLD). Returns the first DEFINITIVE (NoError/NXDOMAIN) answer; a
+    /// peer returning ServFail/Refused/timeout is skipped and the next is tried.
+    /// Returns None if no peer gives a definitive answer, so the caller can fall
+    /// back to an authoritative NXDOMAIN. Peer answers are intentionally NOT
+    /// written to the global upstream cache — they are network-scoped.
+    async fn forward_to_tld_peers(
+        &self,
+        query_data: &[u8],
+        peers: &[SocketAddr],
+    ) -> Option<Vec<u8>> {
+        for target in peers {
+            match self.forward_one(query_data, target).await {
+                Ok(resp) if response_is_definitive(&resp) => return Some(resp),
+                Ok(_) => continue,
+                Err(e) => {
+                    debug!("TLD peer forward to {} failed: {}", target, e);
+                    continue;
+                }
+            }
+        }
+        None
     }
 
     /// Sends one query to one upstream over Do53, tunneling through the proxy if
@@ -3564,5 +3634,250 @@ mod tests {
         assert_eq!(q.query_type(), RecordType::A);
         assert_eq!(q.name().to_ascii(), "one.one.one.one.");
         assert!(msg.recursion_desired());
+    }
+
+    // ================================================================
+    // Per-network TLD partition + per-TLD peer forwarding
+    // ================================================================
+
+    /// Spawns a minimal UDP "peer rolodex" on loopback. If `answer` is Some, it
+    /// replies NoError with that A record for any query; if None, it replies
+    /// SERVFAIL (a non-definitive answer, to exercise forwarder failover).
+    /// Returns the bound address. The task runs until the test ends.
+    async fn spawn_mock_peer(answer: Option<Ipv4Addr>) -> SocketAddr {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = socket.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 4096];
+            loop {
+                let (len, src) = match socket.recv_from(&mut buf).await {
+                    Ok(v) => v,
+                    Err(_) => break,
+                };
+                let query = match Message::from_bytes(&buf[..len]) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                let mut resp = Message::new();
+                resp.set_id(query.id());
+                resp.set_message_type(MessageType::Response);
+                resp.set_op_code(OpCode::Query);
+                if let Some(q) = query.queries().first() {
+                    resp.add_query(q.clone());
+                    match answer {
+                        Some(ip) => {
+                            resp.set_response_code(ResponseCode::NoError);
+                            let rec =
+                                Record::from_rdata(q.name().clone(), 60, RData::A(rdata::A(ip)));
+                            resp.add_answer(rec);
+                        }
+                        None => {
+                            resp.set_response_code(ResponseCode::ServFail);
+                        }
+                    }
+                }
+                if let Ok(bytes) = resp.to_bytes() {
+                    socket.send_to(&bytes, src).await.ok();
+                }
+            }
+        });
+        addr
+    }
+
+    fn office_scope(db: &Database) {
+        db.create_network_scope(&NetworkScope {
+            name: "office".to_string(),
+            home_domain: "office.home".to_string(),
+        })
+        .unwrap();
+        db.add_scope_tld("office", "office").unwrap();
+        db.join_network(&NetworkAssociation {
+            ip_address: "192.168.1.1".to_string(),
+            scope_name: "office".to_string(),
+            ttl_seconds: 3600,
+        })
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_owned_tld_serves_scoped_record() {
+        let db = Database::open_memory().unwrap();
+        office_scope(&db);
+        db.add_scoped_record(
+            "office",
+            &DnsRecord {
+                id: None,
+                name: "gitea.office.".to_string(),
+                record_type: RecordKind::A,
+                value: "10.0.0.7".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
+
+        let server = make_test_server(db);
+        let query = build_query("gitea.office.", RecordType::A);
+        let resp = Message::from_bytes(
+            &server
+                .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert_eq!(resp.answers().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_owned_tld_no_record_no_forwarder_nxdomain() {
+        let db = Database::open_memory().unwrap();
+        office_scope(&db);
+
+        // make_test_server has NO global forwarders, so a fall-through would
+        // yield SERVFAIL. Asserting NXDOMAIN proves the partition fired.
+        let server = make_test_server(db);
+        let query = build_query("absent.office.", RecordType::A);
+        let resp = Message::from_bytes(
+            &server
+                .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NXDomain);
+        assert!(resp.authoritative());
+    }
+
+    #[tokio::test]
+    async fn test_owned_tld_forwards_to_peer() {
+        let db = Database::open_memory().unwrap();
+        office_scope(&db);
+        let peer = spawn_mock_peer(Some(Ipv4Addr::new(10, 9, 9, 9))).await;
+        db.set_scope_tld_forwarders("office", "office", &[peer.to_string()])
+            .unwrap();
+
+        let server = make_test_server(db);
+        let query = build_query("app.office.", RecordType::A);
+        let resp = Message::from_bytes(
+            &server
+                .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert_eq!(resp.answers().len(), 1);
+        if let RData::A(rdata::A(ip)) = resp.answers()[0].data() {
+            assert_eq!(*ip, Ipv4Addr::new(10, 9, 9, 9));
+        } else {
+            panic!("expected A record from peer");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_owned_tld_forwarder_failover() {
+        let db = Database::open_memory().unwrap();
+        office_scope(&db);
+        // First peer SERVFAILs (non-definitive); second answers.
+        let dead = spawn_mock_peer(None).await;
+        let good = spawn_mock_peer(Some(Ipv4Addr::new(10, 8, 8, 8))).await;
+        db.set_scope_tld_forwarders("office", "office", &[dead.to_string(), good.to_string()])
+            .unwrap();
+
+        let server = make_test_server(db);
+        let query = build_query("svc.office.", RecordType::A);
+        let resp = Message::from_bytes(
+            &server
+                .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        if let RData::A(rdata::A(ip)) = resp.answers()[0].data() {
+            assert_eq!(*ip, Ipv4Addr::new(10, 8, 8, 8));
+        } else {
+            panic!("expected A record from second peer");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cross_scope_tld_hidden() {
+        let db = Database::open_memory().unwrap();
+        office_scope(&db);
+        // A different scope owns lab. with a forwarder configured.
+        db.create_network_scope(&NetworkScope {
+            name: "lab".to_string(),
+            home_domain: "lab.home".to_string(),
+        })
+        .unwrap();
+        db.add_scope_tld("lab", "lab").unwrap();
+        let peer = spawn_mock_peer(Some(Ipv4Addr::new(10, 5, 5, 5))).await;
+        db.set_scope_tld_forwarders("lab", "lab", &[peer.to_string()])
+            .unwrap();
+
+        // Query from the office network for a name under lab. is hidden.
+        let server = make_test_server(db);
+        let query = build_query("secret.lab.", RecordType::A);
+        let resp = Message::from_bytes(
+            &server
+                .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NXDomain);
+        assert!(resp.authoritative());
+        assert!(resp.answers().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_partition_does_not_forward_upstream() {
+        let db = Database::open_memory().unwrap();
+        office_scope(&db);
+
+        // Configure a bogus GLOBAL forwarder. A name under the querying scope's
+        // owned TLD must still NXDOMAIN (partition) rather than be forwarded.
+        let rbl = Arc::new(RblChecker::with_resolver(
+            false,
+            vec![],
+            Arc::new(NeverListedResolver),
+        ));
+        let server = Arc::new(DnsServer::new(
+            db,
+            rbl,
+            vec!["203.0.113.1:53".parse().unwrap()],
+        ));
+        let query = build_query("nothing.office.", RecordType::A);
+        let resp = Message::from_bytes(
+            &server
+                .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NXDomain);
+        assert!(resp.authoritative());
+    }
+
+    #[tokio::test]
+    async fn test_non_owned_name_falls_through() {
+        let db = Database::open_memory().unwrap();
+        office_scope(&db);
+
+        // A name NOT under any owned TLD falls through to upstream. With no
+        // global forwarders that is SERVFAIL — proving the partition did not
+        // hijack a non-owned name into an authoritative NXDOMAIN.
+        let server = make_test_server(db);
+        let query = build_query("example.com.", RecordType::A);
+        let resp = Message::from_bytes(
+            &server
+                .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::ServFail);
     }
 }

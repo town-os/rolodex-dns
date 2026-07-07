@@ -313,6 +313,12 @@ enum Commands {
         /// Used as the default search domain for DHCP clients in this network.
         #[arg(short = 'd', long)]
         home_domain: Option<String>,
+
+        /// Additional owned TLD(s) this scope is authoritative for, beyond the
+        /// implicit home_domain. Repeatable (e.g. --tld office. --tld corp.).
+        /// Each TLD is globally unique to one scope.
+        #[arg(long = "tld")]
+        tlds: Vec<String>,
     },
 
     /// Delete a network scope and all its records and associations.
@@ -621,6 +627,56 @@ enum Commands {
     ListScopeRbl {
         #[arg(short, long)]
         scope: String,
+    },
+
+    /// Register an additional owned TLD for a network scope. TLDs are globally
+    /// unique: registering one already owned by another scope fails.
+    #[command(name = "add-scope-tld")]
+    AddScopeTld {
+        #[arg(short, long)]
+        scope: String,
+        /// The TLD/owned zone (e.g. "office.").
+        #[arg(long)]
+        tld: String,
+    },
+
+    /// Remove an additional owned TLD from a scope (the home_domain cannot be
+    /// removed this way).
+    #[command(name = "remove-scope-tld")]
+    RemoveScopeTld {
+        #[arg(short, long)]
+        scope: String,
+        #[arg(long)]
+        tld: String,
+    },
+
+    /// List the TLDs owned by a scope (home_domain first, then additional).
+    #[command(name = "list-scope-tlds")]
+    ListScopeTlds {
+        #[arg(short, long)]
+        scope: String,
+    },
+
+    /// Set the peer forwarders for a scope's TLD (overlay addresses of other
+    /// network members running rolodex). Replaces the existing set.
+    #[command(name = "set-scope-tld-forwarders")]
+    SetScopeTldForwarders {
+        #[arg(short, long)]
+        scope: String,
+        #[arg(long)]
+        tld: String,
+        /// Forwarder address(es) as host:port. Repeatable. Omit to clear.
+        #[arg(short, long = "forwarder")]
+        forwarders: Vec<String>,
+    },
+
+    /// List the peer forwarders configured for a scope's TLD.
+    #[command(name = "list-scope-tld-forwarders")]
+    ListScopeTldForwarders {
+        #[arg(short, long)]
+        scope: String,
+        #[arg(long)]
+        tld: String,
     },
 
     /// Set a DHCP certificate option for a scope.
@@ -1045,12 +1101,17 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::CreateScope { name, home_domain } => {
+        Commands::CreateScope {
+            name,
+            home_domain,
+            tlds,
+        } => {
             let response = client
                 .create_network_scope(CreateNetworkScopeRequest {
                     scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
                         name: name.clone(),
                         home_domain: home_domain.unwrap_or_default(),
+                        tlds: tlds.clone(),
                     }),
                     auth_token: cli.auth_token.clone(),
                 })
@@ -1091,10 +1152,10 @@ async fn main() -> Result<()> {
             if scopes.is_empty() {
                 println!("No network scopes configured.");
             } else {
-                println!("{:<30} HOME DOMAIN", "NAME");
-                println!("{}", "-".repeat(60));
+                println!("{:<30} {:<25} TLDS", "NAME", "HOME DOMAIN");
+                println!("{}", "-".repeat(75));
                 for s in &scopes {
-                    println!("{:<30} {}", s.name, s.home_domain);
+                    println!("{:<30} {:<25} {}", s.name, s.home_domain, s.tlds.join(", "));
                 }
                 println!("\n{} scope(s) found.", scopes.len());
             }
@@ -1693,6 +1754,104 @@ async fn main() -> Result<()> {
                 println!("{}", "-".repeat(50));
                 for p in resp.providers {
                     println!("{:<40} {:<10}", p.zone, p.enabled);
+                }
+            }
+        }
+
+        Commands::AddScopeTld { scope, tld } => {
+            let response = client
+                .add_scope_tld(AddScopeTldRequest {
+                    scope_name: scope.clone(),
+                    tld: tld.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("add-scope-tld RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("Added TLD {} to scope {}", tld, scope);
+            } else {
+                anyhow::bail!("Failed: {}", resp.message);
+            }
+        }
+
+        Commands::RemoveScopeTld { scope, tld } => {
+            let response = client
+                .remove_scope_tld(RemoveScopeTldRequest {
+                    scope_name: scope.clone(),
+                    tld: tld.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("remove-scope-tld RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("Removed TLD {} from scope {}", tld, scope);
+            } else {
+                anyhow::bail!("Failed: {}", resp.message);
+            }
+        }
+
+        Commands::ListScopeTlds { scope } => {
+            let response = client
+                .list_scope_tlds(ListScopeTldsRequest {
+                    scope_name: scope.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("list-scope-tlds RPC failed")?;
+            let tlds = response.into_inner().tlds;
+            if tlds.is_empty() {
+                println!("No TLDs owned by scope {}", scope);
+            } else {
+                for tld in tlds {
+                    println!("{}", tld);
+                }
+            }
+        }
+
+        Commands::SetScopeTldForwarders {
+            scope,
+            tld,
+            forwarders,
+        } => {
+            let response = client
+                .set_scope_tld_forwarders(SetScopeTldForwardersRequest {
+                    scope_name: scope.clone(),
+                    tld: tld.clone(),
+                    forwarders: forwarders.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("set-scope-tld-forwarders RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!(
+                    "Set {} forwarder(s) for scope {} tld {}",
+                    forwarders.len(),
+                    scope,
+                    tld
+                );
+            } else {
+                anyhow::bail!("Failed: {}", resp.message);
+            }
+        }
+
+        Commands::ListScopeTldForwarders { scope, tld } => {
+            let response = client
+                .list_scope_tld_forwarders(ListScopeTldForwardersRequest {
+                    scope_name: scope.clone(),
+                    tld: tld.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("list-scope-tld-forwarders RPC failed")?;
+            let forwarders = response.into_inner().forwarders;
+            if forwarders.is_empty() {
+                println!("No forwarders for scope {} tld {}", scope, tld);
+            } else {
+                for f in forwarders {
+                    println!("{}", f);
                 }
             }
         }

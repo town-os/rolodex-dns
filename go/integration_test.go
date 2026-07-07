@@ -1506,3 +1506,97 @@ func TestDhcpLeaseCrud(t *testing.T) {
 	// We accept either success or a controlled error, but it must not panic
 	_ = err
 }
+
+func TestIntegrationScopeTldOwnership(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	if err := client.CreateNetworkScope(ctx, &NetworkScope{Name: "office", HomeDomain: "office.home."}); err != nil {
+		t.Fatalf("CreateNetworkScope: %v", err)
+	}
+
+	// Register an additional owned TLD.
+	if err := client.AddScopeTld(ctx, "office", "office."); err != nil {
+		t.Fatalf("AddScopeTld: %v", err)
+	}
+
+	// List owned TLDs: home_domain first, then the additional TLD.
+	tlds, err := client.ListScopeTlds(ctx, "office")
+	if err != nil {
+		t.Fatalf("ListScopeTlds: %v", err)
+	}
+	if len(tlds) != 2 {
+		t.Fatalf("got %d tlds, want 2 (home + office.): %v", len(tlds), tlds)
+	}
+	if tlds[0] != "office.home." {
+		t.Errorf("first tld = %q, want home_domain office.home.", tlds[0])
+	}
+
+	// ListNetworkScopes carries the additional TLDs.
+	scopes, err := client.ListNetworkScopes(ctx)
+	if err != nil {
+		t.Fatalf("ListNetworkScopes: %v", err)
+	}
+	if len(scopes) != 1 || len(scopes[0].Tlds) != 1 || scopes[0].Tlds[0] != "office." {
+		t.Errorf("scope tlds = %v, want [office.]", scopes[0].Tlds)
+	}
+
+	// Global uniqueness: a second scope cannot claim the same TLD.
+	if err := client.CreateNetworkScope(ctx, &NetworkScope{Name: "lab", HomeDomain: "lab.home."}); err != nil {
+		t.Fatalf("CreateNetworkScope lab: %v", err)
+	}
+	if err := client.AddScopeTld(ctx, "lab", "office."); err == nil {
+		t.Error("expected conflict registering an already-owned TLD, got nil")
+	}
+
+	// Remove the additional TLD.
+	if err := client.RemoveScopeTld(ctx, "office", "office."); err != nil {
+		t.Fatalf("RemoveScopeTld: %v", err)
+	}
+	tlds, err = client.ListScopeTlds(ctx, "office")
+	if err != nil {
+		t.Fatalf("ListScopeTlds after remove: %v", err)
+	}
+	if len(tlds) != 1 {
+		t.Errorf("got %d tlds after remove, want 1 (home only): %v", len(tlds), tlds)
+	}
+}
+
+func TestIntegrationScopeTldForwarders(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	if err := client.CreateNetworkScope(ctx, &NetworkScope{Name: "office", HomeDomain: "office."}); err != nil {
+		t.Fatalf("CreateNetworkScope: %v", err)
+	}
+
+	fwds := []string{"10.90.12.2:53", "10.90.12.3:53"}
+	if err := client.SetScopeTldForwarders(ctx, "office", "office.", fwds); err != nil {
+		t.Fatalf("SetScopeTldForwarders: %v", err)
+	}
+
+	got, err := client.ListScopeTldForwarders(ctx, "office", "office.")
+	if err != nil {
+		t.Fatalf("ListScopeTldForwarders: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d forwarders, want 2: %v", len(got), got)
+	}
+
+	// Replace-all semantics: setting a smaller set drops the rest.
+	if err := client.SetScopeTldForwarders(ctx, "office", "office.", []string{"10.90.12.9:53"}); err != nil {
+		t.Fatalf("SetScopeTldForwarders replace: %v", err)
+	}
+	got, err = client.ListScopeTldForwarders(ctx, "office", "office.")
+	if err != nil {
+		t.Fatalf("ListScopeTldForwarders after replace: %v", err)
+	}
+	if len(got) != 1 || got[0] != "10.90.12.9:53" {
+		t.Errorf("forwarders after replace = %v, want [10.90.12.9:53]", got)
+	}
+
+	// An invalid forwarder address is rejected.
+	if err := client.SetScopeTldForwarders(ctx, "office", "office.", []string{"not-an-addr"}); err == nil {
+		t.Error("expected error for invalid forwarder address, got nil")
+	}
+}

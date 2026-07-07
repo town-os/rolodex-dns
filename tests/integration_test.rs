@@ -3,11 +3,13 @@ use rolodex_dns::dns_server::DnsServer;
 use rolodex_dns::grpc_service::RolodexDnsGrpcService;
 use rolodex_dns::grpc_service::proto::rolodex_dns_service_server::RolodexDnsService;
 use rolodex_dns::grpc_service::proto::{
-    AddRecordRequest, AddScopedRecordRequest, CreateNetworkScopeRequest, DeleteNetworkScopeRequest,
-    FlushCacheRequest, GetNetworkAssociationsRequest, GetRblConfigRequest, GetSearchDomainsRequest,
-    JoinNetworkRequest, LeaveNetworkRequest, ListNetworkScopesRequest, ListRecordsRequest,
-    ListScopedRecordsRequest, RemoveRecordRequest, RemoveScopedRecordRequest, SetForwarderRequest,
-    SetRblConfigRequest,
+    AddRecordRequest, AddScopeTldRequest, AddScopedRecordRequest, CreateNetworkScopeRequest,
+    DeleteNetworkScopeRequest, FlushCacheRequest, GetNetworkAssociationsRequest,
+    GetRblConfigRequest, GetSearchDomainsRequest, JoinNetworkRequest, LeaveNetworkRequest,
+    ListNetworkScopesRequest, ListRecordsRequest, ListScopeTldForwardersRequest,
+    ListScopeTldsRequest, ListScopedRecordsRequest, RemoveRecordRequest, RemoveScopeTldRequest,
+    RemoveScopedRecordRequest, SetForwarderRequest, SetRblConfigRequest,
+    SetScopeTldForwardersRequest,
 };
 use rolodex_dns::rbl::{RblChecker, RblProvider, RblResolver};
 use std::sync::Arc;
@@ -1223,6 +1225,7 @@ async fn test_network_scope_lifecycle() {
         scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
             name: "testnet".to_string(),
             home_domain: "testnet.home".to_string(),
+            tlds: Vec::new(),
         }),
         auth_token: "test-secret".to_string(),
     });
@@ -1253,6 +1256,211 @@ async fn test_network_scope_lifecycle() {
 }
 
 // ========================================================
+// Integration: per-network TLD ownership + partition + forwarders
+// ========================================================
+
+#[tokio::test]
+async fn test_scope_tld_grpc_lifecycle() {
+    let (_db, _dns_server, _rbl, service) = make_test_stack();
+
+    // Create a scope with an additional TLD supplied at creation.
+    let req = Request::new(CreateNetworkScopeRequest {
+        scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
+            name: "office".to_string(),
+            home_domain: "office.home".to_string(),
+            tlds: vec!["office.".to_string()],
+        }),
+        auth_token: "test-secret".to_string(),
+    });
+    assert!(
+        service
+            .create_network_scope(req)
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+    );
+
+    // Add a second TLD via AddScopeTld.
+    let add = Request::new(AddScopeTldRequest {
+        scope_name: "office".to_string(),
+        tld: "corp.".to_string(),
+        auth_token: "test-secret".to_string(),
+    });
+    assert!(
+        service
+            .add_scope_tld(add)
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+    );
+
+    // ListScopeTlds returns home_domain first plus both TLDs.
+    let list = Request::new(ListScopeTldsRequest {
+        scope_name: "office".to_string(),
+        auth_token: "test-secret".to_string(),
+    });
+    let tlds = service
+        .list_scope_tlds(list)
+        .await
+        .unwrap()
+        .into_inner()
+        .tlds;
+    assert_eq!(tlds[0], "office.home.");
+    assert!(tlds.contains(&"office.".to_string()));
+    assert!(tlds.contains(&"corp.".to_string()));
+
+    // ListNetworkScopes carries the additional TLDs.
+    let ls = Request::new(ListNetworkScopesRequest {
+        auth_token: "test-secret".to_string(),
+    });
+    let scopes = service
+        .list_network_scopes(ls)
+        .await
+        .unwrap()
+        .into_inner()
+        .scopes;
+    assert_eq!(scopes.len(), 1);
+    assert_eq!(scopes[0].tlds.len(), 2);
+
+    // Global uniqueness: another scope cannot claim an owned TLD.
+    service
+        .create_network_scope(Request::new(CreateNetworkScopeRequest {
+            scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
+                name: "lab".to_string(),
+                home_domain: "lab.home".to_string(),
+                tlds: Vec::new(),
+            }),
+            auth_token: "test-secret".to_string(),
+        }))
+        .await
+        .unwrap();
+    let conflict = Request::new(AddScopeTldRequest {
+        scope_name: "lab".to_string(),
+        tld: "office.".to_string(),
+        auth_token: "test-secret".to_string(),
+    });
+    let resp = service.add_scope_tld(conflict).await.unwrap().into_inner();
+    assert!(!resp.success);
+    assert!(resp.message.contains("office"));
+
+    // Remove a TLD.
+    let rm = Request::new(RemoveScopeTldRequest {
+        scope_name: "office".to_string(),
+        tld: "corp.".to_string(),
+        auth_token: "test-secret".to_string(),
+    });
+    assert!(
+        service
+            .remove_scope_tld(rm)
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+    );
+}
+
+#[tokio::test]
+async fn test_scope_tld_forwarders_grpc() {
+    let (_db, _dns_server, _rbl, service) = make_test_stack();
+    service
+        .create_network_scope(Request::new(CreateNetworkScopeRequest {
+            scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
+                name: "office".to_string(),
+                home_domain: "office.".to_string(),
+                tlds: Vec::new(),
+            }),
+            auth_token: "test-secret".to_string(),
+        }))
+        .await
+        .unwrap();
+
+    // Set two forwarders.
+    let set = Request::new(SetScopeTldForwardersRequest {
+        scope_name: "office".to_string(),
+        tld: "office.".to_string(),
+        forwarders: vec!["10.90.12.2:53".to_string(), "10.90.12.3:53".to_string()],
+        auth_token: "test-secret".to_string(),
+    });
+    assert!(
+        service
+            .set_scope_tld_forwarders(set)
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+    );
+
+    let list = Request::new(ListScopeTldForwardersRequest {
+        scope_name: "office".to_string(),
+        tld: "office.".to_string(),
+        auth_token: "test-secret".to_string(),
+    });
+    let fwds = service
+        .list_scope_tld_forwarders(list)
+        .await
+        .unwrap()
+        .into_inner()
+        .forwarders;
+    assert_eq!(fwds.len(), 2);
+
+    // An invalid address is rejected.
+    let bad = Request::new(SetScopeTldForwardersRequest {
+        scope_name: "office".to_string(),
+        tld: "office.".to_string(),
+        forwarders: vec!["not-an-addr".to_string()],
+        auth_token: "test-secret".to_string(),
+    });
+    assert!(
+        !service
+            .set_scope_tld_forwarders(bad)
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+    );
+}
+
+#[tokio::test]
+async fn test_scope_tld_search_domains_grpc() {
+    let (_db, _dns_server, _rbl, service) = make_test_stack();
+    service
+        .create_network_scope(Request::new(CreateNetworkScopeRequest {
+            scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
+                name: "office".to_string(),
+                home_domain: "office.home".to_string(),
+                tlds: vec!["corp.".to_string()],
+            }),
+            auth_token: "test-secret".to_string(),
+        }))
+        .await
+        .unwrap();
+    service
+        .join_network(Request::new(JoinNetworkRequest {
+            ip_address: "10.0.0.5".to_string(),
+            scope_name: "office".to_string(),
+            ttl_seconds: 600,
+            auth_token: "test-secret".to_string(),
+        }))
+        .await
+        .unwrap();
+
+    let sd = Request::new(GetSearchDomainsRequest {
+        ip_address: "10.0.0.5".to_string(),
+        auth_token: "test-secret".to_string(),
+    });
+    let domains = service
+        .get_search_domains(sd)
+        .await
+        .unwrap()
+        .into_inner()
+        .search_domains;
+    assert_eq!(domains[0], "office.home.");
+    assert!(domains.contains(&"corp.".to_string()));
+}
+
+// ========================================================
 // Integration: Join network, add scoped record, DNS query
 // ========================================================
 
@@ -1265,6 +1473,7 @@ async fn test_scoped_dns_resolution_integration() {
         scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
             name: "corp".to_string(),
             home_domain: "corp.home".to_string(),
+            tlds: Vec::new(),
         }),
         auth_token: "test-secret".to_string(),
     });
@@ -1332,6 +1541,7 @@ async fn test_scope_isolation_integration() {
             scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
                 name: name.to_string(),
                 home_domain: domain.to_string(),
+                tlds: Vec::new(),
             }),
             auth_token: "test-secret".to_string(),
         });
@@ -1413,6 +1623,7 @@ async fn test_search_domains_integration() {
         scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
             name: "homenet".to_string(),
             home_domain: "myhome.local".to_string(),
+            tlds: Vec::new(),
         }),
         auth_token: "test-secret".to_string(),
     });
@@ -1459,6 +1670,7 @@ async fn test_scoped_record_crud_integration() {
         scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
             name: "crud".to_string(),
             home_domain: "crud.home".to_string(),
+            tlds: Vec::new(),
         }),
         auth_token: "test-secret".to_string(),
     });
@@ -1530,6 +1742,7 @@ async fn test_leave_network_integration() {
         scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
             name: "leavenet".to_string(),
             home_domain: "leavenet.home".to_string(),
+            tlds: Vec::new(),
         }),
         auth_token: "test-secret".to_string(),
     });
@@ -1601,6 +1814,7 @@ async fn test_global_records_accessible_from_scope() {
         scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
             name: "globaltest".to_string(),
             home_domain: "globaltest.home".to_string(),
+            tlds: Vec::new(),
         }),
         auth_token: "test-secret".to_string(),
     });
@@ -1654,6 +1868,7 @@ async fn test_delete_scope_cascade() {
         scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
             name: "cascade".to_string(),
             home_domain: "cascade.home".to_string(),
+            tlds: Vec::new(),
         }),
         auth_token: "test-secret".to_string(),
     });
@@ -1760,6 +1975,7 @@ async fn test_scoped_managed_zone_nxdomain_integration() {
         scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
             name: "zonenet".to_string(),
             home_domain: "zonenet.home".to_string(),
+            tlds: Vec::new(),
         }),
         auth_token: "test-secret".to_string(),
     });

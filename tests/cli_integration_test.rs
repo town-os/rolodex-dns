@@ -989,3 +989,173 @@ async fn test_cli_remove_nonexistent_record() {
 
     server.shutdown();
 }
+
+// ========================================================
+// Scope TLD subcommands
+// ========================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_cli_scope_tld_lifecycle_tcp() {
+    let server = TestServer::start("test-secret").await;
+
+    // Create a scope with an additional TLD via the repeatable --tld flag.
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args([
+            "create-scope",
+            "-n",
+            "office",
+            "-d",
+            "office.home",
+            "--tld",
+            "office.",
+        ]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains("Created network scope"));
+
+    // Add another TLD.
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args(["add-scope-tld", "-s", "office", "--tld", "corp."]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains("Added TLD"));
+
+    // List TLDs: home_domain plus both additional.
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args(["list-scope-tlds", "-s", "office"]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains("office.home."))
+    .stdout(predicate::str::contains("office."))
+    .stdout(predicate::str::contains("corp."));
+
+    // list-scopes shows the TLDs column.
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args(["list-scopes"]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains("office"));
+
+    // Remove a TLD.
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args(["remove-scope-tld", "-s", "office", "--tld", "corp."]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains("Removed TLD"));
+
+    server.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_cli_scope_tld_uniqueness_tcp() {
+    let server = TestServer::start("test-secret").await;
+
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args(["create-scope", "-n", "office", "-d", "office.home"]);
+        cmd
+    })
+    .await
+    .success();
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args(["create-scope", "-n", "lab", "-d", "lab.home"]);
+        cmd
+    })
+    .await
+    .success();
+
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args(["add-scope-tld", "-s", "office", "--tld", "shared."]);
+        cmd
+    })
+    .await
+    .success();
+
+    // Claiming the same TLD from another scope fails.
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args(["add-scope-tld", "-s", "lab", "--tld", "shared."]);
+        cmd
+    })
+    .await
+    .failure();
+
+    server.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_cli_scope_tld_forwarders_unix() {
+    let server = TestServer::start("test-secret").await;
+
+    run_cmd({
+        let mut cmd = server.cli_unix();
+        cmd.args([
+            "create-scope",
+            "-n",
+            "office",
+            "-d",
+            "office.",
+            "--tld",
+            "office.",
+        ]);
+        cmd
+    })
+    .await
+    .success();
+
+    // Set two peer forwarders.
+    run_cmd({
+        let mut cmd = server.cli_unix();
+        cmd.args([
+            "set-scope-tld-forwarders",
+            "-s",
+            "office",
+            "--tld",
+            "office.",
+            "-f",
+            "10.90.12.2:53",
+            "-f",
+            "10.90.12.3:53",
+        ]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains("Set 2 forwarder(s)"));
+
+    // List them back.
+    run_cmd({
+        let mut cmd = server.cli_unix();
+        cmd.args([
+            "list-scope-tld-forwarders",
+            "-s",
+            "office",
+            "--tld",
+            "office.",
+        ]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains("10.90.12.2:53"))
+    .stdout(predicate::str::contains("10.90.12.3:53"));
+
+    server.shutdown();
+}

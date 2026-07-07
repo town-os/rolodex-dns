@@ -1,10 +1,40 @@
 use anyhow::{Context, Result, anyhow};
 use dashmap::{DashMap, DashSet};
 use rusqlite::{Connection, params};
+use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// Error returned when a TLD is already owned by a different network scope.
+/// Owned TLDs (a scope's `home_domain` plus any additional registered TLDs) are
+/// globally unique so a name resolves within exactly one network partition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TldConflict {
+    /// The normalized TLD that was requested.
+    pub tld: String,
+    /// The scope that already owns it.
+    pub owner: String,
+}
+
+impl std::fmt::Display for TldConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "tld '{}' is already owned by scope '{}'",
+            self.tld, self.owner
+        )
+    }
+}
+
+impl std::error::Error for TldConflict {}
+
+/// Builds the composite key used by `tld_forwarder_cache` for a (scope, tld)
+/// pair. The NUL separator can never appear in a scope name or DNS name.
+fn tld_fwd_key(scope: &str, tld_norm: &str) -> String {
+    format!("{scope}\u{0}{tld_norm}")
+}
 
 /// Parameters for storing a DNSSEC key.
 pub struct DnssecKeyParams<'a> {
@@ -362,6 +392,15 @@ pub struct Database {
     authoritative_zones_cache: Arc<DashSet<String>>,
     /// In-memory cache of managed zones (derived from dns_records names).
     managed_zones_cache: Arc<DashSet<String>>,
+    /// Maps a normalized owned TLD/zone ("office.") to the name of the scope that
+    /// owns it. Populated from each scope's `home_domain` (implicit primary TLD)
+    /// and the `scope_tlds` table. Drives the per-network resolution partition
+    /// and enforces global TLD uniqueness. O(labels) suffix lookup on the hot path.
+    tld_owner_cache: Arc<DashMap<String, String>>,
+    /// Per-(scope, TLD) peer forwarder addresses, keyed by `tld_fwd_key`. These
+    /// are the overlay rolodex servers of other members of the same network,
+    /// consulted only for names under the owning scope's TLD.
+    tld_forwarder_cache: Arc<DashMap<String, Vec<SocketAddr>>>,
 }
 
 impl Database {
@@ -379,6 +418,8 @@ impl Database {
             local_rbl_cache: Arc::new(DashSet::new()),
             authoritative_zones_cache: Arc::new(DashSet::new()),
             managed_zones_cache: Arc::new(DashSet::new()),
+            tld_owner_cache: Arc::new(DashMap::new()),
+            tld_forwarder_cache: Arc::new(DashMap::new()),
         };
         db.init_tables()?;
         db.load_scoped_records_into_cache()?;
@@ -398,6 +439,8 @@ impl Database {
             local_rbl_cache: Arc::new(DashSet::new()),
             authoritative_zones_cache: Arc::new(DashSet::new()),
             managed_zones_cache: Arc::new(DashSet::new()),
+            tld_owner_cache: Arc::new(DashMap::new()),
+            tld_forwarder_cache: Arc::new(DashMap::new()),
         };
         db.init_tables()?;
         Ok(db)
@@ -460,6 +503,24 @@ impl Database {
             CREATE TABLE IF NOT EXISTS authoritative_zones (
                 zone TEXT PRIMARY KEY NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS scope_tlds (
+                scope_name TEXT NOT NULL,
+                tld TEXT NOT NULL,
+                PRIMARY KEY (scope_name, tld),
+                FOREIGN KEY (scope_name) REFERENCES network_scopes(name) ON DELETE CASCADE
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_scope_tlds_tld ON scope_tlds(tld);
+            CREATE INDEX IF NOT EXISTS idx_scope_tlds_scope ON scope_tlds(scope_name);
+
+            CREATE TABLE IF NOT EXISTS scope_tld_forwarders (
+                scope_name TEXT NOT NULL,
+                tld TEXT NOT NULL,
+                forwarder_addr TEXT NOT NULL,
+                PRIMARY KEY (scope_name, tld, forwarder_addr),
+                FOREIGN KEY (scope_name) REFERENCES network_scopes(name) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_scope_tld_fwd ON scope_tld_forwarders(scope_name, tld);
 
             CREATE TABLE IF NOT EXISTS dns_cache (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -755,6 +816,46 @@ impl Database {
             }
         }
 
+        // Owned TLDs: each scope's home_domain (implicit primary TLD) ...
+        let mut stmt = conn.prepare_cached("SELECT name, home_domain FROM network_scopes")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (scope, home_domain) = row?;
+            self.tld_owner_cache
+                .insert(normalize_name(&home_domain), scope);
+        }
+        // ... plus additional registered TLDs.
+        let mut stmt = conn.prepare_cached("SELECT scope_name, tld FROM scope_tlds")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (scope, tld) = row?;
+            self.tld_owner_cache.insert(normalize_name(&tld), scope);
+        }
+
+        // Per-TLD peer forwarders.
+        let mut stmt = conn
+            .prepare_cached("SELECT scope_name, tld, forwarder_addr FROM scope_tld_forwarders")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (scope, tld, addr) = row?;
+            if let Ok(sa) = addr.parse::<SocketAddr>() {
+                self.tld_forwarder_cache
+                    .entry(tld_fwd_key(&scope, &normalize_name(&tld)))
+                    .or_default()
+                    .push(sa);
+            }
+        }
+
         Ok(())
     }
 
@@ -1041,13 +1142,27 @@ impl Database {
     /// as the default search domain for DNS clients in that network.
     /// The home domain is automatically derived as `<name>.home.` if not explicitly provided.
     pub fn create_network_scope(&self, scope: &NetworkScope) -> Result<()> {
+        let home_domain = normalize_name(&scope.home_domain);
+        // A scope's home_domain is its implicit primary owned TLD, so it must be
+        // globally unique across all owned TLDs (home_domains + additional TLDs).
+        if let Some(existing) = self.tld_owner_cache.get(&home_domain)
+            && existing.value() != &scope.name
+        {
+            return Err(TldConflict {
+                tld: home_domain,
+                owner: existing.value().clone(),
+            }
+            .into());
+        }
         let conn = self.lock()?;
         conn.execute(
             "INSERT INTO network_scopes (name, home_domain) VALUES (?1, ?2)",
-            params![scope.name, normalize_name(&scope.home_domain)],
+            params![scope.name, home_domain],
         )
         .context("failed to create network scope")?;
+        drop(conn);
         self.scope_count.fetch_add(1, Ordering::Relaxed);
+        self.tld_owner_cache.insert(home_domain, scope.name.clone());
         Ok(())
     }
 
@@ -1064,6 +1179,16 @@ impl Database {
             "DELETE FROM network_associations WHERE scope_name = ?1",
             params![name],
         )?;
+        // Foreign keys are not enforced at runtime (no PRAGMA foreign_keys=ON),
+        // so cascade the owned-TLD tables manually.
+        conn.execute(
+            "DELETE FROM scope_tld_forwarders WHERE scope_name = ?1",
+            params![name],
+        )?;
+        conn.execute(
+            "DELETE FROM scope_tlds WHERE scope_name = ?1",
+            params![name],
+        )?;
         let count = conn.execute("DELETE FROM network_scopes WHERE name = ?1", params![name])?;
 
         // Clear caches for this scope
@@ -1071,6 +1196,12 @@ impl Database {
             .retain(|key, _| !key.starts_with(&format!("{}:", name)));
         self.association_cache
             .retain(|_, entry| entry.scope_name != name);
+        // Drop this scope's owned TLDs (home_domain + additional) and their
+        // forwarders. Done unconditionally so caches never outlive the rows.
+        self.tld_owner_cache.retain(|_tld, owner| owner != name);
+        let fwd_prefix = format!("{name}\u{0}");
+        self.tld_forwarder_cache
+            .retain(|key, _| !key.starts_with(&fwd_prefix));
 
         if count > 0 {
             self.scope_count.fetch_sub(1, Ordering::Relaxed);
@@ -1478,21 +1609,237 @@ impl Database {
     /// Returns the search domains for a given IP address.
     ///
     /// If the IP is associated with a network scope, returns that scope's
-    /// `.home` domain as the search domain. This is useful for DHCP servers
-    /// that need to set the search domain for clients.
+    /// `.home` domain (the implicit primary TLD) followed by any additional
+    /// owned TLDs. This is useful for DHCP servers that need to set the search
+    /// domain for clients.
     pub fn get_search_domains(&self, ip_address: &str) -> Result<Vec<String>> {
         let scope_name = match self.get_scope_for_ip(ip_address) {
             Some(name) => name,
             None => return Ok(Vec::new()),
         };
+        let mut domains = Vec::new();
+        {
+            let conn = self.lock()?;
+            let mut stmt =
+                conn.prepare_cached("SELECT home_domain FROM network_scopes WHERE name = ?1")?;
+            let mut rows = stmt.query_map(params![scope_name], |row| row.get::<_, String>(0))?;
+            if let Some(row) = rows.next() {
+                domains.push(row?);
+            } else {
+                return Ok(Vec::new());
+            }
+        }
+        for tld in self.list_scope_tlds(&scope_name)? {
+            if !domains.contains(&tld) {
+                domains.push(tld);
+            }
+        }
+        Ok(domains)
+    }
+
+    // ================================================================
+    // Scope TLDs (per-network owned zones, partitioned across networks)
+    // ================================================================
+
+    /// Registers an additional TLD (owned zone) for a scope. The TLD is
+    /// normalized to lowercase with a trailing dot. Owned TLDs are globally
+    /// unique: if the TLD is already owned by any scope (including via a
+    /// `home_domain`), returns a `TldConflict`.
+    pub fn add_scope_tld(&self, scope_name: &str, tld: &str) -> Result<()> {
+        let normalized = normalize_name(tld);
+        if normalized.is_empty() || normalized == "." {
+            return Err(anyhow!("tld must not be empty"));
+        }
+        if let Some(existing) = self.tld_owner_cache.get(&normalized)
+            && existing.value() != scope_name
+        {
+            return Err(TldConflict {
+                tld: normalized,
+                owner: existing.value().clone(),
+            }
+            .into());
+        }
+        // Guard against registering a TLD for a nonexistent scope (there is no
+        // enforced foreign key at runtime).
+        if self.get_network_scope(scope_name)?.is_none() {
+            return Err(anyhow!("scope '{}' does not exist", scope_name));
+        }
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO scope_tlds (scope_name, tld) VALUES (?1, ?2)",
+            params![scope_name, normalized],
+        )
+        .context("failed to add scope tld")?;
+        drop(conn);
+        self.tld_owner_cache
+            .insert(normalized, scope_name.to_string());
+        Ok(())
+    }
+
+    /// Removes an additional owned TLD from a scope. A scope's `home_domain`
+    /// (the implicit primary TLD) cannot be removed this way. Returns whether a
+    /// row was removed.
+    pub fn remove_scope_tld(&self, scope_name: &str, tld: &str) -> Result<bool> {
+        let normalized = normalize_name(tld);
+        if let Some(scope) = self.get_network_scope(scope_name)?
+            && normalize_name(&scope.home_domain) == normalized
+        {
+            return Err(anyhow!(
+                "cannot remove '{}': it is the home_domain (primary TLD) of scope '{}'",
+                normalized,
+                scope_name
+            ));
+        }
+        let conn = self.lock()?;
+        let count = conn.execute(
+            "DELETE FROM scope_tlds WHERE scope_name = ?1 AND tld = ?2",
+            params![scope_name, normalized],
+        )?;
+        conn.execute(
+            "DELETE FROM scope_tld_forwarders WHERE scope_name = ?1 AND tld = ?2",
+            params![scope_name, normalized],
+        )?;
+        drop(conn);
+        if count > 0 {
+            self.tld_owner_cache.remove(&normalized);
+            self.tld_forwarder_cache
+                .remove(&tld_fwd_key(scope_name, &normalized));
+        }
+        Ok(count > 0)
+    }
+
+    /// Lists a scope's additional owned TLDs (from `scope_tlds`, not including
+    /// the implicit `home_domain`).
+    pub fn list_scope_tlds(&self, scope_name: &str) -> Result<Vec<String>> {
         let conn = self.lock()?;
         let mut stmt =
-            conn.prepare_cached("SELECT home_domain FROM network_scopes WHERE name = ?1")?;
-        let mut rows = stmt.query_map(params![scope_name], |row| row.get::<_, String>(0))?;
-        match rows.next() {
-            Some(row) => Ok(vec![row?]),
-            None => Ok(Vec::new()),
+            conn.prepare_cached("SELECT tld FROM scope_tlds WHERE scope_name = ?1 ORDER BY tld")?;
+        let rows = stmt.query_map(params![scope_name], |row| row.get::<_, String>(0))?;
+        let mut tlds = Vec::new();
+        for row in rows {
+            tlds.push(row?);
         }
+        Ok(tlds)
+    }
+
+    /// Lists all TLDs a scope owns: its `home_domain` (first) followed by any
+    /// additional registered TLDs.
+    pub fn list_all_owned_tlds(&self, scope_name: &str) -> Result<Vec<String>> {
+        let mut tlds = Vec::new();
+        if let Some(scope) = self.get_network_scope(scope_name)? {
+            tlds.push(normalize_name(&scope.home_domain));
+        }
+        for tld in self.list_scope_tlds(scope_name)? {
+            if !tlds.contains(&tld) {
+                tlds.push(tld);
+            }
+        }
+        Ok(tlds)
+    }
+
+    /// Finds the scope that owns a covering TLD for `qname`, if any. Walks the
+    /// qname's suffixes (most specific first) against the owned-TLD cache,
+    /// returning `(owning_scope, matched_tld)`. O(labels), cache-only — safe on
+    /// the DNS hot path.
+    pub fn find_tld_owner(&self, qname: &str) -> Option<(String, String)> {
+        let normalized = normalize_name(qname);
+        if let Some(owner) = self.tld_owner_cache.get(&normalized) {
+            return Some((owner.value().clone(), normalized));
+        }
+        let trimmed = normalized.trim_end_matches('.');
+        let mut start = 0;
+        while let Some(dot_pos) = trimmed[start..].find('.') {
+            let suffix_start = start + dot_pos + 1;
+            if suffix_start >= trimmed.len() {
+                break;
+            }
+            let mut suffix = String::with_capacity(trimmed.len() - suffix_start + 1);
+            suffix.push_str(&trimmed[suffix_start..]);
+            suffix.push('.');
+            if let Some(owner) = self.tld_owner_cache.get(&suffix) {
+                return Some((owner.value().clone(), suffix));
+            }
+            start = suffix_start;
+        }
+        None
+    }
+
+    /// Replaces the peer forwarder set for a scope's TLD. Each forwarder is an
+    /// "ip:port" address of another network member's rolodex server. Invalid
+    /// addresses are rejected. Updates both the database and the hot-path cache.
+    pub fn set_scope_tld_forwarders(
+        &self,
+        scope_name: &str,
+        tld: &str,
+        forwarders: &[String],
+    ) -> Result<()> {
+        let normalized = normalize_name(tld);
+        // Validate + parse all addresses up front so the hot path never re-parses.
+        let mut parsed = Vec::with_capacity(forwarders.len());
+        for addr in forwarders {
+            let sa: SocketAddr = addr
+                .parse()
+                .with_context(|| format!("invalid forwarder address '{addr}'"))?;
+            parsed.push(sa);
+        }
+        // Ownership sanity: the TLD should be owned by this scope. Not fatal to
+        // resolution (the hot path keys forwarders by scope+tld), but reject the
+        // obvious misconfiguration of setting forwarders for another scope's TLD.
+        if let Some(owner) = self.tld_owner_cache.get(&normalized)
+            && owner.value() != scope_name
+        {
+            return Err(TldConflict {
+                tld: normalized,
+                owner: owner.value().clone(),
+            }
+            .into());
+        }
+        let conn = self.lock()?;
+        conn.execute(
+            "DELETE FROM scope_tld_forwarders WHERE scope_name = ?1 AND tld = ?2",
+            params![scope_name, normalized],
+        )?;
+        for addr in forwarders {
+            conn.execute(
+                "INSERT OR IGNORE INTO scope_tld_forwarders (scope_name, tld, forwarder_addr) VALUES (?1, ?2, ?3)",
+                params![scope_name, normalized, addr],
+            )?;
+        }
+        drop(conn);
+        let key = tld_fwd_key(scope_name, &normalized);
+        if parsed.is_empty() {
+            self.tld_forwarder_cache.remove(&key);
+        } else {
+            self.tld_forwarder_cache.insert(key, parsed);
+        }
+        Ok(())
+    }
+
+    /// Lists the configured peer forwarder addresses for a scope's TLD (from the
+    /// database, as "ip:port" strings).
+    pub fn list_scope_tld_forwarders(&self, scope_name: &str, tld: &str) -> Result<Vec<String>> {
+        let normalized = normalize_name(tld);
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT forwarder_addr FROM scope_tld_forwarders WHERE scope_name = ?1 AND tld = ?2 ORDER BY forwarder_addr",
+        )?;
+        let rows = stmt.query_map(params![scope_name, normalized], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut addrs = Vec::new();
+        for row in rows {
+            addrs.push(row?);
+        }
+        Ok(addrs)
+    }
+
+    /// Returns the parsed peer forwarders for a (scope, TLD) from the in-memory
+    /// cache. Hot-path helper for the resolver; empty if none configured.
+    pub fn get_tld_forwarders_cached(&self, scope_name: &str, tld: &str) -> Vec<SocketAddr> {
+        self.tld_forwarder_cache
+            .get(&tld_fwd_key(scope_name, tld))
+            .map(|entry| entry.value().clone())
+            .unwrap_or_default()
     }
 
     // ================================================================
@@ -4927,5 +5274,245 @@ mod tests {
         let db = test_db();
         db.add_authoritative_zone("auth.org.").unwrap();
         assert_eq!(db.find_authoritative_zone("other.com."), None);
+    }
+
+    // ================================================================
+    // Scope TLDs (per-network owned zones, partitioned across networks)
+    // ================================================================
+
+    fn scope_with_tld(db: &Database, name: &str, home: &str) {
+        db.create_network_scope(&NetworkScope {
+            name: name.to_string(),
+            home_domain: home.to_string(),
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn test_add_and_find_scope_tld() {
+        let db = test_db();
+        scope_with_tld(&db, "office", "office.home");
+        db.add_scope_tld("office", "office").unwrap();
+
+        // A single-label TLD is owned by the scope for any name under it.
+        assert_eq!(
+            db.find_tld_owner("gitea.town-os.office."),
+            Some(("office".to_string(), "office.".to_string()))
+        );
+        // The home_domain is an implicit owned TLD too.
+        assert_eq!(
+            db.find_tld_owner("host.office.home."),
+            Some(("office".to_string(), "office.home.".to_string()))
+        );
+        // Unrelated names are not owned.
+        assert_eq!(db.find_tld_owner("www.google.com."), None);
+    }
+
+    #[test]
+    fn test_add_scope_tld_normalizes() {
+        let db = test_db();
+        scope_with_tld(&db, "office", "office.home");
+        db.add_scope_tld("office", "Office").unwrap();
+        let tlds = db.list_scope_tlds("office").unwrap();
+        assert_eq!(tlds, vec!["office.".to_string()]);
+    }
+
+    #[test]
+    fn test_scope_tld_global_uniqueness() {
+        let db = test_db();
+        scope_with_tld(&db, "office", "office.home");
+        scope_with_tld(&db, "lab", "lab.home");
+        db.add_scope_tld("office", "shared").unwrap();
+
+        // A different scope cannot claim the same TLD.
+        let err = db.add_scope_tld("lab", "shared").unwrap_err();
+        let conflict = err.downcast_ref::<TldConflict>().expect("TldConflict");
+        assert_eq!(conflict.owner, "office");
+        assert_eq!(conflict.tld, "shared.");
+
+        // Re-adding to the SAME owning scope is idempotent, not a conflict.
+        db.add_scope_tld("office", "shared").unwrap();
+    }
+
+    #[test]
+    fn test_home_domain_uniqueness_across_scopes() {
+        let db = test_db();
+        scope_with_tld(&db, "office", "corp");
+        // A second scope whose home_domain collides an existing owned TLD fails.
+        let err = db
+            .create_network_scope(&NetworkScope {
+                name: "lab".to_string(),
+                home_domain: "corp".to_string(),
+            })
+            .unwrap_err();
+        assert!(err.downcast_ref::<TldConflict>().is_some());
+    }
+
+    #[test]
+    fn test_scope_tld_conflicts_with_other_home_domain() {
+        let db = test_db();
+        scope_with_tld(&db, "office", "office.home");
+        scope_with_tld(&db, "lab", "lab.home");
+        // Registering a TLD equal to another scope's home_domain is rejected.
+        let err = db.add_scope_tld("office", "lab.home").unwrap_err();
+        assert!(err.downcast_ref::<TldConflict>().is_some());
+    }
+
+    #[test]
+    fn test_remove_scope_tld() {
+        let db = test_db();
+        scope_with_tld(&db, "office", "office.home");
+        db.add_scope_tld("office", "office").unwrap();
+        assert!(db.remove_scope_tld("office", "office").unwrap());
+        assert_eq!(db.find_tld_owner("x.office."), None);
+        // Removing again returns false.
+        assert!(!db.remove_scope_tld("office", "office").unwrap());
+    }
+
+    #[test]
+    fn test_remove_scope_tld_refuses_home_domain() {
+        let db = test_db();
+        scope_with_tld(&db, "office", "office.home");
+        assert!(db.remove_scope_tld("office", "office.home").is_err());
+        // home_domain remains owned.
+        assert_eq!(
+            db.find_tld_owner("office.home."),
+            Some(("office".to_string(), "office.home.".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_list_all_owned_tlds() {
+        let db = test_db();
+        scope_with_tld(&db, "office", "office.home");
+        db.add_scope_tld("office", "office").unwrap();
+        db.add_scope_tld("office", "corp").unwrap();
+        let all = db.list_all_owned_tlds("office").unwrap();
+        // home_domain first.
+        assert_eq!(all[0], "office.home.");
+        assert!(all.contains(&"office.".to_string()));
+        assert!(all.contains(&"corp.".to_string()));
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn test_find_tld_owner_most_specific_wins() {
+        let db = test_db();
+        scope_with_tld(&db, "a", "a.home");
+        scope_with_tld(&db, "b", "b.home");
+        db.add_scope_tld("a", "office").unwrap();
+        db.add_scope_tld("b", "team.office").unwrap();
+        // team.office. is more specific than office. and wins.
+        assert_eq!(
+            db.find_tld_owner("x.team.office."),
+            Some(("b".to_string(), "team.office.".to_string()))
+        );
+        assert_eq!(
+            db.find_tld_owner("x.office."),
+            Some(("a".to_string(), "office.".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_scope_tld_forwarders_crud() {
+        let db = test_db();
+        scope_with_tld(&db, "office", "office.home");
+        db.add_scope_tld("office", "office").unwrap();
+        db.set_scope_tld_forwarders(
+            "office",
+            "office",
+            &["10.90.12.2:53".to_string(), "10.90.12.3:53".to_string()],
+        )
+        .unwrap();
+
+        let listed = db.list_scope_tld_forwarders("office", "office").unwrap();
+        assert_eq!(listed.len(), 2);
+        let cached = db.get_tld_forwarders_cached("office", "office.");
+        assert_eq!(cached.len(), 2);
+        assert!(cached.contains(&"10.90.12.2:53".parse().unwrap()));
+
+        // Replace-all with a smaller set.
+        db.set_scope_tld_forwarders("office", "office", &["10.90.12.9:53".to_string()])
+            .unwrap();
+        assert_eq!(db.get_tld_forwarders_cached("office", "office.").len(), 1);
+
+        // Clearing empties the cache.
+        db.set_scope_tld_forwarders("office", "office", &[])
+            .unwrap();
+        assert!(db.get_tld_forwarders_cached("office", "office.").is_empty());
+    }
+
+    #[test]
+    fn test_scope_tld_forwarders_rejects_bad_address() {
+        let db = test_db();
+        scope_with_tld(&db, "office", "office.home");
+        db.add_scope_tld("office", "office").unwrap();
+        assert!(
+            db.set_scope_tld_forwarders("office", "office", &["not-an-addr".to_string()])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_delete_scope_cascades_tlds_and_forwarders() {
+        let db = test_db();
+        scope_with_tld(&db, "office", "office.home");
+        db.add_scope_tld("office", "office").unwrap();
+        db.set_scope_tld_forwarders("office", "office", &["10.90.12.2:53".to_string()])
+            .unwrap();
+
+        db.delete_network_scope("office").unwrap();
+
+        // Owned TLDs (home + additional) and forwarders are gone from caches...
+        assert_eq!(db.find_tld_owner("x.office."), None);
+        assert_eq!(db.find_tld_owner("office.home."), None);
+        assert!(db.get_tld_forwarders_cached("office", "office.").is_empty());
+        // ... and from the database.
+        assert!(db.list_scope_tlds("office").unwrap().is_empty());
+        assert!(
+            db.list_scope_tld_forwarders("office", "office")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_scope_tlds_survive_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tld-boot.db");
+        {
+            let db = Database::open(&path).unwrap();
+            scope_with_tld(&db, "office", "office.home");
+            db.add_scope_tld("office", "office").unwrap();
+            db.set_scope_tld_forwarders("office", "office", &["10.90.12.2:53".to_string()])
+                .unwrap();
+        }
+        // Reopen: caches are rebuilt from disk in load_caches_at_boot.
+        let db = Database::open(&path).unwrap();
+        assert_eq!(
+            db.find_tld_owner("host.office."),
+            Some(("office".to_string(), "office.".to_string()))
+        );
+        assert_eq!(
+            db.find_tld_owner("host.office.home."),
+            Some(("office".to_string(), "office.home.".to_string()))
+        );
+        assert_eq!(db.get_tld_forwarders_cached("office", "office.").len(), 1);
+    }
+
+    #[test]
+    fn test_get_search_domains_includes_tlds() {
+        let db = test_db();
+        scope_with_tld(&db, "office", "office.home");
+        db.add_scope_tld("office", "corp").unwrap();
+        db.join_network(&NetworkAssociation {
+            ip_address: "10.0.0.5".to_string(),
+            scope_name: "office".to_string(),
+            ttl_seconds: 600,
+        })
+        .unwrap();
+        let domains = db.get_search_domains("10.0.0.5").unwrap();
+        assert_eq!(domains[0], "office.home.");
+        assert!(domains.contains(&"corp.".to_string()));
     }
 }

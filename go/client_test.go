@@ -78,9 +78,49 @@ type mockRolodexDnsService struct {
 	addScopeRblProviderFn    func(ctx context.Context, req *pb.AddScopeRblProviderRequest) (*pb.AddScopeRblProviderResponse, error)
 	removeScopeRblProviderFn func(ctx context.Context, req *pb.RemoveScopeRblProviderRequest) (*pb.RemoveScopeRblProviderResponse, error)
 	listScopeRblProvidersFn  func(ctx context.Context, req *pb.ListScopeRblProvidersRequest) (*pb.ListScopeRblProvidersResponse, error)
+	addScopeTldFn            func(ctx context.Context, req *pb.AddScopeTldRequest) (*pb.AddScopeTldResponse, error)
+	removeScopeTldFn         func(ctx context.Context, req *pb.RemoveScopeTldRequest) (*pb.RemoveScopeTldResponse, error)
+	listScopeTldsFn          func(ctx context.Context, req *pb.ListScopeTldsRequest) (*pb.ListScopeTldsResponse, error)
+	setScopeTldForwardersFn  func(ctx context.Context, req *pb.SetScopeTldForwardersRequest) (*pb.SetScopeTldForwardersResponse, error)
+	listScopeTldForwardersFn func(ctx context.Context, req *pb.ListScopeTldForwardersRequest) (*pb.ListScopeTldForwardersResponse, error)
 	setDhcpCertOptionFn      func(ctx context.Context, req *pb.SetDhcpCertOptionRequest) (*pb.SetDhcpCertOptionResponse, error)
 	removeDhcpCertOptionFn   func(ctx context.Context, req *pb.RemoveDhcpCertOptionRequest) (*pb.RemoveDhcpCertOptionResponse, error)
 	listDhcpCertOptionsFn    func(ctx context.Context, req *pb.ListDhcpCertOptionsRequest) (*pb.ListDhcpCertOptionsResponse, error)
+}
+
+func (m *mockRolodexDnsService) AddScopeTld(ctx context.Context, req *pb.AddScopeTldRequest) (*pb.AddScopeTldResponse, error) {
+	if m.addScopeTldFn != nil {
+		return m.addScopeTldFn(ctx, req)
+	}
+	return &pb.AddScopeTldResponse{Success: true}, nil
+}
+
+func (m *mockRolodexDnsService) RemoveScopeTld(ctx context.Context, req *pb.RemoveScopeTldRequest) (*pb.RemoveScopeTldResponse, error) {
+	if m.removeScopeTldFn != nil {
+		return m.removeScopeTldFn(ctx, req)
+	}
+	return &pb.RemoveScopeTldResponse{Success: true}, nil
+}
+
+func (m *mockRolodexDnsService) ListScopeTlds(ctx context.Context, req *pb.ListScopeTldsRequest) (*pb.ListScopeTldsResponse, error) {
+	if m.listScopeTldsFn != nil {
+		return m.listScopeTldsFn(ctx, req)
+	}
+	return &pb.ListScopeTldsResponse{}, nil
+}
+
+func (m *mockRolodexDnsService) SetScopeTldForwarders(ctx context.Context, req *pb.SetScopeTldForwardersRequest) (*pb.SetScopeTldForwardersResponse, error) {
+	if m.setScopeTldForwardersFn != nil {
+		return m.setScopeTldForwardersFn(ctx, req)
+	}
+	return &pb.SetScopeTldForwardersResponse{Success: true}, nil
+}
+
+func (m *mockRolodexDnsService) ListScopeTldForwarders(ctx context.Context, req *pb.ListScopeTldForwardersRequest) (*pb.ListScopeTldForwardersResponse, error) {
+	if m.listScopeTldForwardersFn != nil {
+		return m.listScopeTldForwardersFn(ctx, req)
+	}
+	return &pb.ListScopeTldForwardersResponse{}, nil
 }
 
 func (m *mockRolodexDnsService) AddRecord(ctx context.Context, req *pb.AddRecordRequest) (*pb.AddRecordResponse, error) {
@@ -2934,5 +2974,151 @@ func TestListDhcpCertOptions(t *testing.T) {
 	}
 	if string(options[1].CertData) != "cert-2" {
 		t.Errorf("option[1] cert data = %q, want %q", string(options[1].CertData), "cert-2")
+	}
+}
+
+func TestAddScopeTld(t *testing.T) {
+	var captured *pb.AddScopeTldRequest
+	mock := &mockRolodexDnsService{
+		addScopeTldFn: func(_ context.Context, req *pb.AddScopeTldRequest) (*pb.AddScopeTldResponse, error) {
+			captured = req
+			return &pb.AddScopeTldResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("test-token"))
+
+	if err := client.AddScopeTld(context.Background(), "office", "office."); err != nil {
+		t.Fatalf("AddScopeTld returned error: %v", err)
+	}
+	if captured == nil {
+		t.Fatal("server did not receive request")
+	}
+	if captured.ScopeName != "office" || captured.Tld != "office." {
+		t.Errorf("got (%q, %q), want (office, office.)", captured.ScopeName, captured.Tld)
+	}
+	if captured.AuthToken != "test-token" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "test-token")
+	}
+}
+
+func TestAddScopeTldServerFailure(t *testing.T) {
+	mock := &mockRolodexDnsService{
+		addScopeTldFn: func(_ context.Context, _ *pb.AddScopeTldRequest) (*pb.AddScopeTldResponse, error) {
+			return &pb.AddScopeTldResponse{Success: false, Message: "tld 'office.' is already owned by scope 'lab'"}, nil
+		},
+	}
+	client := startMockServer(t, mock)
+	err := client.AddScopeTld(context.Background(), "office", "office.")
+	if err == nil {
+		t.Fatal("expected error on server failure, got nil")
+	}
+}
+
+func TestRemoveScopeTld(t *testing.T) {
+	var captured *pb.RemoveScopeTldRequest
+	mock := &mockRolodexDnsService{
+		removeScopeTldFn: func(_ context.Context, req *pb.RemoveScopeTldRequest) (*pb.RemoveScopeTldResponse, error) {
+			captured = req
+			return &pb.RemoveScopeTldResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+
+	if err := client.RemoveScopeTld(context.Background(), "office", "corp."); err != nil {
+		t.Fatalf("RemoveScopeTld returned error: %v", err)
+	}
+	if captured == nil || captured.ScopeName != "office" || captured.Tld != "corp." {
+		t.Fatalf("unexpected request: %+v", captured)
+	}
+}
+
+func TestListScopeTlds(t *testing.T) {
+	var captured *pb.ListScopeTldsRequest
+	mock := &mockRolodexDnsService{
+		listScopeTldsFn: func(_ context.Context, req *pb.ListScopeTldsRequest) (*pb.ListScopeTldsResponse, error) {
+			captured = req
+			return &pb.ListScopeTldsResponse{Tlds: []string{"office.home.", "office.", "corp."}}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+
+	tlds, err := client.ListScopeTlds(context.Background(), "office")
+	if err != nil {
+		t.Fatalf("ListScopeTlds returned error: %v", err)
+	}
+	if captured == nil || captured.ScopeName != "office" {
+		t.Fatalf("unexpected request: %+v", captured)
+	}
+	want := []string{"office.home.", "office.", "corp."}
+	if len(tlds) != len(want) {
+		t.Fatalf("got %d tlds, want %d", len(tlds), len(want))
+	}
+	for i := range want {
+		if tlds[i] != want[i] {
+			t.Errorf("tld[%d] = %q, want %q", i, tlds[i], want[i])
+		}
+	}
+}
+
+func TestSetScopeTldForwarders(t *testing.T) {
+	var captured *pb.SetScopeTldForwardersRequest
+	mock := &mockRolodexDnsService{
+		setScopeTldForwardersFn: func(_ context.Context, req *pb.SetScopeTldForwardersRequest) (*pb.SetScopeTldForwardersResponse, error) {
+			captured = req
+			return &pb.SetScopeTldForwardersResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+
+	fwds := []string{"10.90.12.2:53", "10.90.12.3:53"}
+	if err := client.SetScopeTldForwarders(context.Background(), "office", "office.", fwds); err != nil {
+		t.Fatalf("SetScopeTldForwarders returned error: %v", err)
+	}
+	if captured == nil || captured.ScopeName != "office" || captured.Tld != "office." {
+		t.Fatalf("unexpected request: %+v", captured)
+	}
+	if len(captured.Forwarders) != 2 || captured.Forwarders[0] != "10.90.12.2:53" {
+		t.Errorf("forwarders = %v, want %v", captured.Forwarders, fwds)
+	}
+}
+
+func TestListScopeTldForwarders(t *testing.T) {
+	mock := &mockRolodexDnsService{
+		listScopeTldForwardersFn: func(_ context.Context, _ *pb.ListScopeTldForwardersRequest) (*pb.ListScopeTldForwardersResponse, error) {
+			return &pb.ListScopeTldForwardersResponse{Forwarders: []string{"10.90.12.2:53"}}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+
+	fwds, err := client.ListScopeTldForwarders(context.Background(), "office", "office.")
+	if err != nil {
+		t.Fatalf("ListScopeTldForwarders returned error: %v", err)
+	}
+	if len(fwds) != 1 || fwds[0] != "10.90.12.2:53" {
+		t.Errorf("forwarders = %v, want [10.90.12.2:53]", fwds)
+	}
+}
+
+func TestListNetworkScopesCarriesTlds(t *testing.T) {
+	mock := &mockRolodexDnsService{
+		listNetworkScopesFn: func(_ context.Context, _ *pb.ListNetworkScopesRequest) (*pb.ListNetworkScopesResponse, error) {
+			return &pb.ListNetworkScopesResponse{
+				Scopes: []*pb.NetworkScope{
+					{Name: "office", HomeDomain: "office.home.", Tlds: []string{"office.", "corp."}},
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+
+	scopes, err := client.ListNetworkScopes(context.Background())
+	if err != nil {
+		t.Fatalf("ListNetworkScopes returned error: %v", err)
+	}
+	if len(scopes) != 1 {
+		t.Fatalf("got %d scopes, want 1", len(scopes))
+	}
+	if len(scopes[0].Tlds) != 2 || scopes[0].Tlds[0] != "office." {
+		t.Errorf("tlds = %v, want [office. corp.]", scopes[0].Tlds)
 	}
 }

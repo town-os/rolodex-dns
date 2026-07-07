@@ -1471,6 +1471,100 @@ func (c *Client) ListScopeRblProviders(ctx context.Context, scopeName string) ([
 	return resp.Providers, nil
 }
 
+// AddScopeTld registers a globally-unique TLD as owned by a network scope.
+// Owned TLDs partition the DNS namespace per network: names under the TLD are
+// resolved only within the owning scope and never forwarded upstream.
+// Registering a TLD already owned by another scope returns an error.
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/AddScopeTld
+func (c *Client) AddScopeTld(ctx context.Context, scopeName, tld string) error {
+	resp, err := c.rpc.AddScopeTld(ctx, &pb.AddScopeTldRequest{
+		ScopeName: scopeName,
+		Tld:       tld,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex-dns: add scope tld: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex-dns: add scope tld: %s", resp.Message)
+	}
+	return nil
+}
+
+// RemoveScopeTld removes an additional owned TLD from a scope. A scope's
+// home_domain (its implicit primary TLD) cannot be removed this way.
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/RemoveScopeTld
+func (c *Client) RemoveScopeTld(ctx context.Context, scopeName, tld string) error {
+	resp, err := c.rpc.RemoveScopeTld(ctx, &pb.RemoveScopeTldRequest{
+		ScopeName: scopeName,
+		Tld:       tld,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex-dns: remove scope tld: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex-dns: remove scope tld: %s", resp.Message)
+	}
+	return nil
+}
+
+// ListScopeTlds lists the TLDs owned by a scope: its home_domain first,
+// followed by any additional registered TLDs.
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/ListScopeTlds
+func (c *Client) ListScopeTlds(ctx context.Context, scopeName string) ([]string, error) {
+	resp, err := c.rpc.ListScopeTlds(ctx, &pb.ListScopeTldsRequest{
+		ScopeName: scopeName,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex-dns: list scope tlds: %w", err)
+	}
+	return resp.Tlds, nil
+}
+
+// SetScopeTldForwarders replaces the peer forwarder set for a scope's TLD.
+// Forwarders are "ip:port" overlay addresses of other network members running
+// rolodex; queries under the owning scope's TLD that have no local scoped
+// record are forwarded to these peers before an authoritative NXDOMAIN is
+// returned. Pass an empty slice to clear the forwarders.
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/SetScopeTldForwarders
+func (c *Client) SetScopeTldForwarders(ctx context.Context, scopeName, tld string, forwarders []string) error {
+	resp, err := c.rpc.SetScopeTldForwarders(ctx, &pb.SetScopeTldForwardersRequest{
+		ScopeName:  scopeName,
+		Tld:        tld,
+		Forwarders: forwarders,
+		AuthToken:  c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex-dns: set scope tld forwarders: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex-dns: set scope tld forwarders: %s", resp.Message)
+	}
+	return nil
+}
+
+// ListScopeTldForwarders lists the peer forwarder addresses configured for a
+// scope's TLD.
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/ListScopeTldForwarders
+func (c *Client) ListScopeTldForwarders(ctx context.Context, scopeName, tld string) ([]string, error) {
+	resp, err := c.rpc.ListScopeTldForwarders(ctx, &pb.ListScopeTldForwardersRequest{
+		ScopeName: scopeName,
+		Tld:       tld,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex-dns: list scope tld forwarders: %w", err)
+	}
+	return resp.Forwarders, nil
+}
+
 // SetDhcpCertOption sets a certificate to be delivered via DHCP for a scope.
 //
 // Parameters:

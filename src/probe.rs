@@ -217,8 +217,22 @@ mod tests {
 
     #[tokio::test]
     async fn probe_family_false_when_unreachable() {
-        // 203.0.113.0/24 is TEST-NET-3 (RFC 5737) — guaranteed unroutable.
-        let targets = vec!["203.0.113.1:443".to_string()];
+        // A closed loopback port: bind an ephemeral port, then drop the listener
+        // so the port is closed. Connecting to it yields ECONNREFUSED on every
+        // platform, so `probe_family` must report the family unreachable.
+        //
+        // We deliberately do NOT use a routed unreachable address (e.g. TEST-NET
+        // 203.0.113.0/24): networks with a transparent proxy / captive-portal
+        // interceptor complete the TCP handshake to arbitrary WAN addresses,
+        // which would make the connect succeed and this assertion flaky. Loopback
+        // is never intercepted, so a closed loopback port is deterministic.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral loopback port");
+        let addr = listener.local_addr().expect("local addr");
+        drop(listener);
+
+        let targets = vec![addr.to_string()];
         assert!(!probe_family(&targets, Duration::from_millis(300)).await);
     }
 }
