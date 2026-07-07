@@ -100,6 +100,17 @@ pub struct DnsServer {
     /// Whether to return IPv6 (AAAA) answers. Cleared by the routability probe
     /// when the host cannot reach the IPv6 internet. Default true.
     answer_v6: AtomicBool,
+    /// Source ranges treated as untrusted network-overlay peers (WireGuard
+    /// links). Scope enforcement (REFUSED-if-unassociated + partitioned TLDs)
+    /// applies only to these; every other source is a trusted local client that
+    /// resolves the full view. Defaults to the overlay range `10.64.0.0/10`.
+    overlay_cidrs: Arc<ArcSwap<Vec<crate::cidr::IpCidr>>>,
+}
+
+/// The default WireGuard-overlay range: only source IPs here are subject to
+/// network-scope enforcement (see `overlay_cidrs`).
+fn default_overlay_cidrs() -> Vec<crate::cidr::IpCidr> {
+    vec![crate::cidr::IpCidr::parse("10.64.0.0/10").expect("valid default overlay CIDR")]
 }
 
 impl DnsServer {
@@ -133,6 +144,7 @@ impl DnsServer {
             recovery_probe_secs: AtomicU64::new(60),
             answer_v4: AtomicBool::new(true),
             answer_v6: AtomicBool::new(true),
+            overlay_cidrs: Arc::new(ArcSwap::from_pointee(default_overlay_cidrs())),
         }
     }
 
@@ -174,7 +186,22 @@ impl DnsServer {
             recovery_probe_secs: AtomicU64::new(60),
             answer_v4: AtomicBool::new(true),
             answer_v6: AtomicBool::new(true),
+            overlay_cidrs: Arc::new(ArcSwap::from_pointee(default_overlay_cidrs())),
         }
+    }
+
+    /// Sets the source ranges treated as untrusted network-overlay peers
+    /// (WireGuard links). Only queries from these ranges are scope-enforced;
+    /// every other source is a trusted local client. Replaces the default
+    /// `10.64.0.0/10`.
+    pub fn set_overlay_cidrs(&self, cidrs: Vec<crate::cidr::IpCidr>) {
+        self.overlay_cidrs.store(Arc::new(cidrs));
+    }
+
+    /// Whether `ip` is a network-overlay (WireGuard) peer subject to scope
+    /// enforcement, per the configured `overlay_cidrs`.
+    fn is_overlay_peer(&self, ip: IpAddr) -> bool {
+        self.overlay_cidrs.load().iter().any(|c| c.contains(ip))
     }
 
     /// Sets the upstream resolution mode (recursive-from-roots or forward).
@@ -476,25 +503,39 @@ impl DnsServer {
             return Ok(make_error_response(query_data, ResponseCode::FormErr));
         }
 
-        // Determine network scope for this query
+        // Determine network scope for this query.
+        //
+        // Only WireGuard-overlay peers (source IP in `overlay_cidrs`) are
+        // scope-enforced: an overlay peer must be joined to a scope or it is
+        // REFUSED, and it sees only that scope's partitioned TLDs. Every other
+        // source — loopback (the box's own resolver), the LAN, container
+        // bridges — is a trusted local client: it is never refused and resolves
+        // the full view (public names plus any network's records, keyed by the
+        // query's owned TLD, so e.g. `gitea.default.fart` resolves from the LAN
+        // or the box itself). Only the overlay is untrusted and partitioned.
         let scope_name = if let Some(ip) = source_ip {
             let ip_str = ip.to_string();
-            if self.db.has_scopes() {
-                let scope = self.db.get_scope_for_ip(&ip_str);
-                if scope.is_none() {
-                    // IP is not associated with any scope - refuse resolution
-                    debug!("Refusing DNS query from unassociated IP {}", ip);
-                    return Ok(build_response_edns(
-                        &message,
-                        ResponseCode::Refused,
-                        vec![],
-                        false,
-                        edns_ctx.as_ref(),
-                    ));
-                }
-                scope
+            if let Some(scope) = self.db.get_scope_for_ip(&ip_str) {
+                // Already joined to a network (only overlay addresses are ever
+                // joined): resolve within its scope, partitioned.
+                Some(scope)
+            } else if self.db.has_scopes() && self.is_overlay_peer(ip) {
+                // An overlay peer that has not joined any network. It is not a
+                // member of anything, so refuse it.
+                debug!("Refusing DNS query from unassociated overlay peer {}", ip);
+                return Ok(build_response_edns(
+                    &message,
+                    ResponseCode::Refused,
+                    vec![],
+                    false,
+                    edns_ctx.as_ref(),
+                ));
             } else {
-                None
+                // Trusted local source: resolve the full view. If the name is
+                // under a network-owned TLD, answer from that owning scope.
+                self.db
+                    .find_tld_owner(&questions[0].name().to_string())
+                    .map(|(owner, _)| owner)
             }
         } else {
             None
@@ -3036,10 +3077,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_unassociated_ip_refused_when_scopes_exist() {
+    async fn test_unassociated_overlay_peer_refused_when_scopes_exist() {
         let db = Database::open_memory().unwrap();
 
-        // Create a scope but don't associate the querying IP
+        // Create a scope but don't associate the querying IP.
+        db.create_network_scope(&NetworkScope {
+            name: "private".to_string(),
+            home_domain: "private.home".to_string(),
+        })
+        .unwrap();
+
+        let server = make_test_server(db);
+        let query = build_query("anything.com.", RecordType::A);
+        // An unassociated *overlay* peer (10.64.0.0/10) is refused: it is a
+        // WireGuard link that hasn't joined any network.
+        let response_bytes = server
+            .handle_query_from(&query, "10.64.0.99".parse().unwrap())
+            .await
+            .unwrap();
+        let response = Message::from_bytes(&response_bytes).unwrap();
+
+        assert_eq!(response.response_code(), ResponseCode::Refused);
+    }
+
+    #[tokio::test]
+    async fn test_unassociated_lan_client_not_refused_when_scopes_exist() {
+        let db = Database::open_memory().unwrap();
+
+        // A scope exists, but a LAN client is a trusted local source: it must
+        // NOT be refused even though it isn't joined to any network.
         db.create_network_scope(&NetworkScope {
             name: "private".to_string(),
             home_domain: "private.home".to_string(),
@@ -3054,7 +3120,7 @@ mod tests {
             .unwrap();
         let response = Message::from_bytes(&response_bytes).unwrap();
 
-        assert_eq!(response.response_code(), ResponseCode::Refused);
+        assert_ne!(response.response_code(), ResponseCode::Refused);
     }
 
     #[tokio::test]
@@ -3319,8 +3385,11 @@ mod tests {
         )
         .unwrap();
 
+        // An overlay peer (10.64.0.0/10) so that, once its association expires,
+        // it falls back to the "unassociated overlay peer" refusal path rather
+        // than the trusted-local path.
         db.join_network(&NetworkAssociation {
-            ip_address: "192.168.1.1".to_string(),
+            ip_address: "10.64.0.1".to_string(),
             scope_name: "expirenet".to_string(),
             ttl_seconds: 3600,
         })
@@ -3331,7 +3400,7 @@ mod tests {
         // Should resolve while association is active
         let query = build_query("host.expirenet.home.", RecordType::A);
         let resp_bytes = server
-            .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+            .handle_query_from(&query, "10.64.0.1".parse().unwrap())
             .await
             .unwrap();
         let resp = Message::from_bytes(&resp_bytes).unwrap();
@@ -3339,11 +3408,11 @@ mod tests {
         assert_eq!(resp.answers().len(), 1);
 
         // Expire the association cache entry
-        db.expire_association("192.168.1.1");
+        db.expire_association("10.64.0.1");
 
         // Should get REFUSED after association expires
         let resp_bytes = server
-            .handle_query_from(&query, "192.168.1.1".parse().unwrap())
+            .handle_query_from(&query, "10.64.0.1".parse().unwrap())
             .await
             .unwrap();
         let resp = Message::from_bytes(&resp_bytes).unwrap();
@@ -3727,6 +3796,62 @@ mod tests {
         .unwrap();
         assert_eq!(resp.response_code(), ResponseCode::NoError);
         assert_eq!(resp.answers().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_loopback_resolves_owned_tld_scoped_record() {
+        // The host's own loopback is never joined to a network scope, but must
+        // still be able to resolve a scoped name under a network-owned TLD
+        // (e.g. `gitea.default.fart` from the box itself). It is scoped by the
+        // query's TLD owner, not by a source-IP association.
+        let db = Database::open_memory().unwrap();
+        office_scope(&db);
+        db.add_scoped_record(
+            "office",
+            &DnsRecord {
+                id: None,
+                name: "gitea.office.".to_string(),
+                record_type: RecordKind::A,
+                value: "10.0.0.7".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
+
+        let server = make_test_server(db);
+        let query = build_query("gitea.office.", RecordType::A);
+        let resp = Message::from_bytes(
+            &server
+                .handle_query_from(&query, "127.0.0.1".parse().unwrap())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert_eq!(resp.answers().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_loopback_bypasses_scope_refusal() {
+        // A scope exists, so an unassociated remote IP would be REFUSED — but
+        // loopback (the host's resolver path) must never be refused, otherwise
+        // creating any network kills the box's own DNS. A non-owned public name
+        // has no local answer and no forwarder here, so it will not be NoError;
+        // the point is that it is NOT Refused.
+        let db = Database::open_memory().unwrap();
+        office_scope(&db);
+
+        let server = make_test_server(db);
+        let query = build_query("example.com.", RecordType::A);
+        let resp = Message::from_bytes(
+            &server
+                .handle_query_from(&query, "127.0.0.1".parse().unwrap())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_ne!(resp.response_code(), ResponseCode::Refused);
     }
 
     #[tokio::test]

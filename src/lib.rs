@@ -5,6 +5,7 @@ pub mod acme;
 pub mod acme_jose;
 pub mod acme_server;
 pub mod ca;
+pub mod cidr;
 pub mod config;
 pub mod dane;
 pub mod db;

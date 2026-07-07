@@ -15,7 +15,11 @@ RELEASE_IMAGE      := quay.io/town/rolodex
 IMAGE_TAG ?=
 export PODMAN_BUILD_IMAGE RELEASE_IMAGE IMAGE_TAG
 
-.PHONY: help test build clean go-test go-integration-test dev dev-release install lint bench
+# Directory for timestamped test logs (see the test-log target).
+LOG_DIR := /tmp/rolodex-dns/log
+export LOG_DIR
+
+.PHONY: help test test-log build clean go-test go-integration-test dev dev-release install lint bench
 .PHONY: rust-test rust-integration-test
 .PHONY: deps js-lint js-test js-integration-test
 .PHONY: image push push-arch push-rc push-release manifest manifest-rc manifest-release quay-login clean-containers
@@ -35,6 +39,9 @@ lint: ## Run cargo fmt --check and clippy -D warnings
 	cargo clippy --all-targets -- -D warnings
 
 test: lint go-test rust-test js-test ## Run the full suite: lint, Go, Rust, and JavaScript tests
+
+test-log: ## Same as test, tee'd into a timestamped log file printed at the end even on failure
+	@bash -c 'set -o pipefail; mkdir -p "$(LOG_DIR)"; logfile="$(LOG_DIR)/test-$$(date +%s).log"; echo "Logging to: $$logfile"; rc=0; $(MAKE) test 2>&1 | tee "$$logfile" || rc=$$?; echo "Log file: $$logfile"; exit $$rc'
 
 rust-test: rust-integration-test ## Run all Rust tests (includes integration tests)
 	cargo test

@@ -153,6 +153,24 @@ async fn main() -> Result<()> {
     dns_server.set_resolution_mode(resolution_mode);
     info!("Upstream resolution mode: {:?}", resolution_mode);
 
+    // Network-overlay ranges: only these (WireGuard) source IPs are scope-
+    // enforced; every other source is a trusted local client. Bad entries are
+    // warned about and skipped so a typo can't accidentally trust the overlay.
+    let overlay_cidrs: Vec<_> = config
+        .security
+        .overlay_cidrs
+        .iter()
+        .filter_map(|c| match rolodex_dns::cidr::IpCidr::parse(c) {
+            Ok(cidr) => Some(cidr),
+            Err(e) => {
+                warn!("Skipping overlay CIDR '{}': {}", c, e);
+                None
+            }
+        })
+        .collect();
+    info!("Scope-enforced overlay ranges: {}", overlay_cidrs.len());
+    dns_server.set_overlay_cidrs(overlay_cidrs);
+
     // Auto mode: build the secure (DoT) tier, the public :53 last-resort tier,
     // and the switch tuning. Bad entries are warned about and skipped so a typo
     // can't take resolution down.

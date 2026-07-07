@@ -1515,9 +1515,11 @@ async fn test_scoped_dns_resolution_integration() {
     );
     assert_eq!(resp.answers().len(), 1);
 
-    // DNS query from unassociated IP should be refused
+    // DNS query from unassociated overlay peer (10.64.0.0/10) should be refused.
+    // Only overlay (WireGuard) peers are scope-enforced; a plain LAN source is a
+    // trusted local client and would not be refused.
     let resp_bytes = dns_server
-        .handle_query_from(&query, "192.168.1.99".parse().unwrap())
+        .handle_query_from(&query, "10.64.0.99".parse().unwrap())
         .await
         .unwrap();
     let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
@@ -1749,7 +1751,7 @@ async fn test_leave_network_integration() {
     service.create_network_scope(req).await.unwrap();
 
     let join_req = Request::new(JoinNetworkRequest {
-        ip_address: "192.168.1.50".to_string(),
+        ip_address: "10.64.0.50".to_string(),
         scope_name: "leavenet".to_string(),
         ttl_seconds: 3600,
         auth_token: "test-secret".to_string(),
@@ -1773,7 +1775,7 @@ async fn test_leave_network_integration() {
     // Can resolve while joined
     let query = build_dns_query("server.leavenet.home.", hickory_proto::rr::RecordType::A);
     let resp_bytes = dns_server
-        .handle_query_from(&query, "192.168.1.50".parse().unwrap())
+        .handle_query_from(&query, "10.64.0.50".parse().unwrap())
         .await
         .unwrap();
     let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
@@ -1784,14 +1786,14 @@ async fn test_leave_network_integration() {
 
     // Leave network
     let leave_req = Request::new(LeaveNetworkRequest {
-        ip_address: "192.168.1.50".to_string(),
+        ip_address: "10.64.0.50".to_string(),
         auth_token: "test-secret".to_string(),
     });
     service.leave_network(leave_req).await.unwrap();
 
     // Can no longer resolve (refused)
     let resp_bytes = dns_server
-        .handle_query_from(&query, "192.168.1.50".parse().unwrap())
+        .handle_query_from(&query, "10.64.0.50".parse().unwrap())
         .await
         .unwrap();
     let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();

@@ -603,14 +603,29 @@ pub struct SecurityConfig {
     /// Whether to randomize the case of QNAME labels (0x20 encoding) for cache-poisoning resistance.
     #[serde(default = "default_true")]
     pub qname_case_randomization: bool,
+    /// Source CIDRs treated as untrusted network-overlay peers (WireGuard
+    /// links). Network-scope enforcement applies **only** to these ranges: a
+    /// query from here must be joined to a scope (else REFUSED) and sees only
+    /// its own scope's partitioned TLDs. Every other source — loopback, the
+    /// LAN, container bridges — is trusted and resolves the full view (public
+    /// names plus any scope's records, keyed by the query's owned TLD).
+    /// Defaults to Town OS's WireGuard overlay range `10.64.0.0/10` (see
+    /// `SubnetForNetwork` in the controller's `wireguard/ipam.go`).
+    #[serde(default = "default_overlay_cidrs")]
+    pub overlay_cidrs: Vec<String>,
 }
 
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
             qname_case_randomization: true,
+            overlay_cidrs: default_overlay_cidrs(),
         }
     }
+}
+
+fn default_overlay_cidrs() -> Vec<String> {
+    vec!["10.64.0.0/10".to_string()]
 }
 
 /// Address-family answer preference. In `auto` mode a background probe (see
@@ -999,6 +1014,7 @@ mod tests {
             },
             security: SecurityConfig {
                 qname_case_randomization: false,
+                overlay_cidrs: default_overlay_cidrs(),
             },
             ..Config::default()
         };
