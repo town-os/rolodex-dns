@@ -260,6 +260,19 @@ Network scopes provide per-network DNS views, isolating DNS records by network m
 - Records added via `AddScopedRecord` are only visible to IPs associated with that scope.
 - Records are managed via `RemoveScopedRecord` and `ListScopedRecords`, which support the same name/type filtering as global records.
 
+### Per-Network Owned TLDs
+
+Beyond its implicit `.home` domain, a scope can own additional TLDs (zones) that partition the DNS namespace across networks. Each owned TLD is **globally unique** to a single scope. Names under an owned TLD are resolved only within the owning network and are never forwarded upstream — an unmatched name yields an authoritative NXDOMAIN (after optionally consulting the TLD's peer forwarders, the overlay addresses of other rolodex members of the same network). Owned TLDs are managed via `AddScopeTld`, `RemoveScopeTld`, and `ListScopeTlds`; peer forwarders via `SetScopeTldForwarders`/`ListScopeTldForwarders`. Ownership is enforced by a `scope_tlds` table with a globally-unique index and mirrored into an in-memory `tld_owner_cache` for O(labels) suffix lookup on the hot path (`db::find_tld_owner`).
+
+### Ingress DNS Listeners
+
+An owned TLD can be given a local **ingress IP** when registered (`AddScopeTld` with a `listen_ip`). This does two things:
+
+1. **Binds a DNS listener** (UDP + TCP) on that local IP, on the server-configured `dns.ingress_listen_port` (default 53). Listeners are tracked in an abort-handle registry so removing the TLD (`RemoveScopeTld`) tears the listener down once no remaining TLD references that IP; they are re-created at boot from the database.
+2. **Rewrites answers to the ingress IP.** A query for a **programmed** name under the TLD (one that has a stored A/AAAA record — packages, pages, etc.), *when it arrives on that ingress listener*, has its A/AAAA answer rewritten to the ingress IP so the network's ingress controller receives the traffic and routes by Host/SNI. The rewrite is a full override of the stored value, matching the queried address family. It is **confined to the ingress listener**: the same name on the main `:53` listener resolves to its stored value, and a name with no stored record still returns NXDOMAIN (no wildcard synthesis). The listener's local IP is threaded through the query handler (`handle_query_on`); the main wildcard (`0.0.0.0`) listeners carry no concrete local IP and never rewrite.
+
+The per-TLD ingress mapping is stored in a `tld_listeners` table and mirrored into an in-memory `tld_ingress_cache`. Listeners are listed via `ListScopeTldListeners`.
+
 ## Authoritative Zone Declarations
 
 Zones can be explicitly declared authoritative via `AddAuthoritativeZone`. Queries for names within authoritative zones are never forwarded upstream — if the specific name is not found locally, an authoritative NXDOMAIN is returned. Zones are managed via `AddAuthoritativeZone`, `RemoveAuthoritativeZone`, and `ListAuthoritativeZones`.
@@ -834,6 +847,7 @@ dns:
 | ----------------------------------- | ------------------------------ | ------------------------------------------------------ |
 | `dns.bind`                          | `[{udp: "0.0.0.0:53"}, {tcp: "0.0.0.0:53"}]` | DNS listeners; list of `{udp: addr}` / `{tcp: addr}` entries |
 | `dns.auto_ptr`                      | `false`                        | Auto-maintain reverse PTR records for A/AAAA added via gRPC (see Automatic Reverse PTR Records) |
+| `dns.ingress_listen_port`           | `53`                           | UDP/TCP port for per-TLD ingress listeners (bind IP is per-TLD; see Ingress DNS Listeners) |
 | `grpc.tcp_bind`                     | `127.0.0.1:50051`              | gRPC TCP listener; supports interface:port (empty to disable) |
 | `grpc.unix_socket`                  | `/var/run/rolodex-dns.sock`    | gRPC Unix socket path (empty to disable)               |
 | `grpc.shared_secret`                | (empty)                        | Shared secret for TCP gRPC auth                        |

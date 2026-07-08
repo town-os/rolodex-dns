@@ -1065,6 +1065,13 @@ message AddScopeTldRequest {
   // The TLD/owned zone (e.g. "office."). Normalized to lowercase trailing-dot.
   string tld = 2;
   string auth_token = 3;
+  // Optional local IP for an ingress DNS listener bound to this TLD. When set,
+  // rolodex starts a DNS listener (UDP+TCP) on this IP; A/AAAA answers for
+  // programmed names under this TLD, when the query arrives on this listener,
+  // are rewritten to this IP so the network's ingress controller receives the
+  // traffic. Empty = no listener (plain owned-TLD registration). The listener
+  // port is the server-configured dns.ingress_listen_port (default 53).
+  string listen_ip = 4;
 }
 
 message AddScopeTldResponse {
@@ -1122,6 +1129,25 @@ message ListScopeTldForwardersRequest {
 
 message ListScopeTldForwardersResponse {
   repeated string forwarders = 1;
+}
+
+// TldListener describes a TLD that has an ingress DNS listener bound to a local
+// IP. Programmed names under the TLD, queried on that listener, resolve to
+// listen_ip (the network's ingress controller).
+message TldListener {
+  string tld = 1;
+  string listen_ip = 2;
+}
+
+// ListScopeTldListenersRequest lists the ingress listeners configured for a
+// scope's TLDs.
+message ListScopeTldListenersRequest {
+  string scope_name = 1;
+  string auth_token = 2;
+}
+
+message ListScopeTldListenersResponse {
+  repeated TldListener listeners = 1;
 }
 
 // ================================================================
@@ -1426,6 +1452,9 @@ service RolodexDnsService {
 
   // ListScopeTldForwarders lists the peer forwarders for a scope's TLD.
   rpc ListScopeTldForwarders(ListScopeTldForwardersRequest) returns (ListScopeTldForwardersResponse);
+
+  // ListScopeTldListeners lists the ingress DNS listeners bound to a scope's TLDs.
+  rpc ListScopeTldListeners(ListScopeTldListenersRequest) returns (ListScopeTldListenersResponse);
 
   // ================================================================
   // DHCP Certificate Options

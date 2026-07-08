@@ -282,6 +282,13 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Per-TLD ingress listeners: bind a DNS listener on each TLD's ingress IP so
+    // programmed names under that TLD resolve to the network's ingress
+    // controller. The IPs are registered via gRPC (`AddScopeTld` with a
+    // listen_ip) and persisted, so re-create them here at boot.
+    dns_server.set_ingress_port(config.dns.ingress_listen_port);
+    dns_server.sync_ingress_listeners();
+
     // Spawn DNS-over-TLS (DoT) server if configured
     if let Some(ref dot_config) = config.dot {
         let tls_cfg = rolodex_dns::tls::TlsConfig {

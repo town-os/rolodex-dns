@@ -638,6 +638,11 @@ enum Commands {
         /// The TLD/owned zone (e.g. "office.").
         #[arg(long)]
         tld: String,
+        /// Optional local IP for an ingress DNS listener bound to this TLD.
+        /// When set, the server binds a DNS listener on this IP and programmed
+        /// A/AAAA names under the TLD, queried on that listener, resolve to it.
+        #[arg(long = "listen-ip")]
+        listen_ip: Option<String>,
     },
 
     /// Remove an additional owned TLD from a scope (the home_domain cannot be
@@ -677,6 +682,13 @@ enum Commands {
         scope: String,
         #[arg(long)]
         tld: String,
+    },
+
+    /// List the ingress DNS listeners bound to a scope's TLDs.
+    #[command(name = "list-scope-tld-listeners")]
+    ListScopeTldListeners {
+        #[arg(short, long)]
+        scope: String,
     },
 
     /// Set a DHCP certificate option for a scope.
@@ -1758,18 +1770,31 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::AddScopeTld { scope, tld } => {
+        Commands::AddScopeTld {
+            scope,
+            tld,
+            listen_ip,
+        } => {
             let response = client
                 .add_scope_tld(AddScopeTldRequest {
                     scope_name: scope.clone(),
                     tld: tld.clone(),
                     auth_token: cli.auth_token.clone(),
+                    listen_ip: listen_ip.clone().unwrap_or_default(),
                 })
                 .await
                 .context("add-scope-tld RPC failed")?;
             let resp = response.into_inner();
             if resp.success {
-                println!("Added TLD {} to scope {}", tld, scope);
+                match listen_ip {
+                    Some(ip) => {
+                        println!(
+                            "Added TLD {} to scope {} with ingress listener {}",
+                            tld, scope, ip
+                        )
+                    }
+                    None => println!("Added TLD {} to scope {}", tld, scope),
+                }
             } else {
                 anyhow::bail!("Failed: {}", resp.message);
             }
@@ -1852,6 +1877,26 @@ async fn main() -> Result<()> {
             } else {
                 for f in forwarders {
                     println!("{}", f);
+                }
+            }
+        }
+
+        Commands::ListScopeTldListeners { scope } => {
+            let response = client
+                .list_scope_tld_listeners(ListScopeTldListenersRequest {
+                    scope_name: scope.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("list-scope-tld-listeners RPC failed")?;
+            let listeners = response.into_inner().listeners;
+            if listeners.is_empty() {
+                println!("No ingress listeners for scope {}", scope);
+            } else {
+                println!("{:<30} {:<20}", "TLD", "LISTEN IP");
+                println!("{}", "-".repeat(50));
+                for l in listeners {
+                    println!("{:<30} {:<20}", l.tld, l.listen_ip);
                 }
             }
         }

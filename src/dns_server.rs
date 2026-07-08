@@ -3,6 +3,7 @@ use crate::dns_cache::DnsCache;
 use crate::rbl::RblChecker;
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
+use dashmap::DashMap;
 use hickory_proto::op::{MessageType, OpCode, ResponseCode};
 use hickory_proto::rr::rdata;
 use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordType};
@@ -10,8 +11,9 @@ use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use rand::Rng;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use tokio::net::{TcpListener, UdpSocket};
+use tokio::task::AbortHandle;
 use tracing::{debug, error, info, warn};
 
 const FORWARD_POOL_SIZE: usize = 8;
@@ -105,6 +107,13 @@ pub struct DnsServer {
     /// applies only to these; every other source is a trusted local client that
     /// resolves the full view. Defaults to the overlay range `10.64.0.0/10`.
     overlay_cidrs: Arc<ArcSwap<Vec<crate::cidr::IpCidr>>>,
+    /// Active per-TLD ingress DNS listeners, keyed by their bound local IP. Each
+    /// entry holds the abort handles for the UDP+TCP tasks so the listener can be
+    /// torn down when its last TLD is removed. Started via `spawn_ingress_listener`.
+    ingress_listeners: Arc<DashMap<IpAddr, Vec<AbortHandle>>>,
+    /// UDP/TCP port that ingress listeners bind (the ingress IP is per-TLD).
+    /// Defaults to 53; overridable via `set_ingress_port` (e.g. dev/tests).
+    ingress_port: AtomicU16,
 }
 
 /// The default WireGuard-overlay range: only source IPs here are subject to
@@ -145,6 +154,8 @@ impl DnsServer {
             answer_v4: AtomicBool::new(true),
             answer_v6: AtomicBool::new(true),
             overlay_cidrs: Arc::new(ArcSwap::from_pointee(default_overlay_cidrs())),
+            ingress_listeners: Arc::new(DashMap::new()),
+            ingress_port: AtomicU16::new(53),
         }
     }
 
@@ -187,6 +198,8 @@ impl DnsServer {
             answer_v4: AtomicBool::new(true),
             answer_v6: AtomicBool::new(true),
             overlay_cidrs: Arc::new(ArcSwap::from_pointee(default_overlay_cidrs())),
+            ingress_listeners: Arc::new(DashMap::new()),
+            ingress_port: AtomicU16::new(53),
         }
     }
 
@@ -202,6 +215,87 @@ impl DnsServer {
     /// enforcement, per the configured `overlay_cidrs`.
     fn is_overlay_peer(&self, ip: IpAddr) -> bool {
         self.overlay_cidrs.load().iter().any(|c| c.contains(ip))
+    }
+
+    /// Sets the UDP/TCP port used by per-TLD ingress listeners (default 53).
+    /// The bind IP is provided per-TLD; this is the shared port.
+    pub fn set_ingress_port(&self, port: u16) {
+        self.ingress_port.store(port, Ordering::Relaxed);
+    }
+
+    /// Number of active ingress listener IPs (for diagnostics/tests).
+    pub fn ingress_listener_count(&self) -> usize {
+        self.ingress_listeners.len()
+    }
+
+    /// Whether an ingress listener is currently active on `ip`.
+    pub fn has_ingress_listener(&self, ip: IpAddr) -> bool {
+        self.ingress_listeners.contains_key(&ip)
+    }
+
+    /// Starts an ingress DNS listener (UDP + TCP) bound to `ip` on the configured
+    /// ingress port. Idempotent: a no-op if one is already active on `ip` (so
+    /// multiple TLDs can share one ingress IP). The tasks run until aborted by
+    /// `stop_ingress_listener`. A bind failure is logged by the spawned task and
+    /// leaves no active listener registered on retry-after-remove.
+    pub fn spawn_ingress_listener(self: &Arc<Self>, ip: IpAddr) {
+        if self.ingress_listeners.contains_key(&ip) {
+            return;
+        }
+        let port = self.ingress_port.load(Ordering::Relaxed);
+        let bind = SocketAddr::new(ip, port).to_string();
+
+        let udp_srv = Arc::clone(self);
+        let udp_bind = bind.clone();
+        let udp = tokio::spawn(async move {
+            if let Err(e) = udp_srv.serve_udp(&udp_bind).await {
+                error!("Ingress UDP listener {} exited: {}", udp_bind, e);
+            }
+        });
+
+        let tcp_srv = Arc::clone(self);
+        let tcp_bind = bind.clone();
+        let tcp = tokio::spawn(async move {
+            if let Err(e) = tcp_srv.serve_tcp(&tcp_bind).await {
+                error!("Ingress TCP listener {} exited: {}", tcp_bind, e);
+            }
+        });
+
+        self.ingress_listeners
+            .insert(ip, vec![udp.abort_handle(), tcp.abort_handle()]);
+        info!("Started ingress DNS listener on {}", bind);
+    }
+
+    /// Stops the ingress DNS listener bound to `ip`, aborting its UDP+TCP tasks.
+    /// A no-op if none is active on `ip`.
+    pub fn stop_ingress_listener(&self, ip: IpAddr) {
+        if let Some((_, handles)) = self.ingress_listeners.remove(&ip) {
+            for h in handles {
+                h.abort();
+            }
+            info!("Stopped ingress DNS listener on {}", ip);
+        }
+    }
+
+    /// (Re)creates ingress listeners for every TLD that has an ingress IP in the
+    /// database. Called at boot after the DnsServer Arc is built.
+    pub fn sync_ingress_listeners(self: &Arc<Self>) {
+        for ip in self.db.list_all_tld_ingress_ips() {
+            self.spawn_ingress_listener(ip);
+        }
+    }
+
+    /// Computes the ingress-IP override for a query, or `None` if the answer
+    /// should resolve normally. Returns `Some(ip)` only when (a) the query
+    /// arrived on a concrete local listener IP, and (b) the queried name falls
+    /// under a TLD whose configured ingress IP equals that listener IP. This is
+    /// what confines the rewrite to the ingress listener (a query for the same
+    /// name on the main `:53` listener has `local_ip == None` and is unaffected).
+    fn ingress_override(&self, local_ip: Option<IpAddr>, qname: &str) -> Option<IpAddr> {
+        let local_ip = local_ip?;
+        let (_, tld) = self.db.find_tld_owner(qname)?;
+        let ingress = self.db.get_tld_ingress(&tld)?;
+        (ingress == local_ip).then_some(ingress)
     }
 
     /// Sets the upstream resolution mode (recursive-from-roots or forward).
@@ -356,6 +450,7 @@ impl DnsServer {
                 .with_context(|| format!("failed to bind UDP socket to {}", bind_addr))?,
         );
         info!("DNS UDP server listening on {}", bind_addr);
+        let local_ip = concrete_bind_ip(bind_addr);
 
         let mut buf = vec![0u8; MAX_UDP_SIZE];
         loop {
@@ -372,7 +467,7 @@ impl DnsServer {
             let server = Arc::clone(&self);
             let socket = Arc::clone(&socket);
             tokio::spawn(async move {
-                match server.handle_query_from(&data, src.ip()).await {
+                match server.handle_query_on(&data, src.ip(), local_ip).await {
                     Ok(resp) => {
                         if let Err(e) = socket.send_to(&resp, src).await {
                             error!("UDP send error to {}: {}", src, e);
@@ -392,6 +487,7 @@ impl DnsServer {
             .await
             .with_context(|| format!("failed to bind TCP listener to {}", bind_addr))?;
         info!("DNS TCP server listening on {}", bind_addr);
+        let local_ip = concrete_bind_ip(bind_addr);
 
         loop {
             let (stream, src) = match listener.accept().await {
@@ -404,7 +500,7 @@ impl DnsServer {
 
             let server = Arc::clone(&self);
             tokio::spawn(async move {
-                if let Err(e) = server.handle_tcp_connection(stream, src).await {
+                if let Err(e) = server.handle_tcp_connection(stream, src, local_ip).await {
                     debug!("TCP connection error from {}: {}", src, e);
                 }
             });
@@ -415,6 +511,7 @@ impl DnsServer {
         &self,
         stream: tokio::net::TcpStream,
         src: SocketAddr,
+        local_ip: Option<IpAddr>,
     ) -> Result<()> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -437,7 +534,7 @@ impl DnsServer {
             let mut msg_buf = vec![0u8; msg_len];
             reader.read_exact(&mut msg_buf).await?;
 
-            let response = self.handle_query_from(&msg_buf, src.ip()).await?;
+            let response = self.handle_query_on(&msg_buf, src.ip(), local_ip).await?;
             let resp_len = (response.len() as u16).to_be_bytes();
             writer.write_all(&resp_len).await?;
             writer.write_all(&response).await?;
@@ -448,7 +545,7 @@ impl DnsServer {
     /// This is a convenience method that does not enforce network scoping.
     /// Used for tests where source IP context is not available.
     pub async fn handle_query(&self, query_data: &[u8]) -> Result<Vec<u8>> {
-        let response = self.resolve_query(query_data, None).await?;
+        let response = self.resolve_query(query_data, None, None).await?;
         Ok(self.apply_family_filter(response))
     }
 
@@ -459,12 +556,33 @@ impl DnsServer {
     /// REFUSED responses. When no network scopes are defined, the server
     /// operates in legacy mode without scope enforcement.
     pub async fn handle_query_from(&self, query_data: &[u8], source_ip: IpAddr) -> Result<Vec<u8>> {
-        let response = self.resolve_query(query_data, Some(source_ip)).await?;
+        self.handle_query_on(query_data, source_ip, None).await
+    }
+
+    /// Handles a query, additionally aware of the concrete local listener IP the
+    /// query arrived on (`None` for wildcard binds like `0.0.0.0:53`). The local
+    /// IP gates the per-TLD ingress rewrite: programmed A/AAAA names under a TLD
+    /// whose ingress IP equals `local_ip` are answered with that IP.
+    pub async fn handle_query_on(
+        &self,
+        query_data: &[u8],
+        source_ip: IpAddr,
+        local_ip: Option<IpAddr>,
+    ) -> Result<Vec<u8>> {
+        let response = self
+            .resolve_query(query_data, Some(source_ip), local_ip)
+            .await?;
         Ok(self.apply_family_filter(response))
     }
 
-    /// Core DNS resolution logic with optional network scope context.
-    async fn resolve_query(&self, query_data: &[u8], source_ip: Option<IpAddr>) -> Result<Vec<u8>> {
+    /// Core DNS resolution logic with optional network scope context and the
+    /// optional local listener IP (used for the per-TLD ingress rewrite).
+    async fn resolve_query(
+        &self,
+        query_data: &[u8],
+        source_ip: Option<IpAddr>,
+        local_ip: Option<IpAddr>,
+    ) -> Result<Vec<u8>> {
         let message = match hickory_proto::op::Message::from_bytes(query_data) {
             Ok(m) => m,
             Err(e) => {
@@ -545,6 +663,12 @@ impl DnsServer {
         let qname = question.name().to_string();
         let qtype = question.query_type();
 
+        // Per-TLD ingress rewrite: if this query arrived on a TLD's ingress
+        // listener, programmed A/AAAA answers under that TLD are rewritten to the
+        // ingress IP (the network's ingress controller). `None` on the main
+        // listeners, so those resolve to the stored value unchanged.
+        let ingress_override = self.ingress_override(local_ip, &qname);
+
         debug!("DNS query: {} {:?} (scope: {:?})", qname, qtype, scope_name);
 
         // If we have a network scope, check scoped RBL first
@@ -582,8 +706,7 @@ impl DnsServer {
                             scope,
                             cached.len()
                         );
-                        let dns_records =
-                            cached.iter().filter_map(db_record_to_dns_record).collect();
+                        let dns_records = build_scoped_answers(&cached, ingress_override);
                         return Ok(build_response_edns(
                             &message,
                             ResponseCode::NoError,
@@ -606,7 +729,7 @@ impl DnsServer {
                     if let Some(ref cache) = self.dns_cache {
                         cache.insert_local(&scoped_cache_name, Some(kind), records.clone());
                     }
-                    let dns_records = records.iter().filter_map(db_record_to_dns_record).collect();
+                    let dns_records = build_scoped_answers(&records, ingress_override);
                     return Ok(build_response_edns(
                         &message,
                         ResponseCode::NoError,
@@ -625,14 +748,14 @@ impl DnsServer {
                         let target = &aname_records[0].value;
                         let target_records = self.db.lookup_scoped(scope, target, Some(kind));
                         if !target_records.is_empty() {
-                            let dns_records: Vec<Record> = target_records
-                                .iter()
-                                .filter_map(|r| {
-                                    let mut rec = db_record_to_dns_record(r)?;
-                                    rec.set_name(Name::from_ascii(&qname).ok()?);
-                                    Some(rec)
-                                })
-                                .collect();
+                            let dns_records: Vec<Record> =
+                                build_scoped_answers(&target_records, ingress_override)
+                                    .into_iter()
+                                    .filter_map(|mut rec| {
+                                        rec.set_name(Name::from_ascii(&qname).ok()?);
+                                        Some(rec)
+                                    })
+                                    .collect();
                             return Ok(build_response_edns(
                                 &message,
                                 ResponseCode::NoError,
@@ -1643,6 +1766,44 @@ fn map_query_type_to_kind(rt: RecordType) -> Option<RecordKind> {
             }
         }
     }
+}
+
+/// Parses `bind_addr` ("ip:port") and returns the bound IP only when it is a
+/// concrete (non-wildcard) address. A wildcard bind (`0.0.0.0`/`[::]`) yields
+/// `None` because a single packet's true destination IP is not recoverable
+/// without per-packet `IP_PKTINFO`; ingress listeners always bind a concrete IP.
+fn concrete_bind_ip(bind_addr: &str) -> Option<IpAddr> {
+    bind_addr
+        .parse::<SocketAddr>()
+        .ok()
+        .map(|sa| sa.ip())
+        .filter(|ip| !ip.is_unspecified())
+}
+
+/// Builds the hickory answer records for a scoped lookup, applying the per-TLD
+/// ingress rewrite: when `override_ip` is set, an A/AAAA record of the matching
+/// address family has its value replaced with the ingress IP (the ingress
+/// controller). Records of a different type or family pass through unchanged.
+fn build_scoped_answers(
+    records: &[crate::db::DnsRecord],
+    override_ip: Option<IpAddr>,
+) -> Vec<Record> {
+    records
+        .iter()
+        .filter_map(|r| match override_ip {
+            Some(IpAddr::V4(v4)) if r.record_type == RecordKind::A => {
+                let mut r2 = r.clone();
+                r2.value = v4.to_string();
+                db_record_to_dns_record(&r2)
+            }
+            Some(IpAddr::V6(v6)) if r.record_type == RecordKind::AAAA => {
+                let mut r2 = r.clone();
+                r2.value = v6.to_string();
+                db_record_to_dns_record(&r2)
+            }
+            _ => db_record_to_dns_record(r),
+        })
+        .collect()
 }
 
 /// Converts a database record to a hickory DNS record.
@@ -3796,6 +3957,181 @@ mod tests {
         .unwrap();
         assert_eq!(resp.response_code(), ResponseCode::NoError);
         assert_eq!(resp.answers().len(), 1);
+    }
+
+    /// Builds an office scope owning `office.` with a scoped A record
+    /// `gitea.office. -> 10.0.0.7` and an ingress listener on `ingress`.
+    fn ingress_scope(db: &Database, ingress: IpAddr) {
+        office_scope(db);
+        db.set_tld_listener("office", "office", ingress).unwrap();
+        db.add_scoped_record(
+            "office",
+            &DnsRecord {
+                id: None,
+                name: "gitea.office.".to_string(),
+                record_type: RecordKind::A,
+                value: "10.0.0.7".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
+    }
+
+    fn answer_a(resp: &Message) -> Ipv4Addr {
+        match resp.answers()[0].data() {
+            RData::A(rdata::A(ip)) => *ip,
+            other => panic!("expected A record, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ingress_override_rewrites_on_ingress_listener() {
+        // A programmed A name under an ingress TLD, queried on that TLD's ingress
+        // listener, is rewritten to the ingress IP (the ingress controller) —
+        // NOT the stored backend value.
+        let ingress: IpAddr = "127.0.0.9".parse().unwrap();
+        let db = Database::open_memory().unwrap();
+        ingress_scope(&db, ingress);
+        let server = make_test_server(db);
+
+        let query = build_query("gitea.office.", RecordType::A);
+        let resp = Message::from_bytes(
+            &server
+                .handle_query_on(&query, "127.0.0.1".parse().unwrap(), Some(ingress))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert_eq!(resp.answers().len(), 1);
+        assert_eq!(answer_a(&resp), Ipv4Addr::new(127, 0, 0, 9));
+    }
+
+    #[tokio::test]
+    async fn test_ingress_no_override_on_main_listener() {
+        // The same name on the main listener (no concrete local IP) resolves to
+        // the stored backend value — the rewrite is confined to the ingress
+        // listener.
+        let ingress: IpAddr = "127.0.0.9".parse().unwrap();
+        let db = Database::open_memory().unwrap();
+        ingress_scope(&db, ingress);
+        let server = make_test_server(db);
+
+        let query = build_query("gitea.office.", RecordType::A);
+        let resp = Message::from_bytes(
+            &server
+                .handle_query_from(&query, "127.0.0.1".parse().unwrap())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert_eq!(answer_a(&resp), Ipv4Addr::new(10, 0, 0, 7));
+    }
+
+    #[tokio::test]
+    async fn test_ingress_no_override_on_wrong_listener_ip() {
+        // A query arriving on a concrete listener IP that is NOT this TLD's
+        // ingress IP is not rewritten (e.g. another TLD's ingress listener).
+        let ingress: IpAddr = "127.0.0.9".parse().unwrap();
+        let other: IpAddr = "127.0.0.8".parse().unwrap();
+        let db = Database::open_memory().unwrap();
+        ingress_scope(&db, ingress);
+        let server = make_test_server(db);
+
+        let query = build_query("gitea.office.", RecordType::A);
+        let resp = Message::from_bytes(
+            &server
+                .handle_query_on(&query, "127.0.0.1".parse().unwrap(), Some(other))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(answer_a(&resp), Ipv4Addr::new(10, 0, 0, 7));
+    }
+
+    #[tokio::test]
+    async fn test_ingress_no_synthesis_for_unprogrammed_name() {
+        // Only PROGRAMMED names are subject to the rewrite. A name with no record
+        // under the ingress TLD is an authoritative NXDOMAIN even on the ingress
+        // listener — no wildcard synthesis to the ingress IP.
+        let ingress: IpAddr = "127.0.0.9".parse().unwrap();
+        let db = Database::open_memory().unwrap();
+        ingress_scope(&db, ingress);
+        let server = make_test_server(db);
+
+        let query = build_query("missing.office.", RecordType::A);
+        let resp = Message::from_bytes(
+            &server
+                .handle_query_on(&query, "127.0.0.1".parse().unwrap(), Some(ingress))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NXDomain);
+        assert!(resp.answers().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_ingress_override_only_matching_family() {
+        // An IPv4 ingress IP does not rewrite an AAAA answer; the stored AAAA
+        // value passes through unchanged (family mismatch).
+        let ingress: IpAddr = "127.0.0.9".parse().unwrap();
+        let db = Database::open_memory().unwrap();
+        office_scope(&db);
+        db.set_tld_listener("office", "office", ingress).unwrap();
+        db.add_scoped_record(
+            "office",
+            &DnsRecord {
+                id: None,
+                name: "gitea.office.".to_string(),
+                record_type: RecordKind::AAAA,
+                value: "fd00::7".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
+        let server = make_test_server(db);
+
+        let query = build_query("gitea.office.", RecordType::AAAA);
+        let resp = Message::from_bytes(
+            &server
+                .handle_query_on(&query, "127.0.0.1".parse().unwrap(), Some(ingress))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert_eq!(resp.answers().len(), 1);
+        match resp.answers()[0].data() {
+            RData::AAAA(rdata::AAAA(ip)) => {
+                assert_eq!(*ip, "fd00::7".parse::<Ipv6Addr>().unwrap())
+            }
+            other => panic!("expected AAAA record, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_spawn_and_stop_ingress_listener_registry() {
+        // The listener registry is idempotent per IP and torn down on stop.
+        let db = Database::open_memory().unwrap();
+        let server = make_test_server(db);
+        server.set_ingress_port(0); // ephemeral port — avoids privileged :53
+        let ip: IpAddr = "127.0.0.20".parse().unwrap();
+
+        assert!(!server.has_ingress_listener(ip));
+        server.spawn_ingress_listener(ip);
+        assert!(server.has_ingress_listener(ip));
+        assert_eq!(server.ingress_listener_count(), 1);
+        // Idempotent: a second spawn for the same IP does not add a listener.
+        server.spawn_ingress_listener(ip);
+        assert_eq!(server.ingress_listener_count(), 1);
+
+        server.stop_ingress_listener(ip);
+        assert!(!server.has_ingress_listener(ip));
+        assert_eq!(server.ingress_listener_count(), 0);
     }
 
     #[tokio::test]

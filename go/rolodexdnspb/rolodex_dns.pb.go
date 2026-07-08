@@ -8221,8 +8221,15 @@ type AddScopeTldRequest struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	ScopeName string                 `protobuf:"bytes,1,opt,name=scope_name,json=scopeName,proto3" json:"scope_name,omitempty"`
 	// The TLD/owned zone (e.g. "office."). Normalized to lowercase trailing-dot.
-	Tld           string `protobuf:"bytes,2,opt,name=tld,proto3" json:"tld,omitempty"`
-	AuthToken     string `protobuf:"bytes,3,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	Tld       string `protobuf:"bytes,2,opt,name=tld,proto3" json:"tld,omitempty"`
+	AuthToken string `protobuf:"bytes,3,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	// Optional local IP for an ingress DNS listener bound to this TLD. When set,
+	// rolodex starts a DNS listener (UDP+TCP) on this IP; A/AAAA answers for
+	// programmed names under this TLD, when the query arrives on this listener,
+	// are rewritten to this IP so the network's ingress controller receives the
+	// traffic. Empty = no listener (plain owned-TLD registration). The listener
+	// port is the server-configured dns.ingress_listen_port (default 53).
+	ListenIp      string `protobuf:"bytes,4,opt,name=listen_ip,json=listenIp,proto3" json:"listen_ip,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8274,6 +8281,13 @@ func (x *AddScopeTldRequest) GetTld() string {
 func (x *AddScopeTldRequest) GetAuthToken() string {
 	if x != nil {
 		return x.AuthToken
+	}
+	return ""
+}
+
+func (x *AddScopeTldRequest) GetListenIp() string {
+	if x != nil {
+		return x.ListenIp
 	}
 	return ""
 }
@@ -8772,6 +8786,159 @@ func (x *ListScopeTldForwardersResponse) GetForwarders() []string {
 	return nil
 }
 
+// TldListener describes a TLD that has an ingress DNS listener bound to a local
+// IP. Programmed names under the TLD, queried on that listener, resolve to
+// listen_ip (the network's ingress controller).
+type TldListener struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Tld           string                 `protobuf:"bytes,1,opt,name=tld,proto3" json:"tld,omitempty"`
+	ListenIp      string                 `protobuf:"bytes,2,opt,name=listen_ip,json=listenIp,proto3" json:"listen_ip,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TldListener) Reset() {
+	*x = TldListener{}
+	mi := &file_rolodex_dns_proto_msgTypes[156]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TldListener) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TldListener) ProtoMessage() {}
+
+func (x *TldListener) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[156]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TldListener.ProtoReflect.Descriptor instead.
+func (*TldListener) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{156}
+}
+
+func (x *TldListener) GetTld() string {
+	if x != nil {
+		return x.Tld
+	}
+	return ""
+}
+
+func (x *TldListener) GetListenIp() string {
+	if x != nil {
+		return x.ListenIp
+	}
+	return ""
+}
+
+// ListScopeTldListenersRequest lists the ingress listeners configured for a
+// scope's TLDs.
+type ListScopeTldListenersRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ScopeName     string                 `protobuf:"bytes,1,opt,name=scope_name,json=scopeName,proto3" json:"scope_name,omitempty"`
+	AuthToken     string                 `protobuf:"bytes,2,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListScopeTldListenersRequest) Reset() {
+	*x = ListScopeTldListenersRequest{}
+	mi := &file_rolodex_dns_proto_msgTypes[157]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListScopeTldListenersRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListScopeTldListenersRequest) ProtoMessage() {}
+
+func (x *ListScopeTldListenersRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[157]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListScopeTldListenersRequest.ProtoReflect.Descriptor instead.
+func (*ListScopeTldListenersRequest) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{157}
+}
+
+func (x *ListScopeTldListenersRequest) GetScopeName() string {
+	if x != nil {
+		return x.ScopeName
+	}
+	return ""
+}
+
+func (x *ListScopeTldListenersRequest) GetAuthToken() string {
+	if x != nil {
+		return x.AuthToken
+	}
+	return ""
+}
+
+type ListScopeTldListenersResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Listeners     []*TldListener         `protobuf:"bytes,1,rep,name=listeners,proto3" json:"listeners,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListScopeTldListenersResponse) Reset() {
+	*x = ListScopeTldListenersResponse{}
+	mi := &file_rolodex_dns_proto_msgTypes[158]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListScopeTldListenersResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListScopeTldListenersResponse) ProtoMessage() {}
+
+func (x *ListScopeTldListenersResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_rolodex_dns_proto_msgTypes[158]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListScopeTldListenersResponse.ProtoReflect.Descriptor instead.
+func (*ListScopeTldListenersResponse) Descriptor() ([]byte, []int) {
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{158}
+}
+
+func (x *ListScopeTldListenersResponse) GetListeners() []*TldListener {
+	if x != nil {
+		return x.Listeners
+	}
+	return nil
+}
+
 // DhcpCertOption represents a certificate delivered via DHCP options.
 type DhcpCertOption struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -8785,7 +8952,7 @@ type DhcpCertOption struct {
 
 func (x *DhcpCertOption) Reset() {
 	*x = DhcpCertOption{}
-	mi := &file_rolodex_dns_proto_msgTypes[156]
+	mi := &file_rolodex_dns_proto_msgTypes[159]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8797,7 +8964,7 @@ func (x *DhcpCertOption) String() string {
 func (*DhcpCertOption) ProtoMessage() {}
 
 func (x *DhcpCertOption) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[156]
+	mi := &file_rolodex_dns_proto_msgTypes[159]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8810,7 +8977,7 @@ func (x *DhcpCertOption) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DhcpCertOption.ProtoReflect.Descriptor instead.
 func (*DhcpCertOption) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{156}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{159}
 }
 
 func (x *DhcpCertOption) GetScopeName() string {
@@ -8851,7 +9018,7 @@ type SetDhcpCertOptionRequest struct {
 
 func (x *SetDhcpCertOptionRequest) Reset() {
 	*x = SetDhcpCertOptionRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[157]
+	mi := &file_rolodex_dns_proto_msgTypes[160]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8863,7 +9030,7 @@ func (x *SetDhcpCertOptionRequest) String() string {
 func (*SetDhcpCertOptionRequest) ProtoMessage() {}
 
 func (x *SetDhcpCertOptionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[157]
+	mi := &file_rolodex_dns_proto_msgTypes[160]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8876,7 +9043,7 @@ func (x *SetDhcpCertOptionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetDhcpCertOptionRequest.ProtoReflect.Descriptor instead.
 func (*SetDhcpCertOptionRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{157}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{160}
 }
 
 func (x *SetDhcpCertOptionRequest) GetOption() *DhcpCertOption {
@@ -8903,7 +9070,7 @@ type SetDhcpCertOptionResponse struct {
 
 func (x *SetDhcpCertOptionResponse) Reset() {
 	*x = SetDhcpCertOptionResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[158]
+	mi := &file_rolodex_dns_proto_msgTypes[161]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8915,7 +9082,7 @@ func (x *SetDhcpCertOptionResponse) String() string {
 func (*SetDhcpCertOptionResponse) ProtoMessage() {}
 
 func (x *SetDhcpCertOptionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[158]
+	mi := &file_rolodex_dns_proto_msgTypes[161]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8928,7 +9095,7 @@ func (x *SetDhcpCertOptionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetDhcpCertOptionResponse.ProtoReflect.Descriptor instead.
 func (*SetDhcpCertOptionResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{158}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{161}
 }
 
 func (x *SetDhcpCertOptionResponse) GetSuccess() bool {
@@ -8956,7 +9123,7 @@ type RemoveDhcpCertOptionRequest struct {
 
 func (x *RemoveDhcpCertOptionRequest) Reset() {
 	*x = RemoveDhcpCertOptionRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[159]
+	mi := &file_rolodex_dns_proto_msgTypes[162]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8968,7 +9135,7 @@ func (x *RemoveDhcpCertOptionRequest) String() string {
 func (*RemoveDhcpCertOptionRequest) ProtoMessage() {}
 
 func (x *RemoveDhcpCertOptionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[159]
+	mi := &file_rolodex_dns_proto_msgTypes[162]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8981,7 +9148,7 @@ func (x *RemoveDhcpCertOptionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveDhcpCertOptionRequest.ProtoReflect.Descriptor instead.
 func (*RemoveDhcpCertOptionRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{159}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{162}
 }
 
 func (x *RemoveDhcpCertOptionRequest) GetScopeName() string {
@@ -9015,7 +9182,7 @@ type RemoveDhcpCertOptionResponse struct {
 
 func (x *RemoveDhcpCertOptionResponse) Reset() {
 	*x = RemoveDhcpCertOptionResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[160]
+	mi := &file_rolodex_dns_proto_msgTypes[163]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9027,7 +9194,7 @@ func (x *RemoveDhcpCertOptionResponse) String() string {
 func (*RemoveDhcpCertOptionResponse) ProtoMessage() {}
 
 func (x *RemoveDhcpCertOptionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[160]
+	mi := &file_rolodex_dns_proto_msgTypes[163]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9040,7 +9207,7 @@ func (x *RemoveDhcpCertOptionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveDhcpCertOptionResponse.ProtoReflect.Descriptor instead.
 func (*RemoveDhcpCertOptionResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{160}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{163}
 }
 
 func (x *RemoveDhcpCertOptionResponse) GetSuccess() bool {
@@ -9067,7 +9234,7 @@ type ListDhcpCertOptionsRequest struct {
 
 func (x *ListDhcpCertOptionsRequest) Reset() {
 	*x = ListDhcpCertOptionsRequest{}
-	mi := &file_rolodex_dns_proto_msgTypes[161]
+	mi := &file_rolodex_dns_proto_msgTypes[164]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9079,7 +9246,7 @@ func (x *ListDhcpCertOptionsRequest) String() string {
 func (*ListDhcpCertOptionsRequest) ProtoMessage() {}
 
 func (x *ListDhcpCertOptionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[161]
+	mi := &file_rolodex_dns_proto_msgTypes[164]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9092,7 +9259,7 @@ func (x *ListDhcpCertOptionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDhcpCertOptionsRequest.ProtoReflect.Descriptor instead.
 func (*ListDhcpCertOptionsRequest) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{161}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{164}
 }
 
 func (x *ListDhcpCertOptionsRequest) GetScopeName() string {
@@ -9118,7 +9285,7 @@ type ListDhcpCertOptionsResponse struct {
 
 func (x *ListDhcpCertOptionsResponse) Reset() {
 	*x = ListDhcpCertOptionsResponse{}
-	mi := &file_rolodex_dns_proto_msgTypes[162]
+	mi := &file_rolodex_dns_proto_msgTypes[165]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9130,7 +9297,7 @@ func (x *ListDhcpCertOptionsResponse) String() string {
 func (*ListDhcpCertOptionsResponse) ProtoMessage() {}
 
 func (x *ListDhcpCertOptionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_rolodex_dns_proto_msgTypes[162]
+	mi := &file_rolodex_dns_proto_msgTypes[165]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9143,7 +9310,7 @@ func (x *ListDhcpCertOptionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDhcpCertOptionsResponse.ProtoReflect.Descriptor instead.
 func (*ListDhcpCertOptionsResponse) Descriptor() ([]byte, []int) {
-	return file_rolodex_dns_proto_rawDescGZIP(), []int{162}
+	return file_rolodex_dns_proto_rawDescGZIP(), []int{165}
 }
 
 func (x *ListDhcpCertOptionsResponse) GetOptions() []*DhcpCertOption {
@@ -9730,13 +9897,14 @@ const file_rolodex_dns_proto_rawDesc = "" +
 	"\n" +
 	"auth_token\x18\x02 \x01(\tR\tauthToken\"\\\n" +
 	"\x1dListScopeRblProvidersResponse\x12;\n" +
-	"\tproviders\x18\x01 \x03(\v2\x1d.rolodex_dns.ScopeRblProviderR\tproviders\"d\n" +
+	"\tproviders\x18\x01 \x03(\v2\x1d.rolodex_dns.ScopeRblProviderR\tproviders\"\x81\x01\n" +
 	"\x12AddScopeTldRequest\x12\x1d\n" +
 	"\n" +
 	"scope_name\x18\x01 \x01(\tR\tscopeName\x12\x10\n" +
 	"\x03tld\x18\x02 \x01(\tR\x03tld\x12\x1d\n" +
 	"\n" +
-	"auth_token\x18\x03 \x01(\tR\tauthToken\"I\n" +
+	"auth_token\x18\x03 \x01(\tR\tauthToken\x12\x1b\n" +
+	"\tlisten_ip\x18\x04 \x01(\tR\blistenIp\"I\n" +
 	"\x13AddScopeTldResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\"g\n" +
@@ -9777,7 +9945,17 @@ const file_rolodex_dns_proto_rawDesc = "" +
 	"\x1eListScopeTldForwardersResponse\x12\x1e\n" +
 	"\n" +
 	"forwarders\x18\x01 \x03(\tR\n" +
-	"forwarders\"\x8f\x01\n" +
+	"forwarders\"<\n" +
+	"\vTldListener\x12\x10\n" +
+	"\x03tld\x18\x01 \x01(\tR\x03tld\x12\x1b\n" +
+	"\tlisten_ip\x18\x02 \x01(\tR\blistenIp\"\\\n" +
+	"\x1cListScopeTldListenersRequest\x12\x1d\n" +
+	"\n" +
+	"scope_name\x18\x01 \x01(\tR\tscopeName\x12\x1d\n" +
+	"\n" +
+	"auth_token\x18\x02 \x01(\tR\tauthToken\"W\n" +
+	"\x1dListScopeTldListenersResponse\x126\n" +
+	"\tlisteners\x18\x01 \x03(\v2\x18.rolodex_dns.TldListenerR\tlisteners\"\x8f\x01\n" +
 	"\x0eDhcpCertOption\x12\x1d\n" +
 	"\n" +
 	"scope_name\x18\x01 \x01(\tR\tscopeName\x12\x1f\n" +
@@ -9836,7 +10014,7 @@ const file_rolodex_dns_proto_rawDesc = "" +
 	"\x05NSEC3\x10\x13\x12\x0e\n" +
 	"\n" +
 	"NSEC3PARAM\x10\x14\x12\b\n" +
-	"\x04CERT\x10\x152\xfd4\n" +
+	"\x04CERT\x10\x152\xed5\n" +
 	"\x11RolodexDnsService\x12J\n" +
 	"\tAddRecord\x12\x1d.rolodex_dns.AddRecordRequest\x1a\x1e.rolodex_dns.AddRecordResponse\x12S\n" +
 	"\fRemoveRecord\x12 .rolodex_dns.RemoveRecordRequest\x1a!.rolodex_dns.RemoveRecordResponse\x12P\n" +
@@ -9901,7 +10079,8 @@ const file_rolodex_dns_proto_rawDesc = "" +
 	"\x0eRemoveScopeTld\x12\".rolodex_dns.RemoveScopeTldRequest\x1a#.rolodex_dns.RemoveScopeTldResponse\x12V\n" +
 	"\rListScopeTlds\x12!.rolodex_dns.ListScopeTldsRequest\x1a\".rolodex_dns.ListScopeTldsResponse\x12n\n" +
 	"\x15SetScopeTldForwarders\x12).rolodex_dns.SetScopeTldForwardersRequest\x1a*.rolodex_dns.SetScopeTldForwardersResponse\x12q\n" +
-	"\x16ListScopeTldForwarders\x12*.rolodex_dns.ListScopeTldForwardersRequest\x1a+.rolodex_dns.ListScopeTldForwardersResponse\x12b\n" +
+	"\x16ListScopeTldForwarders\x12*.rolodex_dns.ListScopeTldForwardersRequest\x1a+.rolodex_dns.ListScopeTldForwardersResponse\x12n\n" +
+	"\x15ListScopeTldListeners\x12).rolodex_dns.ListScopeTldListenersRequest\x1a*.rolodex_dns.ListScopeTldListenersResponse\x12b\n" +
 	"\x11SetDhcpCertOption\x12%.rolodex_dns.SetDhcpCertOptionRequest\x1a&.rolodex_dns.SetDhcpCertOptionResponse\x12k\n" +
 	"\x14RemoveDhcpCertOption\x12(.rolodex_dns.RemoveDhcpCertOptionRequest\x1a).rolodex_dns.RemoveDhcpCertOptionResponse\x12h\n" +
 	"\x13ListDhcpCertOptions\x12'.rolodex_dns.ListDhcpCertOptionsRequest\x1a(.rolodex_dns.ListDhcpCertOptionsResponse\x12S\n" +
@@ -9924,7 +10103,7 @@ func file_rolodex_dns_proto_rawDescGZIP() []byte {
 }
 
 var file_rolodex_dns_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_rolodex_dns_proto_msgTypes = make([]protoimpl.MessageInfo, 163)
+var file_rolodex_dns_proto_msgTypes = make([]protoimpl.MessageInfo, 166)
 var file_rolodex_dns_proto_goTypes = []any{
 	(RecordType)(0),                         // 0: rolodex_dns.RecordType
 	(*DnsRecord)(nil),                       // 1: rolodex_dns.DnsRecord
@@ -10083,13 +10262,16 @@ var file_rolodex_dns_proto_goTypes = []any{
 	(*SetScopeTldForwardersResponse)(nil),   // 154: rolodex_dns.SetScopeTldForwardersResponse
 	(*ListScopeTldForwardersRequest)(nil),   // 155: rolodex_dns.ListScopeTldForwardersRequest
 	(*ListScopeTldForwardersResponse)(nil),  // 156: rolodex_dns.ListScopeTldForwardersResponse
-	(*DhcpCertOption)(nil),                  // 157: rolodex_dns.DhcpCertOption
-	(*SetDhcpCertOptionRequest)(nil),        // 158: rolodex_dns.SetDhcpCertOptionRequest
-	(*SetDhcpCertOptionResponse)(nil),       // 159: rolodex_dns.SetDhcpCertOptionResponse
-	(*RemoveDhcpCertOptionRequest)(nil),     // 160: rolodex_dns.RemoveDhcpCertOptionRequest
-	(*RemoveDhcpCertOptionResponse)(nil),    // 161: rolodex_dns.RemoveDhcpCertOptionResponse
-	(*ListDhcpCertOptionsRequest)(nil),      // 162: rolodex_dns.ListDhcpCertOptionsRequest
-	(*ListDhcpCertOptionsResponse)(nil),     // 163: rolodex_dns.ListDhcpCertOptionsResponse
+	(*TldListener)(nil),                     // 157: rolodex_dns.TldListener
+	(*ListScopeTldListenersRequest)(nil),    // 158: rolodex_dns.ListScopeTldListenersRequest
+	(*ListScopeTldListenersResponse)(nil),   // 159: rolodex_dns.ListScopeTldListenersResponse
+	(*DhcpCertOption)(nil),                  // 160: rolodex_dns.DhcpCertOption
+	(*SetDhcpCertOptionRequest)(nil),        // 161: rolodex_dns.SetDhcpCertOptionRequest
+	(*SetDhcpCertOptionResponse)(nil),       // 162: rolodex_dns.SetDhcpCertOptionResponse
+	(*RemoveDhcpCertOptionRequest)(nil),     // 163: rolodex_dns.RemoveDhcpCertOptionRequest
+	(*RemoveDhcpCertOptionResponse)(nil),    // 164: rolodex_dns.RemoveDhcpCertOptionResponse
+	(*ListDhcpCertOptionsRequest)(nil),      // 165: rolodex_dns.ListDhcpCertOptionsRequest
+	(*ListDhcpCertOptionsResponse)(nil),     // 166: rolodex_dns.ListDhcpCertOptionsResponse
 }
 var file_rolodex_dns_proto_depIdxs = []int32{
 	0,   // 0: rolodex_dns.DnsRecord.record_type:type_name -> rolodex_dns.RecordType
@@ -10136,155 +10318,158 @@ var file_rolodex_dns_proto_depIdxs = []int32{
 	135, // 41: rolodex_dns.ListDhcpLeasesResponse.leases:type_name -> rolodex_dns.DhcpLease
 	140, // 42: rolodex_dns.AddScopeRblProviderRequest.provider:type_name -> rolodex_dns.ScopeRblProvider
 	140, // 43: rolodex_dns.ListScopeRblProvidersResponse.providers:type_name -> rolodex_dns.ScopeRblProvider
-	157, // 44: rolodex_dns.SetDhcpCertOptionRequest.option:type_name -> rolodex_dns.DhcpCertOption
-	157, // 45: rolodex_dns.ListDhcpCertOptionsResponse.options:type_name -> rolodex_dns.DhcpCertOption
-	2,   // 46: rolodex_dns.RolodexDnsService.AddRecord:input_type -> rolodex_dns.AddRecordRequest
-	4,   // 47: rolodex_dns.RolodexDnsService.RemoveRecord:input_type -> rolodex_dns.RemoveRecordRequest
-	6,   // 48: rolodex_dns.RolodexDnsService.ListRecords:input_type -> rolodex_dns.ListRecordsRequest
-	8,   // 49: rolodex_dns.RolodexDnsService.SetForwarders:input_type -> rolodex_dns.SetForwarderRequest
-	11,  // 50: rolodex_dns.RolodexDnsService.SetRblConfig:input_type -> rolodex_dns.SetRblConfigRequest
-	13,  // 51: rolodex_dns.RolodexDnsService.GetRblConfig:input_type -> rolodex_dns.GetRblConfigRequest
-	16,  // 52: rolodex_dns.RolodexDnsService.SetDnsblConfig:input_type -> rolodex_dns.SetDnsblConfigRequest
-	18,  // 53: rolodex_dns.RolodexDnsService.GetDnsblConfig:input_type -> rolodex_dns.GetDnsblConfigRequest
-	20,  // 54: rolodex_dns.RolodexDnsService.FlushCache:input_type -> rolodex_dns.FlushCacheRequest
-	23,  // 55: rolodex_dns.RolodexDnsService.CreateNetworkScope:input_type -> rolodex_dns.CreateNetworkScopeRequest
-	25,  // 56: rolodex_dns.RolodexDnsService.DeleteNetworkScope:input_type -> rolodex_dns.DeleteNetworkScopeRequest
-	27,  // 57: rolodex_dns.RolodexDnsService.ListNetworkScopes:input_type -> rolodex_dns.ListNetworkScopesRequest
-	29,  // 58: rolodex_dns.RolodexDnsService.JoinNetwork:input_type -> rolodex_dns.JoinNetworkRequest
-	31,  // 59: rolodex_dns.RolodexDnsService.LeaveNetwork:input_type -> rolodex_dns.LeaveNetworkRequest
-	33,  // 60: rolodex_dns.RolodexDnsService.GetNetworkAssociations:input_type -> rolodex_dns.GetNetworkAssociationsRequest
-	36,  // 61: rolodex_dns.RolodexDnsService.AddScopedRecord:input_type -> rolodex_dns.AddScopedRecordRequest
-	38,  // 62: rolodex_dns.RolodexDnsService.RemoveScopedRecord:input_type -> rolodex_dns.RemoveScopedRecordRequest
-	40,  // 63: rolodex_dns.RolodexDnsService.ListScopedRecords:input_type -> rolodex_dns.ListScopedRecordsRequest
-	42,  // 64: rolodex_dns.RolodexDnsService.GetSearchDomains:input_type -> rolodex_dns.GetSearchDomainsRequest
-	44,  // 65: rolodex_dns.RolodexDnsService.AddAuthoritativeZone:input_type -> rolodex_dns.AddAuthoritativeZoneRequest
-	46,  // 66: rolodex_dns.RolodexDnsService.RemoveAuthoritativeZone:input_type -> rolodex_dns.RemoveAuthoritativeZoneRequest
-	48,  // 67: rolodex_dns.RolodexDnsService.ListAuthoritativeZones:input_type -> rolodex_dns.ListAuthoritativeZonesRequest
-	50,  // 68: rolodex_dns.RolodexDnsService.GetCacheStats:input_type -> rolodex_dns.GetCacheStatsRequest
-	52,  // 69: rolodex_dns.RolodexDnsService.FlushDnsCache:input_type -> rolodex_dns.FlushDnsCacheRequest
-	55,  // 70: rolodex_dns.RolodexDnsService.SetTtlDriftConfig:input_type -> rolodex_dns.SetTtlDriftConfigRequest
-	57,  // 71: rolodex_dns.RolodexDnsService.GetTtlDriftConfig:input_type -> rolodex_dns.GetTtlDriftConfigRequest
-	60,  // 72: rolodex_dns.RolodexDnsService.GetQueryLatencyStats:input_type -> rolodex_dns.GetQueryLatencyStatsRequest
-	63,  // 73: rolodex_dns.RolodexDnsService.AddLocalRblEntry:input_type -> rolodex_dns.AddLocalRblEntryRequest
-	65,  // 74: rolodex_dns.RolodexDnsService.RemoveLocalRblEntry:input_type -> rolodex_dns.RemoveLocalRblEntryRequest
-	67,  // 75: rolodex_dns.RolodexDnsService.ListLocalRblEntries:input_type -> rolodex_dns.ListLocalRblEntriesRequest
-	71,  // 76: rolodex_dns.RolodexDnsService.SetDotConfig:input_type -> rolodex_dns.SetDotConfigRequest
-	73,  // 77: rolodex_dns.RolodexDnsService.GetDotConfig:input_type -> rolodex_dns.GetDotConfigRequest
-	76,  // 78: rolodex_dns.RolodexDnsService.SetDohConfig:input_type -> rolodex_dns.SetDohConfigRequest
-	78,  // 79: rolodex_dns.RolodexDnsService.GetDohConfig:input_type -> rolodex_dns.GetDohConfigRequest
-	81,  // 80: rolodex_dns.RolodexDnsService.SetDoqConfig:input_type -> rolodex_dns.SetDoqConfigRequest
-	83,  // 81: rolodex_dns.RolodexDnsService.GetDoqConfig:input_type -> rolodex_dns.GetDoqConfigRequest
-	86,  // 82: rolodex_dns.RolodexDnsService.SetProxyConfig:input_type -> rolodex_dns.SetProxyConfigRequest
-	88,  // 83: rolodex_dns.RolodexDnsService.GetProxyConfig:input_type -> rolodex_dns.GetProxyConfigRequest
-	91,  // 84: rolodex_dns.RolodexDnsService.GenerateDnssecKey:input_type -> rolodex_dns.GenerateDnssecKeyRequest
-	93,  // 85: rolodex_dns.RolodexDnsService.ListDnssecKeys:input_type -> rolodex_dns.ListDnssecKeysRequest
-	95,  // 86: rolodex_dns.RolodexDnsService.DeleteDnssecKey:input_type -> rolodex_dns.DeleteDnssecKeyRequest
-	97,  // 87: rolodex_dns.RolodexDnsService.GetDsRecords:input_type -> rolodex_dns.GetDsRecordsRequest
-	99,  // 88: rolodex_dns.RolodexDnsService.SignZone:input_type -> rolodex_dns.SignZoneRequest
-	101, // 89: rolodex_dns.RolodexDnsService.GenerateTlsaRecord:input_type -> rolodex_dns.GenerateTlsaRecordRequest
-	103, // 90: rolodex_dns.RolodexDnsService.ListTlsaRecords:input_type -> rolodex_dns.ListTlsaRecordsRequest
-	105, // 91: rolodex_dns.RolodexDnsService.GenerateDaneRootCa:input_type -> rolodex_dns.GenerateDaneRootCaRequest
-	107, // 92: rolodex_dns.RolodexDnsService.RequestAcmeCert:input_type -> rolodex_dns.RequestAcmeCertRequest
-	109, // 93: rolodex_dns.RolodexDnsService.GetAcmeStatus:input_type -> rolodex_dns.GetAcmeStatusRequest
-	124, // 94: rolodex_dns.RolodexDnsService.SetDns64Config:input_type -> rolodex_dns.SetDns64ConfigRequest
-	126, // 95: rolodex_dns.RolodexDnsService.GetDns64Config:input_type -> rolodex_dns.GetDns64ConfigRequest
-	129, // 96: rolodex_dns.RolodexDnsService.AddDhcpPool:input_type -> rolodex_dns.AddDhcpPoolRequest
-	131, // 97: rolodex_dns.RolodexDnsService.RemoveDhcpPool:input_type -> rolodex_dns.RemoveDhcpPoolRequest
-	133, // 98: rolodex_dns.RolodexDnsService.ListDhcpPools:input_type -> rolodex_dns.ListDhcpPoolsRequest
-	136, // 99: rolodex_dns.RolodexDnsService.ListDhcpLeases:input_type -> rolodex_dns.ListDhcpLeasesRequest
-	138, // 100: rolodex_dns.RolodexDnsService.DeleteDhcpLease:input_type -> rolodex_dns.DeleteDhcpLeaseRequest
-	141, // 101: rolodex_dns.RolodexDnsService.AddScopeRblProvider:input_type -> rolodex_dns.AddScopeRblProviderRequest
-	143, // 102: rolodex_dns.RolodexDnsService.RemoveScopeRblProvider:input_type -> rolodex_dns.RemoveScopeRblProviderRequest
-	145, // 103: rolodex_dns.RolodexDnsService.ListScopeRblProviders:input_type -> rolodex_dns.ListScopeRblProvidersRequest
-	147, // 104: rolodex_dns.RolodexDnsService.AddScopeTld:input_type -> rolodex_dns.AddScopeTldRequest
-	149, // 105: rolodex_dns.RolodexDnsService.RemoveScopeTld:input_type -> rolodex_dns.RemoveScopeTldRequest
-	151, // 106: rolodex_dns.RolodexDnsService.ListScopeTlds:input_type -> rolodex_dns.ListScopeTldsRequest
-	153, // 107: rolodex_dns.RolodexDnsService.SetScopeTldForwarders:input_type -> rolodex_dns.SetScopeTldForwardersRequest
-	155, // 108: rolodex_dns.RolodexDnsService.ListScopeTldForwarders:input_type -> rolodex_dns.ListScopeTldForwardersRequest
-	158, // 109: rolodex_dns.RolodexDnsService.SetDhcpCertOption:input_type -> rolodex_dns.SetDhcpCertOptionRequest
-	160, // 110: rolodex_dns.RolodexDnsService.RemoveDhcpCertOption:input_type -> rolodex_dns.RemoveDhcpCertOptionRequest
-	162, // 111: rolodex_dns.RolodexDnsService.ListDhcpCertOptions:input_type -> rolodex_dns.ListDhcpCertOptionsRequest
-	111, // 112: rolodex_dns.RolodexDnsService.EnsureZoneCa:input_type -> rolodex_dns.EnsureZoneCaRequest
-	113, // 113: rolodex_dns.RolodexDnsService.CreateEabCredential:input_type -> rolodex_dns.CreateEabCredentialRequest
-	115, // 114: rolodex_dns.RolodexDnsService.RemoveEabCredential:input_type -> rolodex_dns.RemoveEabCredentialRequest
-	118, // 115: rolodex_dns.RolodexDnsService.ListAcmeAccounts:input_type -> rolodex_dns.ListAcmeAccountsRequest
-	121, // 116: rolodex_dns.RolodexDnsService.ListAcmeCertificates:input_type -> rolodex_dns.ListAcmeCertificatesRequest
-	3,   // 117: rolodex_dns.RolodexDnsService.AddRecord:output_type -> rolodex_dns.AddRecordResponse
-	5,   // 118: rolodex_dns.RolodexDnsService.RemoveRecord:output_type -> rolodex_dns.RemoveRecordResponse
-	7,   // 119: rolodex_dns.RolodexDnsService.ListRecords:output_type -> rolodex_dns.ListRecordsResponse
-	9,   // 120: rolodex_dns.RolodexDnsService.SetForwarders:output_type -> rolodex_dns.SetForwarderResponse
-	12,  // 121: rolodex_dns.RolodexDnsService.SetRblConfig:output_type -> rolodex_dns.SetRblConfigResponse
-	14,  // 122: rolodex_dns.RolodexDnsService.GetRblConfig:output_type -> rolodex_dns.GetRblConfigResponse
-	17,  // 123: rolodex_dns.RolodexDnsService.SetDnsblConfig:output_type -> rolodex_dns.SetDnsblConfigResponse
-	19,  // 124: rolodex_dns.RolodexDnsService.GetDnsblConfig:output_type -> rolodex_dns.GetDnsblConfigResponse
-	21,  // 125: rolodex_dns.RolodexDnsService.FlushCache:output_type -> rolodex_dns.FlushCacheResponse
-	24,  // 126: rolodex_dns.RolodexDnsService.CreateNetworkScope:output_type -> rolodex_dns.CreateNetworkScopeResponse
-	26,  // 127: rolodex_dns.RolodexDnsService.DeleteNetworkScope:output_type -> rolodex_dns.DeleteNetworkScopeResponse
-	28,  // 128: rolodex_dns.RolodexDnsService.ListNetworkScopes:output_type -> rolodex_dns.ListNetworkScopesResponse
-	30,  // 129: rolodex_dns.RolodexDnsService.JoinNetwork:output_type -> rolodex_dns.JoinNetworkResponse
-	32,  // 130: rolodex_dns.RolodexDnsService.LeaveNetwork:output_type -> rolodex_dns.LeaveNetworkResponse
-	35,  // 131: rolodex_dns.RolodexDnsService.GetNetworkAssociations:output_type -> rolodex_dns.GetNetworkAssociationsResponse
-	37,  // 132: rolodex_dns.RolodexDnsService.AddScopedRecord:output_type -> rolodex_dns.AddScopedRecordResponse
-	39,  // 133: rolodex_dns.RolodexDnsService.RemoveScopedRecord:output_type -> rolodex_dns.RemoveScopedRecordResponse
-	41,  // 134: rolodex_dns.RolodexDnsService.ListScopedRecords:output_type -> rolodex_dns.ListScopedRecordsResponse
-	43,  // 135: rolodex_dns.RolodexDnsService.GetSearchDomains:output_type -> rolodex_dns.GetSearchDomainsResponse
-	45,  // 136: rolodex_dns.RolodexDnsService.AddAuthoritativeZone:output_type -> rolodex_dns.AddAuthoritativeZoneResponse
-	47,  // 137: rolodex_dns.RolodexDnsService.RemoveAuthoritativeZone:output_type -> rolodex_dns.RemoveAuthoritativeZoneResponse
-	49,  // 138: rolodex_dns.RolodexDnsService.ListAuthoritativeZones:output_type -> rolodex_dns.ListAuthoritativeZonesResponse
-	51,  // 139: rolodex_dns.RolodexDnsService.GetCacheStats:output_type -> rolodex_dns.GetCacheStatsResponse
-	53,  // 140: rolodex_dns.RolodexDnsService.FlushDnsCache:output_type -> rolodex_dns.FlushDnsCacheResponse
-	56,  // 141: rolodex_dns.RolodexDnsService.SetTtlDriftConfig:output_type -> rolodex_dns.SetTtlDriftConfigResponse
-	58,  // 142: rolodex_dns.RolodexDnsService.GetTtlDriftConfig:output_type -> rolodex_dns.GetTtlDriftConfigResponse
-	61,  // 143: rolodex_dns.RolodexDnsService.GetQueryLatencyStats:output_type -> rolodex_dns.GetQueryLatencyStatsResponse
-	64,  // 144: rolodex_dns.RolodexDnsService.AddLocalRblEntry:output_type -> rolodex_dns.AddLocalRblEntryResponse
-	66,  // 145: rolodex_dns.RolodexDnsService.RemoveLocalRblEntry:output_type -> rolodex_dns.RemoveLocalRblEntryResponse
-	68,  // 146: rolodex_dns.RolodexDnsService.ListLocalRblEntries:output_type -> rolodex_dns.ListLocalRblEntriesResponse
-	72,  // 147: rolodex_dns.RolodexDnsService.SetDotConfig:output_type -> rolodex_dns.SetDotConfigResponse
-	74,  // 148: rolodex_dns.RolodexDnsService.GetDotConfig:output_type -> rolodex_dns.GetDotConfigResponse
-	77,  // 149: rolodex_dns.RolodexDnsService.SetDohConfig:output_type -> rolodex_dns.SetDohConfigResponse
-	79,  // 150: rolodex_dns.RolodexDnsService.GetDohConfig:output_type -> rolodex_dns.GetDohConfigResponse
-	82,  // 151: rolodex_dns.RolodexDnsService.SetDoqConfig:output_type -> rolodex_dns.SetDoqConfigResponse
-	84,  // 152: rolodex_dns.RolodexDnsService.GetDoqConfig:output_type -> rolodex_dns.GetDoqConfigResponse
-	87,  // 153: rolodex_dns.RolodexDnsService.SetProxyConfig:output_type -> rolodex_dns.SetProxyConfigResponse
-	89,  // 154: rolodex_dns.RolodexDnsService.GetProxyConfig:output_type -> rolodex_dns.GetProxyConfigResponse
-	92,  // 155: rolodex_dns.RolodexDnsService.GenerateDnssecKey:output_type -> rolodex_dns.GenerateDnssecKeyResponse
-	94,  // 156: rolodex_dns.RolodexDnsService.ListDnssecKeys:output_type -> rolodex_dns.ListDnssecKeysResponse
-	96,  // 157: rolodex_dns.RolodexDnsService.DeleteDnssecKey:output_type -> rolodex_dns.DeleteDnssecKeyResponse
-	98,  // 158: rolodex_dns.RolodexDnsService.GetDsRecords:output_type -> rolodex_dns.GetDsRecordsResponse
-	100, // 159: rolodex_dns.RolodexDnsService.SignZone:output_type -> rolodex_dns.SignZoneResponse
-	102, // 160: rolodex_dns.RolodexDnsService.GenerateTlsaRecord:output_type -> rolodex_dns.GenerateTlsaRecordResponse
-	104, // 161: rolodex_dns.RolodexDnsService.ListTlsaRecords:output_type -> rolodex_dns.ListTlsaRecordsResponse
-	106, // 162: rolodex_dns.RolodexDnsService.GenerateDaneRootCa:output_type -> rolodex_dns.GenerateDaneRootCaResponse
-	108, // 163: rolodex_dns.RolodexDnsService.RequestAcmeCert:output_type -> rolodex_dns.RequestAcmeCertResponse
-	110, // 164: rolodex_dns.RolodexDnsService.GetAcmeStatus:output_type -> rolodex_dns.GetAcmeStatusResponse
-	125, // 165: rolodex_dns.RolodexDnsService.SetDns64Config:output_type -> rolodex_dns.SetDns64ConfigResponse
-	127, // 166: rolodex_dns.RolodexDnsService.GetDns64Config:output_type -> rolodex_dns.GetDns64ConfigResponse
-	130, // 167: rolodex_dns.RolodexDnsService.AddDhcpPool:output_type -> rolodex_dns.AddDhcpPoolResponse
-	132, // 168: rolodex_dns.RolodexDnsService.RemoveDhcpPool:output_type -> rolodex_dns.RemoveDhcpPoolResponse
-	134, // 169: rolodex_dns.RolodexDnsService.ListDhcpPools:output_type -> rolodex_dns.ListDhcpPoolsResponse
-	137, // 170: rolodex_dns.RolodexDnsService.ListDhcpLeases:output_type -> rolodex_dns.ListDhcpLeasesResponse
-	139, // 171: rolodex_dns.RolodexDnsService.DeleteDhcpLease:output_type -> rolodex_dns.DeleteDhcpLeaseResponse
-	142, // 172: rolodex_dns.RolodexDnsService.AddScopeRblProvider:output_type -> rolodex_dns.AddScopeRblProviderResponse
-	144, // 173: rolodex_dns.RolodexDnsService.RemoveScopeRblProvider:output_type -> rolodex_dns.RemoveScopeRblProviderResponse
-	146, // 174: rolodex_dns.RolodexDnsService.ListScopeRblProviders:output_type -> rolodex_dns.ListScopeRblProvidersResponse
-	148, // 175: rolodex_dns.RolodexDnsService.AddScopeTld:output_type -> rolodex_dns.AddScopeTldResponse
-	150, // 176: rolodex_dns.RolodexDnsService.RemoveScopeTld:output_type -> rolodex_dns.RemoveScopeTldResponse
-	152, // 177: rolodex_dns.RolodexDnsService.ListScopeTlds:output_type -> rolodex_dns.ListScopeTldsResponse
-	154, // 178: rolodex_dns.RolodexDnsService.SetScopeTldForwarders:output_type -> rolodex_dns.SetScopeTldForwardersResponse
-	156, // 179: rolodex_dns.RolodexDnsService.ListScopeTldForwarders:output_type -> rolodex_dns.ListScopeTldForwardersResponse
-	159, // 180: rolodex_dns.RolodexDnsService.SetDhcpCertOption:output_type -> rolodex_dns.SetDhcpCertOptionResponse
-	161, // 181: rolodex_dns.RolodexDnsService.RemoveDhcpCertOption:output_type -> rolodex_dns.RemoveDhcpCertOptionResponse
-	163, // 182: rolodex_dns.RolodexDnsService.ListDhcpCertOptions:output_type -> rolodex_dns.ListDhcpCertOptionsResponse
-	112, // 183: rolodex_dns.RolodexDnsService.EnsureZoneCa:output_type -> rolodex_dns.EnsureZoneCaResponse
-	114, // 184: rolodex_dns.RolodexDnsService.CreateEabCredential:output_type -> rolodex_dns.CreateEabCredentialResponse
-	116, // 185: rolodex_dns.RolodexDnsService.RemoveEabCredential:output_type -> rolodex_dns.RemoveEabCredentialResponse
-	119, // 186: rolodex_dns.RolodexDnsService.ListAcmeAccounts:output_type -> rolodex_dns.ListAcmeAccountsResponse
-	122, // 187: rolodex_dns.RolodexDnsService.ListAcmeCertificates:output_type -> rolodex_dns.ListAcmeCertificatesResponse
-	117, // [117:188] is the sub-list for method output_type
-	46,  // [46:117] is the sub-list for method input_type
-	46,  // [46:46] is the sub-list for extension type_name
-	46,  // [46:46] is the sub-list for extension extendee
-	0,   // [0:46] is the sub-list for field type_name
+	157, // 44: rolodex_dns.ListScopeTldListenersResponse.listeners:type_name -> rolodex_dns.TldListener
+	160, // 45: rolodex_dns.SetDhcpCertOptionRequest.option:type_name -> rolodex_dns.DhcpCertOption
+	160, // 46: rolodex_dns.ListDhcpCertOptionsResponse.options:type_name -> rolodex_dns.DhcpCertOption
+	2,   // 47: rolodex_dns.RolodexDnsService.AddRecord:input_type -> rolodex_dns.AddRecordRequest
+	4,   // 48: rolodex_dns.RolodexDnsService.RemoveRecord:input_type -> rolodex_dns.RemoveRecordRequest
+	6,   // 49: rolodex_dns.RolodexDnsService.ListRecords:input_type -> rolodex_dns.ListRecordsRequest
+	8,   // 50: rolodex_dns.RolodexDnsService.SetForwarders:input_type -> rolodex_dns.SetForwarderRequest
+	11,  // 51: rolodex_dns.RolodexDnsService.SetRblConfig:input_type -> rolodex_dns.SetRblConfigRequest
+	13,  // 52: rolodex_dns.RolodexDnsService.GetRblConfig:input_type -> rolodex_dns.GetRblConfigRequest
+	16,  // 53: rolodex_dns.RolodexDnsService.SetDnsblConfig:input_type -> rolodex_dns.SetDnsblConfigRequest
+	18,  // 54: rolodex_dns.RolodexDnsService.GetDnsblConfig:input_type -> rolodex_dns.GetDnsblConfigRequest
+	20,  // 55: rolodex_dns.RolodexDnsService.FlushCache:input_type -> rolodex_dns.FlushCacheRequest
+	23,  // 56: rolodex_dns.RolodexDnsService.CreateNetworkScope:input_type -> rolodex_dns.CreateNetworkScopeRequest
+	25,  // 57: rolodex_dns.RolodexDnsService.DeleteNetworkScope:input_type -> rolodex_dns.DeleteNetworkScopeRequest
+	27,  // 58: rolodex_dns.RolodexDnsService.ListNetworkScopes:input_type -> rolodex_dns.ListNetworkScopesRequest
+	29,  // 59: rolodex_dns.RolodexDnsService.JoinNetwork:input_type -> rolodex_dns.JoinNetworkRequest
+	31,  // 60: rolodex_dns.RolodexDnsService.LeaveNetwork:input_type -> rolodex_dns.LeaveNetworkRequest
+	33,  // 61: rolodex_dns.RolodexDnsService.GetNetworkAssociations:input_type -> rolodex_dns.GetNetworkAssociationsRequest
+	36,  // 62: rolodex_dns.RolodexDnsService.AddScopedRecord:input_type -> rolodex_dns.AddScopedRecordRequest
+	38,  // 63: rolodex_dns.RolodexDnsService.RemoveScopedRecord:input_type -> rolodex_dns.RemoveScopedRecordRequest
+	40,  // 64: rolodex_dns.RolodexDnsService.ListScopedRecords:input_type -> rolodex_dns.ListScopedRecordsRequest
+	42,  // 65: rolodex_dns.RolodexDnsService.GetSearchDomains:input_type -> rolodex_dns.GetSearchDomainsRequest
+	44,  // 66: rolodex_dns.RolodexDnsService.AddAuthoritativeZone:input_type -> rolodex_dns.AddAuthoritativeZoneRequest
+	46,  // 67: rolodex_dns.RolodexDnsService.RemoveAuthoritativeZone:input_type -> rolodex_dns.RemoveAuthoritativeZoneRequest
+	48,  // 68: rolodex_dns.RolodexDnsService.ListAuthoritativeZones:input_type -> rolodex_dns.ListAuthoritativeZonesRequest
+	50,  // 69: rolodex_dns.RolodexDnsService.GetCacheStats:input_type -> rolodex_dns.GetCacheStatsRequest
+	52,  // 70: rolodex_dns.RolodexDnsService.FlushDnsCache:input_type -> rolodex_dns.FlushDnsCacheRequest
+	55,  // 71: rolodex_dns.RolodexDnsService.SetTtlDriftConfig:input_type -> rolodex_dns.SetTtlDriftConfigRequest
+	57,  // 72: rolodex_dns.RolodexDnsService.GetTtlDriftConfig:input_type -> rolodex_dns.GetTtlDriftConfigRequest
+	60,  // 73: rolodex_dns.RolodexDnsService.GetQueryLatencyStats:input_type -> rolodex_dns.GetQueryLatencyStatsRequest
+	63,  // 74: rolodex_dns.RolodexDnsService.AddLocalRblEntry:input_type -> rolodex_dns.AddLocalRblEntryRequest
+	65,  // 75: rolodex_dns.RolodexDnsService.RemoveLocalRblEntry:input_type -> rolodex_dns.RemoveLocalRblEntryRequest
+	67,  // 76: rolodex_dns.RolodexDnsService.ListLocalRblEntries:input_type -> rolodex_dns.ListLocalRblEntriesRequest
+	71,  // 77: rolodex_dns.RolodexDnsService.SetDotConfig:input_type -> rolodex_dns.SetDotConfigRequest
+	73,  // 78: rolodex_dns.RolodexDnsService.GetDotConfig:input_type -> rolodex_dns.GetDotConfigRequest
+	76,  // 79: rolodex_dns.RolodexDnsService.SetDohConfig:input_type -> rolodex_dns.SetDohConfigRequest
+	78,  // 80: rolodex_dns.RolodexDnsService.GetDohConfig:input_type -> rolodex_dns.GetDohConfigRequest
+	81,  // 81: rolodex_dns.RolodexDnsService.SetDoqConfig:input_type -> rolodex_dns.SetDoqConfigRequest
+	83,  // 82: rolodex_dns.RolodexDnsService.GetDoqConfig:input_type -> rolodex_dns.GetDoqConfigRequest
+	86,  // 83: rolodex_dns.RolodexDnsService.SetProxyConfig:input_type -> rolodex_dns.SetProxyConfigRequest
+	88,  // 84: rolodex_dns.RolodexDnsService.GetProxyConfig:input_type -> rolodex_dns.GetProxyConfigRequest
+	91,  // 85: rolodex_dns.RolodexDnsService.GenerateDnssecKey:input_type -> rolodex_dns.GenerateDnssecKeyRequest
+	93,  // 86: rolodex_dns.RolodexDnsService.ListDnssecKeys:input_type -> rolodex_dns.ListDnssecKeysRequest
+	95,  // 87: rolodex_dns.RolodexDnsService.DeleteDnssecKey:input_type -> rolodex_dns.DeleteDnssecKeyRequest
+	97,  // 88: rolodex_dns.RolodexDnsService.GetDsRecords:input_type -> rolodex_dns.GetDsRecordsRequest
+	99,  // 89: rolodex_dns.RolodexDnsService.SignZone:input_type -> rolodex_dns.SignZoneRequest
+	101, // 90: rolodex_dns.RolodexDnsService.GenerateTlsaRecord:input_type -> rolodex_dns.GenerateTlsaRecordRequest
+	103, // 91: rolodex_dns.RolodexDnsService.ListTlsaRecords:input_type -> rolodex_dns.ListTlsaRecordsRequest
+	105, // 92: rolodex_dns.RolodexDnsService.GenerateDaneRootCa:input_type -> rolodex_dns.GenerateDaneRootCaRequest
+	107, // 93: rolodex_dns.RolodexDnsService.RequestAcmeCert:input_type -> rolodex_dns.RequestAcmeCertRequest
+	109, // 94: rolodex_dns.RolodexDnsService.GetAcmeStatus:input_type -> rolodex_dns.GetAcmeStatusRequest
+	124, // 95: rolodex_dns.RolodexDnsService.SetDns64Config:input_type -> rolodex_dns.SetDns64ConfigRequest
+	126, // 96: rolodex_dns.RolodexDnsService.GetDns64Config:input_type -> rolodex_dns.GetDns64ConfigRequest
+	129, // 97: rolodex_dns.RolodexDnsService.AddDhcpPool:input_type -> rolodex_dns.AddDhcpPoolRequest
+	131, // 98: rolodex_dns.RolodexDnsService.RemoveDhcpPool:input_type -> rolodex_dns.RemoveDhcpPoolRequest
+	133, // 99: rolodex_dns.RolodexDnsService.ListDhcpPools:input_type -> rolodex_dns.ListDhcpPoolsRequest
+	136, // 100: rolodex_dns.RolodexDnsService.ListDhcpLeases:input_type -> rolodex_dns.ListDhcpLeasesRequest
+	138, // 101: rolodex_dns.RolodexDnsService.DeleteDhcpLease:input_type -> rolodex_dns.DeleteDhcpLeaseRequest
+	141, // 102: rolodex_dns.RolodexDnsService.AddScopeRblProvider:input_type -> rolodex_dns.AddScopeRblProviderRequest
+	143, // 103: rolodex_dns.RolodexDnsService.RemoveScopeRblProvider:input_type -> rolodex_dns.RemoveScopeRblProviderRequest
+	145, // 104: rolodex_dns.RolodexDnsService.ListScopeRblProviders:input_type -> rolodex_dns.ListScopeRblProvidersRequest
+	147, // 105: rolodex_dns.RolodexDnsService.AddScopeTld:input_type -> rolodex_dns.AddScopeTldRequest
+	149, // 106: rolodex_dns.RolodexDnsService.RemoveScopeTld:input_type -> rolodex_dns.RemoveScopeTldRequest
+	151, // 107: rolodex_dns.RolodexDnsService.ListScopeTlds:input_type -> rolodex_dns.ListScopeTldsRequest
+	153, // 108: rolodex_dns.RolodexDnsService.SetScopeTldForwarders:input_type -> rolodex_dns.SetScopeTldForwardersRequest
+	155, // 109: rolodex_dns.RolodexDnsService.ListScopeTldForwarders:input_type -> rolodex_dns.ListScopeTldForwardersRequest
+	158, // 110: rolodex_dns.RolodexDnsService.ListScopeTldListeners:input_type -> rolodex_dns.ListScopeTldListenersRequest
+	161, // 111: rolodex_dns.RolodexDnsService.SetDhcpCertOption:input_type -> rolodex_dns.SetDhcpCertOptionRequest
+	163, // 112: rolodex_dns.RolodexDnsService.RemoveDhcpCertOption:input_type -> rolodex_dns.RemoveDhcpCertOptionRequest
+	165, // 113: rolodex_dns.RolodexDnsService.ListDhcpCertOptions:input_type -> rolodex_dns.ListDhcpCertOptionsRequest
+	111, // 114: rolodex_dns.RolodexDnsService.EnsureZoneCa:input_type -> rolodex_dns.EnsureZoneCaRequest
+	113, // 115: rolodex_dns.RolodexDnsService.CreateEabCredential:input_type -> rolodex_dns.CreateEabCredentialRequest
+	115, // 116: rolodex_dns.RolodexDnsService.RemoveEabCredential:input_type -> rolodex_dns.RemoveEabCredentialRequest
+	118, // 117: rolodex_dns.RolodexDnsService.ListAcmeAccounts:input_type -> rolodex_dns.ListAcmeAccountsRequest
+	121, // 118: rolodex_dns.RolodexDnsService.ListAcmeCertificates:input_type -> rolodex_dns.ListAcmeCertificatesRequest
+	3,   // 119: rolodex_dns.RolodexDnsService.AddRecord:output_type -> rolodex_dns.AddRecordResponse
+	5,   // 120: rolodex_dns.RolodexDnsService.RemoveRecord:output_type -> rolodex_dns.RemoveRecordResponse
+	7,   // 121: rolodex_dns.RolodexDnsService.ListRecords:output_type -> rolodex_dns.ListRecordsResponse
+	9,   // 122: rolodex_dns.RolodexDnsService.SetForwarders:output_type -> rolodex_dns.SetForwarderResponse
+	12,  // 123: rolodex_dns.RolodexDnsService.SetRblConfig:output_type -> rolodex_dns.SetRblConfigResponse
+	14,  // 124: rolodex_dns.RolodexDnsService.GetRblConfig:output_type -> rolodex_dns.GetRblConfigResponse
+	17,  // 125: rolodex_dns.RolodexDnsService.SetDnsblConfig:output_type -> rolodex_dns.SetDnsblConfigResponse
+	19,  // 126: rolodex_dns.RolodexDnsService.GetDnsblConfig:output_type -> rolodex_dns.GetDnsblConfigResponse
+	21,  // 127: rolodex_dns.RolodexDnsService.FlushCache:output_type -> rolodex_dns.FlushCacheResponse
+	24,  // 128: rolodex_dns.RolodexDnsService.CreateNetworkScope:output_type -> rolodex_dns.CreateNetworkScopeResponse
+	26,  // 129: rolodex_dns.RolodexDnsService.DeleteNetworkScope:output_type -> rolodex_dns.DeleteNetworkScopeResponse
+	28,  // 130: rolodex_dns.RolodexDnsService.ListNetworkScopes:output_type -> rolodex_dns.ListNetworkScopesResponse
+	30,  // 131: rolodex_dns.RolodexDnsService.JoinNetwork:output_type -> rolodex_dns.JoinNetworkResponse
+	32,  // 132: rolodex_dns.RolodexDnsService.LeaveNetwork:output_type -> rolodex_dns.LeaveNetworkResponse
+	35,  // 133: rolodex_dns.RolodexDnsService.GetNetworkAssociations:output_type -> rolodex_dns.GetNetworkAssociationsResponse
+	37,  // 134: rolodex_dns.RolodexDnsService.AddScopedRecord:output_type -> rolodex_dns.AddScopedRecordResponse
+	39,  // 135: rolodex_dns.RolodexDnsService.RemoveScopedRecord:output_type -> rolodex_dns.RemoveScopedRecordResponse
+	41,  // 136: rolodex_dns.RolodexDnsService.ListScopedRecords:output_type -> rolodex_dns.ListScopedRecordsResponse
+	43,  // 137: rolodex_dns.RolodexDnsService.GetSearchDomains:output_type -> rolodex_dns.GetSearchDomainsResponse
+	45,  // 138: rolodex_dns.RolodexDnsService.AddAuthoritativeZone:output_type -> rolodex_dns.AddAuthoritativeZoneResponse
+	47,  // 139: rolodex_dns.RolodexDnsService.RemoveAuthoritativeZone:output_type -> rolodex_dns.RemoveAuthoritativeZoneResponse
+	49,  // 140: rolodex_dns.RolodexDnsService.ListAuthoritativeZones:output_type -> rolodex_dns.ListAuthoritativeZonesResponse
+	51,  // 141: rolodex_dns.RolodexDnsService.GetCacheStats:output_type -> rolodex_dns.GetCacheStatsResponse
+	53,  // 142: rolodex_dns.RolodexDnsService.FlushDnsCache:output_type -> rolodex_dns.FlushDnsCacheResponse
+	56,  // 143: rolodex_dns.RolodexDnsService.SetTtlDriftConfig:output_type -> rolodex_dns.SetTtlDriftConfigResponse
+	58,  // 144: rolodex_dns.RolodexDnsService.GetTtlDriftConfig:output_type -> rolodex_dns.GetTtlDriftConfigResponse
+	61,  // 145: rolodex_dns.RolodexDnsService.GetQueryLatencyStats:output_type -> rolodex_dns.GetQueryLatencyStatsResponse
+	64,  // 146: rolodex_dns.RolodexDnsService.AddLocalRblEntry:output_type -> rolodex_dns.AddLocalRblEntryResponse
+	66,  // 147: rolodex_dns.RolodexDnsService.RemoveLocalRblEntry:output_type -> rolodex_dns.RemoveLocalRblEntryResponse
+	68,  // 148: rolodex_dns.RolodexDnsService.ListLocalRblEntries:output_type -> rolodex_dns.ListLocalRblEntriesResponse
+	72,  // 149: rolodex_dns.RolodexDnsService.SetDotConfig:output_type -> rolodex_dns.SetDotConfigResponse
+	74,  // 150: rolodex_dns.RolodexDnsService.GetDotConfig:output_type -> rolodex_dns.GetDotConfigResponse
+	77,  // 151: rolodex_dns.RolodexDnsService.SetDohConfig:output_type -> rolodex_dns.SetDohConfigResponse
+	79,  // 152: rolodex_dns.RolodexDnsService.GetDohConfig:output_type -> rolodex_dns.GetDohConfigResponse
+	82,  // 153: rolodex_dns.RolodexDnsService.SetDoqConfig:output_type -> rolodex_dns.SetDoqConfigResponse
+	84,  // 154: rolodex_dns.RolodexDnsService.GetDoqConfig:output_type -> rolodex_dns.GetDoqConfigResponse
+	87,  // 155: rolodex_dns.RolodexDnsService.SetProxyConfig:output_type -> rolodex_dns.SetProxyConfigResponse
+	89,  // 156: rolodex_dns.RolodexDnsService.GetProxyConfig:output_type -> rolodex_dns.GetProxyConfigResponse
+	92,  // 157: rolodex_dns.RolodexDnsService.GenerateDnssecKey:output_type -> rolodex_dns.GenerateDnssecKeyResponse
+	94,  // 158: rolodex_dns.RolodexDnsService.ListDnssecKeys:output_type -> rolodex_dns.ListDnssecKeysResponse
+	96,  // 159: rolodex_dns.RolodexDnsService.DeleteDnssecKey:output_type -> rolodex_dns.DeleteDnssecKeyResponse
+	98,  // 160: rolodex_dns.RolodexDnsService.GetDsRecords:output_type -> rolodex_dns.GetDsRecordsResponse
+	100, // 161: rolodex_dns.RolodexDnsService.SignZone:output_type -> rolodex_dns.SignZoneResponse
+	102, // 162: rolodex_dns.RolodexDnsService.GenerateTlsaRecord:output_type -> rolodex_dns.GenerateTlsaRecordResponse
+	104, // 163: rolodex_dns.RolodexDnsService.ListTlsaRecords:output_type -> rolodex_dns.ListTlsaRecordsResponse
+	106, // 164: rolodex_dns.RolodexDnsService.GenerateDaneRootCa:output_type -> rolodex_dns.GenerateDaneRootCaResponse
+	108, // 165: rolodex_dns.RolodexDnsService.RequestAcmeCert:output_type -> rolodex_dns.RequestAcmeCertResponse
+	110, // 166: rolodex_dns.RolodexDnsService.GetAcmeStatus:output_type -> rolodex_dns.GetAcmeStatusResponse
+	125, // 167: rolodex_dns.RolodexDnsService.SetDns64Config:output_type -> rolodex_dns.SetDns64ConfigResponse
+	127, // 168: rolodex_dns.RolodexDnsService.GetDns64Config:output_type -> rolodex_dns.GetDns64ConfigResponse
+	130, // 169: rolodex_dns.RolodexDnsService.AddDhcpPool:output_type -> rolodex_dns.AddDhcpPoolResponse
+	132, // 170: rolodex_dns.RolodexDnsService.RemoveDhcpPool:output_type -> rolodex_dns.RemoveDhcpPoolResponse
+	134, // 171: rolodex_dns.RolodexDnsService.ListDhcpPools:output_type -> rolodex_dns.ListDhcpPoolsResponse
+	137, // 172: rolodex_dns.RolodexDnsService.ListDhcpLeases:output_type -> rolodex_dns.ListDhcpLeasesResponse
+	139, // 173: rolodex_dns.RolodexDnsService.DeleteDhcpLease:output_type -> rolodex_dns.DeleteDhcpLeaseResponse
+	142, // 174: rolodex_dns.RolodexDnsService.AddScopeRblProvider:output_type -> rolodex_dns.AddScopeRblProviderResponse
+	144, // 175: rolodex_dns.RolodexDnsService.RemoveScopeRblProvider:output_type -> rolodex_dns.RemoveScopeRblProviderResponse
+	146, // 176: rolodex_dns.RolodexDnsService.ListScopeRblProviders:output_type -> rolodex_dns.ListScopeRblProvidersResponse
+	148, // 177: rolodex_dns.RolodexDnsService.AddScopeTld:output_type -> rolodex_dns.AddScopeTldResponse
+	150, // 178: rolodex_dns.RolodexDnsService.RemoveScopeTld:output_type -> rolodex_dns.RemoveScopeTldResponse
+	152, // 179: rolodex_dns.RolodexDnsService.ListScopeTlds:output_type -> rolodex_dns.ListScopeTldsResponse
+	154, // 180: rolodex_dns.RolodexDnsService.SetScopeTldForwarders:output_type -> rolodex_dns.SetScopeTldForwardersResponse
+	156, // 181: rolodex_dns.RolodexDnsService.ListScopeTldForwarders:output_type -> rolodex_dns.ListScopeTldForwardersResponse
+	159, // 182: rolodex_dns.RolodexDnsService.ListScopeTldListeners:output_type -> rolodex_dns.ListScopeTldListenersResponse
+	162, // 183: rolodex_dns.RolodexDnsService.SetDhcpCertOption:output_type -> rolodex_dns.SetDhcpCertOptionResponse
+	164, // 184: rolodex_dns.RolodexDnsService.RemoveDhcpCertOption:output_type -> rolodex_dns.RemoveDhcpCertOptionResponse
+	166, // 185: rolodex_dns.RolodexDnsService.ListDhcpCertOptions:output_type -> rolodex_dns.ListDhcpCertOptionsResponse
+	112, // 186: rolodex_dns.RolodexDnsService.EnsureZoneCa:output_type -> rolodex_dns.EnsureZoneCaResponse
+	114, // 187: rolodex_dns.RolodexDnsService.CreateEabCredential:output_type -> rolodex_dns.CreateEabCredentialResponse
+	116, // 188: rolodex_dns.RolodexDnsService.RemoveEabCredential:output_type -> rolodex_dns.RemoveEabCredentialResponse
+	119, // 189: rolodex_dns.RolodexDnsService.ListAcmeAccounts:output_type -> rolodex_dns.ListAcmeAccountsResponse
+	122, // 190: rolodex_dns.RolodexDnsService.ListAcmeCertificates:output_type -> rolodex_dns.ListAcmeCertificatesResponse
+	119, // [119:191] is the sub-list for method output_type
+	47,  // [47:119] is the sub-list for method input_type
+	47,  // [47:47] is the sub-list for extension type_name
+	47,  // [47:47] is the sub-list for extension extendee
+	0,   // [0:47] is the sub-list for field type_name
 }
 
 func init() { file_rolodex_dns_proto_init() }
@@ -10298,7 +10483,7 @@ func file_rolodex_dns_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_rolodex_dns_proto_rawDesc), len(file_rolodex_dns_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   163,
+			NumMessages:   166,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

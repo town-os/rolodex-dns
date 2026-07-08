@@ -492,6 +492,11 @@ type NetworkScope = pb.NetworkScope
 // NetworkAssociation represents a client IP's membership in a network scope.
 type NetworkAssociation = pb.NetworkAssociation
 
+// TldListener describes a TLD that has an ingress DNS listener bound to a local
+// IP. Programmed names under the TLD, queried on that listener, resolve to
+// ListenIp (the network's ingress controller).
+type TldListener = pb.TldListener
+
 // CreateNetworkScope creates a new network scope on the Rolodex DNS server.
 //
 // Each scope has a unique name and a reserved .home domain that serves
@@ -1563,6 +1568,43 @@ func (c *Client) ListScopeTldForwarders(ctx context.Context, scopeName, tld stri
 		return nil, fmt.Errorf("rolodex-dns: list scope tld forwarders: %w", err)
 	}
 	return resp.Forwarders, nil
+}
+
+// AddScopeTldWithListener registers a globally-unique owned TLD and binds an
+// ingress DNS listener to listenIP for it. The server starts a DNS listener
+// (UDP+TCP) on listenIP; programmed A/AAAA names under the TLD, when queried on
+// that listener, resolve to listenIP (the network's ingress controller). Pass an
+// empty listenIP for the plain-registration behaviour of AddScopeTld.
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/AddScopeTld
+func (c *Client) AddScopeTldWithListener(ctx context.Context, scopeName, tld, listenIP string) error {
+	resp, err := c.rpc.AddScopeTld(ctx, &pb.AddScopeTldRequest{
+		ScopeName: scopeName,
+		Tld:       tld,
+		ListenIp:  listenIP,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex-dns: add scope tld: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex-dns: add scope tld: %s", resp.Message)
+	}
+	return nil
+}
+
+// ListScopeTldListeners lists the ingress DNS listeners bound to a scope's TLDs.
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/ListScopeTldListeners
+func (c *Client) ListScopeTldListeners(ctx context.Context, scopeName string) ([]*TldListener, error) {
+	resp, err := c.rpc.ListScopeTldListeners(ctx, &pb.ListScopeTldListenersRequest{
+		ScopeName: scopeName,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex-dns: list scope tld listeners: %w", err)
+	}
+	return resp.Listeners, nil
 }
 
 // SetDhcpCertOption sets a certificate to be delivered via DHCP for a scope.

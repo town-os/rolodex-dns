@@ -82,6 +82,7 @@ const (
 	RolodexDnsService_ListScopeTlds_FullMethodName           = "/rolodex_dns.RolodexDnsService/ListScopeTlds"
 	RolodexDnsService_SetScopeTldForwarders_FullMethodName   = "/rolodex_dns.RolodexDnsService/SetScopeTldForwarders"
 	RolodexDnsService_ListScopeTldForwarders_FullMethodName  = "/rolodex_dns.RolodexDnsService/ListScopeTldForwarders"
+	RolodexDnsService_ListScopeTldListeners_FullMethodName   = "/rolodex_dns.RolodexDnsService/ListScopeTldListeners"
 	RolodexDnsService_SetDhcpCertOption_FullMethodName       = "/rolodex_dns.RolodexDnsService/SetDhcpCertOption"
 	RolodexDnsService_RemoveDhcpCertOption_FullMethodName    = "/rolodex_dns.RolodexDnsService/RemoveDhcpCertOption"
 	RolodexDnsService_ListDhcpCertOptions_FullMethodName     = "/rolodex_dns.RolodexDnsService/ListDhcpCertOptions"
@@ -278,6 +279,8 @@ type RolodexDnsServiceClient interface {
 	SetScopeTldForwarders(ctx context.Context, in *SetScopeTldForwardersRequest, opts ...grpc.CallOption) (*SetScopeTldForwardersResponse, error)
 	// ListScopeTldForwarders lists the peer forwarders for a scope's TLD.
 	ListScopeTldForwarders(ctx context.Context, in *ListScopeTldForwardersRequest, opts ...grpc.CallOption) (*ListScopeTldForwardersResponse, error)
+	// ListScopeTldListeners lists the ingress DNS listeners bound to a scope's TLDs.
+	ListScopeTldListeners(ctx context.Context, in *ListScopeTldListenersRequest, opts ...grpc.CallOption) (*ListScopeTldListenersResponse, error)
 	// SetDhcpCertOption sets a certificate to be delivered via DHCP for a scope.
 	SetDhcpCertOption(ctx context.Context, in *SetDhcpCertOptionRequest, opts ...grpc.CallOption) (*SetDhcpCertOptionResponse, error)
 	// RemoveDhcpCertOption removes a DHCP certificate option for a scope.
@@ -936,6 +939,16 @@ func (c *rolodexDnsServiceClient) ListScopeTldForwarders(ctx context.Context, in
 	return out, nil
 }
 
+func (c *rolodexDnsServiceClient) ListScopeTldListeners(ctx context.Context, in *ListScopeTldListenersRequest, opts ...grpc.CallOption) (*ListScopeTldListenersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListScopeTldListenersResponse)
+	err := c.cc.Invoke(ctx, RolodexDnsService_ListScopeTldListeners_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *rolodexDnsServiceClient) SetDhcpCertOption(ctx context.Context, in *SetDhcpCertOptionRequest, opts ...grpc.CallOption) (*SetDhcpCertOptionResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SetDhcpCertOptionResponse)
@@ -1202,6 +1215,8 @@ type RolodexDnsServiceServer interface {
 	SetScopeTldForwarders(context.Context, *SetScopeTldForwardersRequest) (*SetScopeTldForwardersResponse, error)
 	// ListScopeTldForwarders lists the peer forwarders for a scope's TLD.
 	ListScopeTldForwarders(context.Context, *ListScopeTldForwardersRequest) (*ListScopeTldForwardersResponse, error)
+	// ListScopeTldListeners lists the ingress DNS listeners bound to a scope's TLDs.
+	ListScopeTldListeners(context.Context, *ListScopeTldListenersRequest) (*ListScopeTldListenersResponse, error)
 	// SetDhcpCertOption sets a certificate to be delivered via DHCP for a scope.
 	SetDhcpCertOption(context.Context, *SetDhcpCertOptionRequest) (*SetDhcpCertOptionResponse, error)
 	// RemoveDhcpCertOption removes a DHCP certificate option for a scope.
@@ -1418,6 +1433,9 @@ func (UnimplementedRolodexDnsServiceServer) SetScopeTldForwarders(context.Contex
 }
 func (UnimplementedRolodexDnsServiceServer) ListScopeTldForwarders(context.Context, *ListScopeTldForwardersRequest) (*ListScopeTldForwardersResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListScopeTldForwarders not implemented")
+}
+func (UnimplementedRolodexDnsServiceServer) ListScopeTldListeners(context.Context, *ListScopeTldListenersRequest) (*ListScopeTldListenersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListScopeTldListeners not implemented")
 }
 func (UnimplementedRolodexDnsServiceServer) SetDhcpCertOption(context.Context, *SetDhcpCertOptionRequest) (*SetDhcpCertOptionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetDhcpCertOption not implemented")
@@ -2598,6 +2616,24 @@ func _RolodexDnsService_ListScopeTldForwarders_Handler(srv interface{}, ctx cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RolodexDnsService_ListScopeTldListeners_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListScopeTldListenersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexDnsServiceServer).ListScopeTldListeners(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexDnsService_ListScopeTldListeners_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexDnsServiceServer).ListScopeTldListeners(ctx, req.(*ListScopeTldListenersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _RolodexDnsService_SetDhcpCertOption_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SetDhcpCertOptionRequest)
 	if err := dec(in); err != nil {
@@ -3000,6 +3036,10 @@ var RolodexDnsService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListScopeTldForwarders",
 			Handler:    _RolodexDnsService_ListScopeTldForwarders_Handler,
+		},
+		{
+			MethodName: "ListScopeTldListeners",
+			Handler:    _RolodexDnsService_ListScopeTldListeners_Handler,
 		},
 		{
 			MethodName: "SetDhcpCertOption",

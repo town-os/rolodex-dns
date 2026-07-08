@@ -1928,10 +1928,40 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         if req.tld.is_empty() {
             return Err(Status::invalid_argument("tld is required"));
         }
+        // An optional ingress listener IP. Parse (and reject bad input) before
+        // touching the database so a typo does not half-register a TLD.
+        let listen_ip = if req.listen_ip.is_empty() {
+            None
+        } else {
+            match req.listen_ip.parse::<std::net::IpAddr>() {
+                Ok(ip) => Some(ip),
+                Err(e) => {
+                    return Ok(Response::new(AddScopeTldResponse {
+                        success: false,
+                        message: format!("invalid listen_ip '{}': {}", req.listen_ip, e),
+                    }));
+                }
+            }
+        };
         match self.db.add_scope_tld(&req.scope_name, &req.tld) {
             Ok(_) => {
+                if let Some(ip) = listen_ip {
+                    if let Err(e) = self.db.set_tld_listener(&req.scope_name, &req.tld, ip) {
+                        return Ok(Response::new(AddScopeTldResponse {
+                            success: false,
+                            message: e.to_string(),
+                        }));
+                    }
+                    self.dns_server.spawn_ingress_listener(ip);
+                }
                 self.dns_server.flush_cache();
-                info!("Added TLD {} to scope {}", req.tld, req.scope_name);
+                match listen_ip {
+                    Some(ip) => info!(
+                        "Added TLD {} to scope {} with ingress listener {}",
+                        req.tld, req.scope_name, ip
+                    ),
+                    None => info!("Added TLD {} to scope {}", req.tld, req.scope_name),
+                }
                 Ok(Response::new(AddScopeTldResponse {
                     success: true,
                     message: String::new(),
@@ -1953,8 +1983,16 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         if req.scope_name.is_empty() {
             return Err(Status::invalid_argument("scope_name is required"));
         }
+        // Note the TLD's ingress IP (if any) before removal so we can tear down
+        // its listener afterwards — but only once no other TLD still uses it.
+        let ingress_ip = self.db.get_tld_ingress(&req.tld);
         match self.db.remove_scope_tld(&req.scope_name, &req.tld) {
             Ok(true) => {
+                if let Some(ip) = ingress_ip
+                    && !self.db.list_all_tld_ingress_ips().contains(&ip)
+                {
+                    self.dns_server.stop_ingress_listener(ip);
+                }
                 self.dns_server.flush_cache();
                 info!("Removed TLD {} from scope {}", req.tld, req.scope_name);
                 Ok(Response::new(RemoveScopeTldResponse {
@@ -2035,6 +2073,30 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         }
         match self.db.list_scope_tld_forwarders(&req.scope_name, &req.tld) {
             Ok(forwarders) => Ok(Response::new(ListScopeTldForwardersResponse { forwarders })),
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+
+    async fn list_scope_tld_listeners(
+        &self,
+        request: Request<ListScopeTldListenersRequest>,
+    ) -> Result<Response<ListScopeTldListenersResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+        if req.scope_name.is_empty() {
+            return Err(Status::invalid_argument("scope_name is required"));
+        }
+        match self.db.list_tld_listeners(&req.scope_name) {
+            Ok(rows) => {
+                let listeners = rows
+                    .into_iter()
+                    .map(|(tld, ip)| TldListener {
+                        tld,
+                        listen_ip: ip.to_string(),
+                    })
+                    .collect();
+                Ok(Response::new(ListScopeTldListenersResponse { listeners }))
+            }
             Err(e) => Err(Status::internal(e.to_string())),
         }
     }

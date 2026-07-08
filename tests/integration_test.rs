@@ -7,9 +7,9 @@ use rolodex_dns::grpc_service::proto::{
     DeleteNetworkScopeRequest, FlushCacheRequest, GetNetworkAssociationsRequest,
     GetRblConfigRequest, GetSearchDomainsRequest, JoinNetworkRequest, LeaveNetworkRequest,
     ListNetworkScopesRequest, ListRecordsRequest, ListScopeTldForwardersRequest,
-    ListScopeTldsRequest, ListScopedRecordsRequest, RemoveRecordRequest, RemoveScopeTldRequest,
-    RemoveScopedRecordRequest, SetForwarderRequest, SetRblConfigRequest,
-    SetScopeTldForwardersRequest,
+    ListScopeTldListenersRequest, ListScopeTldsRequest, ListScopedRecordsRequest,
+    RemoveRecordRequest, RemoveScopeTldRequest, RemoveScopedRecordRequest, SetForwarderRequest,
+    SetRblConfigRequest, SetScopeTldForwardersRequest,
 };
 use rolodex_dns::rbl::{RblChecker, RblProvider, RblResolver};
 use std::sync::Arc;
@@ -1286,6 +1286,7 @@ async fn test_scope_tld_grpc_lifecycle() {
         scope_name: "office".to_string(),
         tld: "corp.".to_string(),
         auth_token: "test-secret".to_string(),
+        listen_ip: String::new(),
     });
     assert!(
         service
@@ -1340,6 +1341,7 @@ async fn test_scope_tld_grpc_lifecycle() {
         scope_name: "lab".to_string(),
         tld: "office.".to_string(),
         auth_token: "test-secret".to_string(),
+        listen_ip: String::new(),
     });
     let resp = service.add_scope_tld(conflict).await.unwrap().into_inner();
     assert!(!resp.success);
@@ -2337,4 +2339,143 @@ async fn test_auto_ptr_disabled_by_default_constructor() {
             .unwrap()
             .is_empty()
     );
+}
+
+// ========================================================
+// Integration: per-TLD ingress listener added via gRPC
+// ========================================================
+
+// End-to-end: register an owned TLD with an ingress `listen_ip` via gRPC, then
+// query a programmed name under it over REAL UDP on the spawned ingress
+// listener and confirm the answer is rewritten to the ingress IP. The same name
+// on the main resolution path keeps its stored value, and removing the TLD tears
+// the listener down.
+#[tokio::test]
+async fn test_ingress_listener_e2e_grpc() {
+    use hickory_proto::rr::{RData, rdata};
+    use std::net::Ipv4Addr;
+
+    let (dns_db, dns_server, _rbl, service) = make_test_stack();
+
+    // Create the scope and a programmed A record under its owned TLD.
+    service
+        .create_network_scope(Request::new(CreateNetworkScopeRequest {
+            scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
+                name: "office".to_string(),
+                home_domain: "office.home".to_string(),
+                tlds: Vec::new(),
+            }),
+            auth_token: "test-secret".to_string(),
+        }))
+        .await
+        .unwrap();
+    service
+        .add_scoped_record(Request::new(AddScopedRecordRequest {
+            scope_name: "office".to_string(),
+            record: Some(rolodex_dns::grpc_service::proto::DnsRecord {
+                name: "gitea.office.".to_string(),
+                record_type: 0, // A
+                value: "10.0.0.7".to_string(),
+                ttl: 300,
+                priority: 0,
+            }),
+            auth_token: "test-secret".to_string(),
+        }))
+        .await
+        .unwrap();
+
+    // Pick a free UDP port for the ingress listener and point the server at it.
+    let port = {
+        let s = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        s.local_addr().unwrap().port()
+    };
+    dns_server.set_ingress_port(port);
+
+    // Register the owned TLD WITH an ingress listener IP via gRPC. This spawns
+    // the real UDP+TCP listener on 127.0.0.1:<port>.
+    let resp = service
+        .add_scope_tld(Request::new(AddScopeTldRequest {
+            scope_name: "office".to_string(),
+            tld: "office.".to_string(),
+            auth_token: "test-secret".to_string(),
+            listen_ip: "127.0.0.1".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(resp.success, "add_scope_tld failed: {}", resp.message);
+    assert!(dns_server.has_ingress_listener("127.0.0.1".parse().unwrap()));
+
+    // The listener shows up via the gRPC listing.
+    let listeners = service
+        .list_scope_tld_listeners(Request::new(ListScopeTldListenersRequest {
+            scope_name: "office".to_string(),
+            auth_token: "test-secret".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner()
+        .listeners;
+    assert_eq!(listeners.len(), 1);
+    assert_eq!(listeners[0].tld, "office.");
+    assert_eq!(listeners[0].listen_ip, "127.0.0.1");
+
+    // Give the spawned listener a moment to bind.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Query the programmed name over REAL UDP on the ingress listener: the answer
+    // is rewritten to the ingress IP (127.0.0.1), not the stored 10.0.0.7.
+    let query = build_dns_query("gitea.office.", hickory_proto::rr::RecordType::A);
+    let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    client
+        .send_to(&query, format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
+    let mut buf = vec![0u8; 4096];
+    let (len, _) = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client.recv_from(&mut buf),
+    )
+    .await
+    .expect("timeout waiting for ingress UDP response")
+    .unwrap();
+    let response = hickory_proto::op::Message::from_bytes(&buf[..len]).unwrap();
+    assert_eq!(
+        response.response_code(),
+        hickory_proto::op::ResponseCode::NoError
+    );
+    assert_eq!(response.answers().len(), 1);
+    match response.answers()[0].data() {
+        RData::A(rdata::A(ip)) => assert_eq!(*ip, Ipv4Addr::new(127, 0, 0, 1)),
+        other => panic!("expected A record, got {:?}", other),
+    }
+
+    // The main resolution path (no ingress listener context) keeps the stored
+    // backend value.
+    let main_resp = hickory_proto::op::Message::from_bytes(
+        &dns_server
+            .handle_query_from(&query, "127.0.0.1".parse().unwrap())
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(main_resp.answers().len(), 1);
+    match main_resp.answers()[0].data() {
+        RData::A(rdata::A(ip)) => assert_eq!(*ip, Ipv4Addr::new(10, 0, 0, 7)),
+        other => panic!("expected A record, got {:?}", other),
+    }
+
+    // Removing the TLD tears down its ingress listener.
+    let removed = service
+        .remove_scope_tld(Request::new(RemoveScopeTldRequest {
+            scope_name: "office".to_string(),
+            tld: "office.".to_string(),
+            auth_token: "test-secret".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(removed.success);
+    assert!(!dns_server.has_ingress_listener("127.0.0.1".parse().unwrap()));
+    assert!(dns_db.get_tld_ingress("office.").is_none());
 }

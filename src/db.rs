@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use dashmap::{DashMap, DashSet};
 use rusqlite::{Connection, params};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -401,6 +401,11 @@ pub struct Database {
     /// are the overlay rolodex servers of other members of the same network,
     /// consulted only for names under the owning scope's TLD.
     tld_forwarder_cache: Arc<DashMap<String, Vec<SocketAddr>>>,
+    /// Ingress listener IP per owned TLD, keyed by the normalized TLD. When a
+    /// query for a programmed name under this TLD arrives on the matching local
+    /// listener IP, its A/AAAA answer is rewritten to this IP (the network's
+    /// ingress controller). O(1) hot-path lookup by TLD.
+    tld_ingress_cache: Arc<DashMap<String, IpAddr>>,
 }
 
 impl Database {
@@ -420,6 +425,7 @@ impl Database {
             managed_zones_cache: Arc::new(DashSet::new()),
             tld_owner_cache: Arc::new(DashMap::new()),
             tld_forwarder_cache: Arc::new(DashMap::new()),
+            tld_ingress_cache: Arc::new(DashMap::new()),
         };
         db.init_tables()?;
         db.load_scoped_records_into_cache()?;
@@ -441,6 +447,7 @@ impl Database {
             managed_zones_cache: Arc::new(DashSet::new()),
             tld_owner_cache: Arc::new(DashMap::new()),
             tld_forwarder_cache: Arc::new(DashMap::new()),
+            tld_ingress_cache: Arc::new(DashMap::new()),
         };
         db.init_tables()?;
         Ok(db)
@@ -521,6 +528,15 @@ impl Database {
                 FOREIGN KEY (scope_name) REFERENCES network_scopes(name) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_scope_tld_fwd ON scope_tld_forwarders(scope_name, tld);
+
+            CREATE TABLE IF NOT EXISTS tld_listeners (
+                scope_name TEXT NOT NULL,
+                tld TEXT NOT NULL,
+                listen_ip TEXT NOT NULL,
+                PRIMARY KEY (scope_name, tld),
+                FOREIGN KEY (scope_name) REFERENCES network_scopes(name) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_tld_listeners_ip ON tld_listeners(listen_ip);
 
             CREATE TABLE IF NOT EXISTS dns_cache (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -853,6 +869,18 @@ impl Database {
                     .entry(tld_fwd_key(&scope, &normalize_name(&tld)))
                     .or_default()
                     .push(sa);
+            }
+        }
+
+        // Per-TLD ingress listener IPs.
+        let mut stmt = conn.prepare_cached("SELECT tld, listen_ip FROM tld_listeners")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (tld, ip) = row?;
+            if let Ok(parsed) = ip.parse::<IpAddr>() {
+                self.tld_ingress_cache.insert(normalize_name(&tld), parsed);
             }
         }
 
@@ -1699,13 +1727,113 @@ impl Database {
             "DELETE FROM scope_tld_forwarders WHERE scope_name = ?1 AND tld = ?2",
             params![scope_name, normalized],
         )?;
+        conn.execute(
+            "DELETE FROM tld_listeners WHERE scope_name = ?1 AND tld = ?2",
+            params![scope_name, normalized],
+        )?;
         drop(conn);
         if count > 0 {
             self.tld_owner_cache.remove(&normalized);
             self.tld_forwarder_cache
                 .remove(&tld_fwd_key(scope_name, &normalized));
+            self.tld_ingress_cache.remove(&normalized);
         }
         Ok(count > 0)
+    }
+
+    /// Sets (or replaces) the ingress listener IP for an owned TLD. The TLD must
+    /// already be owned by `scope_name` (via `add_scope_tld` or as the scope's
+    /// `home_domain`). Programmed A/AAAA names under this TLD, queried on the
+    /// matching local listener, resolve to `listen_ip`. Updates the database and
+    /// the hot-path `tld_ingress_cache`.
+    pub fn set_tld_listener(&self, scope_name: &str, tld: &str, listen_ip: IpAddr) -> Result<()> {
+        let normalized = normalize_name(tld);
+        match self.tld_owner_cache.get(&normalized) {
+            Some(owner) if owner.value() == scope_name => {}
+            Some(owner) => {
+                return Err(anyhow!(
+                    "tld '{}' is owned by scope '{}', not '{}'",
+                    normalized,
+                    owner.value(),
+                    scope_name
+                ));
+            }
+            None => {
+                return Err(anyhow!(
+                    "tld '{}' is not owned by scope '{}'; register it first",
+                    normalized,
+                    scope_name
+                ));
+            }
+        }
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO tld_listeners (scope_name, tld, listen_ip) VALUES (?1, ?2, ?3)
+             ON CONFLICT(scope_name, tld) DO UPDATE SET listen_ip = excluded.listen_ip",
+            params![scope_name, normalized, listen_ip.to_string()],
+        )
+        .context("failed to set tld listener")?;
+        drop(conn);
+        self.tld_ingress_cache.insert(normalized, listen_ip);
+        Ok(())
+    }
+
+    /// Removes the ingress listener for an owned TLD (the TLD ownership itself is
+    /// unaffected). Returns whether a row was removed.
+    pub fn remove_tld_listener(&self, scope_name: &str, tld: &str) -> Result<bool> {
+        let normalized = normalize_name(tld);
+        let conn = self.lock()?;
+        let count = conn.execute(
+            "DELETE FROM tld_listeners WHERE scope_name = ?1 AND tld = ?2",
+            params![scope_name, normalized],
+        )?;
+        drop(conn);
+        if count > 0 {
+            self.tld_ingress_cache.remove(&normalized);
+        }
+        Ok(count > 0)
+    }
+
+    /// Returns the ingress listener IP for a normalized TLD, if one is set.
+    /// Cache-only, O(1) — safe on the DNS hot path.
+    pub fn get_tld_ingress(&self, tld: &str) -> Option<IpAddr> {
+        self.tld_ingress_cache
+            .get(&normalize_name(tld))
+            .map(|e| *e.value())
+    }
+
+    /// Lists the ingress listeners for a scope's TLDs as `(tld, listen_ip)`.
+    pub fn list_tld_listeners(&self, scope_name: &str) -> Result<Vec<(String, IpAddr)>> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT tld, listen_ip FROM tld_listeners WHERE scope_name = ?1 ORDER BY tld",
+        )?;
+        let rows = stmt.query_map(params![scope_name], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (tld, ip) = row?;
+            if let Ok(parsed) = ip.parse::<IpAddr>() {
+                out.push((tld, parsed));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Returns the distinct set of ingress listener IPs across all scopes. Used
+    /// at boot to (re-)create the ingress DNS listeners, and to decide whether a
+    /// listener IP is still referenced after a TLD is removed.
+    pub fn list_all_tld_ingress_ips(&self) -> Vec<IpAddr> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for entry in self.tld_ingress_cache.iter() {
+            let ip = *entry.value();
+            if seen.insert(ip) {
+                out.push(ip);
+            }
+        }
+        out
     }
 
     /// Lists a scope's additional owned TLDs (from `scope_tlds`, not including
@@ -5498,6 +5626,103 @@ mod tests {
             Some(("office".to_string(), "office.home.".to_string()))
         );
         assert_eq!(db.get_tld_forwarders_cached("office", "office.").len(), 1);
+    }
+
+    #[test]
+    fn test_tld_listener_crud() {
+        let db = test_db();
+        scope_with_tld(&db, "office", "office.home");
+        db.add_scope_tld("office", "office").unwrap();
+
+        let ip: IpAddr = "127.0.0.9".parse().unwrap();
+        db.set_tld_listener("office", "office", ip).unwrap();
+
+        // Cache lookup tolerates the missing trailing dot.
+        assert_eq!(db.get_tld_ingress("office"), Some(ip));
+        assert_eq!(db.get_tld_ingress("office."), Some(ip));
+
+        let listed = db.list_tld_listeners("office").unwrap();
+        assert_eq!(listed, vec![("office.".to_string(), ip)]);
+        assert_eq!(db.list_all_tld_ingress_ips(), vec![ip]);
+
+        // Replacing the IP updates the cache.
+        let ip2: IpAddr = "127.0.0.10".parse().unwrap();
+        db.set_tld_listener("office", "office", ip2).unwrap();
+        assert_eq!(db.get_tld_ingress("office."), Some(ip2));
+
+        assert!(db.remove_tld_listener("office", "office").unwrap());
+        assert_eq!(db.get_tld_ingress("office."), None);
+        assert!(db.list_all_tld_ingress_ips().is_empty());
+        // Removing again is a no-op.
+        assert!(!db.remove_tld_listener("office", "office").unwrap());
+    }
+
+    #[test]
+    fn test_set_tld_listener_requires_ownership() {
+        let db = test_db();
+        scope_with_tld(&db, "office", "office.home");
+        // "corp." is not owned by office → rejected.
+        let ip: IpAddr = "127.0.0.9".parse().unwrap();
+        assert!(db.set_tld_listener("office", "corp.", ip).is_err());
+
+        // Owned by a different scope → rejected for the wrong owner.
+        scope_with_tld(&db, "lab", "lab.home");
+        db.add_scope_tld("lab", "lab").unwrap();
+        assert!(db.set_tld_listener("office", "lab.", ip).is_err());
+        // Correct owner works, including on the implicit home_domain TLD.
+        db.set_tld_listener("office", "office.home", ip).unwrap();
+        assert_eq!(db.get_tld_ingress("office.home."), Some(ip));
+    }
+
+    #[test]
+    fn test_remove_scope_tld_clears_listener() {
+        let db = test_db();
+        scope_with_tld(&db, "office", "office.home");
+        db.add_scope_tld("office", "corp").unwrap();
+        let ip: IpAddr = "127.0.0.9".parse().unwrap();
+        db.set_tld_listener("office", "corp", ip).unwrap();
+        assert_eq!(db.get_tld_ingress("corp."), Some(ip));
+
+        assert!(db.remove_scope_tld("office", "corp").unwrap());
+        // Removing the TLD ownership also drops its ingress listener row/cache.
+        assert_eq!(db.get_tld_ingress("corp."), None);
+        assert!(db.list_all_tld_ingress_ips().is_empty());
+    }
+
+    #[test]
+    fn test_two_tlds_share_one_ingress_ip() {
+        let db = test_db();
+        scope_with_tld(&db, "office", "office.home");
+        db.add_scope_tld("office", "office").unwrap();
+        db.add_scope_tld("office", "corp").unwrap();
+        let ip: IpAddr = "127.0.0.9".parse().unwrap();
+        db.set_tld_listener("office", "office", ip).unwrap();
+        db.set_tld_listener("office", "corp", ip).unwrap();
+
+        // Distinct ingress IPs de-duplicated for the boot/orphan check.
+        assert_eq!(db.list_all_tld_ingress_ips(), vec![ip]);
+        // Removing one TLD leaves the shared IP still referenced by the other.
+        db.remove_scope_tld("office", "corp").unwrap();
+        assert_eq!(db.list_all_tld_ingress_ips(), vec![ip]);
+        db.remove_scope_tld("office", "office").unwrap();
+        assert!(db.list_all_tld_ingress_ips().is_empty());
+    }
+
+    #[test]
+    fn test_tld_listeners_survive_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tld-listener-boot.db");
+        let ip: IpAddr = "127.0.0.9".parse().unwrap();
+        {
+            let db = Database::open(&path).unwrap();
+            scope_with_tld(&db, "office", "office.home");
+            db.add_scope_tld("office", "office").unwrap();
+            db.set_tld_listener("office", "office", ip).unwrap();
+        }
+        // Reopen: the ingress cache is rebuilt from disk in load_caches_at_boot.
+        let db = Database::open(&path).unwrap();
+        assert_eq!(db.get_tld_ingress("office."), Some(ip));
+        assert_eq!(db.list_all_tld_ingress_ips(), vec![ip]);
     }
 
     #[test]

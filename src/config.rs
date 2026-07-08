@@ -115,6 +115,15 @@ pub struct DnsConfig {
     /// Disabled by default (opt in to let Rolodex manage reverse zones).
     #[serde(default)]
     pub auto_ptr: bool,
+    /// UDP/TCP port for per-TLD ingress listeners started via the gRPC
+    /// `AddScopeTld` (with a `listen_ip`). The bind IP is provided per-TLD; this
+    /// is the shared port. Defaults to 53; lower it for unprivileged dev runs.
+    #[serde(default = "default_ingress_listen_port")]
+    pub ingress_listen_port: u16,
+}
+
+fn default_ingress_listen_port() -> u16 {
+    53
 }
 
 impl DnsConfig {
@@ -838,6 +847,7 @@ impl Default for Config {
                     DnsBind::Tcp("0.0.0.0:53".to_string()),
                 ],
                 auto_ptr: false,
+                ingress_listen_port: default_ingress_listen_port(),
             },
             grpc: GrpcConfig {
                 tcp_bind: "127.0.0.1:50051".to_string(),

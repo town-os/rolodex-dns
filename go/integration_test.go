@@ -40,6 +40,7 @@ type serverConfig struct {
 	unixSocket   string
 	dnsUDPAddr   string
 	dnsTCPAddr   string
+	ingressPort  int
 	sharedSecret string
 }
 
@@ -55,6 +56,7 @@ dns:
   bind:
     - udp: %q
     - tcp: %q
+  ingress_listen_port: %d
 
 grpc:
   tcp_bind: %q
@@ -64,7 +66,7 @@ grpc:
 rbl:
   enabled: false
   providers: []
-`, cfg.dbPath, cfg.dnsUDPAddr, cfg.dnsTCPAddr, cfg.grpcTCPAddr, cfg.unixSocket, cfg.sharedSecret)
+`, cfg.dbPath, cfg.dnsUDPAddr, cfg.dnsTCPAddr, cfg.ingressPort, cfg.grpcTCPAddr, cfg.unixSocket, cfg.sharedSecret)
 
 	configPath := filepath.Join(cfg.dir, "rolodex-dns.yml")
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
@@ -109,6 +111,19 @@ func allocatePort(t *testing.T) string {
 	return addr
 }
 
+// allocatePortNumber finds a free TCP port and returns just its number. Used for
+// the ingress listener port, which the server binds on a per-TLD IP.
+func allocatePortNumber(t *testing.T) int {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("allocate port: %v", err)
+	}
+	port := lis.Addr().(*net.TCPAddr).Port
+	lis.Close()
+	return port
+}
+
 // setupTestServer creates a temporary directory, allocates random ports, starts
 // a rolodex-dns server, and returns a connected TCP client.
 func setupTestServer(t *testing.T) (*Client, serverConfig) {
@@ -122,6 +137,7 @@ func setupTestServer(t *testing.T) (*Client, serverConfig) {
 		unixSocket:   filepath.Join(dir, "rolodex-dns.sock"),
 		dnsUDPAddr:   allocatePort(t),
 		dnsTCPAddr:   allocatePort(t),
+		ingressPort:  allocatePortNumber(t),
 		sharedSecret: "integration-test-secret",
 	}
 
@@ -1559,6 +1575,44 @@ func TestIntegrationScopeTldOwnership(t *testing.T) {
 	}
 	if len(tlds) != 1 {
 		t.Errorf("got %d tlds after remove, want 1 (home only): %v", len(tlds), tlds)
+	}
+}
+
+func TestIntegrationScopeTldListeners(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	if err := client.CreateNetworkScope(ctx, &NetworkScope{Name: "office", HomeDomain: "office.home."}); err != nil {
+		t.Fatalf("CreateNetworkScope: %v", err)
+	}
+
+	// Register an owned TLD together with an ingress listener IP.
+	if err := client.AddScopeTldWithListener(ctx, "office", "office.", "127.0.0.1"); err != nil {
+		t.Fatalf("AddScopeTldWithListener: %v", err)
+	}
+
+	// The listener is reported back by ListScopeTldListeners.
+	listeners, err := client.ListScopeTldListeners(ctx, "office")
+	if err != nil {
+		t.Fatalf("ListScopeTldListeners: %v", err)
+	}
+	if len(listeners) != 1 {
+		t.Fatalf("got %d listeners, want 1: %v", len(listeners), listeners)
+	}
+	if listeners[0].Tld != "office." || listeners[0].ListenIp != "127.0.0.1" {
+		t.Errorf("listener = {%q, %q}, want {office., 127.0.0.1}", listeners[0].Tld, listeners[0].ListenIp)
+	}
+
+	// Removing the TLD tears down its listener registration.
+	if err := client.RemoveScopeTld(ctx, "office", "office."); err != nil {
+		t.Fatalf("RemoveScopeTld: %v", err)
+	}
+	listeners, err = client.ListScopeTldListeners(ctx, "office")
+	if err != nil {
+		t.Fatalf("ListScopeTldListeners after remove: %v", err)
+	}
+	if len(listeners) != 0 {
+		t.Errorf("got %d listeners after remove, want 0: %v", len(listeners), listeners)
 	}
 }
 
