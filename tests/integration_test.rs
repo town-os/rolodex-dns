@@ -2384,6 +2384,19 @@ async fn test_ingress_listener_e2e_grpc() {
         .await
         .unwrap();
 
+    // Join a WireGuard-overlay peer (10.64.0.0/10) to the office scope. It is a
+    // scope member and resolves the scoped record on the main listener — used
+    // below to show the ingress rewrite is confined to the ingress listener.
+    service
+        .join_network(Request::new(JoinNetworkRequest {
+            ip_address: "10.64.0.5".to_string(),
+            scope_name: "office".to_string(),
+            ttl_seconds: 3600,
+            auth_token: "test-secret".to_string(),
+        }))
+        .await
+        .unwrap();
+
     // Pick a free UDP port for the ingress listener and point the server at it.
     let port = {
         let s = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -2450,11 +2463,12 @@ async fn test_ingress_listener_e2e_grpc() {
         other => panic!("expected A record, got {:?}", other),
     }
 
-    // The main resolution path (no ingress listener context) keeps the stored
-    // backend value.
+    // The main resolution path (no ingress listener context), queried by a
+    // scope member, keeps the stored backend value — the rewrite is confined to
+    // the ingress listener.
     let main_resp = hickory_proto::op::Message::from_bytes(
         &dns_server
-            .handle_query_from(&query, "127.0.0.1".parse().unwrap())
+            .handle_query_from(&query, "10.64.0.5".parse().unwrap())
             .await
             .unwrap(),
     )

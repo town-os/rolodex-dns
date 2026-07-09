@@ -285,17 +285,22 @@ impl DnsServer {
         }
     }
 
-    /// Computes the ingress-IP override for a query, or `None` if the answer
-    /// should resolve normally. Returns `Some(ip)` only when (a) the query
-    /// arrived on a concrete local listener IP, and (b) the queried name falls
-    /// under a TLD whose configured ingress IP equals that listener IP. This is
-    /// what confines the rewrite to the ingress listener (a query for the same
-    /// name on the main `:53` listener has `local_ip == None` and is unaffected).
-    fn ingress_override(&self, local_ip: Option<IpAddr>, qname: &str) -> Option<IpAddr> {
+    /// Identifies the ingress listener a query arrived on, or `None` if it did
+    /// not arrive on one. Returns `Some((owner_scope, ingress_ip))` only when
+    /// (a) the query arrived on a concrete local listener IP, and (b) the queried
+    /// name falls under a TLD whose configured ingress IP equals that listener
+    /// IP. This is what confines ingress behavior to the ingress listener (a
+    /// query for the same name on the main `:53` listener has `local_ip == None`
+    /// and is unaffected).
+    ///
+    /// The owning scope drives resolution (the ingress listener serves that
+    /// scope's partitioned records regardless of source IP), and the ingress IP
+    /// is the rewrite target for programmed A/AAAA answers.
+    fn ingress_target(&self, local_ip: Option<IpAddr>, qname: &str) -> Option<(String, IpAddr)> {
         let local_ip = local_ip?;
-        let (_, tld) = self.db.find_tld_owner(qname)?;
+        let (owner, tld) = self.db.find_tld_owner(qname)?;
         let ingress = self.db.get_tld_ingress(&tld)?;
-        (ingress == local_ip).then_some(ingress)
+        (ingress == local_ip).then_some((owner, ingress))
     }
 
     /// Sets the upstream resolution mode (recursive-from-roots or forward).
@@ -621,17 +626,36 @@ impl DnsServer {
             return Ok(make_error_response(query_data, ResponseCode::FormErr));
         }
 
+        let question = &questions[0];
+        let qname = question.name().to_string();
+        let qtype = question.query_type();
+
+        // Per-TLD ingress listener: if this query arrived on a TLD's ingress IP,
+        // it is served from the TLD's owning scope (partitioned, regardless of
+        // source IP — the listener is dedicated to that network) and programmed
+        // A/AAAA answers under the TLD are rewritten to the ingress IP (the
+        // network's ingress controller). `None` on the main listeners, so those
+        // follow the normal source-IP scope selection and resolve to the stored
+        // value unchanged.
+        let ingress = self.ingress_target(local_ip, &qname);
+        let ingress_override = ingress.as_ref().map(|(_, ip)| *ip);
+
         // Determine network scope for this query.
         //
-        // Only WireGuard-overlay peers (source IP in `overlay_cidrs`) are
-        // scope-enforced: an overlay peer must be joined to a scope or it is
-        // REFUSED, and it sees only that scope's partitioned TLDs. Every other
-        // source — loopback (the box's own resolver), the LAN, container
-        // bridges — is a trusted local client: it is never refused and resolves
-        // the full view (public names plus any network's records, keyed by the
-        // query's owned TLD, so e.g. `gitea.default.fart` resolves from the LAN
-        // or the box itself). Only the overlay is untrusted and partitioned.
-        let scope_name = if let Some(ip) = source_ip {
+        // A query on a TLD's ingress listener resolves within that TLD's owning
+        // scope. Otherwise, only WireGuard-overlay peers (source IP in
+        // `overlay_cidrs`) are scope-enforced: an overlay peer must be joined to
+        // a scope or it is REFUSED, and it sees only that scope's partitioned
+        // TLDs. Every other source — loopback (the box's own resolver), the LAN,
+        // container bridges — is a trusted local client: it is never refused and
+        // resolves the GLOBAL namespace (public names plus the box's global
+        // records). This is split-horizon: global records carry the box's
+        // LAN-reachable address, while scoped overlay records carry the overlay
+        // address, so each side gets an address it can actually route to.
+        let scope_name = if let Some((owner, _)) = &ingress {
+            // Ingress listener: dedicated to the owning scope.
+            Some(owner.clone())
+        } else if let Some(ip) = source_ip {
             let ip_str = ip.to_string();
             if let Some(scope) = self.db.get_scope_for_ip(&ip_str) {
                 // Already joined to a network (only overlay addresses are ever
@@ -649,25 +673,13 @@ impl DnsServer {
                     edns_ctx.as_ref(),
                 ));
             } else {
-                // Trusted local source: resolve the full view. If the name is
-                // under a network-owned TLD, answer from that owning scope.
-                self.db
-                    .find_tld_owner(&questions[0].name().to_string())
-                    .map(|(owner, _)| owner)
+                // Trusted local source (loopback/LAN/bridge): resolve the GLOBAL
+                // namespace — split-horizon. Never refused.
+                None
             }
         } else {
             None
         };
-
-        let question = &questions[0];
-        let qname = question.name().to_string();
-        let qtype = question.query_type();
-
-        // Per-TLD ingress rewrite: if this query arrived on a TLD's ingress
-        // listener, programmed A/AAAA answers under that TLD are rewritten to the
-        // ingress IP (the network's ingress controller). `None` on the main
-        // listeners, so those resolve to the stored value unchanged.
-        let ingress_override = self.ingress_override(local_ip, &qname);
 
         debug!("DNS query: {} {:?} (scope: {:?})", qname, qtype, scope_name);
 
@@ -4010,9 +4022,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_ingress_no_override_on_main_listener() {
-        // The same name on the main listener (no concrete local IP) resolves to
-        // the stored backend value — the rewrite is confined to the ingress
-        // listener.
+        // The same name on the main listener (no concrete local IP), queried by a
+        // scope member, resolves to the stored backend value — the rewrite is
+        // confined to the ingress listener. `office_scope` joins 192.168.1.1.
         let ingress: IpAddr = "127.0.0.9".parse().unwrap();
         let db = Database::open_memory().unwrap();
         ingress_scope(&db, ingress);
@@ -4021,7 +4033,7 @@ mod tests {
         let query = build_query("gitea.office.", RecordType::A);
         let resp = Message::from_bytes(
             &server
-                .handle_query_from(&query, "127.0.0.1".parse().unwrap())
+                .handle_query_from(&query, "192.168.1.1".parse().unwrap())
                 .await
                 .unwrap(),
         )
@@ -4034,6 +4046,7 @@ mod tests {
     async fn test_ingress_no_override_on_wrong_listener_ip() {
         // A query arriving on a concrete listener IP that is NOT this TLD's
         // ingress IP is not rewritten (e.g. another TLD's ingress listener).
+        // Queried by a scope member so it resolves the scoped backend value.
         let ingress: IpAddr = "127.0.0.9".parse().unwrap();
         let other: IpAddr = "127.0.0.8".parse().unwrap();
         let db = Database::open_memory().unwrap();
@@ -4043,7 +4056,7 @@ mod tests {
         let query = build_query("gitea.office.", RecordType::A);
         let resp = Message::from_bytes(
             &server
-                .handle_query_on(&query, "127.0.0.1".parse().unwrap(), Some(other))
+                .handle_query_on(&query, "192.168.1.1".parse().unwrap(), Some(other))
                 .await
                 .unwrap(),
         )
@@ -4135,37 +4148,87 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_loopback_resolves_owned_tld_scoped_record() {
-        // The host's own loopback is never joined to a network scope, but must
-        // still be able to resolve a scoped name under a network-owned TLD
-        // (e.g. `gitea.default.fart` from the box itself). It is scoped by the
-        // query's TLD owner, not by a source-IP association.
+    async fn test_split_horizon_overlay_scoped_local_global() {
+        // Split-horizon for a network package name under an owned TLD:
+        //   - a joined WireGuard-overlay peer resolves the SCOPED record (the
+        //     overlay IP, reachable over the tunnel);
+        //   - the host's loopback / a LAN client resolves the GLOBAL record (the
+        //     box's LAN IP, reachable on the local network).
+        // Each side is handed an address it can actually route to. This is how a
+        // package like `gitea.default.fart` is reachable from both networks.
         let db = Database::open_memory().unwrap();
-        office_scope(&db);
+        db.create_network_scope(&NetworkScope {
+            name: "office".to_string(),
+            home_domain: "office.home".to_string(),
+        })
+        .unwrap();
+        db.add_scope_tld("office", "office").unwrap();
+        // The overlay peer is a joined member (overlay addresses are the only
+        // IPs the controller ever joins).
+        db.join_network(&NetworkAssociation {
+            ip_address: "10.64.0.5".to_string(),
+            scope_name: "office".to_string(),
+            ttl_seconds: 3600,
+        })
+        .unwrap();
+        // Scoped record -> overlay IP (served to the wireguard peer).
         db.add_scoped_record(
             "office",
             &DnsRecord {
                 id: None,
                 name: "gitea.office.".to_string(),
                 record_type: RecordKind::A,
-                value: "10.0.0.7".to_string(),
+                value: "10.83.6.1".to_string(),
                 ttl: 300,
                 priority: 0,
             },
         )
         .unwrap();
+        // Global record -> LAN IP (served to local clients).
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "gitea.office.".to_string(),
+            record_type: RecordKind::A,
+            value: "192.168.122.50".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
 
         let server = make_test_server(db);
         let query = build_query("gitea.office.", RecordType::A);
-        let resp = Message::from_bytes(
-            &server
-                .handle_query_from(&query, "127.0.0.1".parse().unwrap())
-                .await
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(resp.response_code(), ResponseCode::NoError);
-        assert_eq!(resp.answers().len(), 1);
+
+        let answer_from = |src: IpAddr| {
+            let server = server.clone();
+            let query = query.clone();
+            async move {
+                let resp =
+                    Message::from_bytes(&server.handle_query_from(&query, src).await.unwrap())
+                        .unwrap();
+                assert_eq!(resp.response_code(), ResponseCode::NoError);
+                assert_eq!(resp.answers().len(), 1);
+                match resp.answers()[0].data() {
+                    RData::A(rdata::A(ip)) => *ip,
+                    other => panic!("expected A record, got {other:?}"),
+                }
+            }
+        };
+
+        // WireGuard overlay peer -> scoped overlay IP.
+        assert_eq!(
+            answer_from("10.64.0.5".parse().unwrap()).await,
+            Ipv4Addr::new(10, 83, 6, 1)
+        );
+        // Loopback (the box itself) -> global LAN IP.
+        assert_eq!(
+            answer_from("127.0.0.1".parse().unwrap()).await,
+            Ipv4Addr::new(192, 168, 122, 50)
+        );
+        // A LAN client -> global LAN IP too (trusted local, not an overlay peer).
+        assert_eq!(
+            answer_from("192.168.122.77".parse().unwrap()).await,
+            Ipv4Addr::new(192, 168, 122, 50)
+        );
     }
 
     #[tokio::test]

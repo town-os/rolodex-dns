@@ -4,6 +4,7 @@ Rolodex DNS is a split-horizon DNS server and forwarding resolver with remote ma
 
 ## Rules
 
+- please do not run make tasks unless told to
 - ensure deny(dead_code) and deny(unsafe) are at the top and honored
 - handle all std::result::Result in an appropriate way
 - do not use unwrap
