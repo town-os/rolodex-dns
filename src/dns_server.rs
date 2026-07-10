@@ -995,6 +995,79 @@ impl DnsServer {
             }
         }
 
+        // LAN/loopback source (scope_name == None): the global lookup above found
+        // nothing. If the name falls under a TLD owned by a network scope, resolve
+        // it from that owning scope so every network TLD is visible on the LAN.
+        // Dual-homed names already returned their LAN-facing global record above,
+        // so this serves scoped-only names (e.g. a network's zone apex) at their
+        // stored value. Then try the TLD's peer forwarders; failing everything,
+        // return an authoritative NXDOMAIN — a privately-owned TLD is never
+        // forwarded upstream from the LAN.
+        if scope_name.is_none()
+            && let Some((owner, owned_tld)) = self.db.find_tld_owner(&qname)
+        {
+            if let Some(kind) = record_kind {
+                let records = self.db.lookup_scoped(&owner, &qname, Some(kind));
+                if !records.is_empty() {
+                    debug!(
+                        "LAN fallback hit for {} {:?} in owning scope {}: {} records",
+                        qname,
+                        qtype,
+                        owner,
+                        records.len()
+                    );
+                    let dns_records = build_scoped_answers(&records, ingress_override);
+                    return Ok(build_response_edns(
+                        &message,
+                        ResponseCode::NoError,
+                        dns_records,
+                        true,
+                        edns_ctx.as_ref(),
+                    ));
+                }
+                // CNAME in the owning scope
+                let cname_records = self
+                    .db
+                    .lookup_scoped(&owner, &qname, Some(RecordKind::CNAME));
+                if !cname_records.is_empty() {
+                    let dns_records = cname_records
+                        .iter()
+                        .filter_map(db_record_to_dns_record)
+                        .collect();
+                    return Ok(build_response_edns(
+                        &message,
+                        ResponseCode::NoError,
+                        dns_records,
+                        true,
+                        edns_ctx.as_ref(),
+                    ));
+                }
+            }
+            // No local record in the owning scope: try that TLD's peer forwarders
+            // (other rolodex boxes on the overlay), then authoritative NXDOMAIN.
+            let peers = self.db.get_tld_forwarders_cached(&owner, &owned_tld);
+            if !peers.is_empty()
+                && let Some(resp) = self.forward_to_tld_peers(query_data, &peers).await
+            {
+                debug!(
+                    "LAN fallback peer answer for {} (owning scope {} tld {})",
+                    qname, owner, owned_tld
+                );
+                return Ok(resp);
+            }
+            debug!(
+                "LAN fallback authoritative NXDOMAIN for {} (owning scope {} owns tld {})",
+                qname, owner, owned_tld
+            );
+            return Ok(build_response_edns(
+                &message,
+                ResponseCode::NXDomain,
+                vec![],
+                true,
+                edns_ctx.as_ref(),
+            ));
+        }
+
         // Check DNAME (walk up labels checking for DNAME records, synthesize CNAME)
         if let Some(dname_result) = self.check_dname_global(&qname, qtype, &message) {
             return Ok(dname_result);
@@ -4229,6 +4302,194 @@ mod tests {
             answer_from("192.168.122.77".parse().unwrap()).await,
             Ipv4Addr::new(192, 168, 122, 50)
         );
+    }
+
+    // Create an owned-TLD network scope with a single scoped A record. Mirrors the
+    // town-os EnsureNetworkScope/EnsureScopedTLD plumbing: the scope owns `tld` via
+    // its home_domain (the implicit primary TLD — no add_scope_tld needed) and
+    // holds one scoped record.
+    fn owned_tld_scope(db: &Database, scope: &str, tld: &str, name: &str, ip: &str) {
+        db.create_network_scope(&NetworkScope {
+            name: scope.to_string(),
+            home_domain: format!("{tld}."),
+        })
+        .unwrap();
+        db.add_scoped_record(
+            scope,
+            &DnsRecord {
+                id: None,
+                name: name.to_string(),
+                record_type: RecordKind::A,
+                value: ip.to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
+    }
+
+    // Extract the single A answer's IPv4 from a resolved response, asserting NoError.
+    fn expect_single_a(resp: &Message) -> Ipv4Addr {
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert_eq!(resp.answers().len(), 1, "expected exactly one answer");
+        match resp.answers()[0].data() {
+            RData::A(rdata::A(ip)) => *ip,
+            other => panic!("expected A record, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_lan_fallback_resolves_all_owned_tlds() {
+        // A LAN/loopback client (not on any WireGuard overlay, joined to nothing)
+        // resolves EVERY network's owned TLD from that network's scope — .fart AND
+        // .fart2 — so all TLDs are visible on the LAN even though the records are
+        // stored scoped. This is the LAN->owning-scope fallback.
+        let db = Database::open_memory().unwrap();
+        owned_tld_scope(&db, "fart", "fart", "gitea.default.fart.", "10.83.6.1");
+        owned_tld_scope(&db, "fart2", "fart2", "wiki.default.fart2.", "10.99.0.2");
+
+        let server = make_test_server(db);
+        let lan: IpAddr = "192.168.122.77".parse().unwrap();
+
+        let fart = Message::from_bytes(
+            &server
+                .handle_query_from(&build_query("gitea.default.fart.", RecordType::A), lan)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(expect_single_a(&fart), Ipv4Addr::new(10, 83, 6, 1));
+
+        let fart2 = Message::from_bytes(
+            &server
+                .handle_query_from(&build_query("wiki.default.fart2.", RecordType::A), lan)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(expect_single_a(&fart2), Ipv4Addr::new(10, 99, 0, 2));
+    }
+
+    #[tokio::test]
+    async fn test_lan_fallback_unknown_owned_name_is_authoritative_nxdomain() {
+        // A LAN query for a name under an owned TLD that has no record must NOT be
+        // forwarded upstream (a private TLD never leaks to the public internet).
+        // make_test_server has no forwarders, so a fall-through would be SERVFAIL;
+        // asserting an authoritative NXDOMAIN proves the fallback fired.
+        let db = Database::open_memory().unwrap();
+        owned_tld_scope(&db, "fart", "fart", "gitea.default.fart.", "10.83.6.1");
+
+        let server = make_test_server(db);
+        let lan: IpAddr = "192.168.122.77".parse().unwrap();
+        let resp = Message::from_bytes(
+            &server
+                .handle_query_from(&build_query("absent.default.fart.", RecordType::A), lan)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NXDomain);
+        assert!(resp.authoritative());
+    }
+
+    #[tokio::test]
+    async fn test_wg_peer_partition_hides_sibling_tld_and_home() {
+        // TLDs are partitioned across WireGuard endpoints: a peer joined to `fart`
+        // resolves .fart, but .fart2 (a sibling network) and .home (the LAN-only,
+        // DNS-only owned scope) are both hidden with an authoritative NXDOMAIN.
+        let db = Database::open_memory().unwrap();
+        owned_tld_scope(&db, "fart", "fart", "gitea.default.fart.", "10.83.6.1");
+        owned_tld_scope(&db, "fart2", "fart2", "wiki.default.fart2.", "10.99.0.2");
+        // .home is a DNS-only owned scope (no WG transport) with a GLOBAL record.
+        db.create_network_scope(&NetworkScope {
+            name: "home".to_string(),
+            home_domain: "home.".to_string(),
+        })
+        .unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "nginx.default.home.".to_string(),
+            record_type: RecordKind::A,
+            value: "192.168.122.50".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+        // A WireGuard-overlay peer joined to fart.
+        db.join_network(&NetworkAssociation {
+            ip_address: "10.64.0.5".to_string(),
+            scope_name: "fart".to_string(),
+            ttl_seconds: 3600,
+        })
+        .unwrap();
+
+        let server = make_test_server(db);
+        let peer: IpAddr = "10.64.0.5".parse().unwrap();
+
+        // Own TLD resolves (scoped overlay IP).
+        let own = Message::from_bytes(
+            &server
+                .handle_query_from(&build_query("gitea.default.fart.", RecordType::A), peer)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(expect_single_a(&own), Ipv4Addr::new(10, 83, 6, 1));
+
+        // Sibling network's TLD is hidden.
+        let sibling = Message::from_bytes(
+            &server
+                .handle_query_from(&build_query("wiki.default.fart2.", RecordType::A), peer)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(sibling.response_code(), ResponseCode::NXDomain);
+        assert!(sibling.authoritative());
+
+        // .home is hidden from the WG peer even though it has a global record.
+        let home = Message::from_bytes(
+            &server
+                .handle_query_from(&build_query("nginx.default.home.", RecordType::A), peer)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(home.response_code(), ResponseCode::NXDomain);
+        assert!(home.authoritative());
+    }
+
+    #[tokio::test]
+    async fn test_lan_resolves_home_global_record() {
+        // .home is LAN-only: a LAN client resolves its GLOBAL record directly (the
+        // global lookup wins before the fallback), even though .home is an owned
+        // scope for the sake of hiding it from WG peers.
+        let db = Database::open_memory().unwrap();
+        db.create_network_scope(&NetworkScope {
+            name: "home".to_string(),
+            home_domain: "home.".to_string(),
+        })
+        .unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "nginx.default.home.".to_string(),
+            record_type: RecordKind::A,
+            value: "192.168.122.50".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        let server = make_test_server(db);
+        let lan: IpAddr = "192.168.122.77".parse().unwrap();
+        let resp = Message::from_bytes(
+            &server
+                .handle_query_from(&build_query("nginx.default.home.", RecordType::A), lan)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(expect_single_a(&resp), Ipv4Addr::new(192, 168, 122, 50));
     }
 
     #[tokio::test]

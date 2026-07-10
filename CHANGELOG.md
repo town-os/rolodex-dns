@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### New Features
+
+- **LAN → owning-scope resolution fallback** — a trusted local source (loopback / LAN, associated with no scope) now resolves **every** owned network TLD from its owning scope, so all network TLDs are visible on the LAN even though records are stored scoped. The fallback runs after the global lookup (a dual-homed name's LAN-facing global record still wins) and before upstream forwarding: scoped-only names (e.g. a network's zone apex) are served from the owning scope at their stored value, the TLD's peer forwarders are consulted next, and failing everything an **authoritative NXDOMAIN** is returned — a privately-owned TLD is never forwarded upstream from the LAN. Overlay peers are unaffected and remain strictly partitioned (a peer joined to one network sees only its own TLD and gets NXDOMAIN for a sibling network's TLD), which lets a scope be created purely to *own* a TLD (partitioned-from-peers, LAN-resolvable) without binding any WireGuard overlay to it.
+
 ## v0.3.0 (2026-07-02)
 
 ### New Features
