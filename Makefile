@@ -61,10 +61,10 @@ clean: ## Clean cargo build artifacts
 	cargo clean
 
 go-test: go-integration-test ## Run Go unit tests (includes integration tests)
-	cd go && go test -v -count=1 ./...
+	cd go && go test -v -count=1 .
 
 go-integration-test: build ## Run Go integration tests against a real server
-	cd go && ROLODEX_DNS_BINARY=$(CURDIR)/target/debug/rolodex-dns go test -v -count=1 -tags=integration ./...
+	cd go && ROLODEX_DNS_BINARY=$(CURDIR)/target/debug/rolodex-dns go test -v -count=1 -tags=integration .
 
 deps: ## Install JavaScript dev dependencies (npm install in js/)
 	cd js && npm install --no-audit --no-fund
