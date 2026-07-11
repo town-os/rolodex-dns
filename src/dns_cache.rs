@@ -22,6 +22,22 @@ struct CachedEntry {
     local: bool,
 }
 
+/// The kind of authoritative negative answer cached for a name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NegativeKind {
+    /// The name does not exist.
+    NxDomain,
+    /// The name exists but has no record of the requested type.
+    NoData,
+}
+
+/// A cached negative (NXDOMAIN/NODATA) answer.
+#[derive(Debug, Clone)]
+struct NegativeEntry {
+    kind: NegativeKind,
+    expires_at: Instant,
+}
+
 /// A request to persist a cache entry to disk.
 struct CacheWriteRequest {
     name: String,
@@ -34,6 +50,14 @@ struct CacheWriteRequest {
 pub struct DnsCache {
     /// In-memory cache: key = "name:type" or "name:*"
     memory: Arc<DashMap<String, CachedEntry>>,
+    /// Cached negative answers, keyed the same way as `memory`.
+    ///
+    /// Kept in a separate map rather than as an empty-record entry in `memory`,
+    /// because every positive path here treats "no records" as a miss
+    /// (`insert` early-returns on an empty vec, `lookup` returns `Vec::new()`).
+    /// Overloading that would have been a minefield; a second map keeps the
+    /// positive paths exactly as they were.
+    negatives: Arc<DashMap<String, NegativeEntry>>,
     /// Database for persistent cache storage
     db: Database,
     /// Hit counter
@@ -52,6 +76,7 @@ impl DnsCache {
 
         let cache = Self {
             memory: Arc::new(DashMap::new()),
+            negatives: Arc::new(DashMap::new()),
             db,
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
@@ -227,9 +252,77 @@ impl DnsCache {
         );
     }
 
+    /// Caches an authoritative negative answer (NXDOMAIN/NODATA) for `name`.
+    ///
+    /// Without this, every lookup of a name that does not exist re-walks the
+    /// delegation chain from the root servers — for every query, forever. `ttl`
+    /// is the RFC 2308 negative TTL (`min(SOA MINIMUM, SOA TTL)`, clamped), as
+    /// computed by [`crate::resolver::Resolution::negative_ttl`].
+    ///
+    /// Negatives are held in memory only: they are capped at an hour, cheap to
+    /// re-learn, and persisting them risks a newly-created name looking dead
+    /// across a restart.
+    pub fn insert_negative(
+        &self,
+        name: &str,
+        record_type: Option<RecordKind>,
+        kind: NegativeKind,
+        ttl: u32,
+    ) {
+        if ttl == 0 {
+            return;
+        }
+        let key = cache_key(name, record_type);
+        self.negatives.insert(
+            key,
+            NegativeEntry {
+                kind,
+                expires_at: Instant::now() + std::time::Duration::from_secs(ttl as u64),
+            },
+        );
+    }
+
+    /// Returns the cached negative answer for `name`, if one is live.
+    pub fn lookup_negative(
+        &self,
+        name: &str,
+        record_type: Option<RecordKind>,
+    ) -> Option<NegativeKind> {
+        let key = cache_key(name, record_type);
+        if let Some(entry) = self.negatives.get(&key) {
+            if entry.expires_at > Instant::now() {
+                self.hits.fetch_add(1, Ordering::Relaxed);
+                return Some(entry.kind);
+            }
+            drop(entry);
+            self.negatives.remove(&key);
+        }
+        None
+    }
+
+    /// Drops any cached negative for `name`, across all record types.
+    ///
+    /// Required when a local record appears for a name we previously cached as
+    /// NXDOMAIN: otherwise a freshly-added package would keep returning NXDOMAIN
+    /// until the negative TTL ran out.
+    pub fn invalidate_negative(&self, name: &str) {
+        let prefix = format!("{name}:");
+        self.negatives.retain(|k, _| !k.starts_with(&prefix));
+    }
+
+    /// Number of live negative entries (observability/tests).
+    pub fn negative_count(&self) -> usize {
+        self.negatives.len()
+    }
+
     /// Flushes all cached entries.
+    ///
+    /// Also drops every cached negative — this is called on local zone/record
+    /// mutations, and a stale NXDOMAIN would otherwise shadow a name that was
+    /// just created.
     pub fn flush(&self) {
         self.memory.clear();
+        self.negatives.clear();
         if let Err(e) = self.db.cache_flush() {
             tracing::warn!("failed to flush persistent cache: {}", e);
         }
@@ -247,23 +340,42 @@ impl DnsCache {
     }
 
     /// Loads non-expired entries from disk at boot time.
+    ///
+    /// This used to call `cache_lookup("", None)`, and `cache_lookup` filters on
+    /// `WHERE name = ?1` — so it matched the empty name, loaded nothing, and the
+    /// cache started cold on every single boot ("DNS cache loaded (0 entries)").
+    /// It also stamped a fabricated 300s lifetime on whatever it did load,
+    /// ignoring the stored TTL. Both are fixed here: `cache_load_all` returns
+    /// every live row, and each entry expires when it actually should.
     fn load_from_disk(&self) {
-        // Load from the database cache table
-        if let Ok(records) = self.db.cache_lookup("", None) {
-            for rec in records {
-                let key = cache_key(&rec.name, Some(rec.record_type));
-                self.memory
-                    .entry(key)
-                    .and_modify(|entry| {
-                        Arc::make_mut(&mut entry.records).push(rec.clone());
-                    })
-                    .or_insert(CachedEntry {
-                        records: Arc::new(vec![rec]),
-                        expires_at: Instant::now() + std::time::Duration::from_secs(300),
-                        local: false,
-                    });
+        let rows = match self.db.cache_load_all() {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!("failed to load DNS cache from disk: {}", e);
+                return;
             }
+        };
+
+        for (rec, remaining_ttl) in rows {
+            let key = cache_key(&rec.name, Some(rec.record_type));
+            let expires_at = Instant::now() + std::time::Duration::from_secs(remaining_ttl as u64);
+            self.memory
+                .entry(key)
+                .and_modify(|entry| {
+                    Arc::make_mut(&mut entry.records).push(rec.clone());
+                    // The entry lives only as long as its shortest-lived record.
+                    if expires_at < entry.expires_at {
+                        entry.expires_at = expires_at;
+                    }
+                })
+                .or_insert(CachedEntry {
+                    records: Arc::new(vec![rec]),
+                    expires_at,
+                    local: false,
+                });
         }
+
+        tracing::info!("DNS cache loaded ({} entries)", self.memory.len());
     }
 }
 

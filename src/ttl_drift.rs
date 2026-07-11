@@ -119,6 +119,7 @@ pub fn parse_duration_secs(s: &str) -> Option<i64> {
 }
 
 /// Tracks per-server latency using exponential moving average (EMA).
+#[derive(Debug)]
 pub struct LatencyTracker {
     /// Per-server EMA latency in milliseconds.
     latencies: Arc<DashMap<SocketAddr, f64>>,

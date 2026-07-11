@@ -572,6 +572,14 @@ pub struct ResolutionConfig {
     /// reclaimed. Default 60.
     #[serde(default = "default_recovery_probe_secs")]
     pub recovery_probe_secs: u64,
+    /// Delegations (zone -> nameservers, learned while walking down from the
+    /// roots) whose TTL exceeds this many seconds are persisted to the database,
+    /// so a restart comes back warm instead of re-walking the root servers for
+    /// every name. Shorter-lived delegations are kept in memory only. Root and
+    /// TLD NS sets carry multi-day TTLs, so in practice the entries actually
+    /// worth keeping are the ones that survive. Default 300 (5m).
+    #[serde(default = "default_delegation_persist_min_ttl")]
+    pub delegation_persist_min_ttl: u32,
 }
 
 impl Default for ResolutionConfig {
@@ -583,6 +591,7 @@ impl Default for ResolutionConfig {
             public_fallback: default_public_fallback(),
             switch_grace_failures: default_switch_grace_failures(),
             recovery_probe_secs: default_recovery_probe_secs(),
+            delegation_persist_min_ttl: default_delegation_persist_min_ttl(),
         }
     }
 }
@@ -752,6 +761,10 @@ fn default_public_fallback() -> Vec<String> {
 
 fn default_switch_grace_failures() -> u32 {
     3
+}
+
+fn default_delegation_persist_min_ttl() -> u32 {
+    crate::delegation_cache::DEFAULT_PERSIST_MIN_TTL
 }
 
 fn default_recovery_probe_secs() -> u64 {

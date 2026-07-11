@@ -552,6 +552,31 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_cache_name_type ON dns_cache(name, record_type);
             CREATE INDEX IF NOT EXISTS idx_cache_expiry ON dns_cache(cached_at, ttl);
 
+            -- dns_cache historically had no uniqueness constraint and cache_insert
+            -- was a bare INSERT, so re-caching a name appended a duplicate row every
+            -- time and nothing but a full flush ever pruned them. Collapse any
+            -- accumulated duplicates, then enforce uniqueness so cache_insert can
+            -- upsert. Both are no-ops once the index exists.
+            DELETE FROM dns_cache WHERE id NOT IN (
+                SELECT MAX(id) FROM dns_cache GROUP BY name, record_type, value
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_cache_unique
+                ON dns_cache(name, record_type, value);
+
+            -- Cached delegations (zone -> nameserver addresses), so the iterative
+            -- resolver does not re-walk root -> TLD for every cold name. Long-lived
+            -- entries (root/TLD NS sets carry multi-day TTLs) are persisted so a
+            -- restart comes back warm.
+            CREATE TABLE IF NOT EXISTS delegation_cache (
+                zone       TEXT NOT NULL,
+                ns_ip      TEXT NOT NULL,
+                ttl        INTEGER NOT NULL,
+                cached_at  INTEGER NOT NULL,
+                PRIMARY KEY (zone, ns_ip)
+            );
+            CREATE INDEX IF NOT EXISTS idx_delegation_expiry
+                ON delegation_cache(cached_at, ttl);
+
             CREATE TABLE IF NOT EXISTS local_rbl_entries (
                 name TEXT PRIMARY KEY NOT NULL,
                 reason TEXT NOT NULL DEFAULT ''
@@ -2211,11 +2236,166 @@ impl Database {
             .context("system clock before UNIX epoch")?
             .as_secs() as i64;
         conn.execute(
-            "INSERT INTO dns_cache (name, record_type, value, ttl, original_ttl, cached_at, source) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO dns_cache (name, record_type, value, ttl, original_ttl, cached_at, source) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+             ON CONFLICT(name, record_type, value) DO UPDATE SET \
+                 ttl = excluded.ttl, \
+                 original_ttl = excluded.original_ttl, \
+                 cached_at = excluded.cached_at, \
+                 source = excluded.source",
             params![name, record_type, value, ttl as i64, original_ttl as i64, now, source],
         )
         .context("failed to insert cache entry")?;
         Ok(())
+    }
+
+    /// Loads every non-expired cache row, with each record's TTL rewritten to the
+    /// remaining lifetime.
+    ///
+    /// `cache_lookup` filters on `WHERE name = ?1`, so the boot-load path used to
+    /// call it with an empty name and silently load nothing on every start (hence
+    /// the perennial "DNS cache loaded (0 entries)"). This is the query it should
+    /// have been making.
+    pub fn cache_load_all(&self) -> Result<Vec<(DnsRecord, u32)>> {
+        let conn = self.lock()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .context("system clock before UNIX epoch")?
+            .as_secs() as i64;
+
+        let mut stmt = conn.prepare_cached(
+            "SELECT name, record_type, value, ttl, cached_at FROM dns_cache WHERE cached_at + ttl > ?1",
+        )?;
+        let rows = stmt.query_map(params![now], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            let (name, rt_str, value, ttl, cached_at) = row?;
+            let remaining = ttl - (now - cached_at);
+            if remaining <= 0 {
+                continue;
+            }
+            let remaining = remaining as u32;
+            out.push((
+                DnsRecord {
+                    id: None,
+                    name,
+                    record_type: RecordKind::parse(&rt_str).unwrap_or(RecordKind::A),
+                    value,
+                    ttl: remaining,
+                    priority: 0,
+                },
+                remaining,
+            ));
+        }
+        Ok(out)
+    }
+
+    // ================================================================
+    // Delegation cache (zone -> nameserver addresses)
+    // ================================================================
+
+    /// Upserts one nameserver address for `zone`. Keyed on (zone, ns_ip), so
+    /// re-learning a delegation refreshes it in place instead of appending.
+    pub fn delegation_insert(&self, zone: &str, ns_ip: &str, ttl: u32) -> Result<()> {
+        let conn = self.lock()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .context("system clock before UNIX epoch")?
+            .as_secs() as i64;
+        conn.execute(
+            "INSERT INTO delegation_cache (zone, ns_ip, ttl, cached_at) VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(zone, ns_ip) DO UPDATE SET ttl = excluded.ttl, cached_at = excluded.cached_at",
+            params![zone, ns_ip, ttl as i64, now],
+        )
+        .context("failed to insert delegation")?;
+        Ok(())
+    }
+
+    /// Replaces the full nameserver set for `zone` in one transaction, so a
+    /// shrinking NS set does not leave stale addresses behind.
+    pub fn delegation_replace(&self, zone: &str, ns_ips: &[String], ttl: u32) -> Result<()> {
+        let mut conn = self.lock()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .context("system clock before UNIX epoch")?
+            .as_secs() as i64;
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM delegation_cache WHERE zone = ?1",
+            params![zone],
+        )?;
+        for ip in ns_ips {
+            tx.execute(
+                "INSERT INTO delegation_cache (zone, ns_ip, ttl, cached_at) VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(zone, ns_ip) DO UPDATE SET ttl = excluded.ttl, cached_at = excluded.cached_at",
+                params![zone, ip, ttl as i64, now],
+            )?;
+        }
+        tx.commit().context("failed to replace delegation")?;
+        Ok(())
+    }
+
+    /// Loads every non-expired delegation, grouped by zone, with the remaining TTL.
+    pub fn delegation_load_all(&self) -> Result<Vec<(String, Vec<String>, u32)>> {
+        let conn = self.lock()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .context("system clock before UNIX epoch")?
+            .as_secs() as i64;
+
+        let mut stmt = conn.prepare_cached(
+            "SELECT zone, ns_ip, ttl, cached_at FROM delegation_cache WHERE cached_at + ttl > ?1 ORDER BY zone",
+        )?;
+        let rows = stmt.query_map(params![now], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+
+        let mut grouped: Vec<(String, Vec<String>, u32)> = Vec::new();
+        for row in rows {
+            let (zone, ns_ip, ttl, cached_at) = row?;
+            let remaining = ttl - (now - cached_at);
+            if remaining <= 0 {
+                continue;
+            }
+            let remaining = remaining as u32;
+            match grouped.last_mut() {
+                Some((z, ips, rem)) if *z == zone => {
+                    ips.push(ns_ip);
+                    *rem = (*rem).min(remaining);
+                }
+                _ => grouped.push((zone, vec![ns_ip], remaining)),
+            }
+        }
+        Ok(grouped)
+    }
+
+    pub fn delegation_flush(&self) -> Result<()> {
+        let conn = self.lock()?;
+        conn.execute("DELETE FROM delegation_cache", [])
+            .context("failed to flush delegation cache")?;
+        Ok(())
+    }
+
+    pub fn delegation_count(&self) -> Result<u64> {
+        let conn = self.lock()?;
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM delegation_cache", [], |row| {
+            row.get(0)
+        })?;
+        Ok(count as u64)
     }
 
     pub fn cache_lookup(&self, name: &str, record_type: Option<&str>) -> Result<Vec<DnsRecord>> {

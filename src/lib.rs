@@ -9,6 +9,7 @@ pub mod cidr;
 pub mod config;
 pub mod dane;
 pub mod db;
+pub mod delegation_cache;
 pub mod dhcp;
 pub mod dns_cache;
 pub mod dns_server;

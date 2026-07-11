@@ -320,9 +320,31 @@ impl DnsServer {
     }
 
     /// Replaces the root hints used by the iterative resolver.
+    ///
+    /// Rebuilds the resolver *from the current one* so the delegation cache and
+    /// the nameserver latency stats carry over. Constructing a fresh
+    /// `IterativeResolver` here would silently discard everything learned so far
+    /// and put every query back to walking from the roots.
     pub fn set_root_hints(&self, hints: Vec<IpAddr>) {
+        let resolver = self.resolver.load_full();
         self.resolver
-            .store(Arc::new(crate::resolver::IterativeResolver::new(hints)));
+            .store(Arc::new(resolver.with_root_hints(hints)));
+    }
+
+    /// The current iterative resolver (delegation cache, root hints, latency stats).
+    pub fn resolver_for_test(&self) -> Arc<crate::resolver::IterativeResolver> {
+        self.resolver.load_full()
+    }
+
+    /// Installs a resolver backed by a persistent delegation cache.
+    pub fn set_delegation_cache(&self, delegations: Arc<crate::delegation_cache::DelegationCache>) {
+        let current = self.resolver.load_full();
+        self.resolver.store(Arc::new(
+            crate::resolver::IterativeResolver::with_delegations(
+                current.root_hints().to_vec(),
+                delegations,
+            ),
+        ));
     }
 
     /// Sets the auto-mode encrypted (DoH/DoT) upstreams (the secure tier).
@@ -420,10 +442,29 @@ impl DnsServer {
     }
 
     /// Flushes the in-memory DNS cache (and its persistent backing store).
+    ///
+    /// **This does NOT touch the delegation cache, and must not.** Every gRPC
+    /// zone/record/scope mutation calls this — adding one package would otherwise
+    /// discard every delegation we have learned, sending the next lookup of every
+    /// name back to the root servers. That is exactly the failure that motivated
+    /// the delegation cache in the first place. Cross-tier invalidation lives in
+    /// [`Self::flush_upstream_state`] instead.
     pub fn flush_cache(&self) {
         if let Some(ref cache) = self.dns_cache {
             cache.flush();
         }
+    }
+
+    /// Discards everything learned from the current upstream tier: cached
+    /// answers, cached negatives, and cached delegations.
+    ///
+    /// Called only when the `auto` chain switches tiers. Delegations and answers
+    /// obtained while talking to one upstream must not steer queries once we are
+    /// talking to a different one — and on a degrade (say, to a network that
+    /// filters :53) the cached nameserver addresses are unreachable anyway.
+    pub fn flush_upstream_state(&self) {
+        self.flush_cache();
+        self.resolver.load().delegations().flush();
     }
 
     /// Updates the upstream forwarder list.
@@ -739,6 +780,10 @@ impl DnsServer {
                         records.len()
                     );
                     if let Some(ref cache) = self.dns_cache {
+                        // See the global path below: a live local record must
+                        // evict any negative previously cached for this name.
+                        cache.invalidate_negative(&scoped_cache_name);
+                        cache.invalidate_negative(&qname);
                         cache.insert_local(&scoped_cache_name, Some(kind), records.clone());
                     }
                     let dns_records = build_scoped_answers(&records, ingress_override);
@@ -941,6 +986,11 @@ impl DnsServer {
                         records.len()
                     );
                     if let Some(ref cache) = self.dns_cache {
+                        // A local record exists for this name, so any negative we
+                        // cached for it earlier is now a lie — drop it, or a
+                        // freshly-added name would keep returning NXDOMAIN until
+                        // the negative TTL ran out.
+                        cache.invalidate_negative(&qname);
                         cache.insert_local(&qname, Some(kind), records.clone());
                     }
                     let dns_records = records.iter().filter_map(db_record_to_dns_record).collect();
@@ -1144,6 +1194,24 @@ impl DnsServer {
                     &message,
                     ResponseCode::NoError,
                     dns_records,
+                    false,
+                    edns_ctx.as_ref(),
+                ));
+            }
+
+            // A cached authoritative negative. Without this, every lookup of a
+            // name that does not exist re-walks the delegation chain from the
+            // root servers, every single time.
+            if let Some(kind) = cache.lookup_negative(&qname, record_kind) {
+                debug!("Negative cache hit for {} {:?}: {:?}", qname, qtype, kind);
+                let rcode = match kind {
+                    crate::dns_cache::NegativeKind::NxDomain => ResponseCode::NXDomain,
+                    crate::dns_cache::NegativeKind::NoData => ResponseCode::NoError,
+                };
+                return Ok(build_response_edns(
+                    &message,
+                    rcode,
+                    vec![],
                     false,
                     edns_ctx.as_ref(),
                 ));
@@ -1451,7 +1519,7 @@ impl DnsServer {
         } else if winner < active {
             // Recovery: a more-preferred (more-trusted) tier answered. Safe
             // direction — switch immediately.
-            self.flush_cache();
+            self.flush_upstream_state();
             self.active_tier.store(winner, Ordering::Relaxed);
             self.deviation_streak.store(0, Ordering::Relaxed);
             info!(
@@ -1464,7 +1532,7 @@ impl DnsServer {
             let grace = self.switch_grace_failures.load(Ordering::Relaxed).max(1);
             let streak = self.deviation_streak.fetch_add(1, Ordering::Relaxed) + 1;
             if streak >= grace as usize {
-                self.flush_cache();
+                self.flush_upstream_state();
                 self.active_tier.store(winner, Ordering::Relaxed);
                 self.deviation_streak.store(0, Ordering::Relaxed);
                 warn!(
@@ -1586,6 +1654,11 @@ impl DnsServer {
             Ok(res) => {
                 if res.rcode == ResponseCode::NoError && !res.answers.is_empty() {
                     self.cache_answers(&res.answers);
+                } else if let Some(ttl) = res.negative_ttl() {
+                    // An authoritative negative with an SOA to derive the TTL from
+                    // (RFC 2308). Cache it so the next lookup of this name does
+                    // not re-walk from the roots.
+                    self.cache_negative(question, res.rcode, ttl);
                 }
                 Ok(build_response_edns(
                     &message,
@@ -1629,6 +1702,28 @@ impl DnsServer {
                 cache.insert(&name, kind, cache_records, ttl);
             }
         }
+    }
+
+    /// Caches an authoritative negative answer for the question that produced it.
+    ///
+    /// Keyed exactly like the positive cache (`question.name()` +
+    /// `map_query_type_to_kind(qtype)`), so `handle_query`'s negative lookup hits
+    /// on the same key it would have used for a positive answer.
+    fn cache_negative(&self, question: &hickory_proto::op::Query, rcode: ResponseCode, ttl: u32) {
+        let Some(ref cache) = self.dns_cache else {
+            return;
+        };
+        let kind = match rcode {
+            ResponseCode::NXDomain => crate::dns_cache::NegativeKind::NxDomain,
+            ResponseCode::NoError => crate::dns_cache::NegativeKind::NoData,
+            // Only authoritative negatives are cacheable; SERVFAIL and friends
+            // are transient and must be retried.
+            _ => return,
+        };
+        let name = question.name().to_string();
+        let record_kind = map_query_type_to_kind(question.query_type());
+        debug!("Caching negative for {} ({:?}) ttl={}", name, kind, ttl);
+        cache.insert_negative(&name, record_kind, kind, ttl);
     }
 
     /// Forwards a DNS query to the configured upstream resolvers.

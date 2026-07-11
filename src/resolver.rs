@@ -17,12 +17,18 @@ use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
 use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordType, rdata};
 use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use rand::Rng;
+use rand::seq::SliceRandom;
+use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tracing::debug;
+
+use crate::delegation_cache::DelegationCache;
+use crate::ttl_drift::LatencyTracker;
 
 /// Maximum UDP DNS message size we are willing to receive.
 const MAX_UDP_SIZE: usize = 4096;
@@ -39,6 +45,26 @@ const MAX_CNAME_CHAIN: usize = 16;
 const MAX_RESOLUTION_DEPTH: u32 = 16;
 /// Maximum number of NS targets to try when resolving a glue-less delegation.
 const MAX_GLUELESS_NS: usize = 4;
+
+/// Lower bound on a negative (NXDOMAIN/NODATA) cache entry, in seconds.
+pub const MIN_NEGATIVE_TTL: u32 = 60;
+/// Upper bound on a negative cache entry. Negatives are cheap to re-learn and
+/// pinning them for days makes a newly-created name look dead, so cap at an hour.
+pub const MAX_NEGATIVE_TTL: u32 = 3600;
+
+/// EMA latency assumed for a nameserver we have never measured. Sits between a
+/// healthy server (~tens of ms) and the timeout penalty, so an unmeasured server
+/// is preferred over a known-bad one but not over a known-good one.
+const UNKNOWN_RTT_MS: f64 = 200.0;
+/// Latency recorded against a nameserver that failed or timed out, so it sinks
+/// in the ordering instead of being retried first on every subsequent query.
+const TIMEOUT_PENALTY_MS: f64 = 10_000.0;
+/// Probability that a query ignores the RTT ordering and picks at random, so a
+/// recovered or never-tried nameserver still gets probed instead of being
+/// starved behind an entrenched favourite.
+const EXPLORE_PROBABILITY: f64 = 0.10;
+/// EMA smoothing factor for nameserver latency.
+const LATENCY_EMA_ALPHA: f64 = 0.3;
 
 /// The IANA root server IPv4 addresses (the "root hints").
 ///
@@ -68,6 +94,38 @@ pub const ROOT_HINTS: [IpAddr; 13] = [
 pub struct Resolution {
     pub rcode: ResponseCode,
     pub answers: Vec<Record>,
+    /// The authority-section SOA of a negative (NXDOMAIN/NODATA) response, kept
+    /// so the caller can derive an RFC 2308 negative-cache TTL. `None` for
+    /// positive answers.
+    pub soa: Option<Record>,
+}
+
+impl Resolution {
+    /// An answer (or any response carrying records).
+    fn answer(rcode: ResponseCode, answers: Vec<Record>) -> Self {
+        Self {
+            rcode,
+            answers,
+            soa: None,
+        }
+    }
+
+    /// The RFC 2308 negative-cache TTL for this resolution: `min(SOA MINIMUM,
+    /// SOA record TTL)`, clamped. `None` when this is not a cacheable negative.
+    pub fn negative_ttl(&self) -> Option<u32> {
+        if !self.answers.is_empty() {
+            return None;
+        }
+        let soa = self.soa.as_ref()?;
+        let RData::SOA(data) = soa.data() else {
+            return None;
+        };
+        Some(
+            data.minimum()
+                .min(soa.ttl())
+                .clamp(MIN_NEGATIVE_TTL, MAX_NEGATIVE_TTL),
+        )
+    }
 }
 
 /// Classification of a single nameserver response relative to the query.
@@ -82,12 +140,24 @@ enum Step {
         zone: Name,
         glue: Vec<IpAddr>,
         ns_targets: Vec<Name>,
+        /// Shortest TTL across the delegation's NS (and glue) records — how long
+        /// the delegation may be cached for.
+        ttl: u32,
     },
-    /// An authoritative negative response (NXDOMAIN or NODATA).
-    Negative(ResponseCode),
+    /// An authoritative negative response (NXDOMAIN or NODATA), with the
+    /// authority-section SOA when the server supplied one.
+    Negative {
+        rcode: ResponseCode,
+        soa: Option<Record>,
+    },
 }
 
 /// An iterative resolver that resolves names from the root servers down.
+///
+/// Consults a [`DelegationCache`] before falling back to the root hints, so a
+/// warm zone is entered as far down the delegation chain as possible, and orders
+/// candidate nameservers by measured RTT so a slow or rate-limiting server is
+/// demoted rather than retried first on every query.
 #[derive(Debug, Clone)]
 pub struct IterativeResolver {
     root_hints: Vec<IpAddr>,
@@ -95,12 +165,23 @@ pub struct IterativeResolver {
     /// Port used to reach nameservers (always 53 in production; overridable
     /// for tests).
     port: u16,
+    /// Zone -> nameservers, so cold names do not re-walk from the root every time.
+    delegations: Arc<DelegationCache>,
+    /// Per-nameserver EMA latency, used to order candidates.
+    latency: Arc<LatencyTracker>,
 }
 
 impl IterativeResolver {
     /// Creates a resolver using the given root hints, falling back to the
-    /// built-in [`ROOT_HINTS`] when the list is empty.
+    /// built-in [`ROOT_HINTS`] when the list is empty, with a fresh in-memory
+    /// delegation cache.
     pub fn new(root_hints: Vec<IpAddr>) -> Self {
+        Self::with_delegations(root_hints, Arc::new(DelegationCache::in_memory()))
+    }
+
+    /// Creates a resolver backed by an existing (possibly persistent) delegation
+    /// cache.
+    pub fn with_delegations(root_hints: Vec<IpAddr>, delegations: Arc<DelegationCache>) -> Self {
         let root_hints = if root_hints.is_empty() {
             ROOT_HINTS.to_vec()
         } else {
@@ -110,6 +191,8 @@ impl IterativeResolver {
             root_hints,
             timeout: Duration::from_millis(DEFAULT_QUERY_TIMEOUT_MS),
             port: 53,
+            delegations,
+            latency: Arc::new(LatencyTracker::new(LATENCY_EMA_ALPHA)),
         }
     }
 
@@ -118,16 +201,51 @@ impl IterativeResolver {
         Self::new(Vec::new())
     }
 
-    /// Overrides the per-nameserver query timeout (used by tests).
-    #[cfg(test)]
-    fn with_timeout(mut self, timeout: Duration) -> Self {
+    /// Returns a resolver identical to this one but with different root hints,
+    /// **keeping** the delegation cache and the latency stats.
+    ///
+    /// `DnsServer::set_root_hints` swaps the whole resolver behind an `ArcSwap`;
+    /// building a fresh one there would silently throw away everything learned so
+    /// far and put us right back to walking from the roots on every query.
+    pub fn with_root_hints(&self, root_hints: Vec<IpAddr>) -> Self {
+        let root_hints = if root_hints.is_empty() {
+            ROOT_HINTS.to_vec()
+        } else {
+            root_hints
+        };
+        Self {
+            root_hints,
+            timeout: self.timeout,
+            port: self.port,
+            delegations: Arc::clone(&self.delegations),
+            latency: Arc::clone(&self.latency),
+        }
+    }
+
+    /// The delegation cache backing this resolver.
+    pub fn delegations(&self) -> &Arc<DelegationCache> {
+        &self.delegations
+    }
+
+    /// The root hints this resolver falls back to.
+    pub fn root_hints(&self) -> &[IpAddr] {
+        &self.root_hints
+    }
+
+    /// Overrides the per-nameserver query timeout.
+    ///
+    /// Public so integration tests can drive failover without waiting out the
+    /// production timeout.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
-    /// Overrides the nameserver port (used by tests).
-    #[cfg(test)]
-    fn with_port(mut self, port: u16) -> Self {
+    /// Overrides the port used to reach nameservers (always 53 in production).
+    ///
+    /// Public so integration tests can stand a delegation hierarchy up on an
+    /// unprivileged port.
+    pub fn with_port(mut self, port: u16) -> Self {
         self.port = port;
         self
     }
@@ -144,6 +262,16 @@ impl IterativeResolver {
             .await
     }
 
+    /// Resolves `name`, entering the delegation chain as deep as the cache allows.
+    ///
+    /// Tries the deepest cached delegation covering `name` first; a warm `.com`
+    /// lookup therefore starts at the TLD servers and never touches a root. If
+    /// that cached delegation turns out to be unusable (stale glue, dead servers)
+    /// the entry is invalidated and the walk is retried from the root hints, so a
+    /// bad cache entry costs one retry rather than wedging the name permanently.
+    ///
+    /// A `Negative` (NXDOMAIN/NODATA) answer is a *successful* resolution and must
+    /// not trigger the retry — only a hard failure does.
     async fn resolve_inner(
         &self,
         name: &Name,
@@ -156,7 +284,48 @@ impl IterativeResolver {
             bail!("maximum resolution depth exceeded resolving {}", name);
         }
 
-        let mut servers = self.root_hints.clone();
+        if let Some((zone, servers)) = self.delegations.best_match(name) {
+            // Work on a copy of the CNAME trail: a failed attempt must not leave
+            // partial state that makes the retry look like a CNAME loop.
+            let mut attempt_seen = cname_seen.clone();
+            match Box::pin(self.walk(name, qtype, qclass, depth, &mut attempt_seen, servers)).await
+            {
+                Ok(resolution) => {
+                    *cname_seen = attempt_seen;
+                    return Ok(resolution);
+                }
+                Err(e) => {
+                    debug!(
+                        "cached delegation {} unusable for {} ({}); re-walking from the roots",
+                        zone, name, e
+                    );
+                    self.delegations.invalidate(&zone);
+                }
+            }
+        }
+
+        Box::pin(self.walk(
+            name,
+            qtype,
+            qclass,
+            depth,
+            cname_seen,
+            self.root_hints.clone(),
+        ))
+        .await
+    }
+
+    /// Walks the delegation chain for `name`, starting at `servers`, caching each
+    /// delegation it learns along the way.
+    async fn walk(
+        &self,
+        name: &Name,
+        qtype: RecordType,
+        qclass: DNSClass,
+        depth: u32,
+        cname_seen: &mut Vec<Name>,
+        mut servers: Vec<IpAddr>,
+    ) -> Result<Resolution> {
         let mut visited_zones: HashSet<String> = HashSet::new();
 
         for _hop in 0..MAX_REFERRALS {
@@ -164,10 +333,7 @@ impl IterativeResolver {
 
             match classify(&response, qtype) {
                 Step::Answer(records) => {
-                    return Ok(Resolution {
-                        rcode: response.response_code(),
-                        answers: records,
-                    });
+                    return Ok(Resolution::answer(response.response_code(), records));
                 }
                 Step::Cname { target, records } => {
                     if cname_seen.iter().any(|n| n == &target) {
@@ -182,21 +348,20 @@ impl IterativeResolver {
                         Box::pin(self.resolve_inner(&target, qtype, qclass, depth + 1, cname_seen))
                             .await?;
                     accumulated.extend(sub.answers);
-                    return Ok(Resolution {
-                        rcode: sub.rcode,
-                        answers: accumulated,
-                    });
+                    return Ok(Resolution::answer(sub.rcode, accumulated));
                 }
-                Step::Negative(rcode) => {
+                Step::Negative { rcode, soa } => {
                     return Ok(Resolution {
                         rcode,
                         answers: Vec::new(),
+                        soa,
                     });
                 }
                 Step::Referral {
                     zone,
                     glue,
                     ns_targets,
+                    ttl,
                 } => {
                     let zone_key = zone.to_ascii().to_lowercase();
                     if !visited_zones.insert(zone_key) {
@@ -211,6 +376,9 @@ impl IterativeResolver {
                     if servers.is_empty() {
                         bail!("no reachable nameservers for delegation of {}", zone);
                     }
+                    // Remember the delegation so the next name in this zone starts
+                    // here instead of back at the root.
+                    self.delegations.insert(&zone, servers.clone(), ttl);
                 }
             }
         }
@@ -245,6 +413,10 @@ impl IterativeResolver {
     }
 
     /// Sends the query to each server in turn, returning the first valid response.
+    ///
+    /// Servers are tried in RTT order (see [`Self::order_servers`]) and every
+    /// attempt is timed, so a slow or black-holed nameserver is demoted for
+    /// subsequent queries instead of being retried first every time.
     async fn query_servers(
         &self,
         servers: &[IpAddr],
@@ -253,16 +425,77 @@ impl IterativeResolver {
         qclass: DNSClass,
     ) -> Result<Message> {
         let (query, id) = build_query(name, qtype, qclass)?;
-        for server in servers {
-            match self.query_one(*server, &query, id, name).await {
-                Ok(msg) => return Ok(msg),
+        for server in self.order_servers(servers) {
+            let started = Instant::now();
+            match self.query_one(server, &query, id, name).await {
+                Ok(msg) => {
+                    self.record_latency(server, started.elapsed().as_secs_f64() * 1000.0);
+                    return Ok(msg);
+                }
                 Err(e) => {
+                    // A failure is worse than any real latency: sink this server.
+                    self.record_latency(server, TIMEOUT_PENALTY_MS);
                     debug!("query for {} to {} failed: {}", name, server, e);
                     continue;
                 }
             }
         }
         bail!("all nameservers failed for {}", name)
+    }
+
+    fn record_latency(&self, server: IpAddr, latency_ms: f64) {
+        self.latency
+            .record(SocketAddr::new(server, self.port), latency_ms);
+    }
+
+    /// Orders candidate nameservers: fastest measured RTT first, **IPv4 before
+    /// IPv6 always**.
+    ///
+    /// The v4/v6 split is not a preference, it is a correctness constraint —
+    /// [`collect_glue`] deliberately puts IPv4 first because a host with no
+    /// routable IPv6 would otherwise burn the full query timeout on every v6
+    /// nameserver it picked. Ordering therefore happens strictly *within* each
+    /// family, never across.
+    ///
+    /// With probability [`EXPLORE_PROBABILITY`] the RTT ordering is skipped in
+    /// favour of a random shuffle, so a recovered or never-measured server still
+    /// gets traffic rather than being starved behind an entrenched favourite.
+    /// This also means an unqueried set (the root hints) is not always tried in
+    /// declaration order — the old behaviour, which pointed every cold query in
+    /// the system at a.root-servers.net and duly got us rate-limited.
+    fn order_servers(&self, servers: &[IpAddr]) -> Vec<IpAddr> {
+        let mut v4: Vec<IpAddr> = servers.iter().copied().filter(|s| s.is_ipv4()).collect();
+        let mut v6: Vec<IpAddr> = servers.iter().copied().filter(|s| s.is_ipv6()).collect();
+
+        let explore = rand::rng().random::<f64>() < EXPLORE_PROBABILITY;
+        self.rank(&mut v4, explore);
+        self.rank(&mut v6, explore);
+
+        v4.extend(v6);
+        v4
+    }
+
+    /// Shuffles `group`, then (unless exploring) stably sorts it by measured RTT.
+    /// The shuffle is the tie-break: servers with equal or unknown latency end up
+    /// in a random order rather than a fixed one.
+    fn rank(&self, group: &mut [IpAddr], explore: bool) {
+        group.shuffle(&mut rand::rng());
+        if explore {
+            return;
+        }
+        group.sort_by(|a, b| {
+            let la = self.rtt_of(*a);
+            let lb = self.rtt_of(*b);
+            la.partial_cmp(&lb).unwrap_or(Ordering::Equal)
+        });
+    }
+
+    /// Measured EMA latency for a server, or [`UNKNOWN_RTT_MS`] if we have never
+    /// talked to it.
+    fn rtt_of(&self, server: IpAddr) -> f64 {
+        self.latency
+            .get_latency(&SocketAddr::new(server, self.port))
+            .unwrap_or(UNKNOWN_RTT_MS)
     }
 
     /// Sends a single query over UDP (falling back to TCP on truncation) and
@@ -400,7 +633,10 @@ fn classify(response: &Message, qtype: RecordType) -> Step {
     }
 
     if response.response_code() == ResponseCode::NXDomain {
-        return Step::Negative(ResponseCode::NXDomain);
+        return Step::Negative {
+            rcode: ResponseCode::NXDomain,
+            soa: find_soa(response),
+        };
     }
 
     // No answers, NoError: a delegation (NS in authority) or NODATA.
@@ -411,7 +647,10 @@ fn classify(response: &Message, qtype: RecordType) -> Step {
         .collect();
 
     if ns_records.is_empty() {
-        return Step::Negative(response.response_code());
+        return Step::Negative {
+            rcode: response.response_code(),
+            soa: find_soa(response),
+        };
     }
 
     let zone = ns_records
@@ -427,11 +666,37 @@ fn classify(response: &Message, qtype: RecordType) -> Step {
         .collect();
     let glue = collect_glue(response, &ns_targets);
 
+    // The delegation may only be cached for as long as its shortest component
+    // lives: the NS records, and any glue we are about to rely on.
+    let ns_ttl = ns_records.iter().map(|r| r.ttl()).min().unwrap_or(0);
+    let glue_ttl = response
+        .additionals()
+        .iter()
+        .filter(|rec| ns_targets.iter().any(|t| names_equal(t, rec.name())))
+        .filter(|rec| matches!(rec.data(), RData::A(_) | RData::AAAA(_)))
+        .map(|rec| rec.ttl())
+        .min();
+    let ttl = match glue_ttl {
+        Some(g) => ns_ttl.min(g),
+        None => ns_ttl,
+    };
+
     Step::Referral {
         zone,
         glue,
         ns_targets,
+        ttl,
     }
+}
+
+/// Extracts the authority-section SOA of a negative response, used to derive the
+/// negative-cache TTL (RFC 2308).
+fn find_soa(response: &Message) -> Option<Record> {
+    response
+        .name_servers()
+        .iter()
+        .find(|r| matches!(r.data(), RData::SOA(_)))
+        .cloned()
 }
 
 /// Extracts glue address records from the additional section for the given
@@ -558,10 +823,13 @@ mod tests {
                 zone,
                 glue,
                 ns_targets,
+                ttl,
             } => {
                 assert!(names_equal(&zone, &name("com.")));
                 assert_eq!(glue, vec![IpAddr::V4(Ipv4Addr::new(192, 5, 6, 30))]);
                 assert_eq!(ns_targets.len(), 1);
+                // Shortest of the NS record TTL and the glue TTL — both 300 here.
+                assert_eq!(ttl, 300);
             }
             other => panic!("expected referral, got {:?}", other),
         }
@@ -600,7 +868,12 @@ mod tests {
             )),
         ));
         match classify(&msg, RecordType::A) {
-            Step::Negative(rcode) => assert_eq!(rcode, ResponseCode::NXDomain),
+            Step::Negative { rcode, soa } => {
+                assert_eq!(rcode, ResponseCode::NXDomain);
+                // The authority SOA must be carried out so a negative TTL can be
+                // derived (RFC 2308) instead of the negative being thrown away.
+                assert!(soa.is_some(), "NXDOMAIN must retain its authority SOA");
+            }
             other => panic!("expected negative, got {:?}", other),
         }
     }
@@ -622,7 +895,10 @@ mod tests {
             )),
         ));
         match classify(&msg, RecordType::AAAA) {
-            Step::Negative(rcode) => assert_eq!(rcode, ResponseCode::NoError),
+            Step::Negative { rcode, soa } => {
+                assert_eq!(rcode, ResponseCode::NoError);
+                assert!(soa.is_some(), "NODATA must retain its authority SOA");
+            }
             other => panic!("expected nodata negative, got {:?}", other),
         }
     }

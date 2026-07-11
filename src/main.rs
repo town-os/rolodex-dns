@@ -221,7 +221,21 @@ async fn main() -> Result<()> {
     // family the host can't route (which otherwise stalls the connection).
     rolodex_dns::probe::start(Arc::clone(&dns_server), &config.address_family).await;
 
-    // Apply custom root hints if provided (parsed once, above).
+    // Back the iterative resolver with a persistent delegation cache, so cold
+    // names do not re-walk root -> TLD every time and a restart comes back warm.
+    let delegations = Arc::new(rolodex_dns::delegation_cache::DelegationCache::with_db(
+        db.clone(),
+        config.resolution.delegation_persist_min_ttl,
+    ));
+    info!(
+        "Delegation cache: {} zone(s) restored, persisting delegations with TTL > {}s",
+        delegations.len(),
+        config.resolution.delegation_persist_min_ttl
+    );
+    dns_server.set_delegation_cache(delegations);
+
+    // Apply custom root hints if provided (parsed once, above). This preserves
+    // the delegation cache installed above.
     if !root_hint_ips.is_empty() {
         info!("Using {} custom root hint(s)", root_hint_ips.len());
         dns_server.set_root_hints(root_hint_ips);
