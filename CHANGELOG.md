@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.3.2 (2026-07-11)
+
+### Performance
+
+- **Delegation caching for the iterative resolver** — the zone → nameserver delegations learned while walking down from the root servers are now cached, so a cold name no longer re-walks root → TLD on every lookup. Long-lived delegations (root and TLD NS sets carry multi-day TTLs) are persisted to a new `delegation_cache` table, gated by `resolution.delegation_persist_min_ttl` (default 300s), so a restart comes back warm.
+- **The whole recursion is cached, not just the delegation** — glue, glue-less NS-name lookups, and CNAME hops arrive with TTLs and were previously discarded after a single use. They are now kept keyed by `(name, type)` and handed back with their *remaining* lifetime, so a served record is never re-cached upstream at full TTL. Authoritative NXDOMAIN/NODATA answers are cached in a separate negatives map, leaving the positive paths free to treat "no records" as a miss.
+- **Load spread across the root servers** — server selection now scores by `hits * ema_latency` instead of pure sort-by-RTT, which drove every query to a single fastest root. The product drives toward equality across the group, allocating queries as `hits ∝ 1/latency`: fast servers carry more, every healthy server carries some. An unqueried server scores 0, is tried first, and learns its latency from a query that had to happen anyway — no pre-measurement and no explore-probability branch.
+- **Root priming** — the live root NS set is fetched once at startup and cached as the `.` delegation with its real TTL. The hardcoded `ROOT_HINTS` become what they should be: a bootstrap, and the fallback when priming fails.
+
+### Bug Fixes
+
+- **Failed upstream servers now actually recover.** Failures are tracked as an explicit exponential backoff (2s, doubling, capped at 300s, cleared on the first success) rather than folded into the latency EMA as a synthetic 10s RTT. Folding them in tied recovery to how fast the healthy peers happened to be — against a 0.3ms peer, a 10s penalty gave a dead server a 1-in-33,000 share, so it was never retried and never came back. Backed-off servers sort behind healthy ones within their address family but are never removed, so resolution continues even if everything is failing.
+- **The DNS cache boot load always loaded 0 entries** — it called `cache_lookup` with an empty name; a new `cache_load_all` performs the query it should have been making.
+- **Duplicate `dns_cache` rows** — re-caching a response appended a row instead of updating it. Existing duplicates are collapsed and a unique index makes `cache_insert` upsert.
+- **`flush_cache` no longer discards delegations.** Every gRPC record mutation calls it, which was throwing away the upstream state on every local record change; tier switches use a separate `flush_upstream_state`.
+
+### Configuration
+
+- `resolution.delegation_persist_min_ttl` (default 300) — minimum TTL for a delegation to be persisted across restarts.
+- `resolution.default_ttl` (default 300) — TTL applied wherever a record or response supplies none of its own (an NXDOMAIN/NODATA with no SOA, a zero-TTL delegation or glue record). A TTL that *is* present is always honoured exactly as sent, including an SOA's negative TTL, which is never clamped.
+
 ## v0.3.1 (2026-07-10)
 
 ### New Features
