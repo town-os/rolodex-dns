@@ -158,6 +158,15 @@ impl LatencyTracker {
         self.latencies.get(server).map(|v| *v)
     }
 
+    /// Number of queries sent to a server (0 if we have never used it).
+    ///
+    /// Paired with [`Self::get_latency`] this is what the resolver balances on:
+    /// it picks the nameserver with the lowest `hits * latency`, so load lands on
+    /// each server in inverse proportion to how slow it is.
+    pub fn get_count(&self, server: &SocketAddr) -> u64 {
+        self.counts.get(server).map(|c| *c).unwrap_or(0)
+    }
+
     /// Gets all latency stats.
     pub fn all_stats(&self) -> Vec<(SocketAddr, f64, u64)> {
         self.latencies

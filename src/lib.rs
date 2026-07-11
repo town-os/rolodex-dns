@@ -23,6 +23,7 @@ pub mod grpc_service;
 pub mod portal;
 pub mod probe;
 pub mod rbl;
+pub mod record_cache;
 pub mod resolver;
 pub mod secure_client;
 pub mod tls;

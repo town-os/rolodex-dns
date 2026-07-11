@@ -52,10 +52,26 @@ pub enum Behavior {
         v4: Ipv4Addr,
         ttl: u32,
     },
+    /// Answer a `. NS` priming query: the root NS set, with glue.
+    RootNs { ns_addr: Ipv4Addr, ttl: u32 },
+    /// Dispatch on the query name: the first route whose name matches wins,
+    /// otherwise `default`.
+    ///
+    /// Needed because a level that answers the *same* way regardless of what it was
+    /// asked is degenerate — e.g. a server that returns "delegated glueless to
+    /// ns1.foo" even when asked to resolve ns1.foo itself sends the resolver into an
+    /// exponential sub-recursion. Real nameservers answer differently per name.
+    Router {
+        routes: Vec<(String, Box<Behavior>)>,
+        default: Box<Behavior>,
+    },
     /// Answer authoritatively with an A record.
     Answer { ip: Ipv4Addr, ttl: u32 },
     /// NXDOMAIN with an SOA, so a negative TTL can be derived (RFC 2308).
     NxDomain { minimum: u32, soa_ttl: u32 },
+    /// NXDOMAIN with **no SOA at all** — there is no TTL to honour, so the
+    /// configured `default_ttl` has to apply.
+    NxDomainNoSoa,
     /// NODATA (NoError, no answers) with an SOA.
     NoData { minimum: u32, soa_ttl: u32 },
 }
@@ -206,6 +222,22 @@ fn soa_record(zone: &str, minimum: u32, soa_ttl: u32) -> Record {
 }
 
 fn build_response(query: &Message, behavior: &Behavior) -> Message {
+    // Resolve routing before building anything, so a Router delegates to the
+    // behavior that actually applies to this query name.
+    if let Behavior::Router { routes, default } = behavior {
+        let qname = query
+            .queries()
+            .first()
+            .map(|q| q.name().to_ascii().to_lowercase())
+            .unwrap_or_default();
+        let chosen = routes
+            .iter()
+            .find(|(pattern, _)| pattern.to_lowercase() == qname)
+            .map(|(_, b)| b.as_ref())
+            .unwrap_or(default.as_ref());
+        return build_response(query, chosen);
+    }
+
     let mut resp = Message::new();
     resp.set_id(query.id());
     resp.set_message_type(MessageType::Response);
@@ -259,6 +291,21 @@ fn build_response(query: &Message, behavior: &Behavior) -> Message {
             ));
             resp.add_additional(Record::from_rdata(name(&ns4), *ttl, RData::A(A(*v4))));
         }
+        Behavior::RootNs { ns_addr, ttl } => {
+            resp.set_authoritative(true);
+            // The root NS set lives in the answer section; the addresses come back
+            // as glue in the additional section.
+            resp.add_answer(Record::from_rdata(
+                Name::root(),
+                *ttl,
+                RData::NS(NS(name("a.root-servers.net."))),
+            ));
+            resp.add_additional(Record::from_rdata(
+                name("a.root-servers.net."),
+                *ttl,
+                RData::A(A(*ns_addr)),
+            ));
+        }
         Behavior::Answer { ip, ttl } => {
             resp.set_authoritative(true);
             resp.add_answer(Record::from_rdata(name(&qname), *ttl, RData::A(A(*ip))));
@@ -268,11 +315,18 @@ fn build_response(query: &Message, behavior: &Behavior) -> Message {
             resp.set_response_code(ResponseCode::NXDomain);
             resp.add_name_server(soa_record(&apex_of(&qname), *minimum, *soa_ttl));
         }
+        Behavior::NxDomainNoSoa => {
+            resp.set_authoritative(true);
+            resp.set_response_code(ResponseCode::NXDomain);
+            // Deliberately no authority section: nothing to derive a TTL from.
+        }
         Behavior::NoData { minimum, soa_ttl } => {
             resp.set_authoritative(true);
             resp.set_response_code(ResponseCode::NoError);
             resp.add_name_server(soa_record(&apex_of(&qname), *minimum, *soa_ttl));
         }
+        // Routed above, before any response is built.
+        Behavior::Router { .. } => unreachable!("Router is dispatched before this match"),
     }
     resp
 }

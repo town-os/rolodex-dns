@@ -580,6 +580,14 @@ pub struct ResolutionConfig {
     /// worth keeping are the ones that survive. Default 300 (5m).
     #[serde(default = "default_delegation_persist_min_ttl")]
     pub delegation_persist_min_ttl: u32,
+    /// TTL applied wherever a record or response supplies none of its own: an
+    /// NXDOMAIN/NODATA with no SOA, a delegation or glue record with a zero TTL.
+    ///
+    /// A TTL that *is* present is always honoured exactly as sent — including an
+    /// SOA's negative TTL, which is never clamped. This is only the fallback for
+    /// when there is nothing to honour. Default 300 (5m).
+    #[serde(default = "default_ttl_secs")]
+    pub default_ttl: u32,
 }
 
 impl Default for ResolutionConfig {
@@ -592,6 +600,7 @@ impl Default for ResolutionConfig {
             switch_grace_failures: default_switch_grace_failures(),
             recovery_probe_secs: default_recovery_probe_secs(),
             delegation_persist_min_ttl: default_delegation_persist_min_ttl(),
+            default_ttl: default_ttl_secs(),
         }
     }
 }
@@ -765,6 +774,10 @@ fn default_switch_grace_failures() -> u32 {
 
 fn default_delegation_persist_min_ttl() -> u32 {
     crate::delegation_cache::DEFAULT_PERSIST_MIN_TTL
+}
+
+fn default_ttl_secs() -> u32 {
+    crate::resolver::DEFAULT_TTL
 }
 
 fn default_recovery_probe_secs() -> u64 {

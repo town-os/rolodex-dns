@@ -31,9 +31,10 @@ use tracing::{debug, warn};
 
 use crate::db::Database;
 
-/// Lower bound on a cached delegation's lifetime.
-pub const MIN_DELEGATION_TTL: u32 = 60;
-/// Upper bound on a cached delegation's lifetime (7 days).
+/// Upper bound on a cached delegation's lifetime (7 days). Purely an absurdity
+/// cap — there is deliberately **no lower bound**: a TTL that is present is
+/// honoured exactly as the zone published it. A floor would silently override what
+/// the zone asked for, which is the one thing a TTL is for.
 pub const MAX_DELEGATION_TTL: u32 = 604_800;
 /// Maximum number of zones held in memory before expired entries are reaped.
 pub const MAX_DELEGATION_ENTRIES: usize = 10_000;
@@ -63,6 +64,8 @@ pub struct DelegationCache {
     persist_tx: Option<tokio::sync::mpsc::Sender<DelegationWriteRequest>>,
     /// Delegations with a TTL above this are persisted; shorter ones stay in memory.
     persist_min_ttl: u32,
+    /// Lifetime applied to a delegation that arrives with a zero TTL.
+    default_ttl: u32,
 }
 
 // `Database` is not `Debug`, so this is hand-rolled to keep `IterativeResolver`
@@ -92,7 +95,14 @@ impl DelegationCache {
             db: None,
             persist_tx: None,
             persist_min_ttl: DEFAULT_PERSIST_MIN_TTL,
+            default_ttl: crate::resolver::DEFAULT_TTL,
         }
+    }
+
+    /// Sets the lifetime applied to a delegation that arrives with a zero TTL.
+    pub fn with_default_ttl(mut self, default_ttl: u32) -> Self {
+        self.default_ttl = default_ttl;
+        self
     }
 
     /// A persistent cache. Spawns the write-behind worker and loads any
@@ -108,6 +118,7 @@ impl DelegationCache {
             db: Some(db),
             persist_tx: Some(tx),
             persist_min_ttl,
+            default_ttl: crate::resolver::DEFAULT_TTL,
         };
         cache.load_from_disk();
         cache
@@ -155,20 +166,30 @@ impl DelegationCache {
         debug!("delegation cache loaded ({} zones)", loaded);
     }
 
-    fn clamp_ttl(ttl: u32) -> u32 {
-        ttl.clamp(MIN_DELEGATION_TTL, MAX_DELEGATION_TTL)
+    /// The lifetime to honour for a delegation.
+    ///
+    /// A TTL that is present is honoured **as sent** — no floor. A zero TTL carries
+    /// no lifetime at all, so [`Self::default_ttl`] applies rather than the
+    /// delegation being dropped (which would send the next lookup back to the
+    /// roots) or kept forever.
+    fn lifetime(&self, ttl: u32) -> u32 {
+        if ttl == 0 {
+            return self.default_ttl;
+        }
+        ttl.min(MAX_DELEGATION_TTL)
     }
 
     /// Records the nameserver addresses for `zone`.
     ///
-    /// The root delegation is never cached: the root hints are the resolver's
-    /// fallback anyway, and caching `.` would just shadow them.
+    /// The root zone (`.`) is cached like any other — that is what root priming
+    /// populates, so the compiled-in hints become a bootstrap rather than the only
+    /// root servers we ever know about.
     pub fn insert(&self, zone: &Name, servers: Vec<IpAddr>, ttl: u32) {
-        if servers.is_empty() || zone.is_root() {
+        if servers.is_empty() {
             return;
         }
         let key = zone_key(zone);
-        let ttl = Self::clamp_ttl(ttl);
+        let ttl = self.lifetime(ttl);
 
         self.reap_if_full();
         self.memory.insert(
@@ -362,25 +383,49 @@ mod tests {
     }
 
     #[test]
-    fn ttl_is_clamped_to_floor_and_ceiling() {
-        assert_eq!(DelegationCache::clamp_ttl(1), MIN_DELEGATION_TTL);
-        assert_eq!(DelegationCache::clamp_ttl(0), MIN_DELEGATION_TTL);
-        assert_eq!(
-            DelegationCache::clamp_ttl(30 * 86_400),
-            MAX_DELEGATION_TTL,
-            "a 30d TTL must clamp to the 7d ceiling"
-        );
-        assert_eq!(DelegationCache::clamp_ttl(3600), 3600);
+    fn a_present_ttl_is_honoured_exactly_as_sent() {
+        let cache = DelegationCache::in_memory();
+        // No floor: a zone that publishes a 1s TTL gets 1s. Rounding it up to some
+        // minimum would silently override what the zone actually asked for.
+        assert_eq!(cache.lifetime(1), 1);
+        assert_eq!(cache.lifetime(30), 30);
+        assert_eq!(cache.lifetime(3600), 3600);
+        assert_eq!(cache.lifetime(172_800), 172_800);
     }
 
     #[test]
-    fn root_zone_is_never_cached() {
+    fn a_zero_ttl_falls_back_to_the_default() {
         let cache = DelegationCache::in_memory();
-        cache.insert(&Name::root(), vec![ip(1)], 3600);
-        assert!(
-            cache.is_empty(),
-            "root delegation must not shadow root hints"
+        // Zero carries no lifetime to honour, so the configured default applies —
+        // rather than dropping the delegation (sending the next lookup back to the
+        // roots) or keeping it forever.
+        assert_eq!(cache.lifetime(0), crate::resolver::DEFAULT_TTL);
+
+        let cache = DelegationCache::in_memory().with_default_ttl(42);
+        assert_eq!(cache.lifetime(0), 42, "the default is configurable");
+    }
+
+    #[test]
+    fn absurd_ttls_are_capped() {
+        let cache = DelegationCache::in_memory();
+        assert_eq!(
+            cache.lifetime(30 * 86_400),
+            MAX_DELEGATION_TTL,
+            "a 30d TTL is capped at the 7d ceiling"
         );
+    }
+
+    #[test]
+    fn root_zone_is_cached() {
+        let cache = DelegationCache::in_memory();
+        // Root priming stores the live root NS set here, which is what demotes the
+        // compiled-in hints to a bootstrap rather than the only roots we ever know.
+        cache.insert(&Name::root(), vec![ip(1)], 518_400);
+        let (zone, servers) = cache
+            .best_match(&name("example.com."))
+            .expect("the primed root delegation must be reachable");
+        assert_eq!(zone, ".");
+        assert_eq!(servers, vec![ip(1)]);
     }
 
     #[test]

@@ -332,18 +332,23 @@ impl DnsServer {
     }
 
     /// The current iterative resolver (delegation cache, root hints, latency stats).
-    pub fn resolver_for_test(&self) -> Arc<crate::resolver::IterativeResolver> {
+    pub fn resolver(&self) -> Arc<crate::resolver::IterativeResolver> {
         self.resolver.load_full()
     }
 
     /// Installs a resolver backed by a persistent delegation cache.
-    pub fn set_delegation_cache(&self, delegations: Arc<crate::delegation_cache::DelegationCache>) {
+    pub fn set_delegation_cache(
+        &self,
+        delegations: Arc<crate::delegation_cache::DelegationCache>,
+        default_ttl: u32,
+    ) {
         let current = self.resolver.load_full();
         self.resolver.store(Arc::new(
             crate::resolver::IterativeResolver::with_delegations(
                 current.root_hints().to_vec(),
                 delegations,
-            ),
+            )
+            .with_default_ttl(default_ttl),
         ));
     }
 
@@ -464,7 +469,9 @@ impl DnsServer {
     /// filters :53) the cached nameserver addresses are unreachable anyway.
     pub fn flush_upstream_state(&self) {
         self.flush_cache();
-        self.resolver.load().delegations().flush();
+        let resolver = self.resolver.load();
+        resolver.delegations().flush();
+        resolver.records().flush();
     }
 
     /// Updates the upstream forwarder list.
@@ -1654,10 +1661,10 @@ impl DnsServer {
             Ok(res) => {
                 if res.rcode == ResponseCode::NoError && !res.answers.is_empty() {
                     self.cache_answers(&res.answers);
-                } else if let Some(ttl) = res.negative_ttl() {
-                    // An authoritative negative with an SOA to derive the TTL from
-                    // (RFC 2308). Cache it so the next lookup of this name does
-                    // not re-walk from the roots.
+                } else if let Some(ttl) = res.negative_ttl(resolver.default_ttl()) {
+                    // An authoritative negative. The SOA's TTL is honoured as sent;
+                    // where there is no SOA, `default_ttl` applies. Cache it so the
+                    // next lookup of this name does not re-walk from the roots.
                     self.cache_negative(question, res.rcode, ttl);
                 }
                 Ok(build_response_edns(

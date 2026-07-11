@@ -10,7 +10,8 @@
 //! over right after a `.fart` network was created and a `gitea@2.0` package added.
 //! Getting this wrong would have shipped the bug back under a new name.
 
-use hickory_proto::rr::Name;
+use hickory_proto::rr::rdata::A;
+use hickory_proto::rr::{Name, RData, Record, RecordType};
 use rolodex_dns::db::{Database, DnsRecord, RecordKind};
 use rolodex_dns::dns_cache::{DnsCache, NegativeKind};
 use rolodex_dns::dns_server::DnsServer;
@@ -43,7 +44,7 @@ fn make_server(db: Database) -> (Arc<DnsServer>, Arc<DnsCache>) {
 
 /// Prime the delegation cache the way a real resolution would.
 fn prime_delegations(server: &DnsServer) {
-    let resolver = server.resolver_for_test();
+    let resolver = server.resolver();
     resolver
         .delegations()
         .insert(&name("com."), vec![ip(1)], 172_800);
@@ -53,7 +54,7 @@ fn prime_delegations(server: &DnsServer) {
 }
 
 fn delegation_count(server: &DnsServer) -> usize {
-    server.resolver_for_test().delegations().len()
+    server.resolver().delegations().len()
 }
 
 /// **The regression test for the trap.**
@@ -158,6 +159,47 @@ async fn answer_flush_and_delegation_flush_are_independent() {
     assert_eq!(delegation_count(&server), 0, "now both are gone");
 }
 
+/// The record cache (glue, glueless NS lookups, CNAME hops) lives under the same
+/// rule as the delegation cache: a local record mutation must not wipe it, a tier
+/// switch must.
+///
+/// Same trap as `local_record_mutation_does_not_flush_delegations` — `flush_cache()`
+/// is called from every gRPC mutation site, so wiring the record cache into it would
+/// mean adding one package discards the whole recursion cache.
+#[tokio::test]
+async fn local_record_mutation_does_not_flush_the_record_cache() {
+    let db = Database::open_memory().unwrap();
+    let (server, _cache) = make_server(db);
+
+    let resolver = server.resolver();
+    resolver.records().insert(
+        &name("ns1.example.net."),
+        RecordType::A,
+        vec![Record::from_rdata(
+            name("ns1.example.net."),
+            3600,
+            RData::A(A(Ipv4Addr::new(192, 0, 2, 50))),
+        )],
+    );
+    assert_eq!(resolver.records().len(), 1);
+
+    // What adding a package does.
+    server.flush_cache();
+    assert_eq!(
+        server.resolver().records().len(),
+        1,
+        "a local record mutation must NOT discard cached glue/intermediates"
+    );
+
+    // What a tier switch does.
+    server.flush_upstream_state();
+    assert_eq!(
+        server.resolver().records().len(),
+        0,
+        "a tier switch must discard records learned from the old tier"
+    );
+}
+
 /// Root-hint changes must carry the delegation cache across, not silently drop it.
 ///
 /// `set_root_hints` swaps the whole resolver behind an `ArcSwap`; rebuilding it
@@ -178,7 +220,7 @@ async fn set_root_hints_preserves_the_delegation_cache() {
         "changing root hints must not discard the delegation cache"
     );
     assert_eq!(
-        server.resolver_for_test().root_hints().len(),
+        server.resolver().root_hints().len(),
         2,
         "and the new hints must actually be in effect"
     );

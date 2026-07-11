@@ -223,16 +223,21 @@ async fn main() -> Result<()> {
 
     // Back the iterative resolver with a persistent delegation cache, so cold
     // names do not re-walk root -> TLD every time and a restart comes back warm.
-    let delegations = Arc::new(rolodex_dns::delegation_cache::DelegationCache::with_db(
-        db.clone(),
-        config.resolution.delegation_persist_min_ttl,
-    ));
-    info!(
-        "Delegation cache: {} zone(s) restored, persisting delegations with TTL > {}s",
-        delegations.len(),
-        config.resolution.delegation_persist_min_ttl
+    let delegations = Arc::new(
+        rolodex_dns::delegation_cache::DelegationCache::with_db(
+            db.clone(),
+            config.resolution.delegation_persist_min_ttl,
+        )
+        .with_default_ttl(config.resolution.default_ttl),
     );
-    dns_server.set_delegation_cache(delegations);
+    info!(
+        "Delegation cache: {} zone(s) restored, persisting delegations with TTL > {}s; \
+         fallback TTL {}s where none is supplied",
+        delegations.len(),
+        config.resolution.delegation_persist_min_ttl,
+        config.resolution.default_ttl
+    );
+    dns_server.set_delegation_cache(delegations, config.resolution.default_ttl);
 
     // Apply custom root hints if provided (parsed once, above). This preserves
     // the delegation cache installed above.
@@ -241,6 +246,17 @@ async fn main() -> Result<()> {
         dns_server.set_root_hints(root_hint_ips);
     } else if !config.resolution.root_hints.is_empty() {
         warn!("No valid root hints parsed from config; using built-in root hints");
+    }
+
+    // Prime the root zone in the background: ask the roots who the roots are and
+    // cache the live NS set with its TTL, so the compiled-in hints are a bootstrap
+    // rather than the only root servers we ever know about. Backgrounded because a
+    // prime must never delay (or fail) a lookup — on failure we just keep the hints.
+    {
+        let resolver = dns_server.resolver();
+        tokio::spawn(async move {
+            resolver.prime_roots(hickory_proto::rr::DNSClass::IN).await;
+        });
     }
 
     // Apply proxy configuration if set

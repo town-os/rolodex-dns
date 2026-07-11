@@ -12,7 +12,7 @@ mod mock_hierarchy;
 use hickory_proto::op::ResponseCode;
 use hickory_proto::rr::{DNSClass, RecordType};
 use mock_hierarchy::{Behavior, MockNs, bind_levels, name, serve};
-use rolodex_dns::resolver::IterativeResolver;
+use rolodex_dns::resolver::{DEFAULT_TTL, IterativeResolver};
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
@@ -343,7 +343,11 @@ async fn negative_ttl_is_min_of_soa_minimum_and_soa_ttl() {
         .await
         .expect("resolves to NXDOMAIN");
     assert_eq!(res.rcode, ResponseCode::NXDomain);
-    assert_eq!(res.negative_ttl(), Some(600), "min(900, 600) = 600");
+    assert_eq!(
+        res.negative_ttl(DEFAULT_TTL),
+        Some(600),
+        "min(900, 600) = 600, honoured as sent — no floor, no ceiling"
+    );
 }
 
 /// A NODATA (NoError + SOA, no answers) is also a cacheable negative.
@@ -379,7 +383,11 @@ async fn nodata_yields_a_negative_ttl() {
         .expect("resolves to NODATA");
     assert_eq!(res.rcode, ResponseCode::NoError);
     assert!(res.answers.is_empty());
-    assert_eq!(res.negative_ttl(), Some(120), "min(120, 3600) = 120");
+    assert_eq!(
+        res.negative_ttl(DEFAULT_TTL),
+        Some(120),
+        "min(120, 3600) = 120"
+    );
 }
 
 /// Caching `com.` must not leak into an unrelated TLD.
