@@ -705,20 +705,30 @@ impl DnsServer {
         let qname = question.name().to_string();
         let qtype = question.query_type();
 
-        // Per-TLD ingress listener: if this query arrived on a TLD's ingress IP,
-        // it is served from the TLD's owning scope (partitioned, regardless of
-        // source IP — the listener is dedicated to that network) and programmed
-        // A/AAAA answers under the TLD are rewritten to the ingress IP (the
-        // network's ingress controller). `None` on the main listeners, so those
-        // follow the normal source-IP scope selection and resolve to the stored
-        // value unchanged.
-        let ingress = self.ingress_target(local_ip, &qname);
-        let ingress_override = ingress.as_ref().map(|(_, ip)| *ip);
+        // Per-TLD ingress listener: a PROGRAMMED A/AAAA name under the TLD, asked
+        // on that TLD's own ingress IP, is rewritten to the ingress IP (the
+        // network's ingress controller) instead of its stored backend value. This
+        // is confined to the name/listener pair — it stays `None` for a name that
+        // is not under the listener's TLD (which therefore passes through with
+        // its resolved value) and on the main listeners, which carry no concrete
+        // local IP.
+        let ingress_override = self.ingress_target(local_ip, &qname).map(|(_, ip)| ip);
 
         // Determine network scope for this query.
         //
-        // A query on a TLD's ingress listener resolves within that TLD's owning
-        // scope. Otherwise, only WireGuard-overlay peers (source IP in
+        // A query that ARRIVED on a TLD's ingress listener is served within that
+        // listener's owning scope for EVERY name, not merely names under the
+        // owned TLD: the listener is bound to the network's overlay address and
+        // is that network's dedicated resolver. Owned TLDs stay partitioned (a
+        // sibling network's TLD is still hidden below) while everything else
+        // falls through to global resolution and forwarding — which is what lets
+        // an overlay peer resolve the public internet through it. Keying the
+        // scope off the queried NAME instead would drop a non-TLD name (e.g.
+        // `google.com`) into the source-IP branch below, where an overlay peer
+        // that never called JoinNetwork is REFUSED — so the ingress listener
+        // would answer only its own TLD and nothing else.
+        //
+        // Off the ingress listeners, only WireGuard-overlay peers (source IP in
         // `overlay_cidrs`) are scope-enforced: an overlay peer must be joined to
         // a scope or it is REFUSED, and it sees only that scope's partitioned
         // TLDs. Every other source — loopback (the box's own resolver), the LAN,
@@ -727,34 +737,35 @@ impl DnsServer {
         // records). This is split-horizon: global records carry the box's
         // LAN-reachable address, while scoped overlay records carry the overlay
         // address, so each side gets an address it can actually route to.
-        let scope_name = if let Some((owner, _)) = &ingress {
-            // Ingress listener: dedicated to the owning scope.
-            Some(owner.clone())
-        } else if let Some(ip) = source_ip {
-            let ip_str = ip.to_string();
-            if let Some(scope) = self.db.get_scope_for_ip(&ip_str) {
-                // Already joined to a network (only overlay addresses are ever
-                // joined): resolve within its scope, partitioned.
+        let scope_name =
+            if let Some(scope) = local_ip.and_then(|ip| self.db.scope_for_ingress_ip(ip)) {
+                // Ingress listener: dedicated to the owning scope, for every name.
                 Some(scope)
-            } else if self.db.has_scopes() && self.is_overlay_peer(ip) {
-                // An overlay peer that has not joined any network. It is not a
-                // member of anything, so refuse it.
-                debug!("Refusing DNS query from unassociated overlay peer {}", ip);
-                return Ok(build_response_edns(
-                    &message,
-                    ResponseCode::Refused,
-                    vec![],
-                    false,
-                    edns_ctx.as_ref(),
-                ));
+            } else if let Some(ip) = source_ip {
+                let ip_str = ip.to_string();
+                if let Some(scope) = self.db.get_scope_for_ip(&ip_str) {
+                    // Already joined to a network (only overlay addresses are ever
+                    // joined): resolve within its scope, partitioned.
+                    Some(scope)
+                } else if self.db.has_scopes() && self.is_overlay_peer(ip) {
+                    // An overlay peer that has not joined any network. It is not a
+                    // member of anything, so refuse it.
+                    debug!("Refusing DNS query from unassociated overlay peer {}", ip);
+                    return Ok(build_response_edns(
+                        &message,
+                        ResponseCode::Refused,
+                        vec![],
+                        false,
+                        edns_ctx.as_ref(),
+                    ));
+                } else {
+                    // Trusted local source (loopback/LAN/bridge): resolve the GLOBAL
+                    // namespace — split-horizon. Never refused.
+                    None
+                }
             } else {
-                // Trusted local source (loopback/LAN/bridge): resolve the GLOBAL
-                // namespace — split-horizon. Never refused.
                 None
-            }
-        } else {
-            None
-        };
+            };
 
         debug!("DNS query: {} {:?} (scope: {:?})", qname, qtype, scope_name);
 
@@ -4326,6 +4337,128 @@ mod tests {
             }
             other => panic!("expected AAAA record, got {:?}", other),
         }
+    }
+
+    /// A WireGuard peer of the network: inside the default overlay CIDR
+    /// (10.64.0.0/10) and — as in production — never joined to a scope. Only the
+    /// box's own ingress IP is joined; the peers are not.
+    const OVERLAY_PEER: &str = "10.81.113.179";
+
+    #[tokio::test]
+    async fn test_ingress_listener_resolves_name_outside_its_tld() {
+        // Regression: an ingress listener is its network's resolver for the WHOLE
+        // namespace, not just its own TLD. Scope used to be selected from the
+        // queried NAME, so a name outside the TLD fell into the source-IP branch,
+        // where an unassociated overlay peer is REFUSED — a WireGuard client could
+        // resolve `gitea.office.` and nothing else. It must resolve, and pass
+        // through with its own value (the rewrite is confined to the owned TLD).
+        let ingress: IpAddr = "127.0.0.9".parse().unwrap();
+        let db = Database::open_memory().unwrap();
+        ingress_scope(&db, ingress);
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "example.com.".to_string(),
+            record_type: RecordKind::A,
+            value: "93.184.216.34".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+        let server = make_test_server(db);
+
+        let query = build_query("example.com.", RecordType::A);
+        let resp = Message::from_bytes(
+            &server
+                .handle_query_on(&query, OVERLAY_PEER.parse().unwrap(), Some(ingress))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert_eq!(resp.answers().len(), 1);
+        assert_eq!(answer_a(&resp), Ipv4Addr::new(93, 184, 216, 34));
+    }
+
+    #[tokio::test]
+    async fn test_ingress_listener_rewrites_owned_tld_for_overlay_peer() {
+        // The other half: the same unassociated overlay peer still gets the owned
+        // TLD's programmed name rewritten to the ingress IP.
+        let ingress: IpAddr = "127.0.0.9".parse().unwrap();
+        let db = Database::open_memory().unwrap();
+        ingress_scope(&db, ingress);
+        let server = make_test_server(db);
+
+        let query = build_query("gitea.office.", RecordType::A);
+        let resp = Message::from_bytes(
+            &server
+                .handle_query_on(&query, OVERLAY_PEER.parse().unwrap(), Some(ingress))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert_eq!(answer_a(&resp), Ipv4Addr::new(127, 0, 0, 9));
+    }
+
+    #[tokio::test]
+    async fn test_ingress_listener_still_hides_sibling_network_tld() {
+        // Serving the whole namespace must not dissolve the partition: a sibling
+        // network's owned TLD stays hidden (authoritative NXDOMAIN), never served
+        // and never forwarded.
+        let ingress: IpAddr = "127.0.0.9".parse().unwrap();
+        let db = Database::open_memory().unwrap();
+        ingress_scope(&db, ingress);
+        db.create_network_scope(&NetworkScope {
+            name: "lab".to_string(),
+            home_domain: "lab.home".to_string(),
+        })
+        .unwrap();
+        db.add_scope_tld("lab", "lab").unwrap();
+        db.add_scoped_record(
+            "lab",
+            &DnsRecord {
+                id: None,
+                name: "secret.lab.".to_string(),
+                record_type: RecordKind::A,
+                value: "10.9.9.9".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
+        let server = make_test_server(db);
+
+        let query = build_query("secret.lab.", RecordType::A);
+        let resp = Message::from_bytes(
+            &server
+                .handle_query_on(&query, OVERLAY_PEER.parse().unwrap(), Some(ingress))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NXDomain);
+        assert!(resp.answers().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_unassociated_overlay_peer_still_refused_off_ingress() {
+        // The ingress relaxation is confined to the ingress listener. The same
+        // unassociated overlay peer hitting the MAIN listener (no concrete local
+        // IP) is still refused — scope enforcement off the listener is unchanged.
+        let ingress: IpAddr = "127.0.0.9".parse().unwrap();
+        let db = Database::open_memory().unwrap();
+        ingress_scope(&db, ingress);
+        let server = make_test_server(db);
+
+        let query = build_query("example.com.", RecordType::A);
+        let resp = Message::from_bytes(
+            &server
+                .handle_query_from(&query, OVERLAY_PEER.parse().unwrap())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::Refused);
     }
 
     #[tokio::test]

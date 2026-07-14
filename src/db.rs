@@ -1827,6 +1827,28 @@ impl Database {
             .map(|e| *e.value())
     }
 
+    /// Reverse of `get_tld_ingress`: the scope that owns a TLD whose ingress
+    /// listener is bound to `ip`, if any.
+    ///
+    /// This associates a query with its network scope by the LISTENER it
+    /// arrived on rather than by the queried name, so an ingress listener acts
+    /// as its network's dedicated resolver for the *whole* namespace: owned-TLD
+    /// names are partitioned/rewritten as before, and every other name
+    /// (`google.com`, …) falls through to global resolution and forwarding
+    /// instead of being refused as an unassociated overlay peer. Cache-only,
+    /// safe on the DNS hot path. If several TLDs share the ingress IP (all
+    /// belonging to the same network in practice) the first owner found wins.
+    pub fn scope_for_ingress_ip(&self, ip: IpAddr) -> Option<String> {
+        for entry in self.tld_ingress_cache.iter() {
+            if *entry.value() == ip
+                && let Some(owner) = self.tld_owner_cache.get(entry.key())
+            {
+                return Some(owner.value().clone());
+            }
+        }
+        None
+    }
+
     /// Lists the ingress listeners for a scope's TLDs as `(tld, listen_ip)`.
     pub fn list_tld_listeners(&self, scope_name: &str) -> Result<Vec<(String, IpAddr)>> {
         let conn = self.lock()?;
