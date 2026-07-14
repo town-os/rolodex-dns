@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.3 (2026-07-14)
+
+### Bug Fixes
+
+- **A failed ingress bind no longer poisons its IP for the life of the process.** `spawn_ingress_listener` recorded the UDP+TCP abort handles unconditionally, before either task had tried to bind, so a listener that failed to bind left behind an entry claiming the address was served while nothing listened on it — and the presence-only guard made every later re-add early-return on that corpse. This bit the common case: a network TLD's ingress IP is a WireGuard overlay address that `sync_ingress_listeners` replays from the database at startup, *before* the tunnel interface exists, so both tasks failed `EADDRNOTAVAIL` and exited; a box that rebooted with a network configured could never serve DNS on that overlay again. An entry whose tasks have all finished is now treated as absent — dropped and respawned — so a re-add actually retries the bind once the interface is up.
+
 ## v0.3.2 (2026-07-11)
 
 ### Performance
