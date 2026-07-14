@@ -2493,3 +2493,137 @@ async fn test_ingress_listener_e2e_grpc() {
     assert!(!dns_server.has_ingress_listener("127.0.0.1".parse().unwrap()));
     assert!(dns_db.get_tld_ingress("office.").is_none());
 }
+
+/// End-to-end regression for the boot race that leaves an overlay address
+/// unserved forever.
+///
+/// In production the ingress IP of a network TLD is a WireGuard overlay address
+/// (`10.x.y.1`). rolodex starts before the tunnel does, so `sync_ingress_listeners`
+/// replays that IP from the database and both listener tasks fail to bind — the
+/// address does not exist on the host yet. The controller then re-asserts the TLD
+/// over gRPC on every reconcile, once the interface IS up. Before the liveness
+/// fix, that re-add early-returned on the dead registry entry: rolodex logged
+/// "Added TLD ... with ingress listener <ip>" and bound nothing, so every peer's
+/// DNS query hit a closed port for the life of the process.
+///
+/// Here the unbindable address is simulated with loopback squatters holding both
+/// protocols — no host addresses are added or removed.
+#[tokio::test]
+async fn test_ingress_listener_rebinds_after_failed_bind() {
+    use hickory_proto::rr::{RData, rdata};
+    use std::net::Ipv4Addr;
+
+    let (_dns_db, dns_server, _rbl, service) = make_test_stack();
+    let ingress_ip = "127.0.0.22";
+
+    service
+        .create_network_scope(Request::new(CreateNetworkScopeRequest {
+            scope: Some(rolodex_dns::grpc_service::proto::NetworkScope {
+                name: "fart".to_string(),
+                home_domain: "fart".to_string(),
+                tlds: Vec::new(),
+            }),
+            auth_token: "test-secret".to_string(),
+        }))
+        .await
+        .unwrap();
+    service
+        .add_scoped_record(Request::new(AddScopedRecordRequest {
+            scope_name: "fart".to_string(),
+            record: Some(rolodex_dns::grpc_service::proto::DnsRecord {
+                name: "gitea.default.fart.".to_string(),
+                record_type: 0, // A
+                value: "10.0.0.9".to_string(),
+                ttl: 300,
+                priority: 0,
+            }),
+            auth_token: "test-secret".to_string(),
+        }))
+        .await
+        .unwrap();
+
+    // Hold the ingress port on the target address for BOTH protocols, so the
+    // listener tasks spawned below fail to bind exactly as they do against an
+    // address whose interface has not come up yet.
+    let tcp_squatter = std::net::TcpListener::bind((ingress_ip, 0)).unwrap();
+    let port = tcp_squatter.local_addr().unwrap().port();
+    let udp_squatter = std::net::UdpSocket::bind((ingress_ip, port)).unwrap();
+    dns_server.set_ingress_port(port);
+
+    // "Boot": register the TLD with its ingress IP. The listener cannot bind.
+    let first = service
+        .add_scope_tld(Request::new(AddScopeTldRequest {
+            scope_name: "fart".to_string(),
+            tld: "fart.".to_string(),
+            auth_token: "test-secret".to_string(),
+            listen_ip: ingress_ip.to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(first.success, "add_scope_tld failed: {}", first.message);
+
+    // Both tasks exit. The registry must not claim the address is served.
+    let ip = ingress_ip.parse().unwrap();
+    for _ in 0..200 {
+        if !dns_server.has_ingress_listener(ip) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        !dns_server.has_ingress_listener(ip),
+        "a listener whose bind failed must not register as active"
+    );
+
+    // The interface comes up: the address becomes bindable.
+    drop(tcp_squatter);
+    drop(udp_squatter);
+
+    // The controller re-asserts the TLD (EnsureScopeListener runs on every
+    // reconcile and is idempotent server-side). This must now actually bind.
+    let second = service
+        .add_scope_tld(Request::new(AddScopeTldRequest {
+            scope_name: "fart".to_string(),
+            tld: "fart.".to_string(),
+            auth_token: "test-secret".to_string(),
+            listen_ip: ingress_ip.to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(second.success, "re-add failed: {}", second.message);
+    assert!(
+        dns_server.has_ingress_listener(ip),
+        "re-adding the TLD must respawn a listener that previously failed to bind"
+    );
+
+    // Prove it is really serving: query the overlay name over REAL UDP on the
+    // ingress address. A registry entry is not a socket — this is the assertion
+    // that would have caught the production failure.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let query = build_dns_query("gitea.default.fart.", hickory_proto::rr::RecordType::A);
+    let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    client
+        .send_to(&query, format!("{}:{}", ingress_ip, port))
+        .await
+        .unwrap();
+    let mut buf = vec![0u8; 4096];
+    let (len, _) = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client.recv_from(&mut buf),
+    )
+    .await
+    .expect("timeout waiting for ingress UDP response after rebind")
+    .unwrap();
+    let response = hickory_proto::op::Message::from_bytes(&buf[..len]).unwrap();
+    assert_eq!(
+        response.response_code(),
+        hickory_proto::op::ResponseCode::NoError
+    );
+    assert_eq!(response.answers().len(), 1);
+    match response.answers()[0].data() {
+        RData::A(rdata::A(ip)) => assert_eq!(*ip, Ipv4Addr::new(127, 0, 0, 22)),
+        other => panic!("expected A record, got {:?}", other),
+    }
+}

@@ -223,24 +223,51 @@ impl DnsServer {
         self.ingress_port.store(port, Ordering::Relaxed);
     }
 
-    /// Number of active ingress listener IPs (for diagnostics/tests).
+    /// Number of live ingress listener IPs (for diagnostics/tests). An entry
+    /// whose tasks have all exited is dead and is not counted — see
+    /// `spawn_ingress_listener`.
     pub fn ingress_listener_count(&self) -> usize {
-        self.ingress_listeners.len()
+        self.ingress_listeners
+            .iter()
+            .filter(|e| e.value().iter().any(|h| !h.is_finished()))
+            .count()
     }
 
-    /// Whether an ingress listener is currently active on `ip`.
+    /// Whether a LIVE ingress listener is currently bound on `ip`. A registry
+    /// entry whose UDP+TCP tasks have both exited (a failed bind) is not a
+    /// listener and reports false, so this never claims an address is served
+    /// when nothing is bound to it.
     pub fn has_ingress_listener(&self, ip: IpAddr) -> bool {
-        self.ingress_listeners.contains_key(&ip)
+        self.ingress_listeners
+            .get(&ip)
+            .is_some_and(|e| e.value().iter().any(|h| !h.is_finished()))
     }
 
     /// Starts an ingress DNS listener (UDP + TCP) bound to `ip` on the configured
-    /// ingress port. Idempotent: a no-op if one is already active on `ip` (so
-    /// multiple TLDs can share one ingress IP). The tasks run until aborted by
-    /// `stop_ingress_listener`. A bind failure is logged by the spawned task and
-    /// leaves no active listener registered on retry-after-remove.
+    /// ingress port. Idempotent: a no-op while one is LIVE on `ip` (so multiple
+    /// TLDs can share one ingress IP). The tasks run until aborted by
+    /// `stop_ingress_listener`.
+    ///
+    /// A dead entry is replaced rather than honoured. The registry records the
+    /// abort handles unconditionally at spawn time, before either task has tried
+    /// to bind — so a listener that failed to bind leaves an entry behind that
+    /// says "active" while nothing is listening. That happens on every boot for a
+    /// WireGuard overlay address: `sync_ingress_listeners` replays the TLD's
+    /// ingress IP from the database before the overlay interface exists, both
+    /// tasks fail `EADDRNOTAVAIL` and exit, and the corpse stays in the map. A
+    /// presence-only check then makes every subsequent `AddScopeTld` re-add
+    /// early-return — it logs success and binds nothing, permanently, for the
+    /// life of the process. Treating an all-finished entry as absent is what lets
+    /// the controller re-assert the listener once the interface is up.
     pub fn spawn_ingress_listener(self: &Arc<Self>, ip: IpAddr) {
-        if self.ingress_listeners.contains_key(&ip) {
-            return;
+        if let Some(entry) = self.ingress_listeners.get(&ip) {
+            let alive = entry.value().iter().any(|h| !h.is_finished());
+            // Drop the read guard before mutating the same shard.
+            drop(entry);
+            if alive {
+                return;
+            }
+            self.ingress_listeners.remove(&ip);
         }
         let port = self.ingress_port.load(Ordering::Relaxed);
         let bind = SocketAddr::new(ip, port).to_string();
@@ -4315,6 +4342,67 @@ mod tests {
         assert_eq!(server.ingress_listener_count(), 1);
         // Idempotent: a second spawn for the same IP does not add a listener.
         server.spawn_ingress_listener(ip);
+        assert_eq!(server.ingress_listener_count(), 1);
+
+        server.stop_ingress_listener(ip);
+        assert!(!server.has_ingress_listener(ip));
+        assert_eq!(server.ingress_listener_count(), 0);
+    }
+
+    /// Polls `cond` until it holds, or panics after ~2s. Used to await the
+    /// asynchronous exit of a listener task whose bind failed.
+    async fn wait_until(mut cond: impl FnMut() -> bool) {
+        for _ in 0..200 {
+            if cond() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("condition not met within 2s");
+    }
+
+    /// Regression: a listener whose bind FAILED must not poison its IP.
+    ///
+    /// The registry records abort handles at spawn time — before either task has
+    /// tried to bind — so a failed bind leaves an entry behind that claims the
+    /// address is served while nothing is listening on it. This is not a corner
+    /// case: it happens on every boot for a WireGuard overlay address, because
+    /// `sync_ingress_listeners` replays the TLD's ingress IP from the database
+    /// before the overlay interface exists, so both tasks fail EADDRNOTAVAIL and
+    /// exit. With a presence-only check, every later `AddScopeTld` re-add
+    /// early-returns on the corpse: rolodex logs "Added TLD ... with ingress
+    /// listener <ip>" and binds nothing, permanently — the controller can never
+    /// bring the listener up once the interface appears, and every peer's DNS
+    /// lands on a closed port.
+    #[tokio::test]
+    async fn test_failed_ingress_bind_does_not_poison_ip() {
+        let db = Database::open_memory().unwrap();
+        let server = make_test_server(db);
+        let ip: IpAddr = "127.0.0.21".parse().unwrap();
+
+        // Occupy the ingress port on `ip` for BOTH protocols so the spawned UDP
+        // and TCP tasks each fail to bind — the same outcome as binding an
+        // address the host does not have yet, without touching the host's
+        // addresses. Loopback only; nothing outside this process is affected.
+        let tcp_squatter = std::net::TcpListener::bind((ip, 0)).unwrap();
+        let port = tcp_squatter.local_addr().unwrap().port();
+        let udp_squatter = std::net::UdpSocket::bind((ip, port)).unwrap();
+        server.set_ingress_port(port);
+
+        server.spawn_ingress_listener(ip);
+
+        // Both tasks fail and exit. The registry must report the listener as
+        // absent rather than claim an unbound address is being served.
+        wait_until(|| !server.has_ingress_listener(ip)).await;
+        assert_eq!(server.ingress_listener_count(), 0);
+
+        // The address becomes bindable — the overlay interface came up. A re-add
+        // must actually retry the bind instead of early-returning on the dead
+        // entry. This is the assertion the old code failed.
+        drop(tcp_squatter);
+        drop(udp_squatter);
+        server.spawn_ingress_listener(ip);
+        assert!(server.has_ingress_listener(ip));
         assert_eq!(server.ingress_listener_count(), 1);
 
         server.stop_ingress_listener(ip);
