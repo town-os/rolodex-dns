@@ -1,18 +1,23 @@
 # Rolodex DNS
 
-A privacy-first, split-horizon DNS server and forwarding resolver with encrypted transports, DNSSEC, and gRPC management, written in Rust.
+A privacy-first, split-horizon DNS server and recursive/forwarding resolver with encrypted transports, DNSSEC, and gRPC management, written in Rust.
 
-Rolodex DNS provides DNS over UDP, TCP, TLS (DoT), HTTPS (DoH), and QUIC (DoQ) with a local record database that takes priority over forwarded queries. Records are managed remotely via gRPC (shared secret authentication over TCP, or unauthenticated over Unix socket). It supports TLD-level resolution with domain overlay, so internal DNS representations are always preferred. A built-in DNS response cache prevents query leakage to upstream resolvers once a record has been seen.
+Rolodex DNS provides DNS over UDP, TCP, TLS (DoT), HTTPS (DoH), and QUIC (DoQ) with a local record database that takes priority over external resolution. Records are managed remotely via gRPC (shared secret authentication over TCP, or unauthenticated over Unix socket). It supports TLD-level resolution with domain overlay, so internal DNS representations are always preferred. A built-in DNS response cache prevents query leakage to upstream resolvers once a record has been seen.
 
-Rolodex DNS also supports Realtime Blackhole Lists (RBLs) for DNS-based spam/malware filtering, DNSSEC zone signing, DANE TLSA certificate association, ACME DNS-01 challenge handling, and DNS64 AAAA synthesis.
+Names that are not local are resolved **iteratively from the root servers** by default, falling back through encrypted (DoH/DoT) and plaintext upstreams so resolution survives networks that filter outbound port 53. See [Upstream Resolution](#upstream-resolution).
+
+Rolodex DNS also supports Realtime Blackhole Lists (RBLs) and domain blocklists (DNSBLs) for spam/malware filtering, DNSSEC zone signing, DANE TLSA certificate association, a built-in ACME certificate authority, DNS64 AAAA synthesis, per-network DNS partitioning, and an integrated DHCPv4 server.
 
 ## Features
 
 - **Privacy-first DNS cache**: Local DNS response caching prevents query leakage to upstream. Once cached, queries are answered locally without contacting any forwarder. Set `forwarders: []` for a purely authoritative server.
 - **Encrypted transports**: DNS-over-TLS (DoT, port 853), DNS-over-HTTPS (DoH, port 443 with GET/POST), DNS-over-QUIC (DoQ, port 8853)
-- **Split-horizon DNS**: Local database records always take priority over forwarded upstream results
+- **Split-horizon DNS**: Local database records always take priority over externally-resolved results
 - **DNS over UDP and TCP**: Full protocol support for both transport layers
-- **Forwarding resolver**: Configurable upstream DNS forwarders for non-local queries
+- **Recursive resolver with resilient fallback**: Iterative resolution from the root servers by default, then DoH/DoT to public resolvers, then the configured forwarders, then plaintext public resolvers — so resolution keeps working on networks that filter `:53` (and DPI that blocks DoT's `:853`). A sticky tier avoids paying timeouts on a dead path, and every tier switch flushes the cache
+- **Resolver caching that honours TTLs**: A persistent zone→nameserver delegation cache (warm across restarts), an in-memory cache for glue/glue-less NS lookups/CNAME hops, and RFC 2308 negative caching — all served with their remaining lifetime
+- **Address-family awareness**: A background probe tests real IPv4/IPv6 internet reachability and suppresses A or AAAA answers for a family the host cannot route, so clients fall back instead of stalling on a dead stack
+- **Forwarding resolver**: Configurable upstream DNS forwarders, usable exclusively via `resolution.mode: forward`
 - **TLD/domain overlay**: Add records at any level (including TLDs) to override public DNS
 - **DNSSEC**: Ed25519 (preferred), ECDSA P-256/P-384, RSA/SHA-256 key generation, zone signing, and DS record computation
 - **DANE TLSA + ACME issuer**: TLSA record generation from certificates, a built-in ACME certificate authority (per-zone intermediate CAs), self-signed root CA generation, ACME DNS-01 challenge handling (serves `_acme-challenge` TXT records natively)
@@ -26,11 +31,15 @@ Rolodex DNS also supports Realtime Blackhole Lists (RBLs) for DNS-based spam/mal
 - **QNAME case randomization**: 0x20 encoding randomizes QNAME case in forwarded queries for cache poisoning defense
 - **gRPC management**: Remote record management via gRPC with shared secret or Unix socket auth
 - **RBL support**: Realtime Blackhole List checking with in-memory caching, plus a local RBL database for custom blocklist entries
-- **Network scoping**: Split-horizon DNS views with per-scope records and IP-based access control
+- **DNSBL support**: Domain blocklists (Spamhaus DBL, SURBL, URIBL) checked before any external resolution, so a listed name is refused even if a forwarded answer was previously cached
+- **Network scoping**: Split-horizon DNS views with per-scope records and IP-based access control. Scope enforcement is confined to the configured overlay (WireGuard) CIDRs; loopback, LAN, and container sources are trusted and never refused
+- **Per-network owned TLDs**: Globally-unique TLDs owned by a scope, partitioned across overlay peers and never forwarded upstream, with optional per-TLD **ingress DNS listeners** that answer on a network's own address and rewrite programmed names to its ingress controller
+- **Integrated DHCPv4 server**: Per-scope address pools with sticky MAC bindings, automatic A/PTR registration, certificate delivery via site-specific options, and a background lease sweep
+- **Automatic reverse PTR records**: Optional (`dns.auto_ptr`) maintenance of matching `in-addr.arpa`/`ip6.arpa` PTRs for A/AAAA records added through gRPC
 - **Proxy support**: Forward DNS queries through HTTP CONNECT, SOCKS5, or DoH proxy
 - **SQLite persistence**: DNS records persist across restarts
 - **TLS hot-reload**: Certificates can be reloaded at runtime (e.g. after ACME renewal) without restarting the server
-- **Performance**: Multi-threaded tokio runtime, lock-free RBL state (`AtomicBool` + `ArcSwap`), in-memory boot caches for scopes/zones/RBL entries, UDP socket pool for upstream forwarding, and DashMap/DashSet concurrent caching throughout
+- **Performance**: Multi-threaded tokio runtime, lock-free RBL and resolver state (`AtomicBool` + `ArcSwap` + atomics), in-memory boot caches for scopes/zones/TLDs/RBL entries, UDP socket pool for upstream forwarding, and DashMap/DashSet concurrent caching throughout
 
 ## Building
 
@@ -43,6 +52,8 @@ make build
 ```
 make test
 ```
+
+Runs lint (`cargo fmt --check` + `clippy --all-targets -D warnings`), the Go integration and unit tests, the Rust integration and unit tests, and the JavaScript lint/integration/unit tests. Use `make test-log` for the same run tee'd into a timestamped log file under `/tmp/rolodex-dns/log` (override with `LOG_DIR`), printed at the end even on failure. Individual layers: `make lint`, `make rust-test`, `make rust-integration-test`, `make go-test`, `make go-integration-test`, `make js-test`, `make js-integration-test`.
 
 ## Development
 
@@ -60,7 +71,9 @@ This will:
    - SQLite database at `/tmp/rolodex-dns-dev.db`
    - No authentication required
    - RBL checking disabled
-   - Default upstream forwarders (`8.8.8.8:53`, `8.8.4.4:53`)
+   - Default upstream forwarders (`8.8.8.8:53`, `8.8.4.4:53`), used as the `local` tier of the default `auto` resolution chain
+
+`make help` lists every target with a description, grouped by section (it is also the default goal, so a bare `make` prints it).
 
 For a release-optimized dev server:
 ```
@@ -226,11 +239,33 @@ dns:
 # Database file path
 database_path: rolodex-dns.db
 
-# Upstream DNS forwarders (address:port format)
-# Set to empty list for a purely authoritative server (no upstream forwarding)
+# Upstream DNS forwarders (address:port format). Used as the "local" tier of the
+# auto chain, or as the only upstream when resolution.mode is "forward".
+# Set to empty list (with resolution.mode: forward) for a purely authoritative server
 forwarders:
   - "8.8.8.8:53"
   - "8.8.4.4:53"
+
+# Upstream resolution strategy (all fields optional; defaults shown)
+resolution:
+  mode: auto              # "auto" (tier chain), "recursive" (roots only), "forward"
+  root_hints: []          # override the built-in IANA root addresses
+  secure_upstreams:       # encrypted tier, tried when root recursion fails
+    - transport: https    # "https" (DoH :443, preferred) or "tls" (DoT :853)
+      addr: "1.1.1.1:443" # dialed by IP, so it needs no prior DNS
+      hostname: cloudflare-dns.com  # SNI / certificate name validated
+      path: /dns-query
+    - transport: https
+      addr: "8.8.8.8:443"
+      hostname: dns.google
+      path: /dns-query
+  public_fallback:        # plaintext Do53, tried last
+    - "1.1.1.1:53"
+    - "8.8.8.8:53"
+  switch_grace_failures: 3      # deviating queries before a tier degrade commits
+  recovery_probe_secs: 60       # how often a degraded chain retries from the top
+  delegation_persist_min_ttl: 300  # persist delegations with a TTL above this
+  default_ttl: 300              # fallback only where nothing carries a TTL
 
 # Each entry pairs a protocol (udp/tcp) with a bind address.
 # Bind addresses accept ip:port, [ipv6]:port, primary:port, or interface:port.
@@ -238,6 +273,8 @@ dns:
   bind:
     - udp: "0.0.0.0:53"     # or "eth0:53" to bind to a specific interface
     - tcp: "0.0.0.0:53"
+  auto_ptr: false           # maintain reverse PTRs for A/AAAA added via gRPC
+  ingress_listen_port: 53   # port for per-TLD ingress listeners (IP is per-TLD)
 
 # DNS-over-TLS (RFC 7858)
 dot:
@@ -288,6 +325,33 @@ rbl:
     - zone: dbl.spamhaus.org
       enabled: true
 
+# Domain blocklists (checked by name, before any external resolution)
+dnsbl:
+  enabled: false
+  providers:
+    - zone: dbl.spamhaus.org
+      enabled: true
+
+# Integrated DHCPv4 server (omit the section to disable)
+dhcp:
+  bind: "0.0.0.0:67"
+  tld: example.com          # required: hostnames register as <host>.lan.<tld>.
+  default_lease_duration: 3600
+  reclaim_timeout: 86400
+  sweep_interval: 60
+
+# ACME issuer / certificate authority (omit the section to disable)
+acme:
+  bind: "0.0.0.0:8555"                    # client-facing ACME HTTPS listener
+  portal_bind: "127.0.0.1:8500"           # trusted-network enrollment portal
+  directory_url: "https://dns.example.com:8555/acme"  # advertised to clients
+  root_ca_cn: "Rolodex Root CA"
+  leaf_validity_days: 90
+  tlsa_port: 443
+  tlsa_proto: tcp
+  require_eab: true
+  issuance_scope: managed_zones           # or "any"
+
 # HTTP proxy for forwarded DNS queries
 proxy:
   url: "http://proxy:8080"
@@ -305,9 +369,19 @@ dns64:
   enabled: false
   prefix: "64:ff9b::"    # default well-known prefix (64:ff9b::/96)
 
+# Address-family answer preference
+address_family:
+  mode: auto              # "auto" (probe and suppress), "off", "force4", "force6"
+  probe_interval_secs: 30
+  fail_threshold: 2       # failed cycles before a family is marked down
+  probe_timeout_secs: 2
+  targets_v4: ["1.1.1.1:443", "8.8.8.8:443"]
+  targets_v6: ["[2606:4700:4700::1111]:443", "[2001:4860:4860::8888]:443"]
+
 # Security settings
 security:
   qname_case_randomization: true  # 0x20 encoding for forwarded queries
+  overlay_cidrs: ["10.64.0.0/10"] # source ranges subject to network-scope enforcement
 ```
 
 ### Configuration Options
@@ -315,8 +389,18 @@ security:
 | Option | Default | Description |
 |--------|---------|-------------|
 | `database_path` | `"rolodex-dns.db"` | Path to the SQLite database file |
-| `forwarders` | `["8.8.8.8:53", "8.8.4.4:53"]` | Upstream DNS resolver addresses. Empty list = purely authoritative |
+| `forwarders` | `["8.8.8.8:53", "8.8.4.4:53"]` | Upstream DNS resolver addresses (the `local` tier in `auto` mode; the only upstream in `forward` mode) |
+| `resolution.mode` | `"auto"` | Upstream strategy: `"auto"` (tier chain), `"recursive"` (roots only), `"forward"` (forwarders only) |
+| `resolution.root_hints` | `[]` (built-in IANA roots) | Override the root server hints used in `recursive`/`auto` mode |
+| `resolution.secure_upstreams` | Cloudflare + Google over DoH | Encrypted upstreams for the `secure` tier: `{transport, addr, hostname, path}` |
+| `resolution.public_fallback` | `["1.1.1.1:53", "8.8.8.8:53"]` | Plaintext public resolvers, tried last in `auto` mode |
+| `resolution.switch_grace_failures` | `3` | Consecutive deviating queries before an `auto` tier degrade commits |
+| `resolution.recovery_probe_secs` | `60` | How often a degraded `auto` chain retries from the top tier |
+| `resolution.delegation_persist_min_ttl` | `300` | Minimum TTL for a learned delegation to be persisted to SQLite |
+| `resolution.default_ttl` | `300` | Fallback TTL where a record/response carries none of its own |
 | `dns.bind` | `[{udp: "0.0.0.0:53"}, {tcp: "0.0.0.0:53"}]` | DNS listeners; list of `{udp: addr}` / `{tcp: addr}` entries |
+| `dns.auto_ptr` | `false` | Maintain reverse PTR records for A/AAAA added via gRPC |
+| `dns.ingress_listen_port` | `53` | UDP/TCP port for per-TLD ingress listeners (bind IP is per-TLD) |
 | `dot.bind` | `""` (disabled) | DoT listener; supports interface:port (typically port 853) |
 | `dot.tls.cert_path` | `""` | TLS certificate path for DoT |
 | `dot.tls.key_path` | `""` | TLS private key path for DoT |
@@ -333,9 +417,25 @@ security:
 | `grpc.tcp_bind` | `"127.0.0.1:50051"` | TCP gRPC listener; supports interface:port (empty to disable) |
 | `grpc.unix_socket` | `"/var/run/rolodex-dns.sock"` | Unix socket path (empty to disable) |
 | `grpc.shared_secret` | `""` | Shared secret for TCP gRPC auth (empty = no auth) |
-| `rbl.enabled` | `false` | Enable RBL checking globally |
-| `rbl.providers[].zone` | -- | DNSBL zone to query |
+| `rbl.enabled` | `false` | Enable IP-based RBL checking globally |
+| `rbl.providers[].zone` | -- | RBL zone to query (reversed IP is prepended) |
 | `rbl.providers[].enabled` | `true` | Enable/disable individual provider |
+| `dnsbl.enabled` | `false` | Enable domain-blocklist (DNSBL) checking globally |
+| `dnsbl.providers[].zone` | -- | DNSBL zone to query (the queried name is prepended) |
+| `dnsbl.providers[].enabled` | `true` | Enable/disable individual DNSBL provider |
+| `dhcp.bind` | `"0.0.0.0:67"` | DHCP listener (section absent = DHCP disabled) |
+| `dhcp.tld` | -- | Required when DHCP is enabled: hostnames register as `<host>.lan.<tld>.` |
+| `dhcp.default_lease_duration` | `3600` | Default lease duration in seconds |
+| `dhcp.reclaim_timeout` | `86400` | Seconds after expiry before an IP is reclaimed |
+| `dhcp.sweep_interval` | `60` | Background lease-sweep interval in seconds |
+| `acme.bind` | `"0.0.0.0:8555"` | Client-facing ACME HTTPS listener (section absent = ACME disabled) |
+| `acme.portal_bind` | `"127.0.0.1:8500"` | Trusted-network enrollment portal listener |
+| `acme.directory_url` | `"https://localhost:8555/acme"` | External ACME directory URL advertised to clients (set this) |
+| `acme.root_ca_cn` | `"Rolodex Root CA"` | Common name of the root CA created at boot |
+| `acme.leaf_validity_days` | `90` | Validity of issued leaf certificates |
+| `acme.tlsa_port` / `acme.tlsa_proto` | `443` / `"tcp"` | Where the DANE-TA TLSA record is published per name |
+| `acme.require_eab` | `true` | Require External Account Binding for account registration |
+| `acme.issuance_scope` | `"managed_zones"` | `"managed_zones"` (zone must have a CA) or `"any"` |
 | `proxy.url` | `""` (disabled) | HTTP proxy URL for forwarded DNS queries |
 | `proxy.auth` | `""` | Proxy authentication (`"user:pass"`) |
 | `proxy.mode` | `"connect"` | Proxy mode: `"connect"` (HTTP CONNECT), `"socks5"` (SOCKS5), or `"doh"` |
@@ -345,6 +445,12 @@ security:
 | `dns64.enabled` | `false` | Enable DNS64 AAAA synthesis |
 | `dns64.prefix` | `"64:ff9b::"` | IPv6 prefix for DNS64 synthesis |
 | `security.qname_case_randomization` | `true` | Enable 0x20 QNAME case randomization |
+| `security.overlay_cidrs` | `["10.64.0.0/10"]` | Source ranges treated as untrusted overlay peers and scope-enforced; every other source is trusted |
+| `address_family.mode` | `"auto"` | `"auto"` (probe and suppress an unroutable family), `"off"`, `"force4"`, `"force6"` |
+| `address_family.probe_interval_secs` | `30` | Seconds between routability probes in `auto` mode |
+| `address_family.fail_threshold` | `2` | Consecutive failed probe cycles before a family is marked down (recovery is immediate) |
+| `address_family.probe_timeout_secs` | `2` | Per-target TCP-connect timeout for each probe |
+| `address_family.targets_v4` / `targets_v6` | Cloudflare/Google on `:443` | Probe targets per family (literal IPs) |
 
 ## Usage
 
@@ -386,13 +492,15 @@ rolodex-dns-cli [OPTIONS] <COMMAND>
 | `list-records` | List DNS records with optional filters |
 | **Forwarders** | |
 | `set-forwarders` | Set upstream DNS forwarders at runtime |
-| **RBL** | |
-| `set-rbl-config` | Configure RBL settings at runtime |
+| **RBL / DNSBL** | |
+| `set-rbl-config` | Configure IP-based RBL settings at runtime |
 | `get-rbl-config` | Retrieve the current RBL configuration |
-| `flush-cache` | Flush the RBL result cache |
-| `add-local-rbl-entry` | Add a local RBL blocklist entry |
-| `remove-local-rbl-entry` | Remove a local RBL blocklist entry |
-| `list-local-rbl-entries` | List all local RBL blocklist entries |
+| `set-dnsbl-config` | Configure domain-blocklist (DNSBL) settings at runtime |
+| `get-dnsbl-config` | Retrieve the current DNSBL configuration |
+| `flush-cache` | Flush the RBL/DNSBL result cache |
+| `add-local-rbl` | Add a local RBL blocklist entry |
+| `remove-local-rbl` | Remove a local RBL blocklist entry |
+| `list-local-rbl` | List all local RBL blocklist entries |
 | **Network Scoping** | |
 | `create-scope` | Create a new network scope |
 | `delete-scope` | Delete a network scope and all its data |
@@ -404,43 +512,48 @@ rolodex-dns-cli [OPTIONS] <COMMAND>
 | `remove-scoped-record` | Remove DNS records from a scope |
 | `list-scoped-records` | List DNS records within a scope |
 | `get-search-domains` | Get search domains for an IP |
+| **Owned TLDs / Ingress** | |
+| `add-scope-tld` | Register a globally-unique owned TLD for a scope (optional `--listen-ip` starts an ingress listener) |
+| `remove-scope-tld` | Remove an owned TLD from a scope |
+| `list-scope-tlds` | List the TLDs owned by a scope |
+| `set-scope-tld-forwarders` | Set the peer forwarders for a scope's TLD |
+| `list-scope-tld-forwarders` | List the peer forwarders for a scope's TLD |
+| `list-scope-tld-listeners` | List the ingress DNS listeners bound to a scope's TLDs |
+| **Per-Scope RBL** | |
+| `add-scope-rbl` | Add an additional RBL provider for a scope |
+| `remove-scope-rbl` | Remove a scope-specific RBL provider |
+| `list-scope-rbl` | List RBL providers for a scope |
 | **Authoritative Zones** | |
-| `add-authoritative-zone` | Declare a zone as authoritative |
-| `remove-authoritative-zone` | Remove a zone from the authoritative list |
-| `list-authoritative-zones` | List all authoritative zones |
+| `add-auth-zone` | Declare a zone as authoritative |
+| `remove-auth-zone` | Remove a zone from the authoritative list |
+| `list-auth-zones` | List all authoritative zones |
 | **Cache** | |
-| `get-cache-stats` | Show DNS cache hit/miss statistics |
+| `cache-stats` | Show DNS cache hit/miss statistics |
 | `flush-dns-cache` | Flush the DNS response cache |
-| **Encrypted Transports** | |
-| `set-dot-config` / `get-dot-config` | Configure/retrieve DNS-over-TLS settings |
-| `set-doh-config` / `get-doh-config` | Configure/retrieve DNS-over-HTTPS settings |
-| `set-doq-config` / `get-doq-config` | Configure/retrieve DNS-over-QUIC settings |
-| **Proxy** | |
-| `set-proxy-config` / `get-proxy-config` | Configure/retrieve HTTP proxy settings |
+| **DHCP** | |
+| `add-dhcp-pool` / `remove-dhcp-pool` / `list-dhcp-pools` | Manage DHCP address pools per scope |
+| `list-dhcp-leases` / `delete-dhcp-lease` | Inspect and delete DHCP leases |
+| `set-dhcp-cert` / `remove-dhcp-cert` / `list-dhcp-certs` | Manage certificate delivery via DHCP options |
 | **DNSSEC** | |
 | `generate-dnssec-key` | Generate a DNSSEC key pair (KSK or ZSK) |
 | `list-dnssec-keys` | List DNSSEC keys for a zone |
-| `delete-dnssec-key` | Delete a DNSSEC key |
-| `get-ds-records` | Get DS records for parent-zone delegation |
 | `sign-zone` | Sign a zone with its DNSSEC keys |
 | **DANE / ACME** | |
-| `generate-tlsa-record` | Generate a TLSA record from a certificate |
-| `list-tlsa-records` | List TLSA records for a domain |
-| `generate-dane-root-ca` | Generate a self-signed DANE root CA |
+| `generate-tlsa` | Generate a TLSA record from a certificate |
 | `request-acme-cert` | Request a certificate via ACME DNS-01 |
-| `get-acme-status` | Check ACME certificate status |
+| `acme-status` | Check ACME certificate status |
 | `ensure-zone-ca` | Ensure the per-zone intermediate CA exists; prints root + intermediate PEM and publishes the CA chain into DNS |
-| `create-eab` | Mint an EAB credential scoped to a zone |
+| `create-eab` / `remove-eab` | Mint or remove an EAB credential scoped to a zone |
 | `list-acme-accounts` | List registered ACME accounts |
 | `list-acme-certs` | List issued certificates |
 | **TTL Drift** | |
-| `set-ttl-drift-config` / `get-ttl-drift-config` | Configure/retrieve TTL drift settings |
+| `set-ttl-drift` / `get-ttl-drift` | Configure/retrieve TTL drift settings |
 | **DNS64** | |
-| `set-dns64-config` / `get-dns64-config` | Configure/retrieve DNS64 settings |
+| `set-dns64` / `get-dns64` | Configure/retrieve DNS64 settings |
 | **Observability** | |
-| `get-query-latency-stats` | Show per-server upstream query latency |
+| `latency-stats` | Show per-server upstream query latency |
 
-See the original command sections below for detailed usage on core record management commands. For the full set of command flags, run `rolodex-dns-cli <COMMAND> --help`.
+Transport (DoT/DoH/DoQ), proxy, and a few DNSSEC/DANE operations are available over gRPC but have no CLI subcommand — see [Additional gRPC Methods](#additional-grpc-methods). For the full set of command flags, run `rolodex-dns-cli <COMMAND> --help`.
 
 ##### `add-record`
 
@@ -1077,6 +1190,19 @@ The following methods are also available. See `proto/rolodex_dns.proto` for full
 | `AddLocalRblEntry` | Add a local RBL blocklist entry |
 | `RemoveLocalRblEntry` | Remove a local RBL blocklist entry |
 | `ListLocalRblEntries` | List all local RBL blocklist entries |
+| `SetDnsblConfig` / `GetDnsblConfig` | Configure/retrieve domain-blocklist (DNSBL) settings |
+| `AddScopeRblProvider` / `RemoveScopeRblProvider` / `ListScopeRblProviders` | Manage additional RBL providers for one scope |
+| `AddScopeTld` | Register a globally-unique owned TLD for a scope; an optional `listen_ip` also starts an ingress DNS listener |
+| `RemoveScopeTld` | Remove an owned TLD (and its ingress listener, once unused) |
+| `ListScopeTlds` | List the TLDs owned by a scope |
+| `SetScopeTldForwarders` / `ListScopeTldForwarders` | Manage a TLD's peer forwarders |
+| `ListScopeTldListeners` | List the ingress DNS listeners bound to a scope's TLDs |
+| `AddDhcpPool` / `RemoveDhcpPool` / `ListDhcpPools` | Manage DHCP address pools per scope |
+| `ListDhcpLeases` / `DeleteDhcpLease` | Inspect and delete DHCP leases |
+| `SetDhcpCertOption` / `RemoveDhcpCertOption` / `ListDhcpCertOptions` | Manage certificate delivery via DHCP options |
+| `EnsureZoneCa` | Create the per-zone intermediate CA if absent; returns root + intermediate PEM |
+| `CreateEabCredential` / `RemoveEabCredential` | Mint or remove a zone-scoped EAB credential |
+| `ListAcmeAccounts` / `ListAcmeCertificates` | List ACME accounts and issued certificates |
 | `SetDotConfig` / `GetDotConfig` | Configure/retrieve DNS-over-TLS settings |
 | `SetDohConfig` / `GetDohConfig` | Configure/retrieve DNS-over-HTTPS settings |
 | `SetDoqConfig` / `GetDoqConfig` | Configure/retrieve DNS-over-QUIC settings |
@@ -1129,9 +1255,64 @@ The cache distinguishes between two kinds of entries:
 - **Local records** (from the SQLite database): Cached in-memory with stable TTLs (no decay). These entries are not persisted to the cache backing store since they already live in the database. The in-memory DNS cache is automatically invalidated whenever records are added, removed, or modified via gRPC, so changes take effect immediately.
 - **Forwarded responses** (from upstream resolvers): Cached with decaying TTLs and persisted to an SQLite-backed cache table. On restart, persisted entries are reloaded so the cache is warm immediately.
 
+Negative answers (authoritative NXDOMAIN/NODATA) are cached separately, for the RFC 2308 negative TTL (`min(SOA MINIMUM, SOA TTL)`) as the zone published it. Adding a local record for a name drops any cached negative for it, so a newly-added name resolves immediately instead of waiting out the negative TTL.
+
 Cache statistics are available via `GetCacheStats` and the cache can be flushed via `FlushDnsCache`.
 
-For maximum privacy, set `forwarders: []` to run Rolodex DNS as a purely authoritative server with no upstream forwarding at all. All answers will come from the local database.
+For maximum privacy, set `resolution.mode: forward` with `forwarders: []` to run Rolodex DNS as a purely authoritative server with no external resolution at all. All answers will come from the local database.
+
+## Upstream Resolution
+
+Names that are not satisfied locally are resolved according to `resolution.mode`:
+
+| Mode | Behavior |
+| ---- | -------- |
+| `auto` (default) | The tiered fallback chain below |
+| `recursive` | Iterative from the root servers only; no upstream resolver is ever contacted |
+| `forward` | Forward to the configured `forwarders` only |
+
+### The `auto` Fallback Chain
+
+Tiers are tried most-preferred (most-trusted) first:
+
+| Tier | Path | Why |
+| ---- | ---- | --- |
+| 0 | Iterative from the root servers | No third party sees your queries |
+| 1 | DoH (`:443`) or DoT (`:853`) to `resolution.secure_upstreams` | Encrypted, and uses ports that survive `:53` filtering |
+| 2 | Plaintext Do53 to `forwarders` | The local/DHCP-provided resolver |
+| 3 | Plaintext Do53 to `resolution.public_fallback` | Last resort |
+
+DoH is preferred over DoT because `:443` looks like ordinary HTTPS and survives deep-packet inspection that lets a DoT connection open but drops its TLS session. Secure upstreams are dialed **by IP**, with the certificate validated against the configured `hostname`, so the tier needs no prior DNS to bootstrap.
+
+A tier only "wins" when the transport succeeded and the rcode is NoError or NXDOMAIN; SERVFAIL, REFUSED, and unparseable responses fall through. The winning tier is **sticky**, so queries do not pay a timeout on a dead path every time. Recovering to a more-preferred tier happens immediately; degrading to a lesser one commits only after `resolution.switch_grace_failures` consecutive deviating queries, so one flaky query cannot thrash the resolver. While degraded, one query per `resolution.recovery_probe_secs` restarts at tier 0 to reclaim a recovered path. Every committed tier switch flushes the DNS cache, so answers from one tier cannot linger after a switch to another.
+
+### Iterative Resolver
+
+The resolver walks the delegation chain from the roots — root → TLD → authoritative — with recursion-desired cleared, validating responses by transaction ID and question name against off-path spoofing, over UDP with automatic TCP fallback on truncation.
+
+- **Root hints and priming.** The 13 IANA root addresses (IPv4 only, so a v4-only host never stalls on a v6 root) are a bootstrap: at startup Rolodex asks the roots who the roots are and caches the live `.` NS set with its real TTL. Priming never runs on the query path, and the hints remain the fallback if it fails. Override with `resolution.root_hints`.
+- **Load spread across servers.** Nameservers are chosen by lowest `hits × average latency`, which allocates queries as `hits ∝ 1/latency`: fast servers carry more, but every healthy server carries some. This deliberately avoids pinning every cold query to one root (whether "the first" or "the fastest"), which earns a rate-limit and turns each lookup into a timeout-and-failover.
+- **Failure backoff.** A failing server sits out 2s, doubling per consecutive failure up to 300s, cleared on its first success. Backed-off servers sort last but are never dropped, so resolution still proceeds when everything is failing.
+- **Bounded work.** 1.5s per-nameserver timeout, 30 referrals, 16 CNAME hops, depth 16, 4 nameservers per glue-less delegation, and a hard ceiling of 64 upstream queries per client lookup — the per-axis limits multiply, so the total is capped outright.
+
+### Resolver Caches
+
+Two TTL-respecting caches sit below the answer cache and keep what a recursion learns on the way down:
+
+- **Delegation cache** — zone → nameserver addresses, learned from every referral. A warm `.com` lookup skips the root hop entirely. Delegations whose TTL exceeds `resolution.delegation_persist_min_ttl` (default 300s) are persisted to SQLite and reloaded at boot, so a restart comes back warm; root and TLD NS sets carry multi-day TTLs, so exactly the entries worth keeping survive.
+- **Record cache** — glue, glue-less NS-name lookups, and CNAME hops, keyed by `(name, type)` and served with their *remaining* lifetime.
+
+Both survive record mutations (adding a record must not send every name in the world back to the roots) and are cleared only on an `auto`-mode tier switch.
+
+TTLs are honoured exactly as published — including a zone's SOA negative TTL, which is never clamped. `resolution.default_ttl` applies only where nothing carries a usable TTL at all.
+
+## Address-Family Filtering
+
+Networks routinely advertise an IPv6 default route and then silently drop all v6 traffic (and the mirror case happens on v4-only NAT). A client handed an address in a family its host cannot route stalls on the dead family instead of falling back — the failure that wedges container image pulls on a broken-v6 link.
+
+With `address_family.mode: auto` (the default), a background probe TCP-connects to public anycast resolvers on `:443` — the port real traffic uses, and one that survives the `:53`/`:853` filtering some networks impose — to test *actual* per-family reachability. A/AAAA records of an unreachable family are then dropped from answers (turning them into NODATA) so clients fall back to the stack that works.
+
+The first probe runs synchronously at startup and is decisive, so a boot onto a dead-family link suppresses that family from the very first query. Afterwards, a previously-working family is only marked down after `address_family.fail_threshold` consecutive failed cycles, while recovery takes effect on the first success. Set `mode: off` to always answer both families, or `force4`/`force6` to pin one without probing.
 
 ## Encrypted Transports
 
@@ -1168,10 +1349,7 @@ Ed448 is not supported due to a limitation in the ring cryptography crate.
    rolodex-dns-cli sign-zone --zone example.com.
    ```
 
-3. Retrieve DS records for your registrar:
-   ```bash
-   rolodex-dns-cli get-ds-records --zone example.com.
-   ```
+3. Retrieve DS records for your registrar. There is no CLI subcommand for this — call the `GetDsRecords` gRPC method (e.g. via the Go client's `GetDsRecords(ctx, zone)`), or query the DS records from the zone with any DNS client.
 
 Signing produces DNSKEY, RRSIG, NSEC/NSEC3, and NSEC3PARAM records automatically. Re-run `sign-zone` after adding or modifying records.
 
@@ -1226,26 +1404,26 @@ Or at runtime via gRPC: `SetDns64Config` / `GetDns64Config`.
 
 ## RBL (Realtime Blackhole List)
 
-When RBL is enabled, Rolodex DNS checks IP addresses found in reverse DNS queries against configured DNSBL providers. If an IP is listed in any enabled provider, the query receives an `NXDOMAIN` response.
+When RBL is enabled, Rolodex DNS checks IP addresses found in reverse DNS queries against configured RBL providers. If an IP is listed in any enabled provider, the query receives an `NXDOMAIN` response. RBL is **disabled by default with an empty provider list** — nothing external is queried until an operator adds providers via the `rbl` config section or `SetRblConfig`.
 
 ### Local RBL Database
 
-In addition to external RBL providers, Rolodex DNS supports locally-managed blocklist entries. Local entries are checked before external providers and are managed via `AddLocalRblEntry`, `RemoveLocalRblEntry`, and `ListLocalRblEntries`.
+In addition to external RBL providers, Rolodex DNS supports locally-managed blocklist entries. Local entries are checked alongside external providers, against both reverse-DNS IP lookups and forward domain names, and are managed via `AddLocalRblEntry`, `RemoveLocalRblEntry`, and `ListLocalRblEntries`.
 
 ```bash
 # Block a specific IP with a reason
-rolodex-dns-cli add-local-rbl-entry --name 10.0.0.5 --reason "known spam source"
+rolodex-dns-cli add-local-rbl --name 10.0.0.5 --reason "known spam source"
 
 # List local entries
-rolodex-dns-cli list-local-rbl-entries
+rolodex-dns-cli list-local-rbl
 
 # Remove an entry
-rolodex-dns-cli remove-local-rbl-entry --name 10.0.0.5
+rolodex-dns-cli remove-local-rbl --name 10.0.0.5
 ```
 
-### Default Providers
+### Commonly Used Providers
 
-These match the common providers used by unbound and other DNS resolvers:
+The provider list ships empty; these are the standard zones an operator typically adds (the same ones used by unbound and other resolvers):
 
 | Zone | Description |
 |------|-------------|
@@ -1269,7 +1447,25 @@ These match the common providers used by unbound and other DNS resolvers:
 
 - Positive results (IP is listed) are cached for the TTL returned by the RBL provider
 - Negative results (IP is not listed) are cached for 5 minutes
+- Lookup errors are not cached and are treated as not-listed, to avoid false positives
 - The cache can be flushed via the `FlushCache` gRPC method
+
+### Per-Scope Providers
+
+A network scope can opt into additional RBL providers beyond the global list, checked for IPs associated with that scope. Managed via `add-scope-rbl`, `remove-scope-rbl`, and `list-scope-rbl`.
+
+## DNSBL (Domain Blocklists)
+
+Where RBL providers block by **IP address** (queried with a reversed IP on reverse-DNS lookups), DNSBL providers block by **domain name**: the queried name's labels are prepended to the provider zone, so `googleadservices.com` against `dbl.spamhaus.org` is queried as `googleadservices.com.dbl.spamhaus.org`. This is how Spamhaus DBL, SURBL, and URIBL operate.
+
+DNSBL gives blocklists **precedence over external DNS**. The check runs after local records and managed/authoritative zones — so internal data always wins — but **before** the upstream response cache and any external resolution. A listed name therefore returns NXDOMAIN even if a forwarded answer for it was previously cached.
+
+Like RBL, DNSBL is disabled by default with an empty provider list, and individual providers can be enabled or disabled independently. An enabled-but-empty DNSBL is a no-op. The standard zones an operator typically adds are `dbl.spamhaus.org`, `multi.surbl.org`, and `multi.uribl.com`. DNSBL results share the RBL result cache (positives for the provider TTL, negatives for 5 minutes).
+
+```bash
+rolodex-dns-cli set-dnsbl-config --enabled --providers dbl.spamhaus.org:true
+rolodex-dns-cli get-dnsbl-config
+```
 
 ## Network Scoping
 
@@ -1287,10 +1483,50 @@ Network scoping provides split-horizon DNS views, allowing different DNS respons
 2. Add scoped DNS records to the scope
 3. Client IPs join the network by associating with a scope (with a TTL)
 4. When a DNS query arrives:
-   - If scopes exist and the source IP is not associated with any scope: **REFUSED**
-   - If the IP is associated with a scope: check scoped records first, then fall through to global records, then forward upstream
+   - If it arrived on a per-TLD **ingress listener**: it is served within that listener's owning scope, for every name
+   - If the source IP is associated with a scope: check scoped records first, then fall through to global records, then resolve externally
+   - If the source IP is inside `security.overlay_cidrs` (an overlay/WireGuard peer) but joined to no scope: **REFUSED**
+   - Any other source — loopback, LAN, container bridges — is trusted: it is never refused and resolves the global namespace
    - If no scopes exist at all: legacy behavior (all queries served from global records)
 5. Search domains (via `GetSearchDomains`) return the `.home` domain for DHCP integration
+
+### Trusted Sources vs. Overlay Peers
+
+Scope enforcement applies **only** to source IPs inside `security.overlay_cidrs` (default `10.64.0.0/10`, the WireGuard overlay range). Such a peer must be joined to a network or it is refused, and it sees only its own scope's partitioned TLDs. Every other source is trusted and resolves the global view.
+
+This is what makes the split horizon useful in practice: a name can carry a global record pointing at the box's LAN address and a scoped record pointing at its overlay address, and each side is handed an address it can actually route to.
+
+### Per-Network Owned TLDs
+
+Beyond its implicit `.home` domain, a scope can own additional TLDs that partition the namespace across networks. Each owned TLD is **globally unique** to one scope, and names under it are never forwarded upstream — an unmatched name yields an authoritative NXDOMAIN, after optionally consulting the TLD's *peer forwarders* (the overlay addresses of other Rolodex members of the same network).
+
+- For an **overlay peer**, owned TLDs are strictly partitioned: it resolves its own network's TLD and gets NXDOMAIN for any other scope's TLD, so two networks' TLDs are never both resolvable from one endpoint.
+- For a **trusted local source** (loopback/LAN), *every* owned TLD resolves from its owning scope, so all network TLDs are visible on the LAN. Dual-homed names still return their LAN-facing global value; only scope-only names are served from the scope.
+
+A scope can therefore exist purely to own a TLD — marking it partitioned-from-peers and LAN-resolvable — without ever binding an overlay to it.
+
+```bash
+# Register an owned TLD for a scope
+rolodex-dns-cli add-scope-tld -s office --tld office.
+# Point unmatched names under it at other Rolodex members of the network
+rolodex-dns-cli set-scope-tld-forwarders -s office --tld office. -f 10.64.0.2:53
+rolodex-dns-cli list-scope-tlds -s office
+```
+
+### Ingress DNS Listeners
+
+An owned TLD can be registered with a local **ingress IP** (`add-scope-tld --listen-ip`), typically the network's own overlay address:
+
+```bash
+rolodex-dns-cli add-scope-tld -s office --tld office. --listen-ip 10.64.0.1
+rolodex-dns-cli list-scope-tld-listeners -s office
+```
+
+That does three things:
+
+1. **Binds a DNS listener** (UDP + TCP) on that IP, at `dns.ingress_listen_port` (default 53). Listeners are re-created at boot from the database, and torn down when the last TLD referencing the IP is removed. A bind that fails — the usual case at boot, when the overlay interface does not exist yet — is retried on the next re-registration rather than being remembered as "already listening".
+2. **Serves the owning scope's view for every name.** The listener is that network's dedicated resolver, so a query arriving on it belongs to the owning scope whatever the name is: owned TLDs stay partitioned, and everything else falls through to global resolution and upstream resolution — which is what lets a peer use it as its general-purpose resolver.
+3. **Rewrites programmed names to the ingress IP.** A name under the TLD that has a stored A/AAAA record is answered with the ingress IP instead of its stored backend value, so the network's ingress controller receives the traffic and routes by Host/SNI. This part stays name-gated: a pass-through name keeps its resolved value, the same name on the main `:53` listener resolves to its stored value, and a name with no record still returns NXDOMAIN (no wildcard synthesis).
 
 ### Resolution Order (Scoped)
 
@@ -1307,10 +1543,32 @@ Network scoping provides split-horizon DNS views, allowing different DNS respons
 11. Check ANAME records (resolve alias at zone apex)
 12. Check if name is under a global managed zone (authoritative NXDOMAIN)
 13. Check wildcard records (`*.zone.`)
-14. Forward to upstream resolvers (with QNAME case randomization if enabled, via proxy if configured)
-15. Apply DNS64 synthesis (if enabled and AAAA query returned empty but A record exists)
-16. Cache the response
-17. Apply TTL drift adjustment (if configured)
+14. Check the local blocklist and DNSBL providers (a listed name is NXDOMAIN, taking precedence over any external answer)
+15. Resolve externally per `resolution.mode` (with QNAME case randomization if enabled, via proxy if configured)
+16. Apply DNS64 synthesis (if enabled and AAAA query returned empty but A record exists)
+17. Cache the response
+18. Apply TTL drift adjustment (if configured)
+19. Drop A/AAAA answers of an unroutable address family (if `address_family.mode: auto`)
+
+## DHCP Server
+
+Rolodex DNS includes an integrated DHCPv4 server with IP address management and automatic DNS registration. It is disabled unless a `dhcp` section is present in the configuration.
+
+- **Per-scope pools.** Each pool belongs to a network scope and defines a single contiguous range, gateway, subnet mask, and DNS servers. When a pool is exhausted, allocation fails — there is no cross-pool aggregation. MAC-to-IP bindings are sticky: the same MAC always gets the same IP back.
+- **Automatic DNS registration.** A client that sends a hostname (option 12) gets an A record at `<hostname>.lan.<dhcp.tld>.` and a matching `in-addr.arpa` PTR, both as scoped records in the pool's scope. The lease is also joined to the network scope (`JoinNetwork`), so the client immediately sees that network's split-horizon view. Both records are removed when the lease is released or expires.
+- **Lease states.** `active`, `expired` (past its duration), `released` (client released it), and `reclaimable` (past `reclaim_timeout`, so the IP can be handed out again).
+- **Certificate delivery.** Certificates can be handed to clients through site-specific DHCP options (codes 224–254), configured per scope.
+- **Background sweep.** Every `sweep_interval` seconds, expired leases are retired (removing their DNS records and scope association) and leases past `reclaim_timeout` release their IP.
+
+```bash
+# A pool for the "office" scope
+rolodex-dns-cli add-dhcp-pool -s office \
+  --range-start 10.0.0.100 --range-end 10.0.0.200 \
+  --gateway 10.0.0.1 --subnet-mask 255.255.255.0 --dns-servers 10.0.0.1
+
+rolodex-dns-cli list-dhcp-pools -s office
+rolodex-dns-cli list-dhcp-leases -s office
+```
 
 ## Go Client
 
@@ -1395,6 +1653,29 @@ All methods accept a `context.Context` for cancellation and deadlines.
 | `RemoveScopedRecord(ctx, scope, name, opts) (uint32, error)` | Remove scoped records |
 | `ListScopedRecords(ctx, scope, opts) ([]*DnsRecord, error)` | List scoped records |
 | `GetSearchDomains(ctx, ip) ([]string, error)` | Get search domains for an IP |
+| `AddScopeTld(ctx, scope, tld) error` | Register a globally-unique owned TLD for a scope |
+| `AddScopeTldWithListener(ctx, scope, tld, listenIP) error` | Register an owned TLD and bind an ingress DNS listener |
+| `RemoveScopeTld(ctx, scope, tld) error` | Remove an owned TLD from a scope |
+| `ListScopeTlds(ctx, scope) ([]string, error)` | List the TLDs owned by a scope |
+| `SetScopeTldForwarders(ctx, scope, tld, forwarders) error` | Set a TLD's peer forwarders |
+| `ListScopeTldForwarders(ctx, scope, tld) ([]string, error)` | List a TLD's peer forwarders |
+| `ListScopeTldListeners(ctx, scope) ([]*TldListener, error)` | List a scope's ingress DNS listeners |
+| `AddScopeRblProvider(ctx, scope, zone, enabled) error` | Add a per-scope RBL provider |
+| `RemoveScopeRblProvider(ctx, scope, zone) error` | Remove a per-scope RBL provider |
+| `ListScopeRblProviders(ctx, scope) ([]*ScopeRblProvider, error)` | List per-scope RBL providers |
+
+#### DHCP
+
+| Method | Description |
+|--------|-------------|
+| `AddDhcpPool(ctx, pool) (string, error)` | Add a DHCP address pool for a scope |
+| `RemoveDhcpPool(ctx, poolID) error` | Remove a DHCP pool |
+| `ListDhcpPools(ctx, scope) ([]*DhcpPool, error)` | List DHCP pools |
+| `ListDhcpLeases(ctx, scope) ([]*DhcpLease, error)` | List DHCP leases |
+| `DeleteDhcpLease(ctx, mac) error` | Delete a DHCP lease by MAC |
+| `SetDhcpCertOption(ctx, opt) error` | Deliver a certificate via a DHCP option |
+| `RemoveDhcpCertOption(ctx, scope, optionCode) error` | Remove a DHCP certificate option |
+| `ListDhcpCertOptions(ctx, scope) ([]*DhcpCertOption, error)` | List DHCP certificate options |
 
 #### Authoritative Zones
 
@@ -1448,6 +1729,11 @@ All methods accept a `context.Context` for cancellation and deadlines.
 | `GenerateDaneRootCa(ctx, name) (string, error)` | Generate a self-signed DANE root CA |
 | `RequestAcmeCert(ctx, domain, providerURL) error` | Request ACME DNS-01 certificate |
 | `GetAcmeStatus(ctx, domain) (*AcmeStatus, error)` | Get ACME certificate status |
+| `EnsureZoneCa(ctx, zone) (*ZoneCa, error)` | Ensure the per-zone intermediate CA exists |
+| `CreateEabCredential(ctx, zone) (*EabCredential, error)` | Mint a zone-scoped EAB credential |
+| `RemoveEabCredential(ctx, kid) error` | Remove an EAB credential |
+| `ListAcmeAccounts(ctx) ([]*AcmeAccount, error)` | List registered ACME accounts |
+| `ListAcmeCertificates(ctx, zone) ([]*AcmeCertificate, error)` | List issued certificates |
 
 #### TTL Drift
 
@@ -1506,6 +1792,8 @@ All methods accept a `context.Context` for cancellation and deadlines.
 
 | RFC | Name | Support |
 |-----|------|---------|
+| RFC 1034 / 1035 | Domain names — concepts and implementation | Iterative resolution from the root servers, delegation following, glue and glue-less NS handling |
+| RFC 2308 | Negative caching of DNS queries | Negative TTL taken as `min(SOA MINIMUM, SOA TTL)`, honoured as published |
 | RFC 4255 | SSHFP DNS record | Full (storage, lookup, algorithm/fingerprint type) |
 | RFC 4398 | CERT DNS record | Full (storage, lookup, PKIX CA-chain distribution) |
 | RFC 4592 | Wildcards in DNS | Full (single-label substitution, exact match priority) |
@@ -1515,8 +1803,9 @@ All methods accept a `context.Context` for cancellation and deadlines.
 | RFC 6698 | DANE TLSA | Full (TLSA record generation, storage, DNS resolution) |
 | RFC 6891 | EDNS(0) | Full (OPT record, payload negotiation, DO bit, BADVERS) |
 | RFC 7553 | URI DNS record | Full (storage and lookup) |
-| RFC 7858 | DNS-over-TLS | Full (TLS-wrapped TCP, port 853) |
-| RFC 8484 | DNS-over-HTTPS | Full (GET + POST, application/dns-message, Cache-Control) |
+| RFC 7858 | DNS-over-TLS | Full (TLS-wrapped TCP, port 853) — server listener and upstream client |
+| RFC 8484 | DNS-over-HTTPS | Full (GET + POST, application/dns-message, Cache-Control) — server listener and upstream client |
+| RFC 8555 | ACME | Server side (built-in certificate authority, dns-01 self-validation, EAB) |
 | RFC 9250 | DNS-over-QUIC | Full (QUIC transport, bidirectional streams) |
 
 ## Architecture
@@ -1546,17 +1835,29 @@ All methods accept a `context.Context` for cancellation and deadlines.
      │   DNAME, ANAME, DNS64)         │
      └──────────────┬─────────────────┘
                     │
-       ┌────────────┼────────────┬────────────┐
-       │            │            │            │
- ┌─────▼────┐ ┌────▼────┐ ┌────▼─────┐ ┌───▼──────┐
- │ Local DB  │ │  RBL    │ │ Forwarder │ │  DNSSEC  │
- │ (SQLite)  │ │ Checker │ │ (Upstream)│ │ Signing  │
- └──────────┘ └─────────┘ └──────────┘ └──────────┘
+       ┌────────────┼────────────┬───────────────┐
+       │            │            │               │
+ ┌─────▼────┐ ┌────▼────┐ ┌────▼──────────┐ ┌──▼───────┐
+ │ Local DB  │ │RBL/DNSBL│ │   Upstream     │ │  DNSSEC  │
+ │ (SQLite)  │ │ Checker │ │   Resolution   │ │ Signing  │
+ └──────────┘ └─────────┘ └────┬──────────┘ └──────────┘
        │                        │
- ┌─────▼──────┐          ┌─────▼──────┐
- │ gRPC Mgmt   │          │ HTTP Proxy │
- │ (TCP/Unix)  │          │ (optional) │
- └─────────────┘          └────────────┘
+       │        ┌───────────────┼───────────┬────────────┐
+       │        │               │           │            │
+       │  ┌────▼─────┐  ┌──────▼─────┐ ┌──▼──────┐ ┌───▼──────┐
+       │  │ Iterative │  │ DoH / DoT  │ │Forwarder│ │  Public  │
+       │  │ from roots│  │  upstream  │ │ (Do53)  │ │  (Do53)  │
+       │  └────┬─────┘  └────────────┘ └─────────┘ └──────────┘
+       │       │  (tier 0)     (tier 1)   (tier 2)    (tier 3)
+       │  ┌────▼──────────────┐
+       │  │ Delegation cache   │
+       │  │ + record cache     │
+       │  └───────────────────┘
+       │
+ ┌─────▼──────┐   ┌────────────┐   ┌─────────────┐   ┌────────────┐
+ │ gRPC Mgmt   │   │ HTTP Proxy │   │ DHCPv4 + AF │   │ ACME + CA  │
+ │ (TCP/Unix)  │   │ (optional) │   │    probe    │   │  (portal)  │
+ └─────────────┘   └────────────┘   └─────────────┘   └────────────┘
 ```
 
 Resolution order (when no network scopes are configured):
@@ -1569,10 +1870,12 @@ Resolution order (when no network scopes are configured):
 7. Check ANAME records (alias resolution at zone apex)
 8. If name is under a managed zone but not found, return authoritative NXDOMAIN
 9. Check wildcard records
-10. Forward to upstream resolvers (QNAME case randomized if enabled, via proxy if configured)
-11. Apply DNS64 AAAA synthesis (if enabled and applicable)
-12. Cache the response
-13. Apply TTL drift adjustment (if configured)
+10. Check the local blocklist and DNSBL providers (NXDOMAIN if listed, ahead of any external answer)
+11. Resolve externally per `resolution.mode` (QNAME case randomized if enabled, via proxy if configured)
+12. Apply DNS64 AAAA synthesis (if enabled and applicable)
+13. Cache the response
+14. Apply TTL drift adjustment (if configured)
+15. Drop A/AAAA answers of an address family the host cannot route (if `address_family.mode: auto`)
 
 When network scopes are configured, see [Network Scoping](#network-scoping) for the extended resolution order.
 
