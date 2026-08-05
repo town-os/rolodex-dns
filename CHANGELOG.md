@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.4.0 (2026-08-05)
+
+### Changes
+
+- **An ingress DNS listener now resolves the whole namespace, not just its own TLD.** Scope selection was keyed on the queried *name*: `ingress_target` started from `find_tld_owner(qname)`, so a name under no owned TLD returned `None` and the query lost its association with the listener it arrived on. It then fell through to the source-IP branch, where a WireGuard peer sits inside `security.overlay_cidrs` but was never `JoinNetwork`'d (only the box's own ingress address is joined, never the peers) — and was REFUSED as an unassociated overlay peer. The listener therefore answered its own TLD and nothing else: a client on the network resolved `gitea.default.fart` but got REFUSED for `google.com`, so the network's DNS server could not resolve the internet it is the resolver for.
+
+  The scope is now selected from the **listener** (`db::scope_for_ingress_ip`, the reverse of the per-TLD ingress mapping), not from the name. A query arriving on an ingress listener belongs to that listener's owning scope whatever the name is: owned TLDs stay partitioned (a sibling network's TLD is still an authoritative NXDOMAIN), and every other name falls through to global resolution and upstream forwarding. The answer **rewrite** to the ingress IP remains name-gated, so a pass-through name keeps its resolved value. Scope enforcement off the ingress listeners is unchanged.
+
+### Documentation
+
+- `CLAUDE.md` and `README.md` brought up to date with the resolver work landed in v0.3.x: the `auto` tier chain, the iterative resolver's server selection/backoff/bounds, the delegation and record caches (including what `flush_cache` versus `flush_upstream_state` clears), TTL semantics, and the ingress-listener scope rules above.
+
 ## v0.3.3 (2026-07-14)
 
 ### Bug Fixes
