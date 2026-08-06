@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.4.1 (2026-08-06)
+
+### Performance
+
+- **The UDP listener is sharded across `SO_REUSEPORT` sockets.** A single UDP socket serialised the entire listener: one task drained it with `recv_from` and every reply went back out through that same socket, so receive was single-threaded and the kernel took a per-socket lock in both directions. Spawning a task per query fanned the *handling* across cores but never the socket, so throughput flattened while the machine sat idle — on a 16-core host the server plateaued at ~104k qps while burning under one core, and past that point additional client concurrency only inflated latency (p99 1.70ms at 32 concurrent clients) instead of adding throughput. Each UDP listen address now binds `dns.udp_shards` sockets to the same `addr:port`, each with its own receive loop and its own socket for replies, and the kernel hashes arriving datagrams across them. Measured on 16 cores against a local record, before → after: 68k → 101k qps at 4 concurrent clients, 99k → 168k at 16, and 104k → 257k at 32 (p99 1.70ms → 432µs). The old path had already flattened by 32 clients; the sharded one is still climbing at 128 (477k qps) with the server at 2.87 of 16 cores, so the remaining ceiling is the load generator rather than the server.
+
+  `SO_REUSEPORT` is set **only** when more than one shard is requested. Linux shares a port only when every socket bound to it carries the option, so a single-shard listener still collides on a busy port — which is what the ingress bind-failure handling depends on. Setting it unconditionally would have made a failed ingress bind start "succeeding" against a port owned by another process and silently take a share of its traffic. Shards are owned by the `serve_udp` future (in a `JoinSet`) rather than by the caller, so `stop_ingress_listener` still tears all of them down through its single abort handle; and a port-`0` bind is forced to one shard, because the kernel hands each socket a *different* ephemeral port and there is nothing coherent to share.
+
+### Configuration
+
+- `dns.udp_shards` (default `0`) — number of `SO_REUSEPORT` sockets bound per UDP listen address. `0` means one shard per available core; `1` restores the previous single-socket listener.
+
+### Documentation
+
+- The Concurrency Model section described DNS UDP queries as "handled sequentially on a single task", which had been stale since queries were moved to a task each; it now describes the shard fan-out and the three constraints above.
+
 ## v0.4.0 (2026-08-05)
 
 ### Changes
