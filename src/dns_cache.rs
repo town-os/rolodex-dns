@@ -386,16 +386,26 @@ pub struct CacheStats {
     pub miss_count: u64,
 }
 
-/// Builds a cache key. Names are expected to already be normalized (lowercase
-/// with trailing dot) by the DNS layer, so we skip the redundant
-/// `to_lowercase()` call.
+/// Builds a cache key, lowercasing the name as it is written.
+///
+/// DNS names are case-insensitive, and the two sides of this cache do NOT see
+/// the same case. Reads use the case the client sent; writes use the case the
+/// question came back in — and with 0x20 encoding enabled (`security.
+/// qname_case_randomization`, on by default) a forwarded query goes out as
+/// `eXaMpLe.CoM` and the response echoes that back. Keying on the raw string
+/// therefore stores every upstream answer under a randomly-cased key that no
+/// lookup will ever reproduce, silently disabling the entire cache. The same
+/// applies, less exotically, to any client that simply queries in mixed case.
+///
+/// This is free: the key `String` is allocated here regardless, so lowercasing
+/// while filling it costs no extra allocation.
 pub fn cache_key(name: &str, record_type: Option<RecordKind>) -> String {
     let rt_str = match record_type {
         Some(rt) => rt.as_str(),
         None => "*",
     };
     let mut key = String::with_capacity(name.len() + 1 + rt_str.len());
-    key.push_str(name);
+    key.extend(name.chars().map(|c| c.to_ascii_lowercase()));
     key.push(':');
     key.push_str(rt_str);
     key

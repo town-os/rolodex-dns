@@ -1787,7 +1787,7 @@ impl DnsServer {
         {
             Ok(res) => {
                 if res.rcode == ResponseCode::NoError && !res.answers.is_empty() {
-                    self.cache_answers(&res.answers);
+                    self.cache_answers(question, &res.answers);
                 } else if let Some(ttl) = res.negative_ttl(resolver.default_ttl()) {
                     // An authoritative negative. The SOA's TTL is honoured as sent;
                     // where there is no SOA, `default_ttl` applies. Cache it so the
@@ -1821,14 +1821,28 @@ impl DnsServer {
         !normalized.is_empty() && normalized != qname && self.db.lookup_local_rbl(&normalized)
     }
 
-    /// Inserts a set of answer records into the DNS cache, keyed by the first
-    /// answer's name and type (matching the forward-path caching behavior).
-    fn cache_answers(&self, answers: &[Record]) {
-        if let Some(ref cache) = self.dns_cache
-            && let Some(first) = answers.first()
-        {
-            let name = first.name().to_string();
-            let kind = map_query_type_to_kind(first.record_type());
+    /// Inserts a set of answer records into the DNS cache, keyed by the QUESTION
+    /// that produced them — `question.name()` + `map_query_type_to_kind(qtype)`,
+    /// the exact key the read path looks up (and the same rule `cache_negative`
+    /// uses).
+    ///
+    /// Keying on the first *answer record* instead is silently wrong for any
+    /// name behind a CNAME. `index.crates.io A` comes back as a chain —
+    /// `index.crates.io CNAME` → `fastly-index.crates.io CNAME` → A records on a
+    /// third name — whose first record is a CNAME, so the entry landed under
+    /// `index.crates.io.:CNAME` while every lookup asked for
+    /// `index.crates.io.:A`. Those keys never meet, so the name was
+    /// *permanently* uncacheable and every query paid a full upstream round
+    /// trip. That is most of the CDN-fronted internet (Fastly, CloudFront, S3);
+    /// it only looked fine in testing because a name like `example.com` answers
+    /// with an A record for itself, making the wrong key accidentally correct.
+    ///
+    /// The whole answer set is stored under that one key, CNAME chain included,
+    /// which is what a resolver is expected to hand back for a chained name.
+    fn cache_answers(&self, question: &hickory_proto::op::Query, answers: &[Record]) {
+        if let Some(ref cache) = self.dns_cache {
+            let name = question.name().to_string();
+            let kind = map_query_type_to_kind(question.query_type());
             let ttl = answers.iter().map(|a| a.ttl()).min().unwrap_or(300);
             let cache_records: Vec<crate::db::DnsRecord> =
                 answers.iter().filter_map(dns_record_to_db_record).collect();
@@ -1927,8 +1941,13 @@ impl DnsServer {
             && let Ok(msg) = hickory_proto::op::Message::from_bytes(response)
             && msg.response_code() == ResponseCode::NoError
             && !msg.answers().is_empty()
+            // The question is echoed in the response, and it — not the first
+            // answer record — is what the entry must be keyed on. A response
+            // without one cannot be keyed correctly, so it is not cached at all
+            // rather than cached somewhere nothing will look.
+            && let Some(question) = msg.queries().first()
         {
-            self.cache_answers(msg.answers());
+            self.cache_answers(question, msg.answers());
         }
     }
 
@@ -4854,6 +4873,115 @@ mod tests {
         );
 
         handle.abort();
+    }
+
+    /// Regression: a CNAME-chained answer must be cached under the QUESTION, not
+    /// under its first answer record.
+    ///
+    /// `index.crates.io A` comes back as `index.crates.io CNAME` →
+    /// `fastly-index.crates.io CNAME` → A records on a third name. Keying on
+    /// `answers[0]` filed that under `index.crates.io.:CNAME` while every lookup
+    /// asked for `index.crates.io.:A`, so the name was permanently uncacheable
+    /// and every single query paid a full upstream round trip — which is most of
+    /// the CDN-fronted internet. It went unnoticed because a name like
+    /// `example.com` answers with an A record for itself, making the wrong key
+    /// accidentally right; every test used names of that shape.
+    #[tokio::test]
+    async fn test_cname_chain_is_cached_under_the_question() {
+        let db = Database::open_memory().unwrap();
+        let cache = Arc::new(crate::dns_cache::DnsCache::new(db.clone()));
+        let rbl = Arc::new(RblChecker::with_resolver(
+            false,
+            vec![],
+            Arc::new(NeverListedResolver),
+        ));
+        let server =
+            DnsServer::new_with_options(db, rbl, vec![], Some(Arc::clone(&cache)), None, true);
+
+        let mut question = hickory_proto::op::Query::new();
+        question
+            .set_name(Name::from_ascii("index.crates.io.").unwrap())
+            .set_query_type(RecordType::A)
+            .set_query_class(DNSClass::IN);
+
+        let answers = vec![
+            Record::from_rdata(
+                Name::from_ascii("index.crates.io.").unwrap(),
+                96,
+                RData::CNAME(rdata::CNAME(
+                    Name::from_ascii("fastly-index.crates.io.").unwrap(),
+                )),
+            ),
+            Record::from_rdata(
+                Name::from_ascii("fastly-index.crates.io.").unwrap(),
+                96,
+                RData::CNAME(rdata::CNAME(
+                    Name::from_ascii("dualstack.k.sni.global.fastly.net.").unwrap(),
+                )),
+            ),
+            Record::from_rdata(
+                Name::from_ascii("dualstack.k.sni.global.fastly.net.").unwrap(),
+                24,
+                RData::A(rdata::A(Ipv4Addr::new(151, 101, 2, 137))),
+            ),
+        ];
+
+        server.cache_answers(&question, &answers);
+
+        // The key the read path actually uses.
+        let hit = cache.lookup("index.crates.io.", Some(RecordKind::A));
+        assert!(
+            !hit.is_empty(),
+            "a CNAME-chained answer must be retrievable by the name and type that were ASKED for"
+        );
+        assert_eq!(
+            hit.len(),
+            3,
+            "the whole chain is served, not just the CNAME"
+        );
+    }
+
+    /// Regression: 0x20 encoding must not poison the cache key.
+    ///
+    /// The two sides of the cache do not see the same case. Reads use the case
+    /// the client sent; writes use the case the question came back in — and with
+    /// `security.qname_case_randomization` (on by default) a forwarded query
+    /// goes out as `eXaMpLe.CoM` and the response echoes that back. A key built
+    /// from the raw string therefore stores every upstream answer under a
+    /// randomly-cased key no lookup can ever reproduce, disabling the cache
+    /// wholesale — every name, not just chained ones.
+    #[tokio::test]
+    async fn test_cache_key_survives_qname_case_randomization() {
+        let db = Database::open_memory().unwrap();
+        let cache = Arc::new(crate::dns_cache::DnsCache::new(db.clone()));
+        let rbl = Arc::new(RblChecker::with_resolver(
+            false,
+            vec![],
+            Arc::new(NeverListedResolver),
+        ));
+        let server =
+            DnsServer::new_with_options(db, rbl, vec![], Some(Arc::clone(&cache)), None, true);
+
+        // The question exactly as a 0x20-randomized response echoes it back.
+        let mut question = hickory_proto::op::Query::new();
+        question
+            .set_name(Name::from_ascii("eXaMpLe.CoM.").unwrap())
+            .set_query_type(RecordType::A)
+            .set_query_class(DNSClass::IN);
+
+        let answers = vec![Record::from_rdata(
+            Name::from_ascii("eXaMpLe.CoM.").unwrap(),
+            300,
+            RData::A(rdata::A(Ipv4Addr::new(93, 184, 216, 34))),
+        )];
+
+        server.cache_answers(&question, &answers);
+
+        // The client asked in lowercase and must get the hit.
+        assert!(
+            !cache.lookup("example.com.", Some(RecordKind::A)).is_empty(),
+            "a randomized-case response must be findable by the lowercase name the client queried"
+        );
     }
 
     #[tokio::test]
