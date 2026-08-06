@@ -2,41 +2,41 @@
 set -e
 . make/lib.sh
 
-ARCH="$(host_arch)"
+# The arch every image tag is suffixed with. The Makefile derives BUILD_ARCH from
+# TARGET and exports it; a direct invocation of this script falls back to the
+# host arch.
+ARCH="${BUILD_ARCH:-$(host_arch)}"
 
 case "$1" in
   release)
-    # RUN steps (apt-get, cargo fetch) resolve DNS in their own network
-    # namespace, which can't reach a resolver on the host's loopback (e.g.
-    # rolodex on 127.0.0.1). Share the host network so they use the host's
-    # /etc/resolv.conf. Override with BUILD_NETWORK= to opt out, or
-    # BUILD_NETWORK=<name> to pick another network.
-    BUILD_NETWORK="${BUILD_NETWORK-host}"
-    NETWORK_FLAG=""
-    [ -n "${BUILD_NETWORK}" ] && NETWORK_FLAG="--network=${BUILD_NETWORK}"
-
-    # Exact source revision baked into both images. A changed commit busts the
-    # compile layer (so the binary is always fresh when the code changes), and it
-    # is recorded as an image label so a stale build/re-push is detectable. The
-    # +dirty suffix flags any uncommitted change in the working tree.
+    # Exact source revision baked into the image. Recorded as a label so a stale
+    # build or a re-pushed old image is detectable. The +dirty suffix flags any
+    # uncommitted change in the working tree.
     SOURCE_REV="$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
     [ -z "$(git status --porcelain 2>/dev/null)" ] || SOURCE_REV="${SOURCE_REV}+dirty"
     substep "Source revision: ${SOURCE_REV}"
 
-    step "Building build image (${ARCH})"
-    mkdir -p .cache/cargo-registry .cache/cargo-git
-    ${SUDO} podman build ${NETWORK_FLAG} \
-      --build-arg "CARGO_JOBS=${CARGO_BUILD_JOBS:-}" \
-      --build-arg "SOURCE_REV=${SOURCE_REV}" \
-      --volume "$(pwd)/.cache/cargo-registry:/usr/local/cargo/registry:z" \
-      --volume "$(pwd)/.cache/cargo-git:/usr/local/cargo/git:z" \
-      -t "${PODMAN_BUILD_IMAGE}-${ARCH}" -f Containerfile.build .
+    # Cross-compile, then assemble. The native and the foreign arch take the SAME
+    # path, so the two published images differ only in their target triple rather
+    # than in how they were produced.
+    make/cross.sh build "${ARCH}"
+    make/cross.sh stage "${ARCH}"
 
-    step "Building release image (${ARCH})"
-    ${SUDO} podman build ${NETWORK_FLAG} --pull=never \
-      --build-arg "BUILD_IMAGE=${PODMAN_BUILD_IMAGE}-${ARCH}" \
+    # The context is .cache/stage/<arch> and the Containerfile has no RUN steps,
+    # so --platform never has to execute a foreign binary — no emulation, no
+    # builder VM. Nothing in the image build resolves DNS any more, so the host
+    # network is no longer shared by default; BUILD_NETWORK is still honoured for
+    # anyone who needs it.
+    BUILD_NETWORK="${BUILD_NETWORK-}"
+    NETWORK_FLAG=""
+    [ -n "${BUILD_NETWORK}" ] && NETWORK_FLAG="--network=${BUILD_NETWORK}"
+
+    step "Building release image (${ARCH} / linux/$(oci_arch "${ARCH}"))"
+    ${SUDO} podman build ${NETWORK_FLAG} \
+      --platform "linux/$(oci_arch "${ARCH}")" \
       --build-arg "SOURCE_REV=${SOURCE_REV}" \
-      -t "${RELEASE_IMAGE}:${IMAGE_TAG:-latest}-${ARCH}" -f Containerfile .
+      -t "${RELEASE_IMAGE}:${IMAGE_TAG:-latest}-${ARCH}" \
+      -f Containerfile ".cache/stage/${ARCH}"
     ;;
   push-arch)
     step "Pushing current-arch image (${ARCH})"

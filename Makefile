@@ -6,14 +6,67 @@ export QUAY_PASSWORD
 INSTANCE_ID := $(shell echo -n "$(CURDIR)" | md5sum | cut -c1-8)
 export INSTANCE_ID
 
-# Image names (unique per working directory).
-PODMAN_BUILD_IMAGE := rolodex-dns-build-$(INSTANCE_ID)
 # DO NOT CHANGE: This is the canonical container image URL for rolodex-dns.
 # The source repo may live elsewhere (e.g. gitea.com/town-os/rolodex-dns)
 # but the published container image is always quay.io/town/rolodex.
 RELEASE_IMAGE      := quay.io/town/rolodex
 IMAGE_TAG ?=
-export PODMAN_BUILD_IMAGE RELEASE_IMAGE IMAGE_TAG
+export RELEASE_IMAGE IMAGE_TAG
+
+# The REAL host architecture (uname -m, normalized). BUILD_ARCH is derived from
+# TARGET below and may differ from it (a cross-arch build); HOST_ARCH never
+# changes, so the build machinery can always tell the two apart.
+HOST_ARCH := $(shell uname -m | sed -e 's/^amd64$$/x86_64/' -e 's/^arm64$$/aarch64/')
+
+# TARGET selects the architecture for EVERY container target (image, push-arch,
+# push-rc, push-release). Empty (the default) is a native build for the host
+# arch. Recognized values:
+#   x86_64 (x86, amd64)                    amd64 image
+#   aarch64 (arm64)                        arm64 image
+#   rpi                                    Raspberry Pi        -> aarch64
+#   rg35xxpro (rg35xx-pro, rg35xx)         Anbernic RG35XX Pro -> aarch64
+#   anbernic                               "                   -> aarch64
+#
+# The board flavors carry no image differences here — rolodex-dns ships one
+# container image per architecture, not per board. They are accepted so a single
+# TARGET= value can be passed across the town-os repos: `make image
+# TARGET=rg35xxpro` builds a board-specific disk image in ../install and simply
+# resolves to the aarch64 container image here, instead of failing on a value
+# that is perfectly valid one directory over.
+#
+# Any TARGET builds from any host: the binaries are cross-compiled with
+# cargo-zigbuild (make/cross.sh) and the runtime image has no RUN steps, so
+# `podman build --platform` never executes a foreign binary. No emulation, no
+# builder VM, and the native and foreign arches take the same code path.
+TARGET ?=
+
+# Derive BUILD_ARCH from TARGET. BUILD_ARCH is the image's architecture and thus
+# the suffix for every arch-suffixed image tag (latest-<arch>, rc.latest-<arch>,
+# release.YYYYMMDD-<arch>, ...). make/build.sh reads it from the environment.
+ifeq ($(TARGET),)
+BUILD_ARCH := $(HOST_ARCH)
+else ifneq ($(filter x86_64 x86 amd64,$(TARGET)),)
+BUILD_ARCH := x86_64
+else ifneq ($(filter aarch64 arm64,$(TARGET)),)
+BUILD_ARCH := aarch64
+else ifeq ($(TARGET),rpi)
+BUILD_ARCH := aarch64
+else ifneq ($(filter rg35xxpro rg35xx-pro rg35xx anbernic,$(TARGET)),)
+BUILD_ARCH := aarch64
+else
+$(error unknown TARGET '$(TARGET)' — expected one of: x86_64, aarch64, rpi, rg35xxpro)
+endif
+
+# CROSS is set when the requested arch differs from the host arch. It selects
+# nothing by itself — every arch goes through cargo-zigbuild either way — but
+# `make build` uses it to decide between a plain debug `cargo build` and the
+# cross toolchain. Derived, not a user knob: set TARGET, not CROSS.
+CROSS :=
+ifneq ($(BUILD_ARCH),$(HOST_ARCH))
+CROSS := 1
+endif
+
+export BUILD_ARCH
 
 # Directory for timestamped test logs (see the test-log target).
 LOG_DIR := /tmp/rolodex-dns/log
@@ -23,8 +76,7 @@ export LOG_DIR
 .PHONY: rust-test rust-integration-test
 .PHONY: deps js-lint js-test js-integration-test
 .PHONY: image push push-arch push-rc push-release manifest manifest-rc manifest-release quay-login clean-containers
-.PHONY: amd64-vm-up amd64-vm-down amd64-vm-status amd64-vm-ssh amd64-vm-destroy
-.PHONY: image-amd64 push-rc-amd64 push-release-amd64 push-rc-all push-release-all
+.PHONY: image-amd64 push-rc-amd64 push-release-amd64 push-rc-all push-release-all cross-deps
 
 help: ## Show this help
 	@printf "Usage: make <target> [IMAGE_TAG=...]\n"
@@ -54,8 +106,8 @@ rust-integration-test: build ## Run each Rust integration test file
 	cargo test --test acme_issuer_test
 	cargo test --test auto_resolution_test
 
-build: ## Compile debug binaries (rolodex-dns + rolodex-dns-cli)
-	cargo build
+build: ## Compile binaries for TARGET (debug natively; cross-compiled release for a foreign TARGET)
+	@$(if $(CROSS),make/cross.sh build $(BUILD_ARCH),cargo build)
 
 clean: ## Clean cargo build artifacts
 	cargo clean
@@ -66,8 +118,16 @@ go-test: go-integration-test ## Run Go unit tests (includes integration tests)
 go-integration-test: build ## Run Go integration tests against a real server
 	cd go && ROLODEX_DNS_BINARY=$(CURDIR)/target/debug/rolodex-dns go test -v -count=1 -tags=integration .
 
-deps: ## Install JavaScript dev dependencies (npm install in js/)
+deps: cross-deps ## Install build dependencies (Rust cross toolchain + JS dev deps)
 	cd js && npm install --no-audit --no-fund
+
+# The Rust cross-compilation toolchain: rustup std for both targets,
+# cargo-zigbuild, and zig as the C cross-compiler/linker. `rustup target add`
+# alone is not enough — rusqlite (bundled) compiles SQLite's C and ring compiles
+# C/asm, so a real cross C toolchain has to be present. Everything here installs
+# without root.
+cross-deps: ## Install the Rust cross-compilation toolchain (rustup targets, cargo-zigbuild, zig)
+	@make/cross.sh deps
 
 js-lint: deps ## Run eslint on the JavaScript package
 	cd js && npm run lint
@@ -98,20 +158,23 @@ dev: ## Build debug and start a dev server using dev.yml
 
 ##@ Containers
 
-image: ## Build the host-arch container image (<IMAGE_TAG|latest>-<arch>)
+# Every target below tags with BUILD_ARCH, which comes from TARGET (default: the
+# host arch). A foreign TARGET is cross-compiled (make/cross.sh) and packaged
+# with `podman build --platform`, so any host can build any arch.
+image: ## Build the container image for TARGET (<IMAGE_TAG|latest>-<arch>)
 	@make/build.sh release
 
 push: push-rc ## Alias for push-rc
 
-# Build and push ONLY the current host's per-arch tag (no rc/release/latest
+# Build and push ONLY the TARGET arch's per-arch tag (no rc/release/latest
 # aliases, no manifest). Produces quay.io/town/rolodex:<IMAGE_TAG|latest>-<arch>.
-push-arch: image quay-login ## Push only the current host's per-arch tag (no aliases, no manifest)
+push-arch: image quay-login ## Push only the TARGET arch's per-arch tag (no aliases, no manifest)
 	@make/build.sh push-arch
 
-push-rc: image quay-login ## Push the host-arch RC image (rc.YYYYMMDD-<arch> + rc.latest-<uname -m>, or IMAGE_TAG)
+push-rc: image quay-login ## Push the TARGET-arch RC image (rc.YYYYMMDD-<arch> + rc.latest-<arch>, or IMAGE_TAG)
 	@make/build.sh push-rc
 
-push-release: image quay-login ## Push the host-arch release image (release.YYYYMMDD-<arch> + latest-<arch>, or IMAGE_TAG)
+push-release: image quay-login ## Push the TARGET-arch release image (release.YYYYMMDD-<arch> + latest-<arch>, or IMAGE_TAG)
 	@make/build.sh push-release
 
 # Manifest targets assemble a multi-arch manifest list from the per-arch image
@@ -129,46 +192,28 @@ quay-login: ## Log in to quay.io using QUAY_USERNAME/QUAY_PASSWORD (env or .env)
 	@make/build.sh quay-login
 
 clean-containers: ## Remove locally built per-arch container images
-	-sudo podman rmi $(PODMAN_BUILD_IMAGE)-x86_64 $(PODMAN_BUILD_IMAGE)-aarch64 2>/dev/null || true
 	-sudo podman rmi $(RELEASE_IMAGE):latest-x86_64 $(RELEASE_IMAGE):latest-aarch64 2>/dev/null || true
 
-##@ amd64 builder VM (cross-arch from an arm64 host)
+# Aliases for the TARGET=x86_64 form, kept because they are the documented
+# interface. They no longer involve a VM — TARGET=x86_64 cross-compiles.
+image-amd64: ## Alias for `make image TARGET=x86_64`
+	@$(MAKE) image TARGET=x86_64
 
-# On an arm64 host (e.g. Fedora Asahi) amd64 images are built natively inside a
-# full-system qemu VM rather than via in-container emulation. See make/amd64-vm.sh.
-amd64-vm-up: ## Provision and boot the amd64 builder VM (downloads a cloud image on first run)
-	@make/amd64-vm.sh up
+push-rc-amd64: ## Alias for `make push-rc TARGET=x86_64`
+	@$(MAKE) push-rc TARGET=x86_64
 
-amd64-vm-down: ## Stop the amd64 builder VM (keeps its disk/state)
-	@make/amd64-vm.sh down
+push-release-amd64: ## Alias for `make push-release TARGET=x86_64`
+	@$(MAKE) push-release TARGET=x86_64
 
-amd64-vm-destroy: ## Stop the VM and delete its disk/state under .cache/amd64-vm
-	@make/amd64-vm.sh destroy
-
-amd64-vm-status: ## Show whether the amd64 builder VM is running
-	@make/amd64-vm.sh status
-
-amd64-vm-ssh: ## Open a shell in the amd64 builder VM
-	@make/amd64-vm.sh ssh
-
-image-amd64: ## Build the amd64 image inside the VM and import it into host podman
-	@make/amd64-vm.sh build
-
-push-rc-amd64: quay-login ## Build+push the amd64 RC image from inside the VM
-	@make/amd64-vm.sh push-rc
-
-push-release-amd64: quay-login ## Build+push the amd64 release image from inside the VM
-	@make/amd64-vm.sh push-release
-
-# Full multi-arch publish from a single arm64 host: native arm64 here, amd64 in
-# the VM, then assemble the manifest from the per-arch tags in the registry.
+# Full multi-arch publish from ONE host of either architecture: cross-compile
+# each arch, then assemble the manifest from the per-arch tags in the registry.
 # Sequenced via recursive make so the manifest is always assembled last.
-push-rc-all: ## Publish both arches (arm64 native + amd64 VM) and the RC manifest
-	$(MAKE) push-rc
-	$(MAKE) push-rc-amd64
+push-rc-all: ## Publish both arches (cross-compiled) and the RC manifest
+	$(MAKE) push-rc TARGET=x86_64
+	$(MAKE) push-rc TARGET=aarch64
 	$(MAKE) manifest-rc
 
-push-release-all: ## Publish both arches (arm64 native + amd64 VM) and the release manifest
-	$(MAKE) push-release
-	$(MAKE) push-release-amd64
+push-release-all: ## Publish both arches (cross-compiled) and the release manifest
+	$(MAKE) push-release TARGET=x86_64
+	$(MAKE) push-release TARGET=aarch64
 	$(MAKE) manifest-release

@@ -1025,13 +1025,14 @@ The project uses a top-level Makefile with the following targets:
 | Target                | Description                                                                                                                                                |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `help`                | Print all targets with their descriptions, grouped by section. The default goal, so bare `make` shows it. Descriptions come from `##` annotations on the target lines; `##@` lines start sections. |
-| `build`               | Compile the Rust project in debug mode (`cargo build`). Produces the `rolodex-dns` server and `rolodex-dns-cli` client binaries.                           |
+| `build`               | Compile the binaries for `TARGET`: a debug `cargo build` natively, or a cross-compiled release build when `TARGET` is a foreign architecture.              |
 | `test`                | Run all tests: lint, Go integration tests, Go unit tests, Rust tests (`cargo test`), and JavaScript tests.                                                 |
 | `test-log`            | Same as `test`, tee'd into a timestamped log file under `/tmp/rolodex-dns/log` (override with `LOG_DIR`). The log path is printed at the end even when the run fails. |
 | `rust-test`           | Run the Rust integration test files, then `cargo test`.                                                                                                     |
 | `rust-integration-test` | Build, then run each Rust integration test file explicitly (`integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`). |
 | `lint`                | Run `cargo fmt -- --check` and `cargo clippy --all-targets -- -D warnings`.                                                                                |
-| `deps`                | Install JavaScript dev dependencies (`npm install` in `js/`).                                                                                              |
+| `deps`                | Install build dependencies: the Rust cross-compilation toolchain (`cross-deps`) and the JavaScript dev dependencies (`npm install` in `js/`).              |
+| `cross-deps`          | Install the Rust cross toolchain: `rustup target add` for both triples, `cargo-zigbuild`, and zig. Rootless — see Cross-Compilation.                       |
 | `js-lint`             | Run eslint on the JavaScript package (depends on `deps`).                                                                                                  |
 | `js-test`             | Run JavaScript unit tests (depends on `js-integration-test`).                                                                                              |
 | `js-integration-test` | Build the Rust binaries, lint, then run JavaScript integration tests with `ROLODEX_DNS_BINARY` pointing at the compiled server.                            |
@@ -1042,14 +1043,13 @@ The project uses a top-level Makefile with the following targets:
 | `install`             | Install the Rust binaries to the Cargo bin directory (`cargo install --path .`).                                                                           |
 | `dev`                 | Build the Rust project in debug mode, then start a development server using `dev.yml`.                                                                     |
 | `dev-release`         | Build the Rust project in release mode, then start a development server using `dev.yml`.                                                                   |
-| `image`               | Build a container image for the host architecture using `make/build.sh release`. Tags with a `uname -m` arch suffix (`-x86_64`/`-aarch64`). Accepts `IMAGE_TAG` (default `latest`). |
-| `push` / `push-rc`    | Build and push the host-arch release candidate image to `quay.io/town/rolodex`. Auto-tags `rc.YYYYMMDD-<arch>` + `` rc.latest-`uname -m` `` (e.g. `rc.latest-x86_64`/`rc.latest-aarch64`) unless `IMAGE_TAG` is set.   |
-| `push-arch`           | Build and push ONLY the current host's per-arch tag (`<IMAGE_TAG\|latest>-<arch>`) to `quay.io/town/rolodex`. No date/`rc`/`latest` aliases, no manifest.       |
-| `push-release`        | Build and push the host-arch release image to `quay.io/town/rolodex`. Auto-tags `release.YYYYMMDD-<arch>` + `latest-<arch>` unless `IMAGE_TAG` is set.             |
-| `image-amd64`         | Build the amd64 image inside the builder VM (`make/amd64-vm.sh`) and import it into host podman. |
-| `push-rc-amd64` / `push-release-amd64` | Build and push the amd64 RC/release image from inside the builder VM (pushes straight to the registry). |
-| `push-rc-all` / `push-release-all` | Publish **both** arches from a single arm64 host — native arm64 here, amd64 in the VM — then assemble the manifest. |
-| `amd64-vm-up` / `-down` / `-destroy` / `-status` / `-ssh` | Manage the amd64 builder VM lifecycle (`make/amd64-vm.sh`). |
+| `image`               | Build a container image for `TARGET` (default: the host architecture) using `make/build.sh release`: cross-compile, stage, then `podman build --platform`. Tags with the `BUILD_ARCH` suffix (`-x86_64`/`-aarch64`). Accepts `IMAGE_TAG` (default `latest`). |
+| `push` / `push-rc`    | Build and push the `TARGET`-arch release candidate image to `quay.io/town/rolodex`. Auto-tags `rc.YYYYMMDD-<arch>` + `rc.latest-<arch>` (e.g. `rc.latest-x86_64`/`rc.latest-aarch64`) unless `IMAGE_TAG` is set.   |
+| `push-arch`           | Build and push ONLY the `TARGET` arch's per-arch tag (`<IMAGE_TAG\|latest>-<arch>`) to `quay.io/town/rolodex`. No date/`rc`/`latest` aliases, no manifest.       |
+| `push-release`        | Build and push the `TARGET`-arch release image to `quay.io/town/rolodex`. Auto-tags `release.YYYYMMDD-<arch>` + `latest-<arch>` unless `IMAGE_TAG` is set.             |
+| `image-amd64`         | Alias for `make image TARGET=x86_64`. |
+| `push-rc-amd64` / `push-release-amd64` | Aliases for `make push-rc TARGET=x86_64` / `make push-release TARGET=x86_64`. |
+| `push-rc-all` / `push-release-all` | Publish **both** arches from a single host of either architecture (both cross-compiled), then assemble the manifest. |
 | `manifest` / `manifest-rc` | Assemble and push a multi-arch RC manifest list (`rc.YYYYMMDD`, `rc.latest`, or `IMAGE_TAG`) from the per-arch tags already in the registry. The `rc.latest` list is assembled from the `uname -m`-suffixed tags (`rc.latest-x86_64`, `rc.latest-aarch64`). |
 | `manifest-release`    | Assemble and push a multi-arch release manifest list (`release.YYYYMMDD`, `latest`, or `IMAGE_TAG`) from the per-arch tags already in the registry.                |
 | `quay-login`          | Login to Quay.io using `QUAY_USERNAME` and `QUAY_PASSWORD` from environment or `.env`.                                                                     |
@@ -1059,31 +1059,76 @@ The Makefile is designed to be extended for non-cargo scenarios. Protocol buffer
 
 ### Multi-Architecture Container Builds
 
-Images are published to `quay.io/town/rolodex` as multi-arch manifest lists covering `linux/amd64` and `linux/arm64` (the OCI platform names embedded in the manifest by podman). Builds are **native**: each architecture is compiled on a host of that architecture (no in-container cross-compilation). `make/build.sh` detects the host arch via `host_arch` in `make/lib.sh`, which echoes the raw `uname -m` machine name (`x86_64`/`aarch64`), and suffixes **every** per-arch image tag with it — including `rc.latest` (`rc.latest-x86_64`/`rc.latest-aarch64`) — so deploy hosts can pull `` <tag>-`uname -m` `` directly without any OCI-name mapping. `ARCHES` in `make/lib.sh` holds the same `x86_64 aarch64` machine names used as manifest suffixes. The `build_manifest` helper assembles a manifest list from the per-arch tags using `podman manifest add docker://…`, so the per-arch images only need to exist in the registry, not locally.
+Images are published to `quay.io/town/rolodex` as multi-arch manifest lists covering `linux/amd64` and `linux/arm64` (the OCI platform names embedded in the manifest by podman). Builds are **native**: each architecture is compiled on a host of that architecture (no in-container cross-compilation).
 
-**amd64 builder VM (`make/amd64-vm.sh`).** To build amd64 images from an arm64 host (e.g. Fedora Asahi), in-container user-mode emulation is **not** an option: Fedora Asahi's x86 emulation runs through FEX + `binfmt-dispatcher` + `muvm`, which on a 16k-page kernel executes the emulator inside a 4k-page microVM and is not usable inside a `podman build` sandbox (even a bare `podman run --platform linux/amd64` fails there). Instead, amd64 is built **natively inside a full-system qemu VM**: `make/amd64-vm.sh` boots a Debian cloud image under `qemu-system-x86_64` (TCG — there is no KVM for x86 on arm), provisions podman via cloud-init, `rsync`s the repo in, and runs the ordinary `make image`/push targets inside the guest (where `host_arch` is genuinely `x86_64`). `make image-amd64` builds in the VM and streams the result back to host podman via `podman save | podman load`; `make push-rc-amd64`/`push-release-amd64` push straight to the registry from the guest (forwarding `QUAY_*`). VM state lives under `.cache/amd64-vm/` (gitignored); tunables: `VM_MEM`, `VM_CPUS`, `VM_DISK_SIZE`, `VM_SSH_PORT`, `VM_IMAGE_URL`. TCG builds are slow — expect minutes-to-tens-of-minutes.
+#### `TARGET` — selecting the architecture
 
-**Build network.** `podman build` RUN steps run in their own network namespace, which cannot reach a resolver on the host's loopback (e.g. rolodex on `127.0.0.1`). `build.sh` therefore passes `--network=host` to both `podman build` invocations so RUN steps use the host's `/etc/resolv.conf`. Override with `BUILD_NETWORK=` (empty, to opt out) or `BUILD_NETWORK=<name>` (another podman network).
+`TARGET` selects the architecture for **every** container target (`image`, `push-arch`, `push-rc`, `push-release`), mirroring the model used by the `install` repo so one `TARGET=` value can be passed across the town-os repos. Empty (the default) is a native build for the host arch. Recognized values:
 
-The end-to-end multi-arch publish flow — either build each arch on its own native host:
+| `TARGET` | Resolves to |
+| -------- | ----------- |
+| *(empty)* | the host arch (`uname -m`, normalized) |
+| `x86_64`, `x86`, `amd64` | `x86_64` |
+| `aarch64`, `arm64` | `aarch64` |
+| `rpi` | `aarch64` |
+| `rg35xxpro`, `rg35xx-pro`, `rg35xx`, `anbernic` | `aarch64` |
 
-1. On an amd64 host: `make push-release` → pushes `…:latest-x86_64` (+ date tag).
-2. On an arm64 host: `make push-release` → pushes `…:latest-aarch64` (+ date tag).
-3. On any host, once both are pushed: `make manifest-release` → pushes the `…:latest` manifest list.
+Anything else is a hard `$(error)` at parse time listing the valid values. The board flavors (`rpi`, `rg35xxpro`, …) carry no image differences here — rolodex-dns ships one container image per architecture, not per board. They are accepted so that a `TARGET=rg35xxpro` that builds a board-specific disk image in `install` resolves to the aarch64 container image here instead of failing on a value that is valid one repo over.
 
-— or, from a single arm64 host, `make push-release-all` (native arm64 + amd64 in the VM, then the manifest); `push-rc-all` is the RC equivalent.
+Two derived variables follow from it, neither of which is a user knob:
+
+- **`BUILD_ARCH`** — the image's architecture, and therefore the suffix on every arch-suffixed tag (`latest-<arch>`, `rc.latest-<arch>`, `release.YYYYMMDD-<arch>`). The Makefile exports it and `make/build.sh` reads it, falling back to `host_arch` when invoked directly. Deploy hosts can still pull `` <tag>-`uname -m` `` with no OCI-name mapping.
+- **`CROSS`** — set when `BUILD_ARCH` differs from `HOST_ARCH`. Every architecture is cross-compiled either way, so this only decides whether `make build` runs a plain debug `cargo build` or the cross toolchain. **Any host can build any architecture** — there is no rejected combination. Set `TARGET`, not `CROSS`.
+
+`ARCHES` in `make/lib.sh` holds the `x86_64 aarch64` machine names used as manifest suffixes (note: it is assigned unconditionally, so it is not overridable from the environment). The `build_manifest` helper assembles a manifest list from the per-arch tags using `podman manifest add docker://…`, so the per-arch images only need to exist in the registry, not locally.
+
+#### Cross-Compilation (`make/cross.sh`)
+
+Both architectures are **cross-compiled on whatever host runs `make`** — there is no builder VM and no emulation. The native and the foreign arch take the identical code path, so the two published images differ only in their target triple rather than in how they were produced.
+
+**Why a real cross toolchain is required.** `rustup target add` on its own is not enough: `rusqlite` is built with the `bundled` feature (it compiles SQLite's C sources) and `ring` compiles C and assembly, so the build dies at the `cc` step without a cross **C** compiler. `cargo-zigbuild` supplies one by using zig as the C cross-compiler and linker.
+
+**Why zig rather than a distro cross-gcc.** The entire toolchain installs without root — `rustup target add`, `cargo install cargo-zigbuild`, and a zig tarball extracted under `.cache/zig/` — so `make deps` can provision it on any machine instead of depending on distro-specific packages (`gcc-aarch64-linux-gnu` and friends differ per distro and need root). zig also links against a **pinned glibc**: the target triple is suffixed with `GLIBC_VERSION` (default `2.36`, matching `debian:bookworm`), so the binary runs on the runtime base image regardless of the build host's own glibc. Pins: `ZIG_VERSION`, `ZIGBUILD_VERSION`, `GLIBC_VERSION`.
+
+**The runtime image has no `RUN` steps.** This is the constraint that removes the VM rather than relocating the problem. `podman build --platform linux/<arch>` only needs to *execute* something of the target architecture if a `RUN` instruction exists; a foreign `RUN` requires user-mode emulation, which is exactly what is unavailable on hosts like Fedora Asahi (its x86 emulation runs through FEX + `binfmt-dispatcher` + `muvm`, unusable inside a `podman build` sandbox — even a bare `podman run --platform linux/amd64` fails there). `Containerfile` therefore only `COPY`s: the cross-compiled binaries, and a CA bundle taken from the build host (certificates are architecture-independent data, so they need no `apt-get`). With zero `RUN` steps, a foreign-arch image is pure assembly of files and needs no emulation at all.
+
+`make/cross.sh` has three subcommands: `deps` (provision the toolchain), `build ARCH` (cross-compile and strip the release binaries into `target/<triple>/release`), and `stage ARCH` (assemble `.cache/stage/<arch>` — the binaries plus the CA bundle — as the container build context).
+
+**Build network.** Nothing in the image build resolves DNS any more, so `--network=host` is no longer passed by default. `BUILD_NETWORK=<name>` is still honoured if you need a specific podman network.
+
+The end-to-end multi-arch publish flow, from **one host of either architecture**:
+
+```bash
+make push-release-all   # cross-compiles both arches, pushes both, then the manifest
+```
+
+Or step by step, which is also how you split it across hosts if you prefer:
+
+1. `make push-release TARGET=x86_64` → pushes `…:latest-x86_64` (+ date tag).
+2. `make push-release TARGET=aarch64` → pushes `…:latest-aarch64` (+ date tag).
+3. `make manifest-release` → pushes the `…:latest` manifest list.
+
+`push-rc-all` is the RC equivalent.
 
 ### Container Image Tagging
 
-Images are published to `quay.io/town/rolodex`. The `IMAGE_TAG` variable controls the tag used for both building and pushing. Per-arch images carry an arch suffix; the manifest targets produce the un-suffixed multi-arch tag.
+Images are published to `quay.io/town/rolodex`. Two variables control the tag: `IMAGE_TAG` picks the tag itself, and `TARGET` picks the architecture suffix appended to it (via `BUILD_ARCH`). Per-arch images carry the arch suffix; the manifest targets produce the un-suffixed multi-arch tag.
 
 **Push with auto-generated tags** (default):
 
 ```bash
-make push-rc          # pushes rc.YYYYMMDD-<arch> and rc.latest-$(uname -m)
+make push-rc          # pushes rc.YYYYMMDD-<arch> and rc.latest-<arch>
 make push-release     # pushes release.YYYYMMDD-<arch> and latest-<arch>
 make manifest-rc      # pushes rc.YYYYMMDD and rc.latest manifest lists
 make manifest-release # pushes release.YYYYMMDD and latest manifest lists
+```
+
+**Pick the architecture** with `TARGET` (default: the host arch). Any host builds any arch by cross-compiling:
+
+```bash
+make push-release TARGET=x86_64     # pushes release.YYYYMMDD-x86_64 and latest-x86_64
+make push-release TARGET=aarch64    # pushes release.YYYYMMDD-aarch64 and latest-aarch64
+make image TARGET=rg35xxpro         # board flavor -> aarch64 container image
 ```
 
 **Push a specific tag**:
@@ -1092,6 +1137,9 @@ make manifest-release # pushes release.YYYYMMDD and latest manifest lists
 make IMAGE_TAG=v1.2.3 push-release      # pushes quay.io/town/rolodex:v1.2.3-<arch>
 make IMAGE_TAG=v1.2.3 manifest-release  # pushes quay.io/town/rolodex:v1.2.3 manifest list
 make IMAGE_TAG=v1.2.3-rc1 push-rc       # pushes quay.io/town/rolodex:v1.2.3-rc1-<arch>
+
+# IMAGE_TAG and TARGET compose: the tag, with that arch's suffix.
+make IMAGE_TAG=v1.2.3 TARGET=x86_64 push-release   # -> quay.io/town/rolodex:v1.2.3-x86_64
 ```
 
 When `IMAGE_TAG` is set, only that exact tag (per-arch, then manifest) is pushed — no date-based or `latest` tags are created.

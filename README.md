@@ -89,35 +89,60 @@ After the dev server is running, you can manage it using the `rolodex-dns-cli` b
 
 ## Container Images
 
-Rolodex DNS builds with Podman using two Containerfiles: `Containerfile.build` compiles the Rust binaries in a full toolchain image, and `Containerfile` provisions a lean runtime image (`debian:bookworm`) containing only the stripped binaries and CA certificates.
+Rolodex DNS cross-compiles its binaries on the build host with `cargo-zigbuild`, then assembles a lean runtime image (`debian:bookworm-slim`) containing only the stripped binaries and a CA bundle. The `Containerfile` deliberately contains **no `RUN` steps**, which is what lets any host build an image for any architecture with no emulation and no builder VM.
 
 Images are published to `quay.io/town/rolodex` as multi-arch manifest lists covering `linux/amd64` and `linux/arm64`.
 
 ### Multi-Architecture Builds
 
-Builds are **native**: each architecture is compiled on a host of that architecture. The build tooling detects the host architecture via `uname -m`, tags every image with an arch suffix (`-amd64` or `-arm64`), and a separate manifest step assembles the per-arch images into a single multi-arch tag.
+Builds are **native**: each architecture is compiled on a host of that architecture. Every image is tagged with an arch suffix using the `uname -m` machine name (`-x86_64` or `-aarch64`, *not* the OCI `amd64`/`arm64` names), so a deploy host can pull `` <tag>-`uname -m` `` with no mapping. A separate manifest step assembles the per-arch images into a single multi-arch tag.
+
+#### Choosing the architecture: `TARGET`
+
+`TARGET` selects the architecture for every container target (`image`, `push-arch`, `push-rc`, `push-release`). It defaults to the host architecture, and matches the `TARGET=` model used by the town-os `install` repo so the same value can be passed to either:
+
+| `TARGET` | Builds |
+| -------- | ------ |
+| *(unset)* | the host architecture |
+| `x86_64`, `x86`, `amd64` | amd64 image, tagged `-x86_64` |
+| `aarch64`, `arm64` | arm64 image, tagged `-aarch64` |
+| `rpi` | arm64 image, tagged `-aarch64` |
+| `rg35xxpro`, `rg35xx-pro`, `rg35xx`, `anbernic` | arm64 image, tagged `-aarch64` |
+
+Any other value is an error listing the accepted ones. The board flavors don't change the image — rolodex-dns ships one container image per architecture, not per board — they're accepted so a `TARGET=rg35xxpro` that means something specific in `install` still resolves sensibly here.
+
+**Any host builds any architecture.** A foreign `TARGET` is cross-compiled rather than emulated, so there are no rejected combinations and no builder VM — see Cross-Compilation below.
 
 `podman build` RUN steps share the host network (`--network=host`) so they can use a DNS resolver on the host's loopback (e.g. rolodex itself); override with `BUILD_NETWORK=` to opt out.
 
 The end-to-end flow for publishing a multi-arch image — one host per arch:
 
-1. On an amd64 host: `make push-release` → pushes `…:latest-amd64` (and the date tag).
-2. On an arm64 host: `make push-release` → pushes `…:latest-arm64` (and the date tag).
+1. On an amd64 host: `make push-release` → pushes `…:latest-x86_64` (and the date tag).
+2. On an arm64 host: `make push-release` → pushes `…:latest-aarch64` (and the date tag).
 3. On either host (once both are pushed): `make manifest-release` → creates and pushes the multi-arch `…:latest` manifest list.
 
 A consumer that pulls `quay.io/town/rolodex:latest` then transparently receives the image matching their architecture.
 
-#### Building amd64 from an arm64 host (builder VM)
+#### Cross-Compilation
 
-On an arm64 host such as **Fedora Asahi**, amd64 images can't be built with in-container user-mode emulation — the platform's x86 emulation (FEX / `binfmt-dispatcher` / `muvm`) runs inside a 4k-page microVM and isn't usable in a `podman build` sandbox. Instead, amd64 is built **natively inside a full-system qemu VM** (`make/amd64-vm.sh`): a Debian cloud image booted under `qemu-system-x86_64` (TCG; there's no KVM for x86 on arm), provisioned with podman via cloud-init.
+Both architectures are cross-compiled on whichever host runs `make`, using `cargo-zigbuild` with zig as the C cross-compiler and linker. `make deps` provisions the whole toolchain **without root**:
 
 ```bash
-make image-amd64          # build amd64 in the VM, import into host podman
-make push-release-amd64   # build + push amd64 straight from the VM (needs QUAY_* creds)
-make push-release-all     # native arm64 here + amd64 in the VM + the manifest, in one go
+make deps        # rustup targets + cargo-zigbuild + zig, and the JS dev deps
+make cross-deps  # just the Rust cross toolchain
 ```
 
-VM lifecycle: `make amd64-vm-up` / `amd64-vm-down` / `amd64-vm-status` / `amd64-vm-ssh` / `amd64-vm-destroy`. State lives in `.cache/amd64-vm/`; tune with `VM_MEM`, `VM_CPUS`, `VM_DISK_SIZE`, `VM_IMAGE_URL`. Full-system emulation is slow — an amd64 build takes minutes to tens of minutes.
+A plain `rustup target add` would not be enough: `rusqlite` compiles SQLite's bundled C sources and `ring` compiles C and assembly, so a real cross **C** toolchain has to be present or the build fails at the `cc` step. zig provides one without any distro-specific packages, and links against a pinned glibc (`GLIBC_VERSION`, default `2.36` to match `debian:bookworm`) so the binary runs on the runtime image whatever the build host carries.
+
+Version pins, all overridable: `ZIG_VERSION`, `ZIGBUILD_VERSION`, `GLIBC_VERSION`.
+
+```bash
+make image TARGET=x86_64         # cross-compile + assemble an amd64 image
+make push-release TARGET=aarch64 # cross-compile + push an arm64 image
+make push-release-all            # both arches + the manifest, from one host
+```
+
+`make image-amd64`, `push-rc-amd64`, and `push-release-amd64` remain as aliases for the `TARGET=x86_64` forms.
 
 ### Building
 
@@ -125,6 +150,13 @@ Build the release image for the **host** architecture (tagged as `quay.io/town/r
 
 ```
 make image
+```
+
+Build for a specific architecture:
+
+```
+make image TARGET=x86_64
+make image TARGET=aarch64
 ```
 
 Build with a specific tag:
@@ -143,16 +175,18 @@ Login to Quay.io (reads `QUAY_USERNAME` and `QUAY_PASSWORD` from the environment
 make quay-login
 ```
 
-Build and push the host-arch release candidate image (auto-tags `rc.YYYYMMDD-<arch>` and `` rc.latest-`uname -m` ``, e.g. `rc.latest-x86_64` / `rc.latest-aarch64`):
+Build and push the release candidate image for `TARGET` (auto-tags `rc.YYYYMMDD-<arch>` and `rc.latest-<arch>`, e.g. `rc.latest-x86_64` / `rc.latest-aarch64`):
 
 ```
 make push-rc
+make push-rc TARGET=x86_64    # explicit architecture
 ```
 
-Build and push the host-arch release image (auto-tags `release.YYYYMMDD-<arch>` and `latest-<arch>`):
+Build and push the release image for `TARGET` (auto-tags `release.YYYYMMDD-<arch>` and `latest-<arch>`):
 
 ```
 make push-release
+make push-release TARGET=aarch64
 ```
 
 #### Assembling the Multi-Arch Manifest
@@ -161,7 +195,7 @@ After the per-arch images for **all** architectures have been pushed (run `push-
 
 ```
 make manifest-rc       # combines rc.latest-x86_64 + rc.latest-aarch64 → rc.latest (and the rc.YYYYMMDD date tag)
-make manifest-release  # combines latest-amd64 + latest-arm64 → latest (and the release.YYYYMMDD date tag)
+make manifest-release  # combines latest-x86_64 + latest-aarch64 → latest (and the release.YYYYMMDD date tag)
 ```
 
 The manifest is assembled from the images already in the registry (`podman manifest add docker://…`), so it does not require the per-arch images to be present locally.
@@ -172,7 +206,7 @@ Use `IMAGE_TAG` to build and push an exact tag instead of the auto-generated dat
 
 ```
 make IMAGE_TAG=v1.2.3 push-release    # pushes quay.io/town/rolodex:v1.2.3-<arch>
-make IMAGE_TAG=v1.2.3 manifest-release # combines v1.2.3-amd64 + v1.2.3-arm64 → v1.2.3
+make IMAGE_TAG=v1.2.3 manifest-release # combines v1.2.3-x86_64 + v1.2.3-aarch64 → v1.2.3
 ```
 
 The same works with `push-rc` / `manifest-rc`:

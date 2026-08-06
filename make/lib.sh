@@ -38,8 +38,8 @@ warn() {
 ARCHES="x86_64 aarch64"
 
 # host_arch — print the uname -m machine name (x86_64/aarch64) for the current
-# host. Each arch is built natively: aarch64 on an arm64 host, x86_64 either on
-# an x86_64 host or inside the amd64 builder VM (see make/amd64-vm.sh).
+# host. This is the machine make runs on; the arch being BUILT is BUILD_ARCH,
+# which may differ (cross-compiled via make/cross.sh).
 host_arch() {
   case "$(uname -m)" in
     x86_64 | amd64) echo x86_64 ;;
@@ -50,6 +50,38 @@ host_arch() {
       ;;
   esac
 }
+
+# oci_arch MACHINE — map a uname -m machine name to the OCI platform name that
+# podman --platform and manifest lists use. The image TAGS keep the uname -m
+# names (see ARCHES); this is only for talking to podman.
+oci_arch() {
+  case "$1" in
+    x86_64) echo amd64 ;;
+    aarch64) echo arm64 ;;
+    *)
+      echo "unsupported architecture: $1" >&2
+      return 1
+      ;;
+  esac
+}
+
+# rust_triple MACHINE — the Rust target triple for a machine name.
+rust_triple() {
+  case "$1" in
+    x86_64) echo x86_64-unknown-linux-gnu ;;
+    aarch64) echo aarch64-unknown-linux-gnu ;;
+    *)
+      echo "unsupported architecture: $1" >&2
+      return 1
+      ;;
+  esac
+}
+
+# The glibc version the release binaries are built against. cargo-zigbuild
+# accepts it as a suffix on the target triple and links against exactly that
+# ABI, so the binary runs on the runtime base image regardless of whatever
+# glibc the build host happens to carry. debian:bookworm ships glibc 2.36.
+GLIBC_VERSION="${GLIBC_VERSION:-2.36}"
 
 # build_manifest LIST_TAG [SUFFIXES] — assemble and push a multi-arch manifest
 # list from the per-arch image tags (LIST_TAG-<suffix> for each suffix in
