@@ -120,6 +120,23 @@ pub struct DnsConfig {
     /// is the shared port. Defaults to 53; lower it for unprivileged dev runs.
     #[serde(default = "default_ingress_listen_port")]
     pub ingress_listen_port: u16,
+    /// Number of `SO_REUSEPORT` sockets to bind per UDP listen address.
+    ///
+    /// A single UDP socket serialises the whole listener: one task drains it
+    /// with `recv_from` and every reply goes back out through it, so receive is
+    /// single-threaded and the kernel takes a per-socket lock on both ends. That
+    /// caps throughput well below saturation no matter how many cores are free.
+    /// Binding N sockets to the same `addr:port` with `SO_REUSEPORT` lets the
+    /// kernel hash arriving datagrams across N independent receive loops, each
+    /// with its own socket for replies.
+    ///
+    /// `0` (the default) means one shard per available core. `1` restores the
+    /// old single-socket behaviour and is also what any single-shard listener
+    /// uses — `SO_REUSEPORT` is only set when more than one shard is requested,
+    /// so a lone listener still fails loudly on an occupied port instead of
+    /// silently sharing it with another process.
+    #[serde(default)]
+    pub udp_shards: usize,
 }
 
 fn default_ingress_listen_port() -> u16 {
@@ -874,6 +891,7 @@ impl Default for Config {
                 ],
                 auto_ptr: false,
                 ingress_listen_port: default_ingress_listen_port(),
+                udp_shards: 0,
             },
             grpc: GrpcConfig {
                 tcp_bind: "127.0.0.1:50051".to_string(),

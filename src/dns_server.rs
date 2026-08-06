@@ -114,6 +114,9 @@ pub struct DnsServer {
     /// UDP/TCP port that ingress listeners bind (the ingress IP is per-TLD).
     /// Defaults to 53; overridable via `set_ingress_port` (e.g. dev/tests).
     ingress_port: AtomicU16,
+    /// `SO_REUSEPORT` sockets to bind per UDP listen address. `0` means one per
+    /// available core; see `DnsConfig::udp_shards` and `serve_udp`.
+    udp_shards: AtomicUsize,
 }
 
 /// The default WireGuard-overlay range: only source IPs here are subject to
@@ -156,6 +159,7 @@ impl DnsServer {
             overlay_cidrs: Arc::new(ArcSwap::from_pointee(default_overlay_cidrs())),
             ingress_listeners: Arc::new(DashMap::new()),
             ingress_port: AtomicU16::new(53),
+            udp_shards: AtomicUsize::new(0),
         }
     }
 
@@ -200,6 +204,7 @@ impl DnsServer {
             overlay_cidrs: Arc::new(ArcSwap::from_pointee(default_overlay_cidrs())),
             ingress_listeners: Arc::new(DashMap::new()),
             ingress_port: AtomicU16::new(53),
+            udp_shards: AtomicUsize::new(0),
         }
     }
 
@@ -221,6 +226,22 @@ impl DnsServer {
     /// The bind IP is provided per-TLD; this is the shared port.
     pub fn set_ingress_port(&self, port: u16) {
         self.ingress_port.store(port, Ordering::Relaxed);
+    }
+
+    /// Sets how many `SO_REUSEPORT` sockets each UDP listener binds. `0` (the
+    /// default) means one per available core. See `serve_udp`.
+    pub fn set_udp_shards(&self, shards: usize) {
+        self.udp_shards.store(shards, Ordering::Relaxed);
+    }
+
+    /// Resolves the configured shard count to a concrete number of sockets.
+    fn udp_shard_count(&self) -> usize {
+        match self.udp_shards.load(Ordering::Relaxed) {
+            0 => std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1),
+            n => n,
+        }
     }
 
     /// Number of live ingress listener IPs (for diagnostics/tests). An entry
@@ -522,16 +543,84 @@ impl DnsServer {
     }
 
     /// Starts the UDP DNS listener.
-    /// Processes queries concurrently by spawning a task per received query.
+    ///
+    /// The listener is *sharded*: `udp_shard_count()` sockets are bound to the
+    /// same `addr:port` with `SO_REUSEPORT`, each driving its own receive loop
+    /// and sending its replies back out through its own socket. A single socket
+    /// serialises the listener — one task drains it and every reply contends on
+    /// it — which caps throughput far below CPU saturation. Sharding lets the
+    /// kernel hash arriving datagrams across the shards so both directions scale
+    /// across cores.
+    ///
+    /// `SO_REUSEPORT` is set only when more than one shard is requested. A
+    /// single-shard listener therefore binds exactly as before and still fails
+    /// on an occupied port rather than silently sharing it — which is what the
+    /// ingress-listener bind-failure handling depends on.
+    ///
+    /// Shards run in a `JoinSet` owned by this future, so aborting the task that
+    /// drives `serve_udp` (as `stop_ingress_listener` does) drops the set and
+    /// aborts every shard with it.
     pub async fn serve_udp(self: Arc<Self>, bind_addr: &str) -> Result<()> {
-        let socket = Arc::new(
-            UdpSocket::bind(bind_addr)
-                .await
-                .with_context(|| format!("failed to bind UDP socket to {}", bind_addr))?,
-        );
-        info!("DNS UDP server listening on {}", bind_addr);
+        // Port 0 asks the kernel for an ephemeral port, which it would hand out
+        // independently per socket — the shards would land on different ports
+        // instead of sharing one. There is nothing to shard, so bind a single
+        // socket and let the caller keep the port it was given.
+        let ephemeral = {
+            use std::net::ToSocketAddrs;
+            bind_addr
+                .to_socket_addrs()
+                .ok()
+                .and_then(|mut a| a.next())
+                .is_some_and(|a| a.port() == 0)
+        };
+        let shards = if ephemeral {
+            1
+        } else {
+            self.udp_shard_count().max(1)
+        };
         let local_ip = concrete_bind_ip(bind_addr);
 
+        // Bind every shard up front. The first failure is fatal — that is a real
+        // bind error (port taken, address not yet available) and callers rely on
+        // it being reported. A later shard failing is not: the address is
+        // demonstrably bindable, so serve what we got and log the shortfall.
+        let mut sockets = Vec::with_capacity(shards);
+        for i in 0..shards {
+            match bind_udp_shard(bind_addr, shards > 1) {
+                Ok(sock) => sockets.push(sock),
+                Err(e) if i > 0 => {
+                    warn!(
+                        "UDP {}: bound {}/{} shards ({}); continuing with fewer",
+                        bind_addr, i, shards, e
+                    );
+                    break;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        info!(
+            "DNS UDP server listening on {} ({} shard{})",
+            bind_addr,
+            sockets.len(),
+            if sockets.len() == 1 { "" } else { "s" }
+        );
+
+        let mut set = tokio::task::JoinSet::new();
+        for sock in sockets {
+            let server = Arc::clone(&self);
+            set.spawn(async move { server.udp_shard_loop(sock, local_ip).await });
+        }
+
+        // Every shard loop runs forever; this only resolves if they all stop.
+        while set.join_next().await.is_some() {}
+        Ok(())
+    }
+
+    /// One shard's receive loop: drain `socket`, spawn a task per query, and
+    /// reply on the same shard socket.
+    async fn udp_shard_loop(self: Arc<Self>, socket: UdpSocket, local_ip: Option<IpAddr>) {
+        let socket = Arc::new(socket);
         let mut buf = vec![0u8; MAX_UDP_SIZE];
         loop {
             let (len, src) = match socket.recv_from(&mut buf).await {
@@ -1997,6 +2086,42 @@ fn map_query_type_to_kind(rt: RecordType) -> Option<RecordKind> {
 /// concrete (non-wildcard) address. A wildcard bind (`0.0.0.0`/`[::]`) yields
 /// `None` because a single packet's true destination IP is not recoverable
 /// without per-packet `IP_PKTINFO`; ingress listeners always bind a concrete IP.
+/// Binds one UDP shard socket for `bind_addr`.
+///
+/// `SO_REUSEPORT` is set only when the listener is actually sharded. Linux
+/// requires *every* socket on a shared `addr:port` to carry the option, so a
+/// single-shard listener still collides with (and reports) a port already held
+/// by anything else — the behaviour the ingress bind-failure handling relies on.
+/// The option must be set before `bind`.
+fn bind_udp_shard(bind_addr: &str, reuse_port: bool) -> Result<UdpSocket> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    use std::net::ToSocketAddrs;
+
+    let addr = bind_addr
+        .to_socket_addrs()
+        .with_context(|| format!("failed to resolve UDP bind address {}", bind_addr))?
+        .next()
+        .with_context(|| format!("no address resolved for UDP bind address {}", bind_addr))?;
+
+    let domain = match addr {
+        SocketAddr::V4(_) => Domain::IPV4,
+        SocketAddr::V6(_) => Domain::IPV6,
+    };
+    let sock = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))
+        .with_context(|| format!("failed to create UDP socket for {}", bind_addr))?;
+    if reuse_port {
+        sock.set_reuse_port(true)
+            .with_context(|| format!("failed to set SO_REUSEPORT for {}", bind_addr))?;
+    }
+    sock.set_nonblocking(true)
+        .with_context(|| format!("failed to set non-blocking mode for {}", bind_addr))?;
+    sock.bind(&addr.into())
+        .with_context(|| format!("failed to bind UDP socket to {}", bind_addr))?;
+
+    UdpSocket::from_std(sock.into())
+        .with_context(|| format!("failed to register UDP socket for {}", bind_addr))
+}
+
 fn concrete_bind_ip(bind_addr: &str) -> Option<IpAddr> {
     bind_addr
         .parse::<SocketAddr>()
@@ -4541,6 +4666,194 @@ mod tests {
         server.stop_ingress_listener(ip);
         assert!(!server.has_ingress_listener(ip));
         assert_eq!(server.ingress_listener_count(), 0);
+    }
+
+    /// Sends `query` from a fresh client socket and returns the parsed response.
+    /// Each call uses a new ephemeral source port, so the kernel's `SO_REUSEPORT`
+    /// hash picks a different shard per call — which is exactly what makes this
+    /// a test of the shard fan-out and not of one lucky socket. Retries while the
+    /// listener is still coming up.
+    async fn udp_query(target: &str, query: &[u8]) -> Message {
+        for _ in 0..200 {
+            let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            if client.send_to(query, target).await.is_err() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                continue;
+            }
+            let mut buf = vec![0u8; MAX_UDP_SIZE];
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(250),
+                client.recv_from(&mut buf),
+            )
+            .await
+            {
+                Ok(Ok((len, _))) => return Message::from_bytes(&buf[..len]).unwrap(),
+                _ => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
+        }
+        panic!("no UDP response from {} within 2s", target);
+    }
+
+    /// Reserves a free loopback port and releases it, so the caller can bind a
+    /// listener there. Nothing outside this process is touched.
+    fn free_loopback_port() -> u16 {
+        let probe = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        port
+    }
+
+    /// A sharded listener must be indistinguishable from the single-socket one
+    /// on the client side. The kernel hashes each source port to one of the
+    /// shards, so a client that reconnects lands on an arbitrary shard — every
+    /// one of them has to serve the same view. A shard that bound but never got
+    /// wired to the query handler would show up here as a timeout on some
+    /// fraction of the queries, not on all of them.
+    #[tokio::test]
+    async fn test_sharded_udp_listener_answers_from_any_shard() {
+        let db = Database::open_memory().unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "shard.test.".to_string(),
+            record_type: RecordKind::A,
+            value: "127.0.0.30".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+        let server = make_test_server(db);
+        server.set_udp_shards(4);
+
+        let bind = format!("127.0.0.1:{}", free_loopback_port());
+        let srv = Arc::clone(&server);
+        let listen = bind.clone();
+        let handle = tokio::spawn(async move { srv.serve_udp(&listen).await });
+
+        let query = build_query("shard.test.", RecordType::A);
+        for _ in 0..24 {
+            let resp = udp_query(&bind, &query).await;
+            assert_eq!(resp.response_code(), ResponseCode::NoError);
+            assert_eq!(answer_a(&resp), Ipv4Addr::new(127, 0, 0, 30));
+        }
+
+        handle.abort();
+    }
+
+    /// Aborting the task that drives `serve_udp` must take the shards down with
+    /// it. The shards are spawned inside the future rather than by the caller, so
+    /// the caller's abort handle no longer points at them directly — they are
+    /// held in a `JoinSet` that the future owns, and dropping it aborts them. If
+    /// that ownership were broken the shards would outlive the abort and keep the
+    /// port bound, and `stop_ingress_listener` would silently stop stopping
+    /// anything.
+    #[tokio::test]
+    async fn test_aborting_serve_udp_releases_all_shards() {
+        let db = Database::open_memory().unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "up.test.".to_string(),
+            record_type: RecordKind::A,
+            value: "127.0.0.31".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+        let server = make_test_server(db);
+        server.set_udp_shards(4);
+
+        let bind = format!("127.0.0.1:{}", free_loopback_port());
+        let srv = Arc::clone(&server);
+        let listen = bind.clone();
+        let handle = tokio::spawn(async move { srv.serve_udp(&listen).await });
+
+        // Confirm it is actually up before aborting, so a pass cannot come from
+        // the listener never having bound in the first place. A locally-served
+        // name keeps this off the upstream path entirely.
+        let query = build_query("up.test.", RecordType::A);
+        assert_eq!(
+            answer_a(&udp_query(&bind, &query).await),
+            Ipv4Addr::new(127, 0, 0, 31)
+        );
+
+        handle.abort();
+
+        // Every shard socket must be closed: a plain, non-REUSEPORT bind on the
+        // same address only succeeds once they are all gone.
+        let addr: SocketAddr = bind.parse().unwrap();
+        wait_until(|| std::net::UdpSocket::bind(addr).is_ok()).await;
+    }
+
+    /// The ingress bind-failure handling depends on a busy port being reported as
+    /// an error, and `SO_REUSEPORT` is precisely the option that turns such a
+    /// collision into silent sharing. Linux only shares a port when *every*
+    /// socket on it set the option, so a squatter that did not set it still
+    /// collides — but this pins that, because the day it stops holding,
+    /// `sync_ingress_listeners` starts "succeeding" against ports owned by other
+    /// processes and steals their traffic.
+    #[tokio::test]
+    async fn test_sharded_bind_still_fails_on_port_held_without_reuseport() {
+        let db = Database::open_memory().unwrap();
+        let server = make_test_server(db);
+        server.set_udp_shards(4);
+
+        let addr: SocketAddr = format!("127.0.0.1:{}", free_loopback_port())
+            .parse()
+            .unwrap();
+        let squatter = std::net::UdpSocket::bind(addr).unwrap();
+
+        let err = Arc::clone(&server)
+            .serve_udp(&addr.to_string())
+            .await
+            .expect_err("bind must fail while another socket holds the port");
+        assert!(
+            format!("{:#}", err).contains("failed to bind UDP socket"),
+            "unexpected error: {:#}",
+            err
+        );
+
+        drop(squatter);
+    }
+
+    /// A single-shard listener must not set `SO_REUSEPORT` at all — otherwise two
+    /// rolodex listeners configured for the same address would quietly split the
+    /// traffic between them instead of the second one reporting the conflict.
+    #[tokio::test]
+    async fn test_single_shard_listener_does_not_share_its_port() {
+        let db = Database::open_memory().unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "solo.test.".to_string(),
+            record_type: RecordKind::A,
+            value: "127.0.0.32".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+        let server = make_test_server(db);
+        server.set_udp_shards(1);
+
+        let bind = format!("127.0.0.1:{}", free_loopback_port());
+        let srv = Arc::clone(&server);
+        let listen = bind.clone();
+        let handle = tokio::spawn(async move { srv.serve_udp(&listen).await });
+
+        let query = build_query("solo.test.", RecordType::A);
+        assert_eq!(
+            answer_a(&udp_query(&bind, &query).await),
+            Ipv4Addr::new(127, 0, 0, 32)
+        );
+
+        // The second listener asks for several shards, so it *does* set
+        // SO_REUSEPORT. It must still be refused, because the first socket did
+        // not — otherwise the two would split the traffic silently.
+        server.set_udp_shards(4);
+        let second = Arc::clone(&server).serve_udp(&bind).await;
+        assert!(
+            second.is_err(),
+            "a single-shard listener must not let a second listener share its port"
+        );
+
+        handle.abort();
     }
 
     #[tokio::test]

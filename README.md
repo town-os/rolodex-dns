@@ -401,6 +401,7 @@ security:
 | `dns.bind` | `[{udp: "0.0.0.0:53"}, {tcp: "0.0.0.0:53"}]` | DNS listeners; list of `{udp: addr}` / `{tcp: addr}` entries |
 | `dns.auto_ptr` | `false` | Maintain reverse PTR records for A/AAAA added via gRPC |
 | `dns.ingress_listen_port` | `53` | UDP/TCP port for per-TLD ingress listeners (bind IP is per-TLD) |
+| `dns.udp_shards` | `0` (one per core) | `SO_REUSEPORT` sockets bound per UDP listen address. A single socket serialises the listener — one receive loop, one socket for every reply — capping throughput well below CPU saturation. Sharding lets the kernel spread datagrams across cores. Set `1` for the old single-socket behaviour |
 | `dot.bind` | `""` (disabled) | DoT listener; supports interface:port (typically port 853) |
 | `dot.tls.cert_path` | `""` | TLS certificate path for DoT |
 | `dot.tls.key_path` | `""` | TLS private key path for DoT |

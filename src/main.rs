@@ -284,6 +284,11 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Shard every UDP listener across SO_REUSEPORT sockets so receive and send
+    // scale across cores instead of funnelling through one socket. Must be set
+    // before any listener starts, including the ingress listeners below.
+    dns_server.set_udp_shards(config.dns.udp_shards);
+
     // Spawn DNS UDP servers
     for addr in config.dns.udp_addrs() {
         let resolved = rolodex_dns::config::resolve_bind_addrs(addr)
