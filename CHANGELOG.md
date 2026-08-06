@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.4.2 (2026-08-06)
+
+### Bug Fixes
+
+- **The upstream response cache was a near-total no-op.** Two independent key bugs meant answers were written under keys no lookup could ever reproduce, so nearly every query paid a full upstream round trip no matter how recently the same name had been resolved.
+
+  `cache_answers` keyed each entry on the first *answer record* rather than on the question. That is wrong for any name behind a CNAME: `index.crates.io A` comes back as a chain — `index.crates.io CNAME` → `fastly-index.crates.io CNAME` → A records on a third name — whose first record is a CNAME, so the entry landed under `index.crates.io.:CNAME` while every lookup asked for `index.crates.io.:A`. Those keys never meet, so the name was *permanently* uncacheable. That is most of the CDN-fronted internet (Fastly, CloudFront, S3). It went unnoticed because a name like `example.com` answers with an A record for itself, making the wrong key accidentally correct — and every test used a name of that shape.
+
+  `cache_key` separately trusted its caller to have normalized the name. The two sides of the cache do not see the same case: reads use the case the client sent, writes use the case the question came back in, and with 0x20 encoding (`security.qname_case_randomization`, on by default) a forwarded query goes out as `eXaMpLe.CoM` and the response echoes that back. Every upstream answer was therefore filed under a randomly-cased key, which disabled the cache wholesale — every name, not only chained ones.
+
+  Both paths now key on the question, `question.name()` + the question's type, which is the key the read path looks up and the rule `cache_negative` already followed. The whole answer set, CNAME chain included, is stored under that one key. A response carrying no question cannot be keyed correctly and is no longer cached at all rather than cached somewhere nothing will look. `cache_key` lowercases as it fills the key, which costs no extra allocation because the `String` was being allocated anyway.
+
+### Build
+
+- **Both architectures are cross-compiled on whatever host runs `make`; the builder VM is gone.** Multi-arch images were previously built by spinning up an x86_64 QEMU VM (`make/amd64-vm.sh`) whenever the host could not run the foreign architecture — an entire virtual machine standing in for a toolchain. The two published images now differ only in their target triple rather than in how they were produced.
+
+  `cargo-zigbuild` (`make/cross.sh`) supplies the C cross-compiler that `rusqlite` (bundled SQLite sources) and `ring` require — `rustup target add` alone dies at the `cc` step — and links against a pinned glibc (`GLIBC_VERSION`, default `2.36`, matching `debian:bookworm`) so the binary runs on the runtime base image regardless of the build host's own glibc. The whole toolchain installs without root: `rustup target add`, `cargo install cargo-zigbuild`, and a zig tarball extracted under `.cache/zig/`, so `make deps` provisions it anywhere instead of depending on distro-specific cross-gcc packages.
+
+  The runtime `Containerfile` now only `COPY`s — the cross-compiled binaries and a CA bundle taken from the build host. With zero `RUN` steps, `podman build --platform linux/<arch>` never has to *execute* anything of the target architecture, so a foreign-arch image needs no user-mode emulation at all. That is what removes the VM rather than relocating the problem: on hosts such as Fedora Asahi, x86 emulation runs through FEX + `binfmt-dispatcher` + `muvm` and is unusable inside a `podman build` sandbox. `Containerfile.build` is removed along with it, and `--network=host` is no longer passed by default since nothing in the image build resolves DNS.
+
+- `TARGET` now selects the architecture for **every** container target (`image`, `push-arch`, `push-rc`, `push-release`), mirroring the model used by the `install` repo so one `TARGET=` value passes across the town-os repos. Board flavors (`rpi`, `rg35xxpro`, `anbernic`, …) resolve to their architecture; an unrecognized value is a hard error at parse time. Any host can build any architecture — `CROSS` is derived, not a user knob. `push-rc-all` / `push-release-all` publish both arches and assemble the manifest from a single host of either architecture.
+
 ## v0.4.1 (2026-08-06)
 
 ### Performance
