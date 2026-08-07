@@ -152,6 +152,42 @@ impl RecordKind {
         }
     }
 
+    /// The IANA DNS type code for this record kind.
+    ///
+    /// Distinct from [`Self::to_proto_i32`], which is the protobuf enum's
+    /// ordinal and has nothing to do with the wire. DNSSEC signing needs the
+    /// real code: it goes into the RRSIG `type_covered` field and into each
+    /// signed RR, where a wrong value produces a signature no validator can
+    /// reproduce.
+    pub fn wire_type(&self) -> u16 {
+        match self {
+            RecordKind::A => 1,
+            RecordKind::NS => 2,
+            RecordKind::CNAME => 5,
+            RecordKind::SOA => 6,
+            RecordKind::PTR => 12,
+            RecordKind::MX => 15,
+            RecordKind::TXT => 16,
+            RecordKind::AAAA => 28,
+            RecordKind::SRV => 33,
+            RecordKind::CERT => 37,
+            RecordKind::DNAME => 39,
+            RecordKind::DS => 43,
+            RecordKind::SSHFP => 44,
+            RecordKind::RRSIG => 46,
+            RecordKind::NSEC => 47,
+            RecordKind::DNSKEY => 48,
+            RecordKind::NSEC3 => 50,
+            RecordKind::NSEC3PARAM => 51,
+            RecordKind::TLSA => 52,
+            RecordKind::ZONEMD => 63,
+            RecordKind::URI => 256,
+            // ANAME has no assigned code; this is the value hickory uses for the
+            // draft type, matched here so the two agree.
+            RecordKind::ANAME => 65305,
+        }
+    }
+
     pub fn to_proto_i32(&self) -> i32 {
         match self {
             RecordKind::A => 0,

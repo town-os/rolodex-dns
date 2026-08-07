@@ -245,12 +245,15 @@ RFC 9250. Listens on a configurable UDP port (default `0.0.0.0:8853`). ALPN prot
 
 ## DNSSEC
 
-Rolodex DNS supports DNSSEC zone signing with the following algorithms (strongest first):
+Rolodex DNS signs its own zones. It performs **no validation** of DNSSEC data received from upstream — see Upstream DNSSEC (Not Validated) below.
+
+Supported algorithms (strongest first):
 
 1. **Ed25519** (RFC 8080, algorithm 15) — preferred
 2. **ECDSA P-384/SHA-384** (RFC 6605, algorithm 14)
 3. **ECDSA P-256/SHA-256** (RFC 6605, algorithm 13)
-4. **RSA/SHA-256** (RFC 5702, algorithm 8)
+
+**RSA/SHA-256 (algorithm 8) is not supported** and `GenerateDnssecKey` refuses it: `ring` cannot generate RSA keys. Every algorithm on the list is one whose keys are actually generated and whose signatures are actually produced — an algorithm that cannot be honoured end to end is refused at key generation rather than substituted, because a DNSKEY advertising algorithm 13 over Ed25519 key material yields a DS, a DNSKEY and a set of RRSIGs that all disagree, and that failure surfaces at a validating resolver rather than locally.
 
 ### Key Management
 
@@ -259,13 +262,39 @@ Two key types are supported:
 - **ZSK** (Zone Signing Key, flag 256) — signs zone data records.
 - **KSK** (Key Signing Key, flag 257) — signs the DNSKEY RRset.
 
-Keys are generated, stored in the database, and managed via gRPC: `GenerateDnssecKey`, `ListDnssecKeys`, `DeleteDnssecKey`.
+Keys are generated, stored in the database, and managed via gRPC: `GenerateDnssecKey`, `ListDnssecKeys`, `DeleteDnssecKey`. The stored algorithm name round-trips through `DnssecAlgorithm::parse`, and a key whose stored bytes do not load as the algorithm it is filed under is skipped at signing time with a warning rather than signed with.
 
 ### Zone Signing
 
-`SignZone` signs all records in a zone with its DNSSEC keys, producing RRSIG records. DS records for parent-zone delegation are computed using SHA-256 and retrievable via `GetDsRecords`. Key tags are calculated per RFC 4034.
+`SignZone` republishes the apex DNSKEY RRset and signs every RRset in the zone, storing the resulting RRSIG records in the local database.
 
-Cryptographic operations use the `ring` crate.
+- **RRset grouping.** Records are grouped by owner name and type; one RRSIG covers the whole set. Zone membership is matched on label boundaries, so `notexample.com.` is not signed as part of `example.com.`
+- **Canonical form.** The signed bytes are RFC 4034 §3.1.8.1: the RRSIG RDATA up to the signature, then each RR with a canonical owner name (lowercased, uncompressed), its type, class IN, the **original** TTL, and canonical RDATA — sorted into RFC 4034 §6.3 canonical order with duplicates dropped, so the order records come out of SQLite in cannot change the signature.
+- **Key roles.** The DNSKEY RRset is signed by the KSK and other RRsets by the ZSK (RFC 4035 §2.1). With only one key type present, that key signs both. RRSIG RRsets are never themselves signed.
+- **Validity.** Inception is backdated one hour for clock skew; signatures expire 30 days out. The RRSIG's original TTL is the RRset's own TTL.
+- **Unsignable types are skipped, not approximated.** NSEC, NSEC3, NSEC3PARAM and ANAME have no stored wire format here, and a malformed value has no canonical encoding; those RRsets are skipped and named in the response message. A signature computed over an invented encoding is worse than none — it fails closed at every validator instead of leaving the name unsigned.
+- **Re-signing replaces.** Existing RRSIGs in the zone are cleared first, including at names whose records were deleted since the last run, so signatures never accumulate or outlive their data. The DNSKEY RRset is likewise republished rather than appended to. The response cache is flushed afterwards.
+
+RRSIG values are stored as `"type_covered algorithm labels original_ttl expiration inception key_tag signer_name base64_signature"`. Expiration and inception are raw seconds since the Unix epoch rather than presentation-format `YYYYMMDDHHmmSS`, matching how every other record type here stores its numeric fields.
+
+DS records for parent-zone delegation are computed using SHA-256 and retrievable via `GetDsRecords`. Key tags are calculated per RFC 4034 Appendix B. Cryptographic operations use the `ring` crate.
+
+`dnssec::verify_rrsig` is the inverse of the signer and exists so signatures can be checked against something other than the code that produced them. It is deliberately **not** wired into the resolution path.
+
+### Wire Serving of DNSSEC Types
+
+DNSKEY, DS and RRSIG are served under their own type codes, with RDATA encoded by the same canonical encoder the signer hashes — so what goes on the wire is byte-for-byte what was signed. URI and ZONEMD are encoded the same way. (These were previously served as TXT records carrying the stored string, which answers a DNSKEY query with a TXT and makes any published signature unusable.) NSEC, NSEC3 and NSEC3PARAM are never generated and are not served.
+
+### Upstream DNSSEC (Not Validated)
+
+Rolodex does **not** validate DNSSEC on answers it resolves. There is no root trust anchor, the iterative resolver sets no DO bit on its outbound queries (so RRSIG/DNSKEY/NSEC are never even requested), and no signature verification runs on the resolution path.
+
+What does happen: a client that sets the DO bit gets the raw upstream response passed through untouched (`src/dns_server.rs`), so a client validating for itself is not interfered with. Two consequences follow, and neither is a promise of authenticity:
+
+- The **AD bit is relayed from upstream unverified**. On the `local` and `public` tiers that is plaintext Do53, where a relayed AD is worth nothing; on the `secure` tier it is at least channel-authenticated to the configured upstream.
+- In `recursive` mode a DO client receives no RRSIGs at all, since the iterative resolver never asks for them.
+
+Responses built locally never set AD, so answers this server generates make no authentication claim.
 
 ## DANE and TLSA
 
@@ -1131,7 +1160,7 @@ The project uses a top-level Makefile with the following targets:
 | `test`                | Run all tests: lint, Go integration tests, Go unit tests, Rust tests (`cargo test`), and JavaScript tests.                                                 |
 | `test-log`            | Same as `test`, tee'd into a timestamped log file under `/tmp/rolodex-dns/log` (override with `LOG_DIR`). The log path is printed at the end even when the run fails. |
 | `rust-test`           | Run the Rust integration test files, then `cargo test`.                                                                                                     |
-| `rust-integration-test` | Build, then run each Rust integration test file explicitly (`integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`). |
+| `rust-integration-test` | Build, then run each Rust integration test file explicitly (`integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`, `dnssec_signing_test`). |
 | `lint`                | Run `cargo fmt -- --check` and `cargo clippy --all-targets -- -D warnings`.                                                                                |
 | `deps`                | Install build dependencies: the Rust cross-compilation toolchain (`cross-deps`) and the JavaScript dev dependencies (`npm install` in `js/`).              |
 | `cross-deps`          | Install the Rust cross toolchain: `rustup target add` for both triples, `cargo-zigbuild`, and zig. Rootless — see Cross-Compilation.                       |
@@ -1305,6 +1334,14 @@ The iterative resolver has a dedicated suite built on a **mock delegation hierar
 | `tests/root_priming_test.rs` | Priming happens at startup (never on the query path) and the hints are a bootstrap/fallback. |
 | `tests/query_budget_test.rs` | One client lookup costs a bounded number of upstream queries (the pathological glue-less zone that produced 65,536 queries in 42s). |
 
+### DNSSEC Signing Tests
+
+`tests/dnssec_signing_test.rs` pins that a signature is *checkable*, not merely present. Asserting that RRSIG rows appeared would pass just as happily for a signature computed over the wrong bytes, the wrong owner name, or with a key that is not the one advertised — and each of those fails at a validating resolver rather than in the suite. So the central test re-derives the signing input from the **published DNSKEY RRset** (never from the private key rows, since a validator has only the DNSKEY) and verifies every RRSIG in the zone, across all three algorithms and both key types, over a zone containing multi-record RRsets, embedded names and out-of-band MX/SRV priorities.
+
+The rest covers: one RRSIG per multi-record RRset and its failure to verify over a subset, the KSK/ZSK role split and the single-key fallback, label-boundary zone confinement, re-signing replacing rather than accumulating signatures (including at names whose records were deleted), validity windows and original-TTL agreement, unsignable types being skipped and reported, DNSKEY/RRSIG being served under their own type codes, served RDATA being byte-identical to what was signed, generated keys carrying the algorithm they claim, RSA being refused, and the DS record matching the published DNSKEY.
+
+Unit tests in `src/dnssec.rs` cover the canonical form itself: name lowercasing and qualification, RFC 4034 §3.1.3 label counts, character-string chunking, per-type RDATA encoding, RRset order-independence, per-algorithm sign/verify round-trips, tamper detection, refusal to load key material that contradicts its label, and that stored algorithm names round-trip through `parse`.
+
 ### Security Regression Suites
 
 The `tests/security_*.rs` files each pin the behaviour one security finding requires, stated in observable terms and paired with a control that must stay green. They cover: the Do53 forwarder and iterative resolver response validation (`security_forwarder_test`, `security_resolver_test`), referral and glue bailiwick (`security_bailiwick_test`), the ACME issuer's CSR confinement, authorization, replay and expiry handling (`security_acme_test`), the enrollment portal's zone scoping and CSRF defences (`security_portal_test`), IPv4-mapped source classification (`security_scope_test`), open recursion and amplification (`security_open_resolver_test`), DHCP-supplied hostname validation (`security_dhcp_hostname_test`), stream-transport connection limits (`security_tcp_limits_test`, `security_dot_limits_test`), filesystem permissions and startup refusal of an unauthenticated routable gRPC bind (`security_local_access_test`), and constant-time secret comparison plus brute-force throttling (`security_auth_hardening_test`).
@@ -1330,7 +1367,7 @@ The Go client has two test layers:
 - **Unit tests** — Use an in-process mock gRPC server via `bufconn` to test all client methods, authentication token propagation, transport modes, error handling, and edge cases (idempotent close, lazy dial, custom dial options).
 - **Integration tests** — Gated behind the `integration` build tag. Each test starts a real Rolodex DNS server subprocess with a unique temporary directory, random ports, and isolated database. Tests cover record CRUD, wildcard filtering, forwarder configuration, RBL round-trip, cache flushing, Unix socket transport, authentication failure, default TTL behavior, concurrent clients (5 simultaneous), network scoping, DNS64, and TTL drift.
 
-The `make test` target runs the full test suite: lint, Go integration tests, Go unit tests, Rust integration tests (each test file explicitly: `integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`), all Rust tests via `cargo test` (which also covers the resolver suite above), and the JavaScript lint/integration/unit tests. Individual targets are available: `make go-integration-test`, `make go-test`, `make rust-integration-test`, `make rust-test`, `make js-integration-test`, `make js-test`. Use `make test-log` to capture the whole run to a timestamped log file.
+The `make test` target runs the full test suite: lint, Go integration tests, Go unit tests, Rust integration tests (each test file explicitly: `integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`, `dnssec_signing_test`), all Rust tests via `cargo test` (which also covers the resolver suite above), and the JavaScript lint/integration/unit tests. Individual targets are available: `make go-integration-test`, `make go-test`, `make rust-integration-test`, `make rust-test`, `make js-integration-test`, `make js-test`. Use `make test-log` to capture the whole run to a timestamped log file.
 
 ## Key Dependencies
 

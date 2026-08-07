@@ -755,7 +755,7 @@ enum Commands {
         /// The DNS zone to generate a key for (e.g. "example.com.")
         #[arg(short, long)]
         zone: String,
-        /// Algorithm: "ed25519", "ecdsa-p256", "ecdsa-p384", "rsa-sha256"
+        /// Algorithm: "ed25519", "ecdsa-p256", "ecdsa-p384"
         #[arg(short, long, default_value = "ed25519")]
         algorithm: String,
         /// Key type: "ZSK" or "KSK"

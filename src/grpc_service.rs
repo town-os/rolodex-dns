@@ -3,6 +3,7 @@ use crate::dns_server::DnsServer;
 use crate::rbl::{RblChecker, RblProvider};
 use crate::ttl_drift::{TtlDriftConfig as TtlDriftCfg, TtlDriftMode};
 use dashmap::DashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -37,6 +38,25 @@ const MAX_TRACKED_AUTH_SOURCES: usize = 65536;
 /// TCP (the only transport that authenticates), but failures must be counted
 /// against *something* rather than silently escaping the throttle.
 const UNKNOWN_PEER: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+
+/// TTL for the DNSKEY records `SignZone` publishes at the zone apex.
+const DNSKEY_TTL: u32 = 3600;
+
+/// Whether `name` sits at or beneath `zone`, matching on label boundaries.
+///
+/// `ends_with` alone would put `notexample.com.` inside `example.com.`, which
+/// during signing means signing another zone's records with this zone's key.
+fn name_in_zone(name: &str, zone: &str) -> bool {
+    let name = crate::db::normalize_name(name);
+    let zone = crate::db::normalize_name(zone);
+    if name == zone {
+        return true;
+    }
+    if zone == "." {
+        return true;
+    }
+    name.ends_with(&format!(".{}", zone))
+}
 
 /// Failed-authentication state for one source address.
 struct AuthFailures {
@@ -1587,21 +1607,19 @@ impl RolodexDnsService for RolodexDnsGrpcService {
             Status::invalid_argument(format!("invalid key type: {}", req.key_type))
         })?;
 
-        let key_pair = match algorithm {
-            crate::dnssec::DnssecAlgorithm::Ed25519 => {
-                crate::dnssec::generate_ed25519_key(&req.zone, key_type)
-                    .map_err(|e| Status::internal(format!("key generation failed: {}", e)))?
-            }
-            _ => {
-                // For non-Ed25519 algorithms, generate Ed25519 and label with requested algo
-                // (full multi-algorithm support would require additional ring integration)
-                let mut kp = crate::dnssec::generate_ed25519_key(&req.zone, key_type)
-                    .map_err(|e| Status::internal(format!("key generation failed: {}", e)))?;
-                kp.algorithm = algorithm;
-                kp.key_tag = crate::dnssec::compute_key_tag(algorithm, key_type, &kp.public_key);
-                kp
-            }
-        };
+        // An algorithm we cannot generate is refused outright. Generating
+        // Ed25519 and labelling it as the requested algorithm — the previous
+        // behaviour — produced a DNSKEY, a DS and a set of RRSIGs that all
+        // disagreed with the key material underneath them, which no validator
+        // accepts and nothing local reports.
+        if !algorithm.signing_supported() {
+            return Err(Status::invalid_argument(format!(
+                "algorithm {} is not supported; supported algorithms are Ed25519, ECDSA-P256-SHA256 and ECDSA-P384-SHA384",
+                algorithm.as_str()
+            )));
+        }
+        let key_pair = crate::dnssec::generate_key(&req.zone, algorithm, key_type)
+            .map_err(|e| Status::internal(format!("key generation failed: {}", e)))?;
 
         let id = self
             .db
@@ -1740,10 +1758,12 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("sign_zone");
 
+        let zone = crate::db::normalize_name(&req.zone);
+
         // Get all active keys for this zone
         let all_keys = self
             .db
-            .list_dnssec_keys(&req.zone)
+            .list_dnssec_keys(&zone)
             .map_err(|e| Status::internal(format!("failed to list keys: {}", e)))?;
 
         if all_keys.is_empty() {
@@ -1753,49 +1773,217 @@ impl RolodexDnsService for RolodexDnsGrpcService {
             }));
         }
 
-        // For each key, store a DNSKEY record in the DNS database
-        for key in &all_keys {
-            if !key.active {
+        // Load each active key's material. A key whose stored algorithm does not
+        // match its bytes is dropped here with a warning rather than signed
+        // with: a signature labelled with an algorithm it was not made by is
+        // worse than a missing one, because it fails at the validator instead of
+        // at the operator.
+        let mut warnings: Vec<String> = Vec::new();
+        let mut signing_keys: Vec<crate::dnssec::SigningKey> = Vec::new();
+        for key in all_keys.iter().filter(|k| k.active) {
+            let Some(algo) = crate::dnssec::DnssecAlgorithm::parse(&key.algorithm) else {
+                warnings.push(format!(
+                    "key {} has unknown algorithm {}",
+                    key.id, key.algorithm
+                ));
                 continue;
+            };
+            let Some(kt) = crate::dnssec::KeyType::parse(&key.key_type) else {
+                warnings.push(format!(
+                    "key {} has unknown key type {}",
+                    key.id, key.key_type
+                ));
+                continue;
+            };
+            match crate::dnssec::SigningKey::from_pkcs8(algo, kt, &key.private_key) {
+                Ok(loaded) => signing_keys.push(loaded),
+                Err(e) => warnings.push(format!(
+                    "key {} ({}) unusable: {}",
+                    key.id, key.algorithm, e
+                )),
             }
-            let algo = crate::dnssec::DnssecAlgorithm::parse(&key.algorithm)
-                .unwrap_or(crate::dnssec::DnssecAlgorithm::Ed25519);
-            let kt =
-                crate::dnssec::KeyType::parse(&key.key_type).unwrap_or(crate::dnssec::KeyType::ZSK);
+        }
 
-            // DNSKEY RDATA: flags protocol algorithm public_key_base64
-            let flags = kt.flags();
-            let pub_b64 =
-                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &key.public_key);
-            let dnskey_value = format!("{} 3 {} {}", flags, algo as u8, pub_b64);
+        if signing_keys.is_empty() {
+            return Ok(Response::new(SignZoneResponse {
+                success: false,
+                message: format!("no usable DNSSEC keys for zone: {}", warnings.join("; ")),
+            }));
+        }
 
-            // Remove old DNSKEY records for this zone and re-add
-            if let Err(e) =
-                self.db
-                    .remove_records(&req.zone, Some(RecordKind::DNSKEY), &dnskey_value)
-            {
-                return Err(Status::internal(format!(
-                    "failed to remove old DNSKEY: {}",
-                    e
-                )));
-            }
+        // Republish the DNSKEY RRset from scratch so a deleted or unusable key
+        // does not leave a DNSKEY behind advertising a key nothing signs with.
+        self.db
+            .remove_records(&zone, Some(RecordKind::DNSKEY), "")
+            .map_err(|e| Status::internal(format!("failed to clear DNSKEY RRset: {}", e)))?;
+        for key in &signing_keys {
+            let dnskey_value = format!(
+                "{} 3 {} {}",
+                key.key_type.flags(),
+                key.algorithm as u8,
+                base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    key.public_key()
+                ),
+            );
             self.db
                 .add_record(&crate::db::DnsRecord {
                     id: None,
-                    name: req.zone.clone(),
+                    name: zone.clone(),
                     record_type: RecordKind::DNSKEY,
                     value: dnskey_value,
-                    ttl: 3600,
+                    ttl: DNSKEY_TTL,
                     priority: 0,
                 })
                 .map_err(|e| Status::internal(format!("failed to store DNSKEY: {}", e)))?;
         }
 
-        info!("Signed zone {} ({} keys)", req.zone, all_keys.len());
+        // Collect the zone's records. The `*.` filter is a SQL LIKE, which also
+        // matches names that merely end in the zone's text ("notexample.com."
+        // for "example.com."), so the label-boundary check is redone in Rust.
+        let candidates = self
+            .db
+            .list_records(&format!("*.{}", zone), None)
+            .map_err(|e| Status::internal(format!("failed to list zone records: {}", e)))?;
+
+        // Group into RRsets: all records sharing an owner name and type.
+        let mut rrsets: HashMap<(String, RecordKind), Vec<crate::db::DnsRecord>> = HashMap::new();
+        // Every in-zone name that currently holds a signature. Collected from
+        // the records themselves rather than from the RRsets about to be signed:
+        // a name whose last record was deleted since the previous run still has
+        // an RRSIG, and it is exactly the one that must not survive.
+        let mut signed_names: HashSet<String> = HashSet::new();
+        for record in candidates {
+            if !name_in_zone(&record.name, &zone) {
+                continue;
+            }
+            // RFC 4035 §2.2: RRSIG RRsets are not themselves signed. The old
+            // signatures are cleared below.
+            if record.record_type == RecordKind::RRSIG {
+                signed_names.insert(record.name.clone());
+                continue;
+            }
+            signed_names.insert(record.name.clone());
+            rrsets
+                .entry((record.name.clone(), record.record_type))
+                .or_default()
+                .push(record);
+        }
+
+        let now = crate::dnssec::now_secs()
+            .map_err(|e| Status::internal(format!("cannot read the clock: {}", e)))?;
+        let inception = now.saturating_sub(crate::dnssec::RRSIG_INCEPTION_BACKDATE_SECS as u32);
+        let expiration = now.saturating_add(crate::dnssec::RRSIG_VALIDITY_SECS as u32);
+
+        // Clear every existing RRSIG in the zone before re-signing, so a record
+        // that has since been deleted does not keep its signature.
+        for name in &signed_names {
+            self.db
+                .remove_records(name, Some(RecordKind::RRSIG), "")
+                .map_err(|e| Status::internal(format!("failed to clear RRSIGs: {}", e)))?;
+        }
+
+        let mut signed_rrsets = 0usize;
+        let mut skipped: Vec<String> = Vec::new();
+        // Sort for a deterministic pass, so two runs over the same zone do the
+        // same work in the same order and a failure is reproducible.
+        let mut ordered: Vec<((String, RecordKind), Vec<crate::db::DnsRecord>)> =
+            rrsets.into_iter().collect();
+        ordered.sort_by(|a, b| (&a.0.0, a.0.1.wire_type()).cmp(&(&b.0.0, b.0.1.wire_type())));
+
+        for ((owner, kind), records) in ordered {
+            // A type with no canonical wire encoding cannot be signed; say so
+            // rather than emitting a signature over an invented format.
+            if records
+                .iter()
+                .any(|r| crate::dnssec::canonical_rdata(r).is_none())
+            {
+                skipped.push(format!("{} {}", owner, kind.as_str()));
+                continue;
+            }
+
+            // Every RR in an RRset shares one TTL. Where the stored rows
+            // disagree the smallest wins, because that is the only choice that
+            // cannot outlive what an operator asked to be cached.
+            let original_ttl = records.iter().map(|r| r.ttl).min().unwrap_or(DNSKEY_TTL);
+
+            // RFC 4035 §2.1: the DNSKEY RRset is signed by the KSK; everything
+            // else by the ZSK. With only one kind of key present, it does both.
+            let is_apex_dnskey = kind == RecordKind::DNSKEY && owner == zone;
+            let wanted = if is_apex_dnskey {
+                crate::dnssec::KeyType::KSK
+            } else {
+                crate::dnssec::KeyType::ZSK
+            };
+            let mut signers: Vec<&crate::dnssec::SigningKey> = signing_keys
+                .iter()
+                .filter(|k| k.key_type == wanted)
+                .collect();
+            if signers.is_empty() {
+                signers = signing_keys.iter().collect();
+            }
+
+            for key in signers {
+                let value = crate::dnssec::sign_rrset(
+                    key,
+                    &crate::dnssec::RrsetToSign {
+                        signer_zone: &zone,
+                        owner: &owner,
+                        type_covered: kind,
+                        original_ttl,
+                        rrset: &records,
+                        inception,
+                        expiration,
+                    },
+                )
+                .map_err(|e| {
+                    Status::internal(format!("failed to sign {} {}: {}", owner, kind.as_str(), e))
+                })?;
+
+                self.db
+                    .add_record(&crate::db::DnsRecord {
+                        id: None,
+                        name: owner.clone(),
+                        record_type: RecordKind::RRSIG,
+                        value,
+                        ttl: original_ttl,
+                        priority: 0,
+                    })
+                    .map_err(|e| Status::internal(format!("failed to store RRSIG: {}", e)))?;
+            }
+            signed_rrsets += 1;
+        }
+
+        // Signing rewrites records, so the answer cache must not keep serving
+        // the unsigned versions.
+        self.dns_server.flush_cache();
+
+        info!(
+            "Signed zone {} ({} keys, {} RRsets, {} skipped)",
+            zone,
+            signing_keys.len(),
+            signed_rrsets,
+            skipped.len()
+        );
+
+        let mut message = String::new();
+        if !skipped.is_empty() {
+            message.push_str(&format!(
+                "skipped {} RRset(s) with no canonical wire form: {}",
+                skipped.len(),
+                skipped.join(", ")
+            ));
+        }
+        if !warnings.is_empty() {
+            if !message.is_empty() {
+                message.push_str("; ");
+            }
+            message.push_str(&warnings.join("; "));
+        }
 
         Ok(Response::new(SignZoneResponse {
             success: true,
-            message: String::new(),
+            message,
         }))
     }
 
