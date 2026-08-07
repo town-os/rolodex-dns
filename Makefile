@@ -105,6 +105,7 @@ rust-integration-test: build ## Run each Rust integration test file
 	cargo test --test dhcp_integration_test
 	cargo test --test acme_issuer_test
 	cargo test --test auto_resolution_test
+	cargo test --test metrics_test
 
 build: ## Compile binaries for TARGET (debug natively; cross-compiled release for a foreign TARGET)
 	@$(if $(CROSS),make/cross.sh build $(BUILD_ARCH),cargo build)

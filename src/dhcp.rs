@@ -41,6 +41,15 @@ pub struct DhcpServer {
     config: DhcpRuntimeConfig,
 }
 
+/// Indices into [`crate::metrics::DHCP_MESSAGES`].
+const DHCP_DISCOVER: usize = 0;
+const DHCP_OFFER: usize = 1;
+const DHCP_REQUEST: usize = 2;
+const DHCP_ACK: usize = 3;
+const DHCP_RELEASE: usize = 4;
+const DHCP_DECLINE: usize = 5;
+const DHCP_INFORM: usize = 6;
+
 impl DhcpServer {
     pub fn new(
         db: Database,
@@ -96,6 +105,7 @@ impl DhcpServer {
         let interval = Duration::from_secs(self.config.sweep_interval);
         loop {
             tokio::time::sleep(interval).await;
+            crate::metrics::metrics().dhcp_sweeps.inc();
             match self.db.sweep_expired_leases(self.config.reclaim_timeout) {
                 Ok(expired) => {
                     for lease in &expired {
@@ -135,14 +145,27 @@ impl DhcpServer {
         let mac = format_mac(msg.chaddr());
 
         let reply = match msg_type {
-            Some(MessageType::Discover) => self.handle_discover(msg, &mac)?,
-            Some(MessageType::Request) => self.handle_request(msg, &mac)?,
+            Some(MessageType::Discover) => {
+                crate::metrics::metrics().dhcp_messages.inc(DHCP_DISCOVER);
+                self.handle_discover(msg, &mac)?
+            }
+            Some(MessageType::Request) => {
+                crate::metrics::metrics().dhcp_messages.inc(DHCP_REQUEST);
+                self.handle_request(msg, &mac)?
+            }
             Some(MessageType::Release) => {
+                crate::metrics::metrics().dhcp_messages.inc(DHCP_RELEASE);
                 self.handle_release(msg, &mac).await?;
                 None
             }
             Some(MessageType::Decline) => {
+                crate::metrics::metrics().dhcp_messages.inc(DHCP_DECLINE);
                 self.handle_decline(msg, &mac).await?;
+                None
+            }
+            Some(MessageType::Inform) => {
+                crate::metrics::metrics().dhcp_messages.inc(DHCP_INFORM);
+                debug!("Ignoring DHCP INFORM from {}", mac);
                 None
             }
             _ => {
@@ -152,6 +175,16 @@ impl DhcpServer {
         };
 
         if let Some(reply) = reply {
+            // The reply type mirrors the request: DISCOVER is answered with an
+            // OFFER and REQUEST with an ACK, so a divergence between the two
+            // counters is a request that found no address.
+            match msg_type {
+                Some(MessageType::Discover) => {
+                    crate::metrics::metrics().dhcp_messages.inc(DHCP_OFFER)
+                }
+                Some(MessageType::Request) => crate::metrics::metrics().dhcp_messages.inc(DHCP_ACK),
+                _ => {}
+            }
             send_reply(socket, &reply, src).await?;
         }
 
@@ -183,6 +216,7 @@ impl DhcpServer {
                 Some(a) => a,
                 None => {
                     warn!("DHCP DISCOVER from {} but no IPs available", mac);
+                    crate::metrics::metrics().dhcp_allocation_failures.inc();
                     return Ok(None);
                 }
             }

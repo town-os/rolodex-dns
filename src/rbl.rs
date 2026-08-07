@@ -6,6 +6,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
+/// Indices into [`crate::metrics::BLOCK_KINDS`], naming which blocklist a
+/// provider lookup belongs to.
+const BLOCK_RBL_PROVIDER: usize = 0;
+const BLOCK_DNSBL_PROVIDER: usize = 2;
+
+/// Outcome indices for the second dimension of
+/// [`crate::metrics::Metrics::blocklist_lookups`].
+const LOOKUP_LISTED: usize = 0;
+const LOOKUP_NOT_LISTED: usize = 1;
+const LOOKUP_ERROR: usize = 2;
+
 /// A cached RBL lookup result.
 #[derive(Debug, Clone)]
 struct CacheEntry {
@@ -311,6 +322,7 @@ impl RblChecker {
         }
         // Outbound :53 is filtered — skip the doomed lookups (see the flag field).
         if !self.resolver_available.load(Ordering::Relaxed) {
+            crate::metrics::metrics().blocklist_skipped.inc();
             return false;
         }
 
@@ -319,7 +331,7 @@ impl RblChecker {
             .iter()
             .filter(|p| p.enabled)
             .map(|p| (format!("{}/{}", ip, p.zone), build_rbl_query(ip, &p.zone)));
-        self.check_cached_or_fill(lookups)
+        self.check_cached_or_fill(lookups, BLOCK_RBL_PROVIDER)
     }
 
     /// Returns the cached verdict for `cache_key`: `Some(true)` fresh positive,
@@ -347,7 +359,11 @@ impl RblChecker {
     /// [`fill_cache_async`](Self::fill_cache_async)); the current query is NOT
     /// blocked on the network — a cold name is allowed now and its verdict is
     /// served from cache on a later query once the lookup lands.
-    fn check_cached_or_fill(&self, lookups: impl IntoIterator<Item = (String, String)>) -> bool {
+    fn check_cached_or_fill(
+        &self,
+        lookups: impl IntoIterator<Item = (String, String)>,
+        kind: usize,
+    ) -> bool {
         let mut misses = Vec::new();
         for (cache_key, query) in lookups {
             match self.cached_verdict(&cache_key) {
@@ -358,7 +374,7 @@ impl RblChecker {
         }
         // No warm positive: answer now, fill the cold verdicts in the background.
         for (cache_key, query) in misses {
-            self.fill_cache_async(cache_key, query);
+            self.fill_cache_async(cache_key, query, kind);
         }
         false
     }
@@ -367,7 +383,7 @@ impl RblChecker {
     /// a background task that resolves `query` and populates the result cache
     /// (positive with the RBL TTL, negative for 5 minutes; errors are left
     /// uncached so the next query retries). The hot path never awaits this.
-    fn fill_cache_async(&self, cache_key: String, query: String) {
+    fn fill_cache_async(&self, cache_key: String, query: String, kind: usize) {
         // Dedup: if a lookup for this key is already running, don't fan out.
         if self.inflight.insert(cache_key.clone(), ()).is_some() {
             return;
@@ -379,6 +395,9 @@ impl RblChecker {
             match resolver.lookup_rbl(&query).await {
                 Ok(Some(ttl)) => {
                     debug!("RBL async fill: {} listed (TTL: {})", query, ttl);
+                    crate::metrics::metrics()
+                        .blocklist_lookups
+                        .inc(kind, LOOKUP_LISTED);
                     cache.insert(
                         cache_key.clone(),
                         CacheEntry {
@@ -388,6 +407,9 @@ impl RblChecker {
                     );
                 }
                 Ok(None) => {
+                    crate::metrics::metrics()
+                        .blocklist_lookups
+                        .inc(kind, LOOKUP_NOT_LISTED);
                     cache.insert(
                         cache_key.clone(),
                         CacheEntry {
@@ -398,6 +420,9 @@ impl RblChecker {
                 }
                 Err(e) => {
                     debug!("RBL async lookup failed for {}: {}", query, e);
+                    crate::metrics::metrics()
+                        .blocklist_lookups
+                        .inc(kind, LOOKUP_ERROR);
                 }
             }
             inflight.remove(&cache_key);
@@ -420,6 +445,7 @@ impl RblChecker {
         }
         // Outbound :53 is filtered — skip the doomed lookups (see the flag field).
         if !self.resolver_available.load(Ordering::Relaxed) {
+            crate::metrics::metrics().blocklist_skipped.inc();
             return false;
         }
 
@@ -435,7 +461,7 @@ impl RblChecker {
                 format!("{}.{}", normalized, p.zone),
             )
         });
-        self.check_cached_or_fill(lookups)
+        self.check_cached_or_fill(lookups, BLOCK_DNSBL_PROVIDER)
     }
 
     /// Updates the RBL configuration.
@@ -477,6 +503,12 @@ impl RblChecker {
         self.cache.clear();
     }
 
+    /// Number of entries in the shared RBL/DNSBL result cache. Sampled by the
+    /// Prometheus collector; synchronous because a scrape must not await.
+    pub fn cache_entries(&self) -> usize {
+        self.cache.len()
+    }
+
     /// Returns whether RBL checking is enabled.
     pub async fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Relaxed)
@@ -495,7 +527,7 @@ impl RblChecker {
             .iter()
             .filter(|p| p.enabled)
             .map(|p| (format!("{}/{}", ip, p.zone), build_rbl_query(ip, &p.zone)));
-        self.check_cached_or_fill(lookups)
+        self.check_cached_or_fill(lookups, BLOCK_RBL_PROVIDER)
     }
 }
 

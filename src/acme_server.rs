@@ -45,6 +45,10 @@ use tracing::{error, info};
 /// How long orders and authorizations remain valid before expiry.
 const ORDER_TTL_SECS: i64 = 7 * 24 * 3600;
 
+/// Outcome indices for [`crate::metrics::Metrics::acme_validations`].
+const VALIDATION_VALID: usize = 0;
+const VALIDATION_INVALID: usize = 1;
+
 /// Shared state for the ACME server.
 #[derive(Clone)]
 pub struct AcmeState {
@@ -722,6 +726,11 @@ async fn respond_challenge_inner(
         .any(|r| r.value.trim_matches('"') == expected_txt);
 
     let now = OffsetDateTime::now_utc().unix_timestamp();
+    crate::metrics::metrics().acme_validations.inc(if matched {
+        VALIDATION_VALID
+    } else {
+        VALIDATION_INVALID
+    });
     if matched {
         state
             .db
@@ -827,6 +836,7 @@ async fn finalize_inner(state: &AcmeState, id: &str, body: &[u8]) -> Result<Resp
 
     let issued = ca::issue_leaf(&state.db, &zone, &csr_pem, state.leaf_validity_days)
         .map_err(|e| AcmeError::malformed(format!("CSR signing failed: {}", e)))?;
+    crate::metrics::metrics().acme_issued.inc();
 
     let cert_id = state
         .db

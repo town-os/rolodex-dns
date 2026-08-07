@@ -67,7 +67,11 @@ pub async fn serve_doh(
 
 /// Handles POST /dns-query with application/dns-message body.
 async fn handle_doh_post(State(state): State<DohState>, body: Bytes) -> impl IntoResponse {
-    let response = match state.dns_server.handle_query(&body).await {
+    let response = match state
+        .dns_server
+        .handle_query_proto(&body, None, None, crate::metrics::Proto::Doh)
+        .await
+    {
         Ok(resp) => resp,
         Err(e) => {
             error!("DoH POST error: {}", e);
@@ -106,7 +110,11 @@ async fn handle_doh_get(
         Err(_) => return (StatusCode::BAD_REQUEST, "invalid base64url encoding").into_response(),
     };
 
-    let response = match state.dns_server.handle_query(&query_data).await {
+    let response = match state
+        .dns_server
+        .handle_query_proto(&query_data, None, None, crate::metrics::Proto::Doh)
+        .await
+    {
         Ok(resp) => resp,
         Err(e) => {
             error!("DoH GET error: {}", e);

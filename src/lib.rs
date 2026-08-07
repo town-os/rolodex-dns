@@ -20,6 +20,7 @@ pub mod doq_server;
 pub mod dot_server;
 pub mod edns;
 pub mod grpc_service;
+pub mod metrics;
 pub mod portal;
 pub mod probe;
 pub mod rbl;

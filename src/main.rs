@@ -135,7 +135,7 @@ async fn main() -> Result<()> {
         db.clone(),
         rbl.clone(),
         forwarders,
-        Some(dns_cache),
+        Some(Arc::clone(&dns_cache)),
         dns64_prefix,
         config.security.qname_case_randomization,
     ));
@@ -479,6 +479,25 @@ async fn main() -> Result<()> {
                 }
             }
             Err(e) => error!("Failed to initialize DoQ TLS: {}", e),
+        }
+    }
+
+    // Spawn the Prometheus metrics endpoint if configured
+    if let Some(ref metrics_config) = config.metrics {
+        let metrics_binds = rolodex_dns::config::resolve_bind_addrs(&metrics_config.bind)
+            .context("resolving metrics bind address")?;
+        for metrics_bind in metrics_binds {
+            let state = rolodex_dns::metrics::MetricsState {
+                db: db.clone(),
+                dns_server: Arc::clone(&dns_server),
+                dns_cache: Some(Arc::clone(&dns_cache)),
+                rbl: rbl.clone(),
+            };
+            tokio::spawn(async move {
+                if let Err(e) = rolodex_dns::metrics::serve_metrics(&metrics_bind, state).await {
+                    error!("metrics server error on {}: {}", metrics_bind, e);
+                }
+            });
         }
     }
 

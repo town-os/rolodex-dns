@@ -131,8 +131,18 @@ impl RolodexDnsGrpcService {
         if token == self.shared_secret {
             Ok(())
         } else {
+            crate::metrics::metrics().grpc_auth_failures.inc();
             Err(Status::unauthenticated("invalid auth token"))
         }
+    }
+
+    /// Counts one control-plane call against `method`.
+    ///
+    /// Called by each RPC alongside its `check_auth`. The label set is bounded by
+    /// the service definition — every value is a literal in this file — so it
+    /// cannot grow at runtime.
+    fn count_rpc(&self, method: &'static str) {
+        crate::metrics::metrics().grpc_requests.inc(method);
     }
 }
 
@@ -144,6 +154,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<AddRecordResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("add_record");
 
         let record = req
             .record
@@ -200,6 +211,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<RemoveRecordResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("remove_record");
 
         let record_type = RecordKind::from_proto_i32(req.record_type);
 
@@ -248,6 +260,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<ListRecordsResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("list_records");
 
         let record_type = if req.filter_by_type {
             RecordKind::from_proto_i32(req.record_type_filter)
@@ -281,6 +294,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<SetForwarderResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("set_forwarders");
 
         let mut addrs = Vec::new();
         for f in &req.forwarders {
@@ -305,6 +319,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<SetRblConfigResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("set_rbl_config");
 
         let providers: Vec<RblProvider> = req
             .providers
@@ -330,6 +345,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<GetRblConfigResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("get_rbl_config");
 
         let (enabled, providers) = self.rbl.get_config().await;
         let proto_providers = providers
@@ -352,6 +368,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<SetDnsblConfigResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("set_dnsbl_config");
 
         let providers: Vec<RblProvider> = req
             .providers
@@ -380,6 +397,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<GetDnsblConfigResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("get_dnsbl_config");
 
         let (enabled, providers) = self.rbl.get_dnsbl_config().await;
         let proto_providers = providers
@@ -402,6 +420,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<FlushCacheResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("flush_cache");
 
         self.rbl.flush_cache().await;
         info!("Flushed caches");
@@ -418,6 +437,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<CreateNetworkScopeResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("create_network_scope");
 
         let scope = req
             .scope
@@ -469,6 +489,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<DeleteNetworkScopeResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("delete_network_scope");
 
         if req.name.is_empty() {
             return Err(Status::invalid_argument("scope name is required"));
@@ -499,6 +520,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<ListNetworkScopesResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("list_network_scopes");
 
         match self.db.list_network_scopes() {
             Ok(scopes) => {
@@ -527,6 +549,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<JoinNetworkResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("join_network");
 
         if req.ip_address.is_empty() {
             return Err(Status::invalid_argument("ip_address is required"));
@@ -571,6 +594,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<LeaveNetworkResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("leave_network");
 
         if req.ip_address.is_empty() {
             return Err(Status::invalid_argument("ip_address is required"));
@@ -601,6 +625,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<GetNetworkAssociationsResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("get_network_associations");
 
         let scope_filter = if req.scope_name.is_empty() {
             None
@@ -635,6 +660,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<AddScopedRecordResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("add_scoped_record");
 
         if req.scope_name.is_empty() {
             return Err(Status::invalid_argument("scope_name is required"));
@@ -698,6 +724,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<RemoveScopedRecordResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("remove_scoped_record");
 
         if req.scope_name.is_empty() {
             return Err(Status::invalid_argument("scope_name is required"));
@@ -756,6 +783,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<ListScopedRecordsResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("list_scoped_records");
 
         if req.scope_name.is_empty() {
             return Err(Status::invalid_argument("scope_name is required"));
@@ -799,6 +827,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<GetSearchDomainsResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("get_search_domains");
 
         if req.ip_address.is_empty() {
             return Err(Status::invalid_argument("ip_address is required"));
@@ -825,6 +854,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<AddAuthoritativeZoneResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("add_authoritative_zone");
 
         if req.zone.is_empty() {
             return Err(Status::invalid_argument("zone is required"));
@@ -851,6 +881,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<RemoveAuthoritativeZoneResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("remove_authoritative_zone");
 
         if req.zone.is_empty() {
             return Err(Status::invalid_argument("zone is required"));
@@ -881,6 +912,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<ListAuthoritativeZonesResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("list_authoritative_zones");
 
         match self.db.list_authoritative_zones() {
             Ok(zones) => Ok(Response::new(ListAuthoritativeZonesResponse { zones })),
@@ -901,6 +933,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<GetCacheStatsResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("get_cache_stats");
 
         let total = self.db.cache_count().unwrap_or(0);
         Ok(Response::new(GetCacheStatsResponse {
@@ -916,8 +949,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<FlushDnsCacheResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("flush_dns_cache");
 
-        self.dns_server.flush_cache();
+        self.dns_server.flush_cache_explicit();
         match self.db.cache_flush() {
             Ok(_) => {
                 info!("Flushed DNS cache");
@@ -943,6 +977,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<SetTtlDriftConfigResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("set_ttl_drift_config");
 
         if let Some(config) = &req.config {
             let mode = match config.mode.as_str() {
@@ -976,6 +1011,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<GetTtlDriftConfigResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("get_ttl_drift_config");
 
         let drift = self.dns_server.get_ttl_drift_config().await;
         let (mode_str, fixed_adj, log_mult) = match &drift.mode {
@@ -1003,6 +1039,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<GetQueryLatencyStatsResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("get_query_latency_stats");
 
         match self.db.get_latency_stats() {
             Ok(stats) => {
@@ -1035,6 +1072,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<AddLocalRblEntryResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("add_local_rbl_entry");
 
         let entry = req
             .entry
@@ -1065,6 +1103,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<RemoveLocalRblEntryResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("remove_local_rbl_entry");
 
         if req.name.is_empty() {
             return Err(Status::invalid_argument("name is required"));
@@ -1095,6 +1134,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<ListLocalRblEntriesResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("list_local_rbl_entries");
 
         match self.db.list_local_rbl_entries() {
             Ok(entries) => {
@@ -1122,6 +1162,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<AddDnsblAllowlistEntryResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("add_dnsbl_allowlist_entry");
 
         let entry = req
             .entry
@@ -1155,6 +1196,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<RemoveDnsblAllowlistEntryResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("remove_dnsbl_allowlist_entry");
 
         if req.name.trim().is_empty() {
             return Err(Status::invalid_argument("name is required"));
@@ -1185,6 +1227,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<ListDnsblAllowlistEntriesResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("list_dnsbl_allowlist_entries");
 
         match self.db.list_dnsbl_allowlist_entries() {
             Ok(entries) => {
@@ -1216,6 +1259,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<SetDotConfigResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("set_dot_config");
         info!("DoT config set: {:?}", req.config);
         Ok(Response::new(SetDotConfigResponse {
             success: true,
@@ -1229,6 +1273,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<GetDotConfigResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("get_dot_config");
         Ok(Response::new(GetDotConfigResponse { config: None }))
     }
 
@@ -1238,6 +1283,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<SetDohConfigResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("set_doh_config");
         info!("DoH config set: {:?}", req.config);
         Ok(Response::new(SetDohConfigResponse {
             success: true,
@@ -1251,6 +1297,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<GetDohConfigResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("get_doh_config");
         Ok(Response::new(GetDohConfigResponse { config: None }))
     }
 
@@ -1260,6 +1307,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<SetDoqConfigResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("set_doq_config");
         info!("DoQ config set: {:?}", req.config);
         Ok(Response::new(SetDoqConfigResponse {
             success: true,
@@ -1273,6 +1321,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<GetDoqConfigResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("get_doq_config");
         Ok(Response::new(GetDoqConfigResponse { config: None }))
     }
 
@@ -1282,6 +1331,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<SetProxyConfigResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("set_proxy_config");
 
         let proxy = req.config.map(|cfg| crate::doh_proxy::ProxyConfig {
             url: cfg.url,
@@ -1308,6 +1358,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<GetProxyConfigResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("get_proxy_config");
 
         let config = self
             .dns_server
@@ -1331,6 +1382,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<GenerateDnssecKeyResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("generate_dnssec_key");
 
         let algorithm = crate::dnssec::DnssecAlgorithm::parse(&req.algorithm).ok_or_else(|| {
             Status::invalid_argument(format!("unsupported algorithm: {}", req.algorithm))
@@ -1401,6 +1453,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<ListDnssecKeysResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("list_dnssec_keys");
 
         let keys = self
             .db
@@ -1431,6 +1484,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<DeleteDnssecKeyResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("delete_dnssec_key");
 
         let deleted = self
             .db
@@ -1457,6 +1511,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<GetDsRecordsResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("get_ds_records");
 
         let keys = self
             .db
@@ -1483,6 +1538,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<SignZoneResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("sign_zone");
 
         // Get all active keys for this zone
         let all_keys = self
@@ -1553,6 +1609,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<GenerateTlsaRecordResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("generate_tlsa_record");
 
         let tlsa_value = crate::dane::generate_tlsa_record(
             &req.cert_pem,
@@ -1590,6 +1647,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<ListTlsaRecordsResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("list_tlsa_records");
 
         // Query for TLSA records matching _*._*.{domain} pattern
         let filter = format!("*.{}", req.domain);
@@ -1620,6 +1678,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<GenerateDaneRootCaResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("generate_dane_root_ca");
 
         let (cert_pem, key_pem) = crate::dane::generate_dane_root_ca(&req.name)
             .map_err(|e| Status::internal(format!("CA generation failed: {}", e)))?;
@@ -1643,6 +1702,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<RequestAcmeCertResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("request_acme_cert");
 
         // Set up the DNS-01 challenge TXT record
         // In a full implementation, this would interact with an ACME provider
@@ -1668,6 +1728,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<GetAcmeStatusResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("get_acme_status");
 
         // Check if there's a certificate in the database
         match self.db.get_acme_certificate(&req.domain) {
@@ -1720,6 +1781,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<SetDns64ConfigResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("set_dns64_config");
         info!("DNS64 config set: {:?}", req.config);
         Ok(Response::new(SetDns64ConfigResponse {
             success: true,
@@ -1733,6 +1795,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<GetDns64ConfigResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("get_dns64_config");
         Ok(Response::new(GetDns64ConfigResponse {
             config: Some(Dns64Config {
                 enabled: false,
@@ -1751,6 +1814,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<AddDhcpPoolResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("add_dhcp_pool");
         let pool = req
             .pool
             .ok_or_else(|| Status::invalid_argument("pool is required"))?;
@@ -1796,6 +1860,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<RemoveDhcpPoolResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("remove_dhcp_pool");
         match self.db.remove_dhcp_pool(req.pool_id) {
             Ok(true) => {
                 info!("Removed DHCP pool {}", req.pool_id);
@@ -1821,6 +1886,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<ListDhcpPoolsResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("list_dhcp_pools");
         let scope_filter = if req.scope_name.is_empty() {
             None
         } else {
@@ -1856,6 +1922,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<ListDhcpLeasesResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("list_dhcp_leases");
         let scope_filter = if req.scope_name.is_empty() {
             None
         } else {
@@ -1889,6 +1956,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<DeleteDhcpLeaseResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("delete_dhcp_lease");
         if req.mac.is_empty() {
             return Err(Status::invalid_argument("mac is required"));
         }
@@ -1921,6 +1989,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<AddScopeRblProviderResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("add_scope_rbl_provider");
         let provider = req
             .provider
             .ok_or_else(|| Status::invalid_argument("provider is required"))?;
@@ -1953,6 +2022,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<RemoveScopeRblProviderResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("remove_scope_rbl_provider");
         match self
             .db
             .remove_scope_rbl_provider(&req.scope_name, &req.zone)
@@ -1984,6 +2054,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<ListScopeRblProvidersResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("list_scope_rbl_providers");
         match self.db.list_scope_rbl_providers(&req.scope_name) {
             Ok(providers) => {
                 let proto_providers = providers
@@ -2012,6 +2083,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<AddScopeTldResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("add_scope_tld");
         if req.scope_name.is_empty() {
             return Err(Status::invalid_argument("scope_name is required"));
         }
@@ -2070,6 +2142,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<RemoveScopeTldResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("remove_scope_tld");
         if req.scope_name.is_empty() {
             return Err(Status::invalid_argument("scope_name is required"));
         }
@@ -2107,6 +2180,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<ListScopeTldsResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("list_scope_tlds");
         if req.scope_name.is_empty() {
             return Err(Status::invalid_argument("scope_name is required"));
         }
@@ -2122,6 +2196,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<SetScopeTldForwardersResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("set_scope_tld_forwarders");
         if req.scope_name.is_empty() {
             return Err(Status::invalid_argument("scope_name is required"));
         }
@@ -2158,6 +2233,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<ListScopeTldForwardersResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("list_scope_tld_forwarders");
         if req.scope_name.is_empty() {
             return Err(Status::invalid_argument("scope_name is required"));
         }
@@ -2173,6 +2249,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<ListScopeTldListenersResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("list_scope_tld_listeners");
         if req.scope_name.is_empty() {
             return Err(Status::invalid_argument("scope_name is required"));
         }
@@ -2201,6 +2278,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<SetDhcpCertOptionResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("set_dhcp_cert_option");
         let opt = req
             .option
             .ok_or_else(|| Status::invalid_argument("option is required"))?;
@@ -2238,6 +2316,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<RemoveDhcpCertOptionResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("remove_dhcp_cert_option");
         match self
             .db
             .remove_dhcp_cert_option(&req.scope_name, req.option_code)
@@ -2269,6 +2348,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<ListDhcpCertOptionsResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("list_dhcp_cert_options");
         match self.db.list_dhcp_cert_options(&req.scope_name) {
             Ok(options) => {
                 let proto_opts = options
@@ -2298,6 +2378,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<EnsureZoneCaResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("ensure_zone_ca");
 
         crate::ca::ensure_root_ca(&self.db, &self.acme_root_cn)
             .map_err(|e| Status::internal(format!("failed to ensure root CA: {}", e)))?;
@@ -2330,6 +2411,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<CreateEabCredentialResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("create_eab_credential");
 
         // Ensure the per-zone CA exists so issuance against this EAB can succeed.
         crate::ca::ensure_root_ca(&self.db, &self.acme_root_cn)
@@ -2362,6 +2444,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<RemoveEabCredentialResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("remove_eab_credential");
         match self.db.remove_eab(&req.kid) {
             Ok(removed) => Ok(Response::new(RemoveEabCredentialResponse {
                 success: removed,
@@ -2381,6 +2464,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<ListAcmeAccountsResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("list_acme_accounts");
         match self.db.list_acme_accounts() {
             Ok(accounts) => {
                 let accounts = accounts
@@ -2404,6 +2488,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     ) -> Result<Response<ListAcmeCertificatesResponse>, Status> {
         let req = request.into_inner();
         self.check_auth(&req.auth_token)?;
+        self.count_rpc("list_acme_certificates");
         let zone = if req.zone.is_empty() {
             None
         } else {

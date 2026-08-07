@@ -42,6 +42,11 @@ const MAX_UDP_SIZE: usize = 4096;
 const DEFAULT_QUERY_TIMEOUT_MS: u64 = 1500;
 /// Maximum number of delegation hops within a single name resolution.
 const MAX_REFERRALS: usize = 30;
+
+/// Outcome indices for [`crate::metrics::Metrics::resolver_priming`].
+const PRIMING_SUCCESS: usize = 0;
+const PRIMING_FAILURE: usize = 1;
+
 /// Maximum number of CNAME indirections we will follow.
 const MAX_CNAME_CHAIN: usize = 16;
 /// Maximum recursion depth (CNAME chasing + glue-less NS resolution).
@@ -357,6 +362,12 @@ impl IterativeResolver {
         &self.records
     }
 
+    /// Per-nameserver `(address, EMA latency ms, queries sent)` — the same
+    /// figures server selection balances on, exposed for metrics.
+    pub fn latency_stats(&self) -> Vec<(SocketAddr, f64, u64)> {
+        self.latency.all_stats()
+    }
+
     /// The TTL applied where a record or negative carries none of its own.
     pub fn default_ttl(&self) -> u32 {
         self.default_ttl
@@ -402,6 +413,7 @@ impl IterativeResolver {
         qtype: RecordType,
         qclass: DNSClass,
     ) -> Result<Resolution> {
+        crate::metrics::metrics().resolver_lookups.inc();
         let mut cname_seen: Vec<Name> = Vec::new();
         let budget = QueryBudget::new(MAX_QUERIES_PER_RESOLUTION);
         self.resolve_inner(name, qtype, qclass, 0, &mut cname_seen, &budget)
@@ -483,6 +495,9 @@ impl IterativeResolver {
         let addrs = collect_glue(&response, &ns_names);
         if addrs.is_empty() {
             debug!("root priming returned no usable glue; keeping the static hints");
+            crate::metrics::metrics()
+                .resolver_priming
+                .inc(PRIMING_FAILURE);
             return;
         }
 
@@ -491,6 +506,9 @@ impl IterativeResolver {
         self.cache_glue(&collect_glue_records(&response, &ns_names));
 
         debug!("primed root zone: {} servers, ttl {}", addrs.len(), ttl);
+        crate::metrics::metrics()
+            .resolver_priming
+            .inc(PRIMING_SUCCESS);
         self.delegations.insert(&Name::root(), addrs, ttl);
     }
 
@@ -619,6 +637,7 @@ impl IterativeResolver {
                         bail!("CNAME chain too long resolving {}", name);
                     }
                     cname_seen.push(target.clone());
+                    crate::metrics::metrics().resolver_cname_hops.inc();
                     let mut accumulated = records;
                     let sub = Box::pin(self.resolve_inner(
                         &target,
@@ -646,6 +665,7 @@ impl IterativeResolver {
                     ns_targets,
                     ttl,
                 } => {
+                    crate::metrics::metrics().resolver_referrals.inc();
                     let zone_key = zone.to_ascii().to_lowercase();
                     if !visited_zones.insert(zone_key) {
                         bail!("delegation loop at zone {} resolving {}", zone, name);
@@ -763,6 +783,7 @@ impl IterativeResolver {
             // Every packet counts against the lookup's total allowance, so a
             // pathological delegation chain cannot fan out into thousands of queries.
             if !budget.claim() {
+                crate::metrics::metrics().resolver_budget_exhausted.inc();
                 bail!(
                     "query budget ({}) exhausted resolving {}",
                     MAX_QUERIES_PER_RESOLUTION,
@@ -940,6 +961,7 @@ impl IterativeResolver {
             bail!("response id mismatch from {}", server);
         }
         if msg.truncated() {
+            crate::metrics::metrics().resolver_tcp_retries.inc();
             return self.query_tcp(target, query, id, qname).await;
         }
         validate_question(&msg, qname)?;
