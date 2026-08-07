@@ -8,8 +8,10 @@
 //! is the default resolution mode.
 //!
 //! Queries are sent with the recursion-desired bit cleared (iterative
-//! mode). Responses are validated by transaction id and question name to
-//! resist off-path spoofing. UDP is used first, with automatic TCP
+//! mode). Responses are validated by transaction id and by the full
+//! question (name, type, and class) to resist off-path spoofing, and the
+//! UDP query socket is connected to the nameserver so the kernel drops
+//! datagrams from any other source. UDP is used first, with automatic TCP
 //! fallback when a response is truncated.
 
 use anyhow::{Context, Result, bail};
@@ -791,7 +793,10 @@ impl IterativeResolver {
                 );
             }
             let started = Instant::now();
-            match self.query_one(server, &query, id, name).await {
+            match self
+                .query_one(server, &query, id, name, qtype, qclass)
+                .await
+            {
                 Ok(msg) => {
                     self.note_success(server, started.elapsed().as_secs_f64() * 1000.0);
                     return Ok(msg);
@@ -932,13 +937,15 @@ impl IterativeResolver {
     }
 
     /// Sends a single query over UDP (falling back to TCP on truncation) and
-    /// validates the response transaction id and question name.
+    /// validates the response transaction id and question.
     async fn query_one(
         &self,
         server: IpAddr,
         query: &[u8],
         id: u16,
         qname: &Name,
+        qtype: RecordType,
+        qclass: DNSClass,
     ) -> Result<Message> {
         let target = SocketAddr::new(server, self.port);
         let bind = if server.is_ipv6() {
@@ -947,7 +954,12 @@ impl IterativeResolver {
             "0.0.0.0:0"
         };
         let socket = UdpSocket::bind(bind).await?;
-        socket.send_to(query, target).await?;
+        // Connecting filters the receive queue to `target` in the kernel: a datagram
+        // from any other source is dropped before this task ever sees it, so an
+        // off-path injector must also spoof the nameserver's address. Free, and it
+        // costs nothing per packet.
+        socket.connect(target).await?;
+        socket.send(query).await?;
 
         let mut buf = vec![0u8; MAX_UDP_SIZE];
         let len = tokio::time::timeout(self.timeout, socket.recv(&mut buf))
@@ -962,9 +974,11 @@ impl IterativeResolver {
         }
         if msg.truncated() {
             crate::metrics::metrics().resolver_tcp_retries.inc();
-            return self.query_tcp(target, query, id, qname).await;
+            return self
+                .query_tcp(target, query, id, qname, qtype, qclass)
+                .await;
         }
-        validate_question(&msg, qname)?;
+        validate_question(&msg, qname, qtype, qclass)?;
         Ok(msg)
     }
 
@@ -975,6 +989,8 @@ impl IterativeResolver {
         query: &[u8],
         id: u16,
         qname: &Name,
+        qtype: RecordType,
+        qclass: DNSClass,
     ) -> Result<Message> {
         let mut stream = tokio::time::timeout(self.timeout, TcpStream::connect(target))
             .await
@@ -1002,7 +1018,7 @@ impl IterativeResolver {
         if msg.id() != id {
             bail!("TCP response id mismatch from {}", target);
         }
-        validate_question(&msg, qname)?;
+        validate_question(&msg, qname, qtype, qclass)?;
         Ok(msg)
     }
 }
@@ -1026,14 +1042,34 @@ fn build_query(name: &Name, qtype: RecordType, qclass: DNSClass) -> Result<(Vec<
     Ok((msg.to_bytes()?, id))
 }
 
-/// Verifies the response question matches the name we asked for (case-insensitive).
-fn validate_question(msg: &Message, qname: &Name) -> Result<()> {
+/// Verifies the response answers the question we actually asked — name
+/// (case-insensitive), type, and class.
+///
+/// The name alone is not enough: a response echoing the right name but a question
+/// about some other type or class is answering something that was never asked, and
+/// accepting it lets forged records in under a name the resolver did request.
+fn validate_question(
+    msg: &Message,
+    qname: &Name,
+    qtype: RecordType,
+    qclass: DNSClass,
+) -> Result<()> {
     match msg.queries().first() {
-        Some(q) if names_equal(q.name(), qname) => Ok(()),
+        Some(q)
+            if names_equal(q.name(), qname)
+                && q.query_type() == qtype
+                && q.query_class() == qclass =>
+        {
+            Ok(())
+        }
         Some(q) => bail!(
-            "response question {} does not match query {}",
+            "response question {} {} {} does not match query {} {} {}",
             q.name(),
-            qname
+            q.query_class(),
+            q.query_type(),
+            qname,
+            qclass,
+            qtype
         ),
         None => bail!("response has no question section"),
     }
@@ -1507,7 +1543,36 @@ mod tests {
         q.set_query_type(RecordType::A);
         q.set_query_class(DNSClass::IN);
         msg.add_query(q);
-        assert!(validate_question(&msg, &name("example.com.")).is_err());
-        assert!(validate_question(&msg, &name("evil.example.com.")).is_ok());
+        assert!(
+            validate_question(&msg, &name("example.com."), RecordType::A, DNSClass::IN).is_err()
+        );
+        assert!(
+            validate_question(
+                &msg,
+                &name("evil.example.com."),
+                RecordType::A,
+                DNSClass::IN
+            )
+            .is_ok()
+        );
+        // A matching name is not enough: the type and class must match too.
+        assert!(
+            validate_question(
+                &msg,
+                &name("evil.example.com."),
+                RecordType::AAAA,
+                DNSClass::IN
+            )
+            .is_err()
+        );
+        assert!(
+            validate_question(
+                &msg,
+                &name("evil.example.com."),
+                RecordType::A,
+                DNSClass::CH
+            )
+            .is_err()
+        );
     }
 }

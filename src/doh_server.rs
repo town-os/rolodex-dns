@@ -8,12 +8,13 @@ use anyhow::{Context, Result};
 use axum::{
     Router,
     body::Bytes,
-    extract::{Query, State},
-    http::{StatusCode, header},
+    extract::{ConnectInfo, Query, State},
+    http::{Extensions, StatusCode, header},
     response::IntoResponse,
     routing::get,
 };
 use base64::Engine;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::{error, info};
 
@@ -57,21 +58,45 @@ pub async fn serve_doh(
 
     info!("DoH server listening on {}", addr);
 
+    // With connect info, so the peer address reaches source classification: DoH
+    // is a full resolution path, and without the peer every query would look
+    // like a local one — reopening the recursion the `:53` listener closes.
     axum_server::bind_rustls(addr, tls_config)
-        .serve(app.into_make_service())
+        .serve(app.into_make_service_with_connect_info::<SocketAddr>())
         .await
         .context("DoH server error")?;
 
     Ok(())
 }
 
-/// Handles POST /dns-query with application/dns-message body.
-async fn handle_doh_post(State(state): State<DohState>, body: Bytes) -> impl IntoResponse {
-    let response = match state
+/// Resolves a query on behalf of the connecting peer.
+///
+/// The peer is read out of the request extensions rather than extracted, so a
+/// router built without connect info still works: that is `build_router`, used
+/// by in-process tests. A real listener always supplies it (see `serve_doh`).
+async fn resolve(
+    state: &DohState,
+    extensions: &Extensions,
+    query: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    // Absent ConnectInfo the peer is unknown, which is the same unscoped case
+    // `handle_query` represents — pass None rather than inventing an address.
+    let source_ip = extensions
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(addr)| addr.ip());
+    state
         .dns_server
-        .handle_query_proto(&body, None, None, crate::metrics::Proto::Doh)
+        .handle_query_proto(query, source_ip, None, crate::metrics::Proto::Doh)
         .await
-    {
+}
+
+/// Handles POST /dns-query with application/dns-message body.
+async fn handle_doh_post(
+    State(state): State<DohState>,
+    extensions: Extensions,
+    body: Bytes,
+) -> impl IntoResponse {
+    let response = match resolve(&state, &extensions, &body).await {
         Ok(resp) => resp,
         Err(e) => {
             error!("DoH POST error: {}", e);
@@ -98,6 +123,7 @@ async fn handle_doh_post(State(state): State<DohState>, body: Bytes) -> impl Int
 /// Handles GET /dns-query?dns=<base64url-encoded query>.
 async fn handle_doh_get(
     State(state): State<DohState>,
+    extensions: Extensions,
     Query(params): Query<DnsQueryParams>,
 ) -> impl IntoResponse {
     let dns_param = match params.dns {
@@ -110,11 +136,7 @@ async fn handle_doh_get(
         Err(_) => return (StatusCode::BAD_REQUEST, "invalid base64url encoding").into_response(),
     };
 
-    let response = match state
-        .dns_server
-        .handle_query_proto(&query_data, None, None, crate::metrics::Proto::Doh)
-        .await
-    {
+    let response = match resolve(&state, &extensions, &query_data).await {
         Ok(resp) => resp,
         Err(e) => {
             error!("DoH GET error: {}", e);

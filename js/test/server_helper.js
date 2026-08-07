@@ -100,6 +100,13 @@ acme:
   bind: "127.0.0.1:${acmePort}"
   portal_bind: "127.0.0.1:${portalPort}"
   directory_url: "https://127.0.0.1:${acmePort}/acme"
+  # The portal only enrolls zones the server manages (an owned TLD, a zone with
+  # records, a declared authoritative zone). These tests enroll example.com on
+  # an empty database to exercise the portal, DANE, and CA-over-DNS flows, and
+  # the DNS-state assertions depend on that database staying empty — so lift the
+  # restriction here rather than seeding records that would change what those
+  # assertions see. The default (managed_zones) is covered by the Rust suite.
+  issuance_scope: any
 `;
   if (dohPort) {
     config += `

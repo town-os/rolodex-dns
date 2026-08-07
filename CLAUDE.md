@@ -47,6 +47,7 @@ DNS queries are resolved in the following order:
 6. **Managed zone authority** — If the queried name falls under a zone that has records in the local database (determined by the last two labels of any stored FQDN), but the specific name was not found, an authoritative NXDOMAIN is returned. This prevents forwarding queries for names that should be resolved internally. Zones can also be explicitly declared authoritative via `AddAuthoritativeZone`.
 7. **DNSBL / local blocklist check** — Before any external resolution, the queried name (forward names only; reverse names are handled by step 2) is checked against the local RBL blocklist and, if DNSBL is enabled, against the configured DNSBL (domain blocklist) providers. If listed, an NXDOMAIN is returned. Names on the **DNSBL allowlist** (and everything under them) skip this step entirely — see DNSBL Allowlist. Because this runs after the local/managed-zone checks but before the upstream cache and forwarder, DNSBLs take precedence over any externally-resolved answer (forwarded, iterative, or upstream-cached) while local records always win.
 8. **DNS64 synthesis** — If DNS64 is enabled and the query is for AAAA but only A records exist upstream, AAAA records are synthesized using the configured NAT64 prefix.
+8.5. **Recursion access control** — Before anything reaches outside this server (the upstream cache, a blocklist provider, a forwarder, the roots), the source must be inside `security.recursion_cidrs`; otherwise the query is REFUSED. Steps 1–6 are unaffected, so a stranger is still served data this server is authoritative for. See Recursion Access Control.
 9. **Upstream resolution** — Unmatched queries go to the upstream path selected by `resolution.mode` (see Upstream Resolution): the `auto` tier chain by default, iterative-from-the-roots under `recursive`, or plain forwarding under `forward`. If every tier/forwarder fails, SERVFAIL is returned.
 10. **Address-family filter** — Before the response goes out, A/AAAA records of an address family the host cannot route are dropped (see Address-Family Answer Filtering). This applies to every answer, local or upstream.
 
@@ -126,6 +127,8 @@ The probe in `src/probe.rs` therefore tests *actual* per-family internet reachab
 ## Local Record Database
 
 Records are stored in SQLite with WAL mode enabled for concurrent read performance. The database path is configurable (default `rolodex-dns.db`). An in-memory mode is available for testing.
+
+The database file is created **`0600`**, and so are its `-wal`/`-shm` sidecars. It is the keystore — the root CA private key, every per-zone intermediate key, the DNSSEC private keys, and the EAB HMAC secrets are plain rows in it, so a local user who can read the file holds the root key and can forge a certificate for any name every enrolled client trusts. The mode is set explicitly by `Database::open` (via `db::restrict_to_owner`) *before* the WAL pragma runs, because SQLite copies the main file's mode onto the sidecars it creates; leaving it to the umask would produce `0644` under the common default.
 
 Domain names are normalized to lowercase with a trailing dot on storage and lookup, providing case-insensitive matching. The database has indices on `name` and `(name, record_type)`.
 
@@ -293,6 +296,11 @@ Publication is idempotent (existing records at both names are replaced) and happ
 
 End users do not need a CLI. A built-in **web portal** (`src/portal.rs`, served on `acme.portal_bind`) and a **browser extension** (`extension/`) share one JSON API (`/api/account`, `/api/ca`, `/api/zones`, `/api/certs`); a **JavaScript client library** for the same API plus DANE/TLSA retrieval and a local enrollment UI lives in `js/` (see the JavaScript Client Library section). The extension can additionally retrieve the CA chain from DNS itself over DoH (see CA Distribution over DNS), which works for any client that can resolve the zone — no portal access required. The portal mints an EAB account behind the scenes and returns copy-paste client config; users just trust the root CA and run their client. **Access is trusted-network only** — bind `portal_bind` to an internal address; anyone who can reach it may enroll.
 
+Two limits sit alongside that, because "may enroll" is not "may become a CA for the entire namespace", and reaching the portal must mean *the user* reached it:
+
+- **Enrollment is confined to zones the server manages.** `POST /api/account` accepts a zone only if a scope owns it as a TLD (which covers a scope's implicit `.home` domain), it has records in the local database, it is a declared authoritative zone, or it already has an intermediate CA from `EnsureZoneCa`. All four are suffix-matched, so a subzone of a managed zone enrolls too. `acme.issuance_scope: any` lifts the restriction, as it does for the issuer.
+- **Cross-site requests are refused.** The endpoint requires a `application/json` content-type — the three types a cross-origin form POST can send without a preflight are rejected, and the portal answers no preflight — and refuses any `Origin` that is not this server (compared on authority, so a TLS-terminating proxy works). Browser-extension origins are exempt; non-browser clients send no `Origin` and are unaffected.
+
 ### Legacy stub RPCs
 
 `RequestAcmeCert`/`GetAcmeStatus` remain for backward compatibility (challenge-record plumbing + status), superseded by the ACME endpoint and the admin RPCs below.
@@ -330,6 +338,21 @@ Scope enforcement is not applied to every source — it is confined to network-o
 2. **Source IP joined to a scope** (only overlay addresses are ever joined) → that scope, partitioned.
 3. **Source IP inside `overlay_cidrs` but joined to nothing** → REFUSED: an overlay peer that is not a member of any network.
 4. **Everything else** — loopback (the box's own resolver), the LAN, container bridges — is a **trusted local source**: never refused, resolving the global namespace. This is the split-horizon: global records carry the box's LAN-reachable address while scoped overlay records carry the overlay address, so each side gets an address it can actually route to.
+
+The source address (and the local listener IP) is **canonicalized in `handle_query_on` before any of this runs**, so an IPv4 peer arriving on a dual-stack listener as `::ffff:10.64.0.1` is the same address as `10.64.0.1` to the CIDR test, the association lookup, and the ingress-listener match. Without it, `IpCidr::contains` — which deliberately does not match across address families — classifies every IPv4 overlay peer on a `[::]` bind as a trusted local source, so whether a WireGuard peer is scope-enforced at all would depend on how the listener happened to be bound. IPv4-compatible addresses (`::1.2.3.4`, deprecated) are not folded; only true IPv4-mapped ones.
+
+### Recursion Access Control
+
+Scope enforcement decides *which view* a source gets. A separate axis decides whether a source gets **upstream resolution** at all: `security.recursion_cidrs`.
+
+`dns.bind` defaults to `0.0.0.0:53`, so on a routable interface the listener is reachable from the entire internet, and every source outside `overlay_cidrs` is classified as a trusted local client. Without a second check that makes a default deployment an **open recursive resolver** — the classic reflection/amplification asset: a small spoofed query returns a large answer aimed at the spoofed victim, and the outbound resolution traffic is billed to this box.
+
+The default list is every range that is unroutable from the internet — `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `100.64.0.0/10`, `::1/128`, `fe80::/10`, `fc00::/7` — which covers loopback, the LAN, container bridges, and the WireGuard overlay (`10.64.0.0/10` sits inside `10.0.0.0/8`). An empty list closes recursion to everyone, leaving a purely authoritative server.
+
+- **The check sits at the local/remote boundary** (resolution step 8.5): after every path that answers from data this server holds, before every path that reaches for data it does not. A stranger therefore still receives this server's authoritative answers and authoritative NXDOMAINs — closing recursion must not turn the box into a black hole for its own zones — but cannot make it go and ask someone else.
+- **It runs before the response cache**, because a cached answer amplifies exactly as well as a freshly-resolved one, and warming the cache is how the attack is staged.
+- **The refusal is REFUSED with an empty answer section**, the smallest reply available: the response is never larger than the question that provoked it, so a spoofed query gains an attacker nothing.
+- **Every transport is gated.** UDP, TCP, DoT, and DoQ pass the peer address already; DoH serves with connect info (`into_make_service_with_connect_info`) so its peer reaches classification too — otherwise `:443` would reopen what `:53` closes.
 
 ### Scope Management
 
@@ -423,8 +446,9 @@ The management API is defined in `proto/rolodex_dns.proto` under the `RolodexDns
 
 ### Authentication
 
-- **TCP connections** require a shared secret passed as `auth_token` in each request. If the server's shared secret is empty, all connections are allowed without authentication.
-- **Unix socket connections** bypass authentication entirely.
+- **TCP connections** require a shared secret passed as `auth_token` in each request. The token is compared in **constant time** (`subtle::ConstantTimeEq`); `==` on `String` defers to `memcmp`, which returns at the first differing byte and so leaks how many leading bytes were guessed right, turning a search over the whole secret into a byte-at-a-time one. If the server's shared secret is empty, all connections are allowed without authentication — so an empty `grpc.shared_secret` combined with a `grpc.tcp_bind` that resolves to any non-loopback address is **refused at startup** (`config::check_grpc_exposure`).
+- **Failed authentications are throttled per source address.** A shared secret is a password, and an online guessing oracle with no backoff is what makes a weak one fatal. After 5 consecutive failures a source is locked out for 30s, doubling per consecutive lockout to a 15-minute ceiling; while locked out every attempt is refused with `ResourceExhausted` **without the token being compared at all**, so the lockout is not itself an oracle. A successful authentication clears the source's history, and a run of failures that goes quiet for 5 minutes resets — so legitimate automation is never throttled (the counter is on failures, not requests) and an occasional mistyped token never accumulates. Keying by source address rather than globally means one attacker cannot lock the operator out of their own management plane. The table is capped at 65536 sources: over the cap, idle-and-unlocked entries are pruned, and if that does not suffice new sources go untracked rather than the table growing without bound. That combination is an unauthenticated management plane on a routable port; on loopback it remains the documented development configuration. `0.0.0.0` and `::` are not loopback, and an `interface:port` bind is condemned by a single routable address on the interface.
+- **Unix socket connections** bypass authentication entirely, so the socket's file mode *is* the access control. It is created `0660` rather than under the umask (which would leave it `0755` and hand every local user unauthenticated administrative control). The listener is bound at a temporary sibling path, restricted, then renamed into place — an atomic rename keeps the same inode, so the published path never exists in a permissive mode. `0660` rather than `0600` so a deployment can grant a dedicated admin group access by chgrp'ing the socket.
 
 ### Operations
 
@@ -1056,6 +1080,7 @@ dns:
 | `dns64.prefix`                      | `64:ff9b::`                    | NAT64 prefix for synthesis                             |
 | `security.qname_case_randomization` | `true`                         | 0x20 encoding for cache poisoning resistance           |
 | `security.overlay_cidrs`            | `["10.64.0.0/10"]`             | Source ranges treated as untrusted overlay peers and scope-enforced; every other source is trusted |
+| `security.recursion_cidrs`          | loopback, RFC 1918, link-local, ULA, CGNAT | Source ranges allowed to drive **upstream** resolution; others get local data only and are REFUSED for anything else (see Recursion Access Control) |
 | `address_family.mode`               | `auto`                         | `auto` (probe and suppress an unroutable family), `off`, `force4`, `force6` |
 | `address_family.probe_interval_secs`| `30`                           | Seconds between routability probes in `auto` mode      |
 | `address_family.fail_threshold`     | `2`                            | Consecutive failed probe cycles before a family is marked down (recovery is immediate) |
@@ -1305,6 +1330,7 @@ The `make test` target runs the full test suite: lint, Go integration tests, Go 
 - **axum** / **axum-server** — HTTP framework for DoH
 - **quinn** — QUIC protocol for DoQ
 - **ring** / **sha2** — Cryptographic operations for DNSSEC and DANE
+- **subtle** — Constant-time comparison of the gRPC shared secret (ring's own `verify_slices_are_equal` is deprecated and documented as internal-only with no side-channel promises)
 - **base64** — Base64 encoding for DoH GET requests
 - **hex** — Hex encoding for TLSA/DNSSEC records
 - **serde** / **serde_yaml_ng** — Configuration serialization

@@ -2,8 +2,11 @@ use crate::db::{Database, DnsRecord, NetworkAssociation, NetworkScope, RecordKin
 use crate::dns_server::DnsServer;
 use crate::rbl::{RblChecker, RblProvider};
 use crate::ttl_drift::{TtlDriftConfig as TtlDriftCfg, TtlDriftMode};
-use std::net::SocketAddr;
+use dashmap::DashMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+use subtle::ConstantTimeEq;
 use tonic::{Request, Response, Status};
 use tracing::{info, warn};
 
@@ -14,6 +17,39 @@ pub mod proto {
 use proto::rolodex_dns_service_server::RolodexDnsService;
 #[allow(unused_imports)]
 use proto::*;
+
+/// Consecutive failed authentications from one source before it is locked out.
+const AUTH_FAILURE_THRESHOLD: u32 = 5;
+/// How long a source stays locked out after tripping the threshold. Doubles per
+/// consecutive lockout.
+const AUTH_LOCKOUT: Duration = Duration::from_secs(30);
+/// Ceiling on the lockout, so a source that has been hammering is still allowed
+/// to try again eventually rather than being written off forever.
+const MAX_AUTH_LOCKOUT: Duration = Duration::from_secs(900);
+/// A run of failures this far apart is not a run: the counter resets, so an
+/// occasional mistyped token never accumulates into a lockout.
+const AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(300);
+/// Cap on the number of source addresses tracked at once. The table is keyed by
+/// address, so without a bound a distributed flood grows it without limit. See
+/// [`RolodexDnsGrpcService::prune_auth_failures`].
+const MAX_TRACKED_AUTH_SOURCES: usize = 65536;
+/// Key used when the transport reports no peer address. Should not happen on
+/// TCP (the only transport that authenticates), but failures must be counted
+/// against *something* rather than silently escaping the throttle.
+const UNKNOWN_PEER: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+
+/// Failed-authentication state for one source address.
+struct AuthFailures {
+    /// Failures accumulated since the last reset or lockout.
+    count: u32,
+    /// When the most recent failure arrived, for the [`AUTH_FAILURE_WINDOW`] reset.
+    last_failure: Instant,
+    /// While set and in the future, every attempt from this source is refused
+    /// without comparing the token at all.
+    locked_until: Option<Instant>,
+    /// Duration of the *next* lockout for this source.
+    lockout: Duration,
+}
 
 /// The gRPC service implementation for managing rolodex-dns.
 pub struct RolodexDnsGrpcService {
@@ -31,6 +67,9 @@ pub struct RolodexDnsGrpcService {
     acme_root_cn: String,
     /// Whether to automatically maintain reverse PTR records for A/AAAA records.
     auto_ptr: bool,
+    /// Failed-authentication state per source address, for brute-force
+    /// throttling. Keyed by IP so one attacker cannot lock the operator out.
+    auth_failures: Arc<DashMap<IpAddr, AuthFailures>>,
 }
 
 impl RolodexDnsGrpcService {
@@ -50,6 +89,7 @@ impl RolodexDnsGrpcService {
             acme_directory_url: String::new(),
             acme_root_cn: "Rolodex Root CA".to_string(),
             auto_ptr: false,
+            auth_failures: Arc::new(DashMap::new()),
         }
     }
 
@@ -121,19 +161,133 @@ impl RolodexDnsGrpcService {
     }
 
     /// Validates the auth token. Unix socket connections always pass.
-    fn check_auth(&self, token: &str) -> Result<(), Status> {
+    ///
+    /// Two properties beyond "is the token right":
+    ///
+    /// - **The comparison is constant-time.** `==` on `String` defers to `memcmp`,
+    ///   which returns at the first differing byte, so the time taken leaks how
+    ///   many leading bytes of the secret were guessed correctly — turning a
+    ///   search over the whole secret into a byte-at-a-time one.
+    /// - **Failures are throttled per source address** ([`Self::note_auth_failure`]).
+    ///   A shared secret is a password, and an online guessing oracle with no
+    ///   backoff is what makes a weak one fatal.
+    fn check_auth(&self, peer: Option<SocketAddr>, token: &str) -> Result<(), Status> {
         if self.is_unix {
             return Ok(());
         }
         if self.shared_secret.is_empty() {
             return Ok(());
         }
-        if token == self.shared_secret {
+        let source = peer.map(|p| p.ip());
+        if let Some(retry_in) = self.throttled_for(source) {
+            crate::metrics::metrics().grpc_auth_failures.inc();
+            return Err(Status::resource_exhausted(format!(
+                "too many failed authentication attempts; retry in {}s",
+                retry_in.as_secs().max(1)
+            )));
+        }
+        // `subtle::ConstantTimeEq` over the bytes. Slices of differing length
+        // are unequal in constant time for a given pair of lengths; the length
+        // of the configured secret is not what needs protecting here — the
+        // per-byte match position is.
+        if bool::from(token.as_bytes().ct_eq(self.shared_secret.as_bytes())) {
+            self.clear_auth_failures(source);
             Ok(())
         } else {
             crate::metrics::metrics().grpc_auth_failures.inc();
+            self.note_auth_failure(source);
             Err(Status::unauthenticated("invalid auth token"))
         }
+    }
+
+    /// How long `source` must wait before another attempt is considered, or
+    /// `None` if it is not currently locked out.
+    ///
+    /// A served lockout is cleared here rather than by a sweeper, but the entry
+    /// is kept: it carries the escalated backoff, so a source that comes
+    /// straight back after serving one gets a longer one. `AUTH_FAILURE_WINDOW`
+    /// is what eventually forgives it.
+    fn throttled_for(&self, source: Option<IpAddr>) -> Option<Duration> {
+        let key = source.unwrap_or(UNKNOWN_PEER);
+        let mut entry = self.auth_failures.get_mut(&key)?;
+        let locked_until = entry.locked_until?;
+        match locked_until.checked_duration_since(Instant::now()) {
+            Some(remaining) => Some(remaining),
+            None => {
+                entry.locked_until = None;
+                None
+            }
+        }
+    }
+
+    /// Bounds the failure table.
+    ///
+    /// Entries are keyed by source address, so a distributed flood would grow it
+    /// without limit — the same unbounded-table shape as an unswept nonce store,
+    /// pointed at the mutex the control plane runs on. Over the cap, anything
+    /// idle beyond `AUTH_FAILURE_WINDOW` and not currently locked out is
+    /// dropped; if that does not get under the cap, new sources go untracked
+    /// (degrading to plain `Unauthenticated` for them) rather than the table
+    /// growing. Losing the throttle under a distributed attack is the lesser
+    /// failure — the alternative is evicting the entries that are doing the
+    /// work, which is what the attacker wants.
+    fn prune_auth_failures(&self) -> bool {
+        if self.auth_failures.len() < MAX_TRACKED_AUTH_SOURCES {
+            return true;
+        }
+        let now = Instant::now();
+        self.auth_failures.retain(|_, f| {
+            f.locked_until.is_some_and(|until| until > now)
+                || now.duration_since(f.last_failure) <= AUTH_FAILURE_WINDOW
+        });
+        self.auth_failures.len() < MAX_TRACKED_AUTH_SOURCES
+    }
+
+    /// Records a failed attempt from `source`, locking it out once
+    /// [`AUTH_FAILURE_THRESHOLD`] failures have accumulated.
+    ///
+    /// Keyed by source address rather than globally so one attacker cannot lock
+    /// the operator out of their own management plane. Consecutive lockouts
+    /// double up to [`MAX_AUTH_LOCKOUT`]; a run of failures that goes quiet for
+    /// [`AUTH_FAILURE_WINDOW`] starts over, so an occasional fat-fingered token
+    /// never accumulates into a lockout.
+    fn note_auth_failure(&self, source: Option<IpAddr>) {
+        let key = source.unwrap_or(UNKNOWN_PEER);
+        if !self.auth_failures.contains_key(&key) && !self.prune_auth_failures() {
+            return;
+        }
+        let now = Instant::now();
+        let mut entry = self.auth_failures.entry(key).or_insert(AuthFailures {
+            count: 0,
+            last_failure: now,
+            locked_until: None,
+            lockout: AUTH_LOCKOUT,
+        });
+        if now.duration_since(entry.last_failure) > AUTH_FAILURE_WINDOW {
+            entry.count = 0;
+            entry.lockout = AUTH_LOCKOUT;
+        }
+        entry.last_failure = now;
+        entry.count += 1;
+        if entry.count >= AUTH_FAILURE_THRESHOLD {
+            let lockout = entry.lockout;
+            entry.locked_until = Some(now + lockout);
+            entry.lockout = (lockout * 2).min(MAX_AUTH_LOCKOUT);
+            entry.count = 0;
+            warn!(
+                "Throttling gRPC authentication from {} for {}s after {} failed attempts",
+                key,
+                lockout.as_secs(),
+                AUTH_FAILURE_THRESHOLD
+            );
+        }
+    }
+
+    /// Forgets a source's failure history. Called on every successful
+    /// authentication, so a legitimate caller is never throttled by attempts
+    /// that preceded it.
+    fn clear_auth_failures(&self, source: Option<IpAddr>) {
+        self.auth_failures.remove(&source.unwrap_or(UNKNOWN_PEER));
     }
 
     /// Counts one control-plane call against `method`.
@@ -152,8 +306,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<AddRecordRequest>,
     ) -> Result<Response<AddRecordResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("add_record");
 
         let record = req
@@ -209,8 +364,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<RemoveRecordRequest>,
     ) -> Result<Response<RemoveRecordResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("remove_record");
 
         let record_type = RecordKind::from_proto_i32(req.record_type);
@@ -258,8 +414,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<ListRecordsRequest>,
     ) -> Result<Response<ListRecordsResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("list_records");
 
         let record_type = if req.filter_by_type {
@@ -292,8 +449,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<SetForwarderRequest>,
     ) -> Result<Response<SetForwarderResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("set_forwarders");
 
         let mut addrs = Vec::new();
@@ -317,8 +475,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<SetRblConfigRequest>,
     ) -> Result<Response<SetRblConfigResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("set_rbl_config");
 
         let providers: Vec<RblProvider> = req
@@ -343,8 +502,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<GetRblConfigRequest>,
     ) -> Result<Response<GetRblConfigResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("get_rbl_config");
 
         let (enabled, providers) = self.rbl.get_config().await;
@@ -366,8 +526,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<SetDnsblConfigRequest>,
     ) -> Result<Response<SetDnsblConfigResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("set_dnsbl_config");
 
         let providers: Vec<RblProvider> = req
@@ -395,8 +556,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<GetDnsblConfigRequest>,
     ) -> Result<Response<GetDnsblConfigResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("get_dnsbl_config");
 
         let (enabled, providers) = self.rbl.get_dnsbl_config().await;
@@ -418,8 +580,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<FlushCacheRequest>,
     ) -> Result<Response<FlushCacheResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("flush_cache");
 
         self.rbl.flush_cache().await;
@@ -435,8 +598,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<CreateNetworkScopeRequest>,
     ) -> Result<Response<CreateNetworkScopeResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("create_network_scope");
 
         let scope = req
@@ -487,8 +651,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<DeleteNetworkScopeRequest>,
     ) -> Result<Response<DeleteNetworkScopeResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("delete_network_scope");
 
         if req.name.is_empty() {
@@ -518,8 +683,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<ListNetworkScopesRequest>,
     ) -> Result<Response<ListNetworkScopesResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("list_network_scopes");
 
         match self.db.list_network_scopes() {
@@ -547,8 +713,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<JoinNetworkRequest>,
     ) -> Result<Response<JoinNetworkResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("join_network");
 
         if req.ip_address.is_empty() {
@@ -592,8 +759,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<LeaveNetworkRequest>,
     ) -> Result<Response<LeaveNetworkResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("leave_network");
 
         if req.ip_address.is_empty() {
@@ -623,8 +791,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<GetNetworkAssociationsRequest>,
     ) -> Result<Response<GetNetworkAssociationsResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("get_network_associations");
 
         let scope_filter = if req.scope_name.is_empty() {
@@ -658,8 +827,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<AddScopedRecordRequest>,
     ) -> Result<Response<AddScopedRecordResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("add_scoped_record");
 
         if req.scope_name.is_empty() {
@@ -722,8 +892,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<RemoveScopedRecordRequest>,
     ) -> Result<Response<RemoveScopedRecordResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("remove_scoped_record");
 
         if req.scope_name.is_empty() {
@@ -781,8 +952,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<ListScopedRecordsRequest>,
     ) -> Result<Response<ListScopedRecordsResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("list_scoped_records");
 
         if req.scope_name.is_empty() {
@@ -825,8 +997,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<GetSearchDomainsRequest>,
     ) -> Result<Response<GetSearchDomainsResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("get_search_domains");
 
         if req.ip_address.is_empty() {
@@ -852,8 +1025,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<AddAuthoritativeZoneRequest>,
     ) -> Result<Response<AddAuthoritativeZoneResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("add_authoritative_zone");
 
         if req.zone.is_empty() {
@@ -879,8 +1053,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<RemoveAuthoritativeZoneRequest>,
     ) -> Result<Response<RemoveAuthoritativeZoneResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("remove_authoritative_zone");
 
         if req.zone.is_empty() {
@@ -910,8 +1085,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<ListAuthoritativeZonesRequest>,
     ) -> Result<Response<ListAuthoritativeZonesResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("list_authoritative_zones");
 
         match self.db.list_authoritative_zones() {
@@ -931,8 +1107,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<GetCacheStatsRequest>,
     ) -> Result<Response<GetCacheStatsResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("get_cache_stats");
 
         let total = self.db.cache_count().unwrap_or(0);
@@ -947,8 +1124,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<FlushDnsCacheRequest>,
     ) -> Result<Response<FlushDnsCacheResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("flush_dns_cache");
 
         self.dns_server.flush_cache_explicit();
@@ -975,8 +1153,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<SetTtlDriftConfigRequest>,
     ) -> Result<Response<SetTtlDriftConfigResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("set_ttl_drift_config");
 
         if let Some(config) = &req.config {
@@ -1009,8 +1188,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<GetTtlDriftConfigRequest>,
     ) -> Result<Response<GetTtlDriftConfigResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("get_ttl_drift_config");
 
         let drift = self.dns_server.get_ttl_drift_config().await;
@@ -1037,8 +1217,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<GetQueryLatencyStatsRequest>,
     ) -> Result<Response<GetQueryLatencyStatsResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("get_query_latency_stats");
 
         match self.db.get_latency_stats() {
@@ -1070,8 +1251,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<AddLocalRblEntryRequest>,
     ) -> Result<Response<AddLocalRblEntryResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("add_local_rbl_entry");
 
         let entry = req
@@ -1101,8 +1283,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<RemoveLocalRblEntryRequest>,
     ) -> Result<Response<RemoveLocalRblEntryResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("remove_local_rbl_entry");
 
         if req.name.is_empty() {
@@ -1132,8 +1315,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<ListLocalRblEntriesRequest>,
     ) -> Result<Response<ListLocalRblEntriesResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("list_local_rbl_entries");
 
         match self.db.list_local_rbl_entries() {
@@ -1160,8 +1344,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<AddDnsblAllowlistEntryRequest>,
     ) -> Result<Response<AddDnsblAllowlistEntryResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("add_dnsbl_allowlist_entry");
 
         let entry = req
@@ -1194,8 +1379,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<RemoveDnsblAllowlistEntryRequest>,
     ) -> Result<Response<RemoveDnsblAllowlistEntryResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("remove_dnsbl_allowlist_entry");
 
         if req.name.trim().is_empty() {
@@ -1225,8 +1411,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<ListDnsblAllowlistEntriesRequest>,
     ) -> Result<Response<ListDnsblAllowlistEntriesResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("list_dnsbl_allowlist_entries");
 
         match self.db.list_dnsbl_allowlist_entries() {
@@ -1257,8 +1444,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<SetDotConfigRequest>,
     ) -> Result<Response<SetDotConfigResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("set_dot_config");
         info!("DoT config set: {:?}", req.config);
         Ok(Response::new(SetDotConfigResponse {
@@ -1271,8 +1459,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<GetDotConfigRequest>,
     ) -> Result<Response<GetDotConfigResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("get_dot_config");
         Ok(Response::new(GetDotConfigResponse { config: None }))
     }
@@ -1281,8 +1470,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<SetDohConfigRequest>,
     ) -> Result<Response<SetDohConfigResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("set_doh_config");
         info!("DoH config set: {:?}", req.config);
         Ok(Response::new(SetDohConfigResponse {
@@ -1295,8 +1485,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<GetDohConfigRequest>,
     ) -> Result<Response<GetDohConfigResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("get_doh_config");
         Ok(Response::new(GetDohConfigResponse { config: None }))
     }
@@ -1305,8 +1496,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<SetDoqConfigRequest>,
     ) -> Result<Response<SetDoqConfigResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("set_doq_config");
         info!("DoQ config set: {:?}", req.config);
         Ok(Response::new(SetDoqConfigResponse {
@@ -1319,8 +1511,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<GetDoqConfigRequest>,
     ) -> Result<Response<GetDoqConfigResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("get_doq_config");
         Ok(Response::new(GetDoqConfigResponse { config: None }))
     }
@@ -1329,8 +1522,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<SetProxyConfigRequest>,
     ) -> Result<Response<SetProxyConfigResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("set_proxy_config");
 
         let proxy = req.config.map(|cfg| crate::doh_proxy::ProxyConfig {
@@ -1356,8 +1550,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<GetProxyConfigRequest>,
     ) -> Result<Response<GetProxyConfigResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("get_proxy_config");
 
         let config = self
@@ -1380,8 +1575,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<GenerateDnssecKeyRequest>,
     ) -> Result<Response<GenerateDnssecKeyResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("generate_dnssec_key");
 
         let algorithm = crate::dnssec::DnssecAlgorithm::parse(&req.algorithm).ok_or_else(|| {
@@ -1451,8 +1647,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<ListDnssecKeysRequest>,
     ) -> Result<Response<ListDnssecKeysResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("list_dnssec_keys");
 
         let keys = self
@@ -1482,8 +1679,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<DeleteDnssecKeyRequest>,
     ) -> Result<Response<DeleteDnssecKeyResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("delete_dnssec_key");
 
         let deleted = self
@@ -1509,8 +1707,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<GetDsRecordsRequest>,
     ) -> Result<Response<GetDsRecordsResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("get_ds_records");
 
         let keys = self
@@ -1536,8 +1735,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<SignZoneRequest>,
     ) -> Result<Response<SignZoneResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("sign_zone");
 
         // Get all active keys for this zone
@@ -1607,8 +1807,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<GenerateTlsaRecordRequest>,
     ) -> Result<Response<GenerateTlsaRecordResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("generate_tlsa_record");
 
         let tlsa_value = crate::dane::generate_tlsa_record(
@@ -1645,8 +1846,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<ListTlsaRecordsRequest>,
     ) -> Result<Response<ListTlsaRecordsResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("list_tlsa_records");
 
         // Query for TLSA records matching _*._*.{domain} pattern
@@ -1676,8 +1878,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<GenerateDaneRootCaRequest>,
     ) -> Result<Response<GenerateDaneRootCaResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("generate_dane_root_ca");
 
         let (cert_pem, key_pem) = crate::dane::generate_dane_root_ca(&req.name)
@@ -1700,8 +1903,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<RequestAcmeCertRequest>,
     ) -> Result<Response<RequestAcmeCertResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("request_acme_cert");
 
         // Set up the DNS-01 challenge TXT record
@@ -1726,8 +1930,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<GetAcmeStatusRequest>,
     ) -> Result<Response<GetAcmeStatusResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("get_acme_status");
 
         // Check if there's a certificate in the database
@@ -1779,8 +1984,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<SetDns64ConfigRequest>,
     ) -> Result<Response<SetDns64ConfigResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("set_dns64_config");
         info!("DNS64 config set: {:?}", req.config);
         Ok(Response::new(SetDns64ConfigResponse {
@@ -1793,8 +1999,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<GetDns64ConfigRequest>,
     ) -> Result<Response<GetDns64ConfigResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("get_dns64_config");
         Ok(Response::new(GetDns64ConfigResponse {
             config: Some(Dns64Config {
@@ -1812,8 +2019,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<AddDhcpPoolRequest>,
     ) -> Result<Response<AddDhcpPoolResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("add_dhcp_pool");
         let pool = req
             .pool
@@ -1858,8 +2066,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<RemoveDhcpPoolRequest>,
     ) -> Result<Response<RemoveDhcpPoolResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("remove_dhcp_pool");
         match self.db.remove_dhcp_pool(req.pool_id) {
             Ok(true) => {
@@ -1884,8 +2093,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<ListDhcpPoolsRequest>,
     ) -> Result<Response<ListDhcpPoolsResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("list_dhcp_pools");
         let scope_filter = if req.scope_name.is_empty() {
             None
@@ -1920,8 +2130,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<ListDhcpLeasesRequest>,
     ) -> Result<Response<ListDhcpLeasesResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("list_dhcp_leases");
         let scope_filter = if req.scope_name.is_empty() {
             None
@@ -1954,8 +2165,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<DeleteDhcpLeaseRequest>,
     ) -> Result<Response<DeleteDhcpLeaseResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("delete_dhcp_lease");
         if req.mac.is_empty() {
             return Err(Status::invalid_argument("mac is required"));
@@ -1987,8 +2199,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<AddScopeRblProviderRequest>,
     ) -> Result<Response<AddScopeRblProviderResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("add_scope_rbl_provider");
         let provider = req
             .provider
@@ -2020,8 +2233,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<RemoveScopeRblProviderRequest>,
     ) -> Result<Response<RemoveScopeRblProviderResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("remove_scope_rbl_provider");
         match self
             .db
@@ -2052,8 +2266,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<ListScopeRblProvidersRequest>,
     ) -> Result<Response<ListScopeRblProvidersResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("list_scope_rbl_providers");
         match self.db.list_scope_rbl_providers(&req.scope_name) {
             Ok(providers) => {
@@ -2081,8 +2296,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<AddScopeTldRequest>,
     ) -> Result<Response<AddScopeTldResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("add_scope_tld");
         if req.scope_name.is_empty() {
             return Err(Status::invalid_argument("scope_name is required"));
@@ -2140,8 +2356,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<RemoveScopeTldRequest>,
     ) -> Result<Response<RemoveScopeTldResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("remove_scope_tld");
         if req.scope_name.is_empty() {
             return Err(Status::invalid_argument("scope_name is required"));
@@ -2178,8 +2395,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<ListScopeTldsRequest>,
     ) -> Result<Response<ListScopeTldsResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("list_scope_tlds");
         if req.scope_name.is_empty() {
             return Err(Status::invalid_argument("scope_name is required"));
@@ -2194,8 +2412,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<SetScopeTldForwardersRequest>,
     ) -> Result<Response<SetScopeTldForwardersResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("set_scope_tld_forwarders");
         if req.scope_name.is_empty() {
             return Err(Status::invalid_argument("scope_name is required"));
@@ -2231,8 +2450,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<ListScopeTldForwardersRequest>,
     ) -> Result<Response<ListScopeTldForwardersResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("list_scope_tld_forwarders");
         if req.scope_name.is_empty() {
             return Err(Status::invalid_argument("scope_name is required"));
@@ -2247,8 +2467,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<ListScopeTldListenersRequest>,
     ) -> Result<Response<ListScopeTldListenersResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("list_scope_tld_listeners");
         if req.scope_name.is_empty() {
             return Err(Status::invalid_argument("scope_name is required"));
@@ -2276,8 +2497,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<SetDhcpCertOptionRequest>,
     ) -> Result<Response<SetDhcpCertOptionResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("set_dhcp_cert_option");
         let opt = req
             .option
@@ -2314,8 +2536,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<RemoveDhcpCertOptionRequest>,
     ) -> Result<Response<RemoveDhcpCertOptionResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("remove_dhcp_cert_option");
         match self
             .db
@@ -2346,8 +2569,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<ListDhcpCertOptionsRequest>,
     ) -> Result<Response<ListDhcpCertOptionsResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("list_dhcp_cert_options");
         match self.db.list_dhcp_cert_options(&req.scope_name) {
             Ok(options) => {
@@ -2376,8 +2600,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<EnsureZoneCaRequest>,
     ) -> Result<Response<EnsureZoneCaResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("ensure_zone_ca");
 
         crate::ca::ensure_root_ca(&self.db, &self.acme_root_cn)
@@ -2409,8 +2634,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<CreateEabCredentialRequest>,
     ) -> Result<Response<CreateEabCredentialResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("create_eab_credential");
 
         // Ensure the per-zone CA exists so issuance against this EAB can succeed.
@@ -2442,8 +2668,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<RemoveEabCredentialRequest>,
     ) -> Result<Response<RemoveEabCredentialResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("remove_eab_credential");
         match self.db.remove_eab(&req.kid) {
             Ok(removed) => Ok(Response::new(RemoveEabCredentialResponse {
@@ -2462,8 +2689,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<ListAcmeAccountsRequest>,
     ) -> Result<Response<ListAcmeAccountsResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("list_acme_accounts");
         match self.db.list_acme_accounts() {
             Ok(accounts) => {
@@ -2486,8 +2714,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         &self,
         request: Request<ListAcmeCertificatesRequest>,
     ) -> Result<Response<ListAcmeCertificatesResponse>, Status> {
+        let peer = request.remote_addr();
         let req = request.into_inner();
-        self.check_auth(&req.auth_token)?;
+        self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("list_acme_certificates");
         let zone = if req.zone.is_empty() {
             None
@@ -2567,23 +2796,28 @@ mod tests {
         RolodexDnsGrpcService::new(db, dns_server, rbl, "secret123".to_string(), true)
     }
 
+    /// A stand-in peer address for the auth tests.
+    fn peer(addr: &str) -> Option<SocketAddr> {
+        Some(SocketAddr::new(addr.parse().unwrap(), 40000))
+    }
+
     #[test]
     fn test_auth_valid_token() {
         let service = make_test_service();
-        assert!(service.check_auth("secret123").is_ok());
+        assert!(service.check_auth(peer("127.0.0.1"), "secret123").is_ok());
     }
 
     #[test]
     fn test_auth_invalid_token() {
         let service = make_test_service();
-        assert!(service.check_auth("wrong").is_err());
+        assert!(service.check_auth(peer("127.0.0.1"), "wrong").is_err());
     }
 
     #[test]
     fn test_auth_unix_socket_bypasses() {
         let service = make_unix_service();
-        assert!(service.check_auth("").is_ok());
-        assert!(service.check_auth("wrong").is_ok());
+        assert!(service.check_auth(None, "").is_ok());
+        assert!(service.check_auth(None, "wrong").is_ok());
     }
 
     #[test]
@@ -2596,7 +2830,93 @@ mod tests {
         ));
         let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
         let service = RolodexDnsGrpcService::new(db, dns_server, rbl, String::new(), false);
-        assert!(service.check_auth("anything").is_ok());
+        assert!(service.check_auth(peer("127.0.0.1"), "anything").is_ok());
+    }
+
+    #[test]
+    fn repeated_failures_lock_a_source_out() {
+        let service = make_test_service();
+        let src = peer("192.0.2.10");
+
+        // Up to the threshold, a wrong token is simply unauthenticated.
+        for i in 1..AUTH_FAILURE_THRESHOLD {
+            let err = service.check_auth(src, "wrong").unwrap_err();
+            assert_eq!(
+                err.code(),
+                tonic::Code::Unauthenticated,
+                "attempt {} should not be throttled yet",
+                i
+            );
+        }
+
+        // The threshold attempt trips the lockout; the next one is refused
+        // without the token being considered at all.
+        assert_eq!(
+            service.check_auth(src, "wrong").unwrap_err().code(),
+            tonic::Code::Unauthenticated
+        );
+        assert_eq!(
+            service.check_auth(src, "wrong").unwrap_err().code(),
+            tonic::Code::ResourceExhausted
+        );
+        // Even the *correct* secret is refused while locked out — otherwise the
+        // lockout would be a free oracle for "was that guess right?".
+        assert_eq!(
+            service.check_auth(src, "secret123").unwrap_err().code(),
+            tonic::Code::ResourceExhausted
+        );
+    }
+
+    #[test]
+    fn a_lockout_is_confined_to_its_source() {
+        let service = make_test_service();
+        let attacker = peer("192.0.2.10");
+        let operator = peer("192.0.2.11");
+
+        for _ in 0..AUTH_FAILURE_THRESHOLD + 1 {
+            assert!(service.check_auth(attacker, "wrong").is_err());
+        }
+        assert_eq!(
+            service.check_auth(attacker, "wrong").unwrap_err().code(),
+            tonic::Code::ResourceExhausted
+        );
+        // Keyed per source, so an attacker cannot lock the operator out of
+        // their own management plane.
+        assert!(service.check_auth(operator, "secret123").is_ok());
+    }
+
+    #[test]
+    fn success_forgets_earlier_failures() {
+        let service = make_test_service();
+        let src = peer("192.0.2.12");
+
+        // Fail just short of the threshold, then succeed: the counter resets, so
+        // a fat-fingered token never accumulates across unrelated sessions.
+        for _ in 0..AUTH_FAILURE_THRESHOLD - 1 {
+            assert!(service.check_auth(src, "wrong").is_err());
+        }
+        assert!(service.check_auth(src, "secret123").is_ok());
+        for _ in 0..AUTH_FAILURE_THRESHOLD - 1 {
+            assert_eq!(
+                service.check_auth(src, "wrong").unwrap_err().code(),
+                tonic::Code::Unauthenticated
+            );
+        }
+    }
+
+    #[test]
+    fn a_correct_token_is_never_throttled() {
+        let service = make_test_service();
+        let src = peer("192.0.2.13");
+        // The throttle counts failures, not requests: legitimate automation
+        // calling in a loop must never be locked out.
+        for i in 0..AUTH_FAILURE_THRESHOLD * 10 {
+            assert!(
+                service.check_auth(src, "secret123").is_ok(),
+                "correct token rejected on call {}",
+                i
+            );
+        }
     }
 
     #[tokio::test]

@@ -2,10 +2,12 @@ use anyhow::{Context, Result, anyhow};
 use dashmap::{DashMap, DashSet};
 use rusqlite::{Connection, params};
 use std::net::{IpAddr, SocketAddr};
-use std::path::Path;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tracing::warn;
 
 /// Error returned when a TLD is already owned by a different network scope.
 /// Owned TLDs (a scope's `home_domain` plus any additional registered TLDs) are
@@ -417,9 +419,30 @@ impl Database {
     /// Opens or creates the database at the given path.
     /// Uses SQLite with WAL mode for concurrent read performance.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
         let conn = Connection::open(path).context("failed to open database")?;
+        // Tighten before enabling WAL, not after. This file is the keystore —
+        // the root CA private key, every per-zone intermediate key, the DNSSEC
+        // private keys, and the EAB HMAC secrets are plain rows in it — and
+        // SQLite creates it under the bare umask, typically 0644, so any local
+        // user could read the root key and forge a certificate for any name
+        // every enrolled client trusts. SQLite copies the main file's mode onto
+        // the `-wal`/`-shm` sidecars it creates, so restricting first means they
+        // are born restricted rather than fixed up in a window where they are
+        // not.
+        restrict_to_owner(path).context("failed to restrict database permissions")?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
             .context("failed to set pragmas")?;
+        // Belt and braces: a sidecar that already existed (from a previous run
+        // under a looser umask, or a crash) keeps its old mode above.
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = PathBuf::from(format!("{}{}", path.display(), suffix));
+            if sidecar.exists()
+                && let Err(e) = restrict_to_owner(&sidecar)
+            {
+                warn!("failed to restrict permissions on {:?}: {}", sidecar, e);
+            }
+        }
         let db = Self {
             conn: Arc::new(Mutex::new(conn)),
             association_cache: Arc::new(DashMap::new()),
@@ -712,6 +735,8 @@ impl Database {
                 nonce TEXT PRIMARY KEY,
                 created_at INTEGER NOT NULL
             );
+            -- Both the TTL prune and the size cap order by created_at.
+            CREATE INDEX IF NOT EXISTS idx_acme_nonces_created ON acme_nonces(created_at);
 
             CREATE TABLE IF NOT EXISTS dhcp_pools (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3027,24 +3052,80 @@ impl Database {
         Ok(n > 0)
     }
 
-    /// Stores a freshly issued anti-replay nonce.
+    /// How long an unused anti-replay nonce stays valid.
+    ///
+    /// A nonce is minted on *every* ACME response, including unauthenticated
+    /// `GET /acme/directory`, and only the ones a client actually spends are
+    /// removed by [`consume_nonce`]. Without an expiry the table grew by a row
+    /// per request forever — an unauthenticated remote client could fill the
+    /// disk, contending all the while on the mutex the DNS hot path uses.
+    ///
+    /// An hour is far longer than the seconds a real client holds a nonce for,
+    /// and it also gives anti-replay an actual time bound.
+    pub const NONCE_TTL_SECS: i64 = 3600;
+
+    /// Hard ceiling on outstanding (unconsumed) nonces.
+    ///
+    /// The TTL alone does not bound the table: a burst arriving inside one
+    /// second is all within the window, so a flood still grows it without limit.
+    /// The cap is what makes the bound real. Eviction is oldest-first, which
+    /// costs an attacker their own older nonces long before it costs a
+    /// legitimate client, since a real client spends its nonce immediately.
+    pub const MAX_OUTSTANDING_NONCES: i64 = 1024;
+
+    /// Stores a freshly issued anti-replay nonce, then enforces both bounds.
+    ///
+    /// Pruning rides along with minting so no separate sweep task is needed: the
+    /// table can only grow on the same path that trims it.
     pub fn store_nonce(&self, nonce: &str) -> Result<()> {
+        let now = now_secs()?;
         let conn = self.lock()?;
         conn.execute(
             "INSERT OR IGNORE INTO acme_nonces (nonce, created_at) VALUES (?1, ?2)",
-            params![nonce, now_secs()?],
+            params![nonce, now],
         )
         .context("failed to store nonce")?;
+        conn.execute(
+            "DELETE FROM acme_nonces WHERE created_at < ?1",
+            params![now - Self::NONCE_TTL_SECS],
+        )
+        .context("failed to prune expired nonces")?;
+        // Keep only the newest MAX_OUTSTANDING_NONCES rows. `LIMIT -1 OFFSET n`
+        // is SQLite's "everything after the first n".
+        conn.execute(
+            "DELETE FROM acme_nonces WHERE nonce IN (
+                 SELECT nonce FROM acme_nonces
+                 ORDER BY created_at DESC, rowid DESC
+                 LIMIT -1 OFFSET ?1
+             )",
+            params![Self::MAX_OUTSTANDING_NONCES],
+        )
+        .context("failed to cap the nonce table")?;
         Ok(())
     }
 
-    /// Consumes a nonce, returning true if it existed (and is now removed).
+    /// Consumes a nonce, returning true if it existed, is not expired, and is
+    /// now removed. An expired nonce is deleted but reported as unusable.
     pub fn consume_nonce(&self, nonce: &str) -> Result<bool> {
+        let cutoff = now_secs()? - Self::NONCE_TTL_SECS;
         let conn = self.lock()?;
         let n = conn
-            .execute("DELETE FROM acme_nonces WHERE nonce = ?1", params![nonce])
+            .execute(
+                "DELETE FROM acme_nonces WHERE nonce = ?1 AND created_at >= ?2",
+                params![nonce, cutoff],
+            )
             .context("failed to consume nonce")?;
         Ok(n > 0)
+    }
+
+    /// The number of outstanding (unconsumed) nonces. Used by tests to prove the
+    /// table stays bounded.
+    pub fn count_nonces(&self) -> Result<i64> {
+        let conn = self.lock()?;
+        let count = conn
+            .query_row("SELECT COUNT(*) FROM acme_nonces", [], |row| row.get(0))
+            .context("failed to count nonces")?;
+        Ok(count)
     }
 
     /// Creates an ACME order.
@@ -3077,6 +3158,34 @@ impl Database {
              FROM acme_orders WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], |row| {
+            Ok(AcmeOrder {
+                id: row.get(0)?,
+                account_id: row.get(1)?,
+                status: row.get(2)?,
+                identifiers: row.get(3)?,
+                authorizations: row.get(4)?,
+                cert_id: row.get(5)?,
+                expires_at: row.get(6)?,
+            })
+        })?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Finds the order that a certificate was issued under.
+    ///
+    /// Certificates are addressed by a sequential rowid, so the ACME
+    /// certificate-download endpoint needs a way to tell whose certificate a
+    /// given id refers to. The issuing order carries the account.
+    pub fn get_order_by_cert_id(&self, cert_id: i64) -> Result<Option<AcmeOrder>> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, account_id, status, identifiers, authorizations, cert_id, expires_at
+             FROM acme_orders WHERE cert_id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![cert_id], |row| {
             Ok(AcmeOrder {
                 id: row.get(0)?,
                 account_id: row.get(1)?,
@@ -3826,6 +3935,16 @@ fn now_secs() -> Result<i64> {
         .as_secs() as i64)
 }
 
+/// Restricts `path` to `0600` — readable and writable by its owner only.
+///
+/// Used for files whose contents are secrets. Set explicitly rather than left to
+/// the umask, because the umask is the operator's ambient preference and a
+/// default one (0022) leaves a private key world-readable.
+pub fn restrict_to_owner(path: &Path) -> Result<()> {
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("failed to set permissions on {}", path.display()))
+}
+
 /// Normalizes a DNS name to lowercase with a trailing dot.
 pub fn normalize_name(name: &str) -> String {
     let lower = name.to_lowercase();
@@ -3894,6 +4013,41 @@ mod tests {
 
     fn test_db() -> Database {
         Database::open_memory().unwrap()
+    }
+
+    #[test]
+    fn opened_database_and_sidecars_are_owner_only() {
+        // The database is the keystore (root CA key, zone intermediate keys,
+        // DNSSEC private keys, EAB HMAC secrets), so it must not be created
+        // under the bare umask.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rolodex-dns.db");
+        let db = Database::open(&path).unwrap();
+        // Force a write so the WAL sidecar definitely exists.
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "host.example.com.".to_string(),
+            record_type: RecordKind::A,
+            value: "10.0.0.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        for suffix in ["", "-wal", "-shm"] {
+            let p = PathBuf::from(format!("{}{}", path.display(), suffix));
+            if !p.exists() {
+                continue;
+            }
+            let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                mode & 0o077,
+                0,
+                "{} is mode {:04o}; it must be readable by its owner only",
+                p.display(),
+                mode
+            );
+        }
     }
 
     #[test]

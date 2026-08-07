@@ -12,6 +12,7 @@ use rolodex_dns::grpc_service::RolodexDnsGrpcService;
 use rolodex_dns::grpc_service::proto::rolodex_dns_service_server::RolodexDnsServiceServer;
 use rolodex_dns::rbl::{RblChecker, RblProvider, RecursiveRblResolver};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use tokio::net::UnixListener;
 use tonic::transport::Server;
@@ -170,6 +171,29 @@ async fn main() -> Result<()> {
         .collect();
     info!("Scope-enforced overlay ranges: {}", overlay_cidrs.len());
     dns_server.set_overlay_cidrs(overlay_cidrs);
+
+    // Who may drive upstream resolution. A source outside these ranges still
+    // gets this server's authoritative data but is REFUSED rather than recursed
+    // for, so a routable `dns.bind` is not an open resolver. Bad entries are
+    // warned about and skipped — the failure mode of a typo is a source range
+    // that loses recursion, not one that silently gains it.
+    let recursion_cidrs: Vec<_> = config
+        .security
+        .recursion_cidrs
+        .iter()
+        .filter_map(|c| match rolodex_dns::cidr::IpCidr::parse(c) {
+            Ok(cidr) => Some(cidr),
+            Err(e) => {
+                warn!("Skipping recursion CIDR '{}': {}", c, e);
+                None
+            }
+        })
+        .collect();
+    info!(
+        "Recursion offered to {} source range(s); all other sources are served local data only",
+        recursion_cidrs.len()
+    );
+    dns_server.set_recursion_cidrs(recursion_cidrs);
 
     // Auto mode: build the secure (DoT) tier, the public :53 last-resort tier,
     // and the switch tuning. Bad entries are warned about and skipped so a typo
@@ -511,6 +535,13 @@ async fn main() -> Result<()> {
     if !config.grpc.tcp_bind.is_empty() {
         let grpc_binds = rolodex_dns::config::resolve_bind_addrs(&config.grpc.tcp_bind)
             .context("resolving gRPC TCP bind address")?;
+
+        rolodex_dns::config::check_grpc_exposure(
+            &config.grpc.tcp_bind,
+            &grpc_binds,
+            &config.grpc.shared_secret,
+        )?;
+
         for grpc_bind in grpc_binds {
             let grpc_service = RolodexDnsGrpcService::new(
                 db.clone(),
@@ -547,7 +578,28 @@ async fn main() -> Result<()> {
             error!("failed to remove stale socket {}: {}", socket_path, e);
         }
 
-        let uds = UnixListener::bind(&socket_path).context("failed to bind Unix socket")?;
+        // A connection over the Unix socket bypasses authentication entirely, so
+        // the socket's file mode *is* the access control for the management
+        // plane. A bare `bind` creates it under the umask — typically 0755 —
+        // which hands every local user unauthenticated administrative control.
+        //
+        // Bind to a temporary name, restrict it, and rename into place: chmod
+        // after binding at the published path would leave a window in which the
+        // socket exists and is world-connectable. Rename is atomic and keeps the
+        // same inode, so the listener is unaffected and the published path never
+        // exists in a permissive mode. 0660 rather than 0600 so a deployment can
+        // grant a dedicated admin group access by chgrp'ing the socket.
+        let staging_path = format!("{}.{}.tmp", socket_path, std::process::id());
+        if let Err(e) = std::fs::remove_file(&staging_path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            error!("failed to remove stale socket {}: {}", staging_path, e);
+        }
+        let uds = UnixListener::bind(&staging_path).context("failed to bind Unix socket")?;
+        std::fs::set_permissions(&staging_path, std::fs::Permissions::from_mode(0o660))
+            .context("failed to restrict Unix socket permissions")?;
+        std::fs::rename(&staging_path, &socket_path)
+            .context("failed to move Unix socket into place")?;
         let uds_stream = tokio_stream::wrappers::UnixListenerStream::new(uds);
 
         let grpc_service = RolodexDnsGrpcService::new(

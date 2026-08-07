@@ -252,6 +252,42 @@ pub fn resolve_bind_addrs(addr: &str) -> Result<Vec<String>> {
     resolve_interface_addrs(host, port)
 }
 
+/// Rejects a gRPC TCP listener that exposes the management plane with
+/// authentication disabled.
+///
+/// An empty `grpc.shared_secret` makes `check_auth` early-return `Ok(())` for
+/// every TCP RPC, so the management plane is unauthenticated: whoever reaches
+/// the port can rewrite any DNS record, mint EAB credentials, and ensure zone
+/// CAs. That is the documented development configuration on loopback and a
+/// total, silent exposure of the box on anything else — the server comes up
+/// looking healthy and logs nothing unusual.
+///
+/// `resolved` is the output of [`resolve_bind_addrs`] for `configured`; the
+/// original string is carried through only for the error message, since
+/// `primary:50051` and `eth0:50051` do not name their addresses. `0.0.0.0` and
+/// `::` are not loopback — they cover every routable address on the host.
+pub fn check_grpc_exposure(configured: &str, resolved: &[String], secret: &str) -> Result<()> {
+    if !secret.is_empty() {
+        return Ok(());
+    }
+    for bind in resolved {
+        let addr: std::net::SocketAddr = bind
+            .parse()
+            .with_context(|| format!("invalid gRPC TCP bind address: {}", bind))?;
+        if !addr.ip().is_loopback() {
+            anyhow::bail!(
+                "refusing to start: grpc.tcp_bind resolves to {} (from '{}') with an empty \
+                 grpc.shared_secret, which disables authentication on the management plane. \
+                 Set grpc.shared_secret, bind gRPC to loopback, or set grpc.tcp_bind to \"\" \
+                 and use the Unix socket.",
+                addr,
+                configured
+            );
+        }
+    }
+    Ok(())
+}
+
 /// gRPC management interface configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GrpcConfig {
@@ -687,6 +723,23 @@ pub struct SecurityConfig {
     /// `SubnetForNetwork` in the controller's `wireguard/ipam.go`).
     #[serde(default = "default_overlay_cidrs")]
     pub overlay_cidrs: Vec<String>,
+
+    /// Source CIDRs permitted to drive **upstream** resolution. A query from
+    /// outside these ranges is still answered from local/authoritative data but
+    /// is REFUSED rather than forwarded or resolved iteratively.
+    ///
+    /// `dns.bind` defaults to `0.0.0.0:53`, so on a routable interface the
+    /// listener is reachable from the whole internet; recursing for it would
+    /// make this box an open resolver — a reflection/amplification asset whose
+    /// outbound traffic you pay for. The default list is every range that is
+    /// unroutable from the internet (loopback, RFC 1918, link-local, ULA,
+    /// CGNAT), which covers the LAN, the container bridges, and the WireGuard
+    /// overlay. Widen it only for source ranges you actually intend to serve.
+    ///
+    /// This is a separate axis from `overlay_cidrs`: that one decides who is
+    /// *scope-enforced*, this one decides who gets recursion at all.
+    #[serde(default = "default_recursion_cidrs")]
+    pub recursion_cidrs: Vec<String>,
 }
 
 impl Default for SecurityConfig {
@@ -694,12 +747,30 @@ impl Default for SecurityConfig {
         Self {
             qname_case_randomization: true,
             overlay_cidrs: default_overlay_cidrs(),
+            recursion_cidrs: default_recursion_cidrs(),
         }
     }
 }
 
 fn default_overlay_cidrs() -> Vec<String> {
     vec!["10.64.0.0/10".to_string()]
+}
+
+fn default_recursion_cidrs() -> Vec<String> {
+    [
+        "127.0.0.0/8",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "169.254.0.0/16",
+        "100.64.0.0/10",
+        "::1/128",
+        "fe80::/10",
+        "fc00::/7",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
 }
 
 /// Address-family answer preference. In `auto` mode a background probe (see
@@ -1100,6 +1171,7 @@ mod tests {
             security: SecurityConfig {
                 qname_case_randomization: false,
                 overlay_cidrs: default_overlay_cidrs(),
+                recursion_cidrs: default_recursion_cidrs(),
             },
             ..Config::default()
         };
@@ -1386,5 +1458,47 @@ rbl:
         assert_eq!(r2, r3);
         let addr: std::net::SocketAddr = r1[0].parse().unwrap();
         assert_eq!(addr.port(), 853);
+    }
+    #[test]
+    fn empty_secret_on_loopback_is_allowed() {
+        // The documented development configuration.
+        assert!(
+            check_grpc_exposure("127.0.0.1:50051", &["127.0.0.1:50051".to_string()], "").is_ok()
+        );
+        assert!(check_grpc_exposure("[::1]:50051", &["[::1]:50051".to_string()], "").is_ok());
+    }
+
+    #[test]
+    fn empty_secret_on_a_routable_bind_is_refused() {
+        for bind in [
+            "0.0.0.0:50051",
+            "[::]:50051",
+            "192.168.1.5:50051",
+            "203.0.113.9:50051",
+        ] {
+            assert!(
+                check_grpc_exposure(bind, &[bind.to_string()], "").is_err(),
+                "{} with no shared secret must be refused",
+                bind
+            );
+        }
+    }
+
+    #[test]
+    fn a_secret_permits_any_bind() {
+        assert!(
+            check_grpc_exposure("0.0.0.0:50051", &["0.0.0.0:50051".to_string()], "hunter2").is_ok()
+        );
+    }
+
+    #[test]
+    fn one_routable_address_condemns_an_interface_bind() {
+        // `eth0:50051` resolves to every address on the interface; a single
+        // routable one is enough to expose the management plane.
+        let resolved = vec![
+            "127.0.0.1:50051".to_string(),
+            "192.168.1.5:50051".to_string(),
+        ];
+        assert!(check_grpc_exposure("eth0:50051", &resolved, "").is_err());
     }
 }

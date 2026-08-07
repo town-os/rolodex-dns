@@ -76,6 +76,12 @@ quinn = "0.11"
 # DNSSEC
 ring = "0.17"
 
+# Constant-time comparison for the gRPC shared secret. ring's own
+# `verify_slices_are_equal` is deprecated and documented as internal-only with
+# no side-channel promises; subtle is the purpose-built crate and is already in
+# the tree transitively.
+subtle = "2"
+
 # DHCP
 dhcproto = "0.14"
 

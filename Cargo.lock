@@ -2263,6 +2263,7 @@ dependencies = [
  "serde_yaml_ng",
  "sha2",
  "socket2 0.5.10",
+ "subtle",
  "tempfile",
  "thiserror 2.0.18",
  "time",

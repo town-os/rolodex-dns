@@ -238,16 +238,100 @@ pub struct IssuedLeaf {
     pub expires_at: i64,
 }
 
+/// Whether `candidate` looks like a DNS hostname rather than free-form subject
+/// text.
+///
+/// The subject common name is not a structured field: rcgen stamps
+/// `"rcgen self signed cert"` into any CSR built without an explicit DN, and
+/// real clients put organization names there. Only a CN that could actually be
+/// interpreted as a hostname by a TLS client is worth constraining, so this
+/// requires at least one dot and nothing outside the LDH character set.
+fn looks_like_dns_name(candidate: &str) -> bool {
+    let trimmed = candidate.trim_end_matches('.');
+    !trimmed.is_empty()
+        && trimmed.contains('.')
+        && trimmed.split('.').all(|label| {
+            !label.is_empty()
+                && label
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        })
+}
+
+/// Every DNS identity a CSR asks to have asserted: its `dNSName` SANs, plus the
+/// subject common name when that reads as a hostname.
+fn csr_requested_names(params: &CertificateParams) -> Vec<String> {
+    let mut names: Vec<String> = params
+        .subject_alt_names
+        .iter()
+        .filter_map(|san| match san {
+            rcgen::SanType::DnsName(dns) => Some(dns.to_string()),
+            _ => None,
+        })
+        .collect();
+
+    // The CN's ASN.1 encoding is the client's choice — rcgen maps each tag to a
+    // different `DnValue` variant on the way back in — so every string form has
+    // to be read, not just the one a particular client happens to emit.
+    if let Some(cn) = params
+        .distinguished_name
+        .get(&rcgen::DnType::CommonName)
+        .and_then(dn_value_str)
+        && looks_like_dns_name(&cn)
+    {
+        names.push(cn);
+    }
+    names
+}
+
+/// The textual content of a distinguished-name value, whatever its encoding.
+fn dn_value_str(value: &rcgen::DnValue) -> Option<String> {
+    match value {
+        rcgen::DnValue::Utf8String(s) => Some(s.clone()),
+        rcgen::DnValue::PrintableString(s) => Some(s.as_str().to_string()),
+        rcgen::DnValue::Ia5String(s) => Some(s.as_str().to_string()),
+        rcgen::DnValue::TeletexString(s) => Some(s.as_str().to_string()),
+        // BmpString/UniversalString are UCS-2/UTF-32; a hostname would never be
+        // encoded that way, and neither type exposes a &str.
+        _ => None,
+    }
+}
+
+/// Rejects a CSR that asks for any DNS identity outside `allowed`.
+///
+/// This is the check that keeps ACME's proof-of-control meaningful. `rcgen`'s
+/// `CertificateSigningRequestParams` copies the CSR's SANs and subject straight
+/// into the certificate it signs, so without it the validated order identifiers
+/// constrain nothing: an account that proves control of one name could have any
+/// other name — in any zone — signed by an intermediate that chains to the
+/// Rolodex root every enrolled client trusts.
+fn check_csr_names(params: &CertificateParams, allowed: &[String]) -> Result<()> {
+    let permitted: Vec<String> = allowed.iter().map(|n| normalize_name(n)).collect();
+    for requested in csr_requested_names(params) {
+        let normalized = normalize_name(&requested);
+        if !permitted.contains(&normalized) {
+            anyhow::bail!(
+                "CSR requests '{}', which the order did not validate",
+                requested
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Issues a leaf certificate by signing the supplied PKCS#10 CSR with the
 /// intermediate CA for `zone`.
 ///
-/// The CSR carries the subject public key and requested SANs; the issued leaf's
-/// validity is `validity_days` from now. The intermediate must already exist.
+/// `allowed_names` is the set of identifiers the order actually validated. The
+/// CSR may request any subset of them and nothing else — see [`check_csr_names`].
+/// The issued leaf's validity is `validity_days` from now, overriding whatever
+/// the CSR asked for. The intermediate must already exist.
 pub fn issue_leaf(
     db: &Database,
     zone: &str,
     csr_pem: &str,
     validity_days: i64,
+    allowed_names: &[String],
 ) -> Result<IssuedLeaf> {
     let zone = normalize_name(zone);
     let (int_cert_pem, int_key_pem) = db
@@ -257,6 +341,7 @@ pub fn issue_leaf(
 
     let mut csr =
         CertificateSigningRequestParams::from_pem(csr_pem).context("failed to parse CSR")?;
+    check_csr_names(&csr.params, allowed_names)?;
     set_validity(&mut csr.params, validity_days)?;
     let expires_at = csr.params.not_after.unix_timestamp();
 
@@ -352,7 +437,8 @@ mod tests {
         let db = test_db();
         ensure_zone_intermediate(&db, "example.com").expect("intermediate");
         let csr = make_csr("host.example.com");
-        let issued = issue_leaf(&db, "example.com", &csr, 90).expect("issue");
+        let allowed = vec!["host.example.com".to_string()];
+        let issued = issue_leaf(&db, "example.com", &csr, 90, &allowed).expect("issue");
 
         // The chain must contain two certificates: leaf + intermediate.
         let chain_certs: Vec<CertificateDer<'static>> =
@@ -387,6 +473,111 @@ mod tests {
             None,
         )
         .expect("leaf must chain to the Rolodex root");
+    }
+
+    /// Builds a CSR whose SAN list is exactly `names`.
+    fn make_csr_multi(names: &[&str]) -> String {
+        let key = ed25519_key().expect("key");
+        let params =
+            CertificateParams::new(names.iter().map(|n| n.to_string()).collect::<Vec<_>>())
+                .expect("params");
+        let csr = params.serialize_request(&key).expect("csr");
+        csr.pem().expect("csr pem")
+    }
+
+    /// A CSR may not smuggle in a name the order never validated. Without this
+    /// the validated identifiers constrain nothing, because rcgen copies the
+    /// CSR's SANs straight into the signed certificate.
+    #[test]
+    fn issue_leaf_rejects_unvalidated_san() {
+        let db = test_db();
+        ensure_zone_intermediate(&db, "example.com").expect("intermediate");
+        let csr = make_csr_multi(&["host.example.com", "victim.example.com"]);
+        let allowed = vec!["host.example.com".to_string()];
+
+        let err = match issue_leaf(&db, "example.com", &csr, 90, &allowed) {
+            Ok(_) => panic!("an unvalidated SAN must be rejected"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("victim.example.com"),
+            "error should name the offending identifier: {}",
+            err
+        );
+    }
+
+    /// The same via the subject common name rather than the SAN extension.
+    #[test]
+    fn issue_leaf_rejects_unvalidated_common_name() {
+        let db = test_db();
+        ensure_zone_intermediate(&db, "example.com").expect("intermediate");
+        let key = ed25519_key().expect("key");
+        let mut params = CertificateParams::new(Vec::<String>::new()).expect("params");
+        params.distinguished_name = DistinguishedName::new();
+        params
+            .distinguished_name
+            .push(DnType::CommonName, "victim.example.com");
+        let csr = params
+            .serialize_request(&key)
+            .expect("csr")
+            .pem()
+            .expect("pem");
+
+        let allowed = vec!["host.example.com".to_string()];
+        assert!(
+            issue_leaf(&db, "example.com", &csr, 90, &allowed).is_err(),
+            "an unvalidated common name must be rejected"
+        );
+    }
+
+    /// rcgen stamps "rcgen self signed cert" into the CN of any CSR built
+    /// without an explicit DN, and real clients put organization names there.
+    /// Free-form subject text is not a hostname and must not trip the check.
+    #[test]
+    fn issue_leaf_ignores_non_dns_common_name() {
+        let db = test_db();
+        ensure_zone_intermediate(&db, "example.com").expect("intermediate");
+        // make_csr sets no DN, so rcgen supplies its default CN.
+        let csr = make_csr("host.example.com");
+        let allowed = vec!["host.example.com".to_string()];
+        assert!(
+            issue_leaf(&db, "example.com", &csr, 90, &allowed).is_ok(),
+            "a CSR with rcgen's default non-DNS common name must still issue"
+        );
+    }
+
+    /// Requesting a strict subset of the validated names is legitimate.
+    #[test]
+    fn issue_leaf_allows_subset_of_validated_names() {
+        let db = test_db();
+        ensure_zone_intermediate(&db, "example.com").expect("intermediate");
+        let csr = make_csr_multi(&["a.example.com"]);
+        let allowed = vec!["a.example.com".to_string(), "b.example.com".to_string()];
+        assert!(issue_leaf(&db, "example.com", &csr, 90, &allowed).is_ok());
+    }
+
+    /// Matching is on normalized names, so trailing-dot and case differences
+    /// between the order and the CSR are the same identifier.
+    #[test]
+    fn issue_leaf_matches_names_case_and_dot_insensitively() {
+        let db = test_db();
+        ensure_zone_intermediate(&db, "example.com").expect("intermediate");
+        let csr = make_csr_multi(&["HOST.Example.COM"]);
+        let allowed = vec!["host.example.com.".to_string()];
+        assert!(issue_leaf(&db, "example.com", &csr, 90, &allowed).is_ok());
+    }
+
+    #[test]
+    fn looks_like_dns_name_discriminates() {
+        assert!(looks_like_dns_name("host.example.com"));
+        assert!(looks_like_dns_name("host.example.com."));
+        assert!(looks_like_dns_name("a-b.example.com"));
+        // Free-form subject text is not a hostname.
+        assert!(!looks_like_dns_name("rcgen self signed cert"));
+        assert!(!looks_like_dns_name("Example Corp"));
+        assert!(!looks_like_dns_name("localhost"));
+        assert!(!looks_like_dns_name(""));
+        assert!(!looks_like_dns_name("."));
     }
 
     #[test]

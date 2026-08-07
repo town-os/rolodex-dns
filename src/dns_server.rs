@@ -185,6 +185,11 @@ pub struct DnsServer {
     /// applies only to these; every other source is a trusted local client that
     /// resolves the full view. Defaults to the overlay range `10.64.0.0/10`.
     overlay_cidrs: Arc<ArcSwap<Vec<crate::cidr::IpCidr>>>,
+    /// Source ranges permitted to drive *upstream* resolution. A source outside
+    /// these ranges is still served local/authoritative data but is REFUSED
+    /// rather than recursed for — see `may_recurse`. Defaults to the loopback,
+    /// RFC 1918, link-local, ULA, and CGNAT ranges.
+    recursion_cidrs: Arc<ArcSwap<Vec<crate::cidr::IpCidr>>>,
     /// Active per-TLD ingress DNS listeners, keyed by their bound local IP. Each
     /// entry holds the abort handles for the UDP+TCP tasks so the listener can be
     /// torn down when its last TLD is removed. Started via `spawn_ingress_listener`.
@@ -201,6 +206,36 @@ pub struct DnsServer {
 /// network-scope enforcement (see `overlay_cidrs`).
 fn default_overlay_cidrs() -> Vec<crate::cidr::IpCidr> {
     vec![crate::cidr::IpCidr::parse("10.64.0.0/10").expect("valid default overlay CIDR")]
+}
+
+/// The source ranges allowed to drive upstream resolution by default: loopback,
+/// the RFC 1918 private ranges, link-local, IPv6 ULA, and the CGNAT range.
+///
+/// Every one of these is unroutable on the public internet, so the default is
+/// "recurse for the networks physically attached to this box, and for nobody
+/// else". The Town OS WireGuard overlay (`10.64.0.0/10`) falls inside
+/// `10.0.0.0/8`, so overlay peers keep full service — they are scope-*enforced*
+/// by `overlay_cidrs`, which is a separate axis from whether recursion is
+/// offered at all.
+///
+/// `100.64.0.0/10` is included because CGNAT space is where overlay networks
+/// (Tailscale and friends) and carrier-side LANs live; it is not reachable from
+/// the internet either.
+fn default_recursion_cidrs() -> Vec<crate::cidr::IpCidr> {
+    [
+        "127.0.0.0/8",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "169.254.0.0/16",
+        "100.64.0.0/10",
+        "::1/128",
+        "fe80::/10",
+        "fc00::/7",
+    ]
+    .iter()
+    .map(|c| crate::cidr::IpCidr::parse(c).expect("valid default recursion CIDR"))
+    .collect()
 }
 
 impl DnsServer {
@@ -235,6 +270,7 @@ impl DnsServer {
             answer_v4: AtomicBool::new(true),
             answer_v6: AtomicBool::new(true),
             overlay_cidrs: Arc::new(ArcSwap::from_pointee(default_overlay_cidrs())),
+            recursion_cidrs: Arc::new(ArcSwap::from_pointee(default_recursion_cidrs())),
             ingress_listeners: Arc::new(DashMap::new()),
             ingress_port: AtomicU16::new(53),
             udp_shards: AtomicUsize::new(0),
@@ -280,6 +316,7 @@ impl DnsServer {
             answer_v4: AtomicBool::new(true),
             answer_v6: AtomicBool::new(true),
             overlay_cidrs: Arc::new(ArcSwap::from_pointee(default_overlay_cidrs())),
+            recursion_cidrs: Arc::new(ArcSwap::from_pointee(default_recursion_cidrs())),
             ingress_listeners: Arc::new(DashMap::new()),
             ingress_port: AtomicU16::new(53),
             udp_shards: AtomicUsize::new(0),
@@ -298,6 +335,31 @@ impl DnsServer {
     /// enforcement, per the configured `overlay_cidrs`.
     fn is_overlay_peer(&self, ip: IpAddr) -> bool {
         self.overlay_cidrs.load().iter().any(|c| c.contains(ip))
+    }
+
+    /// Sets the source ranges permitted to drive upstream resolution. Replaces
+    /// the defaults from [`default_recursion_cidrs`]. An empty list closes
+    /// recursion to everyone, turning the server purely authoritative.
+    pub fn set_recursion_cidrs(&self, cidrs: Vec<crate::cidr::IpCidr>) {
+        self.recursion_cidrs.store(Arc::new(cidrs));
+    }
+
+    /// Whether `ip` may make this server resolve a name it does not hold locally.
+    ///
+    /// This is the open-resolver guard. `dns.bind` defaults to `0.0.0.0:53`, so
+    /// on a routable interface every host on the internet can reach the listener;
+    /// without this check each of them gets full recursive service, which is a
+    /// reflection/amplification asset — a small spoofed query returns a large
+    /// answer aimed at the spoofed victim, and the outbound traffic is billed to
+    /// this box.
+    ///
+    /// Deliberately narrower than "is this source trusted": a stranger is still
+    /// served data this server is authoritative for (that is a separate
+    /// decision, and closing recursion must not turn the box into a
+    /// non-answering black hole for its own zones). What they cannot do is make
+    /// it go and ask someone else.
+    fn may_recurse(&self, ip: IpAddr) -> bool {
+        self.recursion_cidrs.load().iter().any(|c| c.contains(ip))
     }
 
     /// Sets the UDP/TCP port used by per-TLD ingress listeners (default 53).
@@ -881,8 +943,26 @@ impl DnsServer {
     ) -> Result<Vec<u8>> {
         let started = std::time::Instant::now();
         let tag = QueryTag::new();
+        // Canonicalize once, here, before anything classifies the address. On a
+        // dual-stack listener (`[::]:53` — a supported bind form, and the default
+        // on Linux with `net.ipv6.bindv6only=0`) an IPv4 peer arrives as
+        // `::ffff:10.64.0.1`. That is an `IpAddr::V6`, and `IpCidr::contains`
+        // deliberately does not match across address families, so without this the
+        // overlay peer is classified as a *trusted local source*: an unjoined peer
+        // escapes REFUSED into the global namespace, and a joined one loses its
+        // scope because `JoinNetwork` stored the plain IPv4 form.
+        //
+        // This lives here rather than in `handle_query_on` because the UDP, TCP,
+        // DoT and DoQ listeners call this method directly, with their own
+        // transport label, and never pass through that wrapper — canonicalizing
+        // one level up would leave every one of them unprotected.
         let response = self
-            .resolve_query(query_data, source_ip, local_ip, &tag)
+            .resolve_query(
+                query_data,
+                source_ip.map(|ip| ip.to_canonical()),
+                local_ip.map(|ip| ip.to_canonical()),
+                &tag,
+            )
             .await?;
         let response = self.apply_family_filter(response);
 
@@ -1511,6 +1591,38 @@ impl DnsServer {
                 ResponseCode::NXDomain,
                 vec![],
                 true,
+                edns_ctx.as_ref(),
+            ));
+        }
+
+        // Open-resolver guard. Everything above answers from data this server
+        // holds; everything below reaches for data it does not — the upstream
+        // cache, a blocklist provider, a forwarder, the roots. That boundary is
+        // exactly where "may this source make us recurse?" belongs, so a
+        // stranger still gets our authoritative data (checked above) but cannot
+        // make us resolve the internet on their behalf.
+        //
+        // REFUSED with an empty answer section is also the smallest reply
+        // available: the response is no larger than the question that provoked
+        // it, so a spoofed query gains an attacker nothing. Placing this before
+        // the cache lookup matters for the same reason — a cached answer served
+        // to a stranger amplifies just as well as a freshly-resolved one, and
+        // warming the cache is how the attack is actually staged.
+        //
+        // `source_ip` is `None` only for callers that supply no peer (see
+        // `handle_query`); those are in-process and are not gated here.
+        if let Some(ip) = source_ip
+            && !self.may_recurse(ip)
+        {
+            debug!(
+                "Refusing recursion for {} from non-recursion source {}",
+                qname, ip
+            );
+            return Ok(build_response_edns(
+                &message,
+                ResponseCode::Refused,
+                vec![],
+                false,
                 edns_ctx.as_ref(),
             ));
         }
@@ -2243,38 +2355,96 @@ impl DnsServer {
             (query_data.to_vec(), None)
         };
 
+        // What an acceptable reply has to look like. Everything here is decided
+        // from the datagram we are about to send, never from the one that comes
+        // back — a response does not get to tell us what it was answering.
+        if send_data.len() < 12 {
+            anyhow::bail!("refusing to forward a truncated query");
+        }
+        let expected_id = u16::from_be_bytes([send_data[0], send_data[1]]);
+        let sent_question = hickory_proto::op::Message::from_bytes(&send_data)
+            .ok()
+            .and_then(|m| m.queries().first().cloned());
+
         socket.send_to(&send_data, target).await?;
 
         let mut buf = vec![0u8; MAX_UDP_SIZE];
         // Short: a filtered/black-holed forwarder must fail fast so the auto
         // chain moves on rather than stalling the query for seconds.
-        let timeout = tokio::time::timeout(
-            std::time::Duration::from_millis(1500),
-            socket.recv(&mut buf),
-        );
-        let len = timeout
-            .await
-            .context("forwarder timeout")?
-            .context("forwarder recv error")?;
-        buf.truncate(len);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(1500);
+
+        // Read until a datagram passes every check, or the deadline expires.
+        //
+        // Looping rather than judging the first datagram is deliberate: the
+        // socket is pooled and long-lived, so a late reply to an *earlier* query
+        // can be sitting in the buffer, and an off-path injector who lands one
+        // packet would otherwise deny the query outright. A rejected datagram is
+        // discarded and the real answer is still awaited.
+        let response = loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                anyhow::bail!("forwarder timeout");
+            }
+            let (len, from) = tokio::time::timeout(remaining, socket.recv_from(&mut buf))
+                .await
+                .context("forwarder timeout")?
+                .context("forwarder recv error")?;
+
+            // The pooled sockets are unconnected, so the kernel hands us
+            // datagrams from anyone. A reply from an address we did not query is
+            // not an answer to our question.
+            if from != *target {
+                debug!("discarding forwarder datagram from unexpected source {from}");
+                continue;
+            }
+            // The transaction id is the one thing an off-path forger must guess.
+            if len < 2 || u16::from_be_bytes([buf[0], buf[1]]) != expected_id {
+                debug!("discarding forwarder response with mismatched transaction id");
+                continue;
+            }
+            let Ok(msg) = hickory_proto::op::Message::from_bytes(&buf[..len]) else {
+                debug!("discarding unparseable forwarder response from {target}");
+                continue;
+            };
+            // The response must answer the question we asked — name, type, and
+            // class. `sent_question` is None only for a query we could not parse
+            // ourselves, in which case there is nothing to compare against.
+            if let Some(asked) = &sent_question {
+                let Some(got) = msg.queries().first() else {
+                    debug!("discarding forwarder response with no question section");
+                    continue;
+                };
+                if got.query_type() != asked.query_type()
+                    || got.query_class() != asked.query_class()
+                    || !got.name().eq_case(asked.name())
+                {
+                    // `eq_case` is case-*sensitive*, which is what enforces 0x20:
+                    // a forger who could not observe the outbound query cannot
+                    // reproduce the randomized capitalization. When
+                    // randomization is off this is still the correct check, just
+                    // a weaker one.
+                    if let Some((original_qname, sent_randomized)) = &randomized_name {
+                        warn!(
+                            "QNAME case/question mismatch from {}: sent '{}', got '{}' \
+                             (original: '{}') — discarding",
+                            target,
+                            sent_randomized,
+                            got.name(),
+                            original_qname
+                        );
+                    } else {
+                        debug!("discarding forwarder response answering a different question");
+                    }
+                    continue;
+                }
+            }
+
+            break buf[..len].to_vec();
+        };
         // Release the socket back to the pool
         drop(socket_guard);
 
-        // Verify QNAME case in response matches what we sent (0x20 check)
-        if let Some((ref original_qname, ref sent_randomized)) = randomized_name
-            && let Ok(response_msg) = hickory_proto::op::Message::from_bytes(&buf)
-            && let Some(resp_q) = response_msg.queries().first()
-        {
-            let resp_qname = resp_q.name().to_string();
-            if resp_qname != *sent_randomized {
-                warn!(
-                    "QNAME case mismatch from {}: sent '{}', got '{}' (original: '{}')",
-                    target, sent_randomized, resp_qname, original_qname
-                );
-            }
-        }
-
-        Ok(buf)
+        Ok(response)
     }
 }
 
@@ -5865,5 +6035,86 @@ mod tests {
         )
         .unwrap();
         assert_eq!(resp.response_code(), ResponseCode::ServFail);
+    }
+
+    /// The default recursion ranges cover every network physically attached to
+    /// the box — and nothing that is routable from the internet.
+    #[test]
+    fn default_recursion_ranges_cover_local_networks_only() {
+        let server = make_test_server(Database::open_memory().unwrap());
+        for local in [
+            "127.0.0.1",
+            "192.168.1.10",
+            "10.0.0.5",
+            "10.64.0.1", // the WireGuard overlay, inside 10/8
+            "172.16.4.4",
+            "169.254.1.1",
+            "100.64.0.1",
+            "::1",
+            "fd00::1",
+            "fe80::1",
+        ] {
+            assert!(
+                server.may_recurse(local.parse().unwrap()),
+                "{} is a local source and must get recursion",
+                local
+            );
+        }
+        for public in [
+            "198.51.100.7",
+            "8.8.8.8",
+            "203.0.113.1",
+            "2001:4860:4860::8888",
+        ] {
+            assert!(
+                !server.may_recurse(public.parse().unwrap()),
+                "{} is routable from the internet and must not get recursion",
+                public
+            );
+        }
+    }
+
+    /// An IPv4-mapped source is canonicalized before classification, so it is
+    /// judged the same as its plain form (see `handle_query_on`).
+    #[tokio::test]
+    async fn recursion_guard_sees_through_ipv4_mapped_sources() {
+        let server = make_test_server(Database::open_memory().unwrap());
+        // Forward with no forwarders: a source that *does* get recursion fails
+        // immediately instead of walking to the real root servers.
+        server.set_resolution_mode(ResolutionMode::Forward);
+        let query = build_query("not-local.example.", RecordType::A);
+
+        let refused = Message::from_bytes(
+            &server
+                .handle_query_from(&query, "::ffff:198.51.100.7".parse().unwrap())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(refused.response_code(), ResponseCode::Refused);
+
+        // The LAN, in the same spelling, is not refused. (No forwarders are
+        // configured, so it SERVFAILs — it got recursion and recursion failed.)
+        let served = Message::from_bytes(
+            &server
+                .handle_query_from(&query, "::ffff:192.168.1.10".parse().unwrap())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(served.response_code(), ResponseCode::ServFail);
+    }
+
+    /// `set_recursion_cidrs` replaces the defaults; an empty list closes
+    /// recursion entirely, leaving a purely authoritative server.
+    #[test]
+    fn recursion_ranges_are_replaceable() {
+        let server = make_test_server(Database::open_memory().unwrap());
+        server.set_recursion_cidrs(vec![crate::cidr::IpCidr::parse("198.51.100.0/24").unwrap()]);
+        assert!(server.may_recurse("198.51.100.7".parse().unwrap()));
+        assert!(!server.may_recurse("192.168.1.10".parse().unwrap()));
+
+        server.set_recursion_cidrs(vec![]);
+        assert!(!server.may_recurse("127.0.0.1".parse().unwrap()));
     }
 }

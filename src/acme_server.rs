@@ -182,6 +182,22 @@ impl AcmeError {
             detail,
         )
     }
+    /// The CSR asks for something the order does not authorize (RFC 8555 §7.4).
+    fn bad_csr(detail: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::BAD_REQUEST,
+            "urn:ietf:params:acme:error:badCSR",
+            detail,
+        )
+    }
+    /// The requesting account does not own the object it addressed.
+    fn not_owner() -> Self {
+        Self::new(
+            StatusCode::FORBIDDEN,
+            "urn:ietf:params:acme:error:unauthorized",
+            "the object does not belong to this account",
+        )
+    }
     fn server_internal(detail: impl Into<String>) -> Self {
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -235,10 +251,15 @@ fn verify_request(
         .protected_header()
         .map_err(|e| AcmeError::malformed(e.to_string()))?;
 
-    // URL binding (RFC 8555 §6.4).
-    if let Some(url) = &header.url
-        && url != expected_url
-    {
+    // URL binding (RFC 8555 §6.4). The field is mandatory: a JWS carrying no
+    // `url` is bound to no endpoint, so the same signed body could be replayed
+    // against a different one. Treating it as optional made the check skippable
+    // by simply omitting it.
+    let url = header
+        .url
+        .as_ref()
+        .ok_or_else(|| AcmeError::malformed("JWS protected header is missing url"))?;
+    if url != expected_url {
         return Err(AcmeError::malformed(format!(
             "JWS url {} does not match request {}",
             url, expected_url
@@ -391,6 +412,15 @@ async fn new_account_inner(state: &AcmeState, body: &[u8]) -> Result<Response, A
             .get_eab(&kid)
             .map_err(internal)?
             .ok_or_else(|| AcmeError::unauthorized("unknown External Account Binding key"))?;
+        // An EAB is a one-time enrollment token: the portal mints one per
+        // enrollment and hands it to a single user. `used` was already recorded
+        // and simply never consulted, so a leaked credential enrolled unlimited
+        // accounts against the zone forever.
+        if cred.used {
+            return Err(AcmeError::unauthorized(
+                "this External Account Binding credential has already been used",
+            ));
+        }
         crate::acme_jose::verify_eab(eab, &verified.jwk, &cred.hmac_key)
             .map_err(|e| AcmeError::unauthorized(e.to_string()))?;
         state.db.mark_eab_used(&kid).map_err(internal)?;
@@ -595,12 +625,18 @@ async fn get_order(
 
 async fn get_order_inner(state: &AcmeState, id: &str, body: &[u8]) -> Result<Response, AcmeError> {
     let expected = state.url(&format!("order/{}", id));
-    verify_request(state, body, &expected)?;
+    let verified = verify_request(state, body, &expected)?;
+    let account = verified
+        .account
+        .ok_or_else(|| AcmeError::malformed("order requires an account (kid)"))?;
     let order = state
         .db
         .get_order(id)
         .map_err(internal)?
         .ok_or_else(|| AcmeError::malformed("unknown order"))?;
+    if order.account_id != account.account_id {
+        return Err(AcmeError::not_owner());
+    }
     Ok(json_response(
         StatusCode::OK,
         order_json(state, &order).map_err(internal)?,
@@ -644,12 +680,20 @@ async fn get_authz(
 
 async fn get_authz_inner(state: &AcmeState, id: &str, body: &[u8]) -> Result<Response, AcmeError> {
     let expected = state.url(&format!("authz/{}", id));
-    verify_request(state, body, &expected)?;
+    let verified = verify_request(state, body, &expected)?;
+    let account = verified
+        .account
+        .ok_or_else(|| AcmeError::malformed("authorization requires an account (kid)"))?;
     let authz = state
         .db
         .get_authorization(id)
         .map_err(internal)?
         .ok_or_else(|| AcmeError::malformed("unknown authorization"))?;
+    // The authorization carries the challenge token, which is one half of the
+    // key authorization — leaking it to another account is not merely untidy.
+    if authz.account_id != account.account_id {
+        return Err(AcmeError::not_owner());
+    }
     Ok(json_response(
         StatusCode::OK,
         authz_json(state, &authz).map_err(internal)?,
@@ -709,6 +753,15 @@ async fn respond_challenge_inner(
         .get_authorization(&challenge.authz_id)
         .map_err(internal)?
         .ok_or_else(|| AcmeError::malformed("orphan challenge"))?;
+    // The key authorization below is computed from the *requesting* account's
+    // thumbprint while the *authorization's* status is what gets updated. Those
+    // must be the same account, or one account drives another's validation.
+    if authz.account_id != account.account_id {
+        return Err(AcmeError::not_owner());
+    }
+    if authz.expires_at <= OffsetDateTime::now_utc().unix_timestamp() {
+        return Err(AcmeError::malformed("authorization has expired"));
+    }
 
     // Perform dns-01 validation against our own DNS data.
     let key_auth = crate::acme_jose::key_authorization(&challenge.token, &account.thumbprint);
@@ -812,12 +865,23 @@ async fn finalize_inner(state: &AcmeState, id: &str, body: &[u8]) -> Result<Resp
         .get_order(id)
         .map_err(internal)?
         .ok_or_else(|| AcmeError::malformed("unknown order"))?;
+    // RFC 8555 §7.4: only the account that created the order may finalize it.
+    // Without this, a second account could finalize a victim's ready order with
+    // its own CSR and take delivery of the certificate under a key it controls.
+    if order.account_id != account.account_id {
+        return Err(AcmeError::not_owner());
+    }
     if order.status != "ready" {
         return Err(AcmeError::new(
             StatusCode::FORBIDDEN,
             "urn:ietf:params:acme:error:orderNotReady",
             format!("order is {}, not ready", order.status),
         ));
+    }
+    // A validation performed once must not be good forever: the operator may
+    // have removed the challenge record, or lost the name, since.
+    if order.expires_at <= OffsetDateTime::now_utc().unix_timestamp() {
+        return Err(AcmeError::malformed("order has expired"));
     }
 
     let csr_b64 = verified
@@ -831,11 +895,25 @@ async fn finalize_inner(state: &AcmeState, id: &str, body: &[u8]) -> Result<Resp
     let csr_pem = der_to_pem("CERTIFICATE REQUEST", &csr_der);
 
     let names: Vec<String> = serde_json::from_str(&order.identifiers).map_err(internal)?;
-    let primary = names.first().cloned().unwrap_or_default();
-    let zone = check_issuable(state, &account, &primary)?;
+    // Re-check every identifier, not just the primary: an account's zone scope
+    // can change between new-order and finalize, and checking one name of many
+    // was never sufficient anyway. The primary's zone is the issuing CA.
+    let primary = names
+        .first()
+        .cloned()
+        .ok_or_else(|| AcmeError::malformed("order has no identifiers"))?;
+    let mut zone = String::new();
+    for (i, name) in names.iter().enumerate() {
+        let resolved = check_issuable(state, &account, name)?;
+        if i == 0 {
+            zone = resolved;
+        }
+    }
 
-    let issued = ca::issue_leaf(&state.db, &zone, &csr_pem, state.leaf_validity_days)
-        .map_err(|e| AcmeError::malformed(format!("CSR signing failed: {}", e)))?;
+    // `names` is the authorization boundary. The CSR supplies the public key;
+    // it does not get to widen what was validated.
+    let issued = ca::issue_leaf(&state.db, &zone, &csr_pem, state.leaf_validity_days, &names)
+        .map_err(|e| AcmeError::bad_csr(e.to_string()))?;
     crate::metrics::metrics().acme_issued.inc();
 
     let cert_id = state
@@ -900,10 +978,24 @@ async fn get_cert(State(state): State<AcmeState>, Path(id): Path<String>, body: 
 
 async fn get_cert_inner(state: &AcmeState, id: &str, body: &[u8]) -> Result<Response, AcmeError> {
     let expected = state.url(&format!("cert/{}", id));
-    verify_request(state, body, &expected)?;
+    let verified = verify_request(state, body, &expected)?;
+    let account = verified
+        .account
+        .ok_or_else(|| AcmeError::malformed("certificate requires an account (kid)"))?;
     let cert_id: i64 = id
         .parse()
         .map_err(|_| AcmeError::malformed("invalid certificate id"))?;
+    // Certificate ids are sequential rowids, so without an ownership check any
+    // account could walk the id space and download every certificate the CA has
+    // ever issued. The issuing order is what ties a certificate to an account.
+    let owner = state
+        .db
+        .get_order_by_cert_id(cert_id)
+        .map_err(internal)?
+        .map(|o| o.account_id);
+    if owner.as_deref() != Some(account.account_id.as_str()) {
+        return Err(AcmeError::not_owner());
+    }
     let cert = state
         .db
         .get_acme_certificate_by_id(cert_id)
@@ -919,11 +1011,20 @@ async fn get_cert_inner(state: &AcmeState, id: &str, body: &[u8]) -> Result<Resp
 
 async fn revoke_cert(State(state): State<AcmeState>, body: Bytes) -> Response {
     let expected = state.url("revoke-cert");
-    // Authenticate the request; revocation tracking is not yet implemented.
-    match verify_request(&state, &body, &expected) {
-        Ok(_) => StatusCode::OK.into_response(),
-        Err(e) => e.into_response(),
+    // Revocation is not implemented. Returning 200 told the client its
+    // certificate was dead when it was not — an operator who believes a
+    // compromised key has been revoked is worse off than one who knows the
+    // request failed. Authenticate first so this leaks nothing to strangers,
+    // then say plainly that the CA cannot do it.
+    if let Err(e) = verify_request(&state, &body, &expected) {
+        return e.into_response();
     }
+    AcmeError::new(
+        StatusCode::NOT_IMPLEMENTED,
+        "urn:ietf:params:acme:error:serverInternal",
+        "this CA does not implement certificate revocation",
+    )
+    .into_response()
 }
 
 /// Wraps DER bytes in a PEM block with the given label.

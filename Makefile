@@ -98,6 +98,10 @@ test-log: ## Same as test, tee'd into a timestamped log file printed at the end 
 rust-test: rust-integration-test ## Run all Rust tests (includes integration tests)
 	cargo test
 
+# The security_* suites assert the behaviour each open security issue requires
+# and are EXPECTED TO FAIL until those issues are fixed. A failure there is the
+# finding, not a broken test — see the module docs at the top of each file.
+# Never weaken an assertion to make one pass.
 rust-integration-test: build ## Run each Rust integration test file
 	cargo test --test integration_test
 	cargo test --test new_features_test
@@ -106,6 +110,14 @@ rust-integration-test: build ## Run each Rust integration test file
 	cargo test --test acme_issuer_test
 	cargo test --test auto_resolution_test
 	cargo test --test metrics_test
+	cargo test --test security_acme_test
+	cargo test --test security_forwarder_test
+	cargo test --test security_resolver_test
+	cargo test --test security_scope_test
+	cargo test --test security_portal_test
+	cargo test --test security_open_resolver_test
+	cargo test --test security_local_access_test
+	cargo test --test security_auth_hardening_test
 
 build: ## Compile binaries for TARGET (debug natively; cross-compiled release for a foreign TARGET)
 	@$(if $(CROSS),make/cross.sh build $(BUILD_ARCH),cargo build)
