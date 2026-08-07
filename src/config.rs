@@ -51,6 +51,9 @@ pub struct Config {
     /// ACME issuer / certificate-authority configuration (disabled when absent).
     #[serde(default)]
     pub acme: Option<AcmeConfig>,
+    /// Prometheus metrics endpoint (disabled when absent).
+    #[serde(default)]
+    pub metrics: Option<MetricsConfig>,
 }
 
 /// A DNS bind entry: protocol (udp/tcp) paired with a bind address.
@@ -513,6 +516,33 @@ impl Default for Dns64Config {
     }
 }
 
+/// Prometheus metrics endpoint configuration.
+///
+/// Opt-in: the section is absent by default and no listener is started, so an
+/// existing deployment gains no new open port on upgrade. The default bind is
+/// loopback because the endpoint is unauthenticated plain HTTP — see
+/// [`crate::metrics::serve_metrics`] for why that is the right trade here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricsConfig {
+    /// HTTP bind address for the `/metrics` endpoint. Supports the same
+    /// `primary:port` and `interface:port` forms as every other bind address.
+    /// Port 9153 matches CoreDNS's convention for DNS exporters.
+    #[serde(default = "default_metrics_bind")]
+    pub bind: String,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            bind: default_metrics_bind(),
+        }
+    }
+}
+
+fn default_metrics_bind() -> String {
+    "127.0.0.1:9153".to_string()
+}
+
 /// DHCP server configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DhcpConfig {
@@ -916,6 +946,7 @@ impl Default for Config {
             address_family: AddressFamilyConfig::default(),
             dhcp: None,
             acme: None,
+            metrics: None,
         }
     }
 }

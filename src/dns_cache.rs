@@ -133,6 +133,7 @@ impl DnsCache {
             let now = Instant::now();
             if entry.expires_at > now {
                 self.hits.fetch_add(1, Ordering::Relaxed);
+                crate::metrics::metrics().cache_hits.inc();
                 if entry.local {
                     // Local records: return original TTL (no decay), zero-copy via Arc
                     return (*entry.records).clone();
@@ -152,8 +153,10 @@ impl DnsCache {
             // Expired, remove it
             drop(entry);
             self.memory.remove(&key);
+            crate::metrics::metrics().cache_expired.inc();
         }
         self.misses.fetch_add(1, Ordering::Relaxed);
+        crate::metrics::metrics().cache_misses.inc();
         Vec::new()
     }
 
@@ -169,6 +172,7 @@ impl DnsCache {
             if entry.expires_at > Instant::now() {
                 if entry.local {
                     self.hits.fetch_add(1, Ordering::Relaxed);
+                    crate::metrics::metrics().cache_hits.inc();
                     return (*entry.records).clone();
                 }
                 // Non-local hit: not eligible here, fall through to a miss
@@ -292,6 +296,7 @@ impl DnsCache {
         if let Some(entry) = self.negatives.get(&key) {
             if entry.expires_at > Instant::now() {
                 self.hits.fetch_add(1, Ordering::Relaxed);
+                crate::metrics::metrics().cache_negative_hits.inc();
                 return Some(entry.kind);
             }
             drop(entry);
@@ -328,6 +333,13 @@ impl DnsCache {
         }
         self.hits.store(0, Ordering::Relaxed);
         self.misses.store(0, Ordering::Relaxed);
+    }
+
+    /// Number of cached negative answers. Reported separately from
+    /// [`Self::stats`]'s `total_entries` because negatives live in their own map
+    /// (see the `negatives` field) and are invisible to the positive paths.
+    pub fn negative_entries(&self) -> usize {
+        self.negatives.len()
     }
 
     /// Returns cache statistics.

@@ -2090,6 +2090,13 @@ impl Database {
             .collect()
     }
 
+    /// Number of implicitly-managed zones, read straight off the in-memory
+    /// cache. Unlike [`Self::get_managed_zones_cached`] this clones nothing,
+    /// which matters on the scrape path where only the count is wanted.
+    pub fn managed_zone_count(&self) -> usize {
+        self.managed_zones_cache.len()
+    }
+
     /// Returns managed zones from the in-memory cache (no SQL).
     pub fn get_managed_zones_cached(&self) -> Vec<String> {
         self.managed_zones_cache
@@ -3646,6 +3653,77 @@ impl Database {
         }
         Ok(options)
     }
+
+    /// Collects every row count the Prometheus collector reports, in a single
+    /// pass under one lock acquisition.
+    ///
+    /// The alternative — calling the various `list_*` methods at scrape time —
+    /// would take and release the database mutex a dozen times and materialize
+    /// every record in the zone just to call `.len()` on it. A scrape happens on
+    /// someone else's schedule (typically every 15s, and nothing stops two
+    /// Prometheus servers scraping at once), so it must not contend with the
+    /// query path for the database lock.
+    pub fn metrics_counts(&self) -> Result<MetricsCounts> {
+        let conn = self.lock()?;
+        let count = |sql: &str| -> Result<u64> {
+            let mut stmt = conn.prepare_cached(sql)?;
+            let n: i64 = stmt.query_row([], |row| row.get(0))?;
+            Ok(n.max(0) as u64)
+        };
+
+        let mut counts = MetricsCounts {
+            records: count("SELECT COUNT(*) FROM dns_records")?,
+            scoped_records: count("SELECT COUNT(*) FROM scoped_dns_records")?,
+            scopes: count("SELECT COUNT(*) FROM network_scopes")?,
+            associations: count("SELECT COUNT(*) FROM network_associations")?,
+            authoritative_zones: count("SELECT COUNT(*) FROM authoritative_zones")?,
+            owned_tlds: count("SELECT COUNT(*) FROM scope_tlds")?,
+            dhcp_pools: count("SELECT COUNT(*) FROM dhcp_pools")?,
+            acme_accounts: count("SELECT COUNT(*) FROM acme_server_accounts")?,
+            acme_certificates: count("SELECT COUNT(*) FROM acme_certificates")?,
+            leases_by_state: Vec::new(),
+        };
+
+        let mut stmt =
+            conn.prepare_cached("SELECT state, COUNT(*) FROM dhcp_leases GROUP BY state")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (state, n) = row?;
+            counts.leases_by_state.push((state, n.max(0) as u64));
+        }
+
+        Ok(counts)
+    }
+}
+
+/// Row counts sampled by the Prometheus collector; see
+/// [`Database::metrics_counts`].
+#[derive(Debug, Default)]
+pub struct MetricsCounts {
+    /// Rows in `dns_records` (the global, unscoped namespace).
+    pub records: u64,
+    /// Rows in `scoped_dns_records`, across every scope.
+    pub scoped_records: u64,
+    /// Configured network scopes.
+    pub scopes: u64,
+    /// Live IP-to-scope associations.
+    pub associations: u64,
+    /// Zones explicitly declared authoritative.
+    pub authoritative_zones: u64,
+    /// TLDs owned by a network scope.
+    pub owned_tlds: u64,
+    /// Configured DHCP address pools.
+    pub dhcp_pools: u64,
+    /// Registered ACME server accounts.
+    pub acme_accounts: u64,
+    /// Issued certificates on record.
+    pub acme_certificates: u64,
+    /// `(state, count)` pairs straight from the `dhcp_leases` table. States the
+    /// collector does not recognize are simply not reported, so a future state
+    /// value cannot land in the wrong series.
+    pub leases_by_state: Vec<(String, u64)>,
 }
 
 fn row_mapper(row: &rusqlite::Row) -> rusqlite::Result<DnsRecord> {

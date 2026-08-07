@@ -1,5 +1,6 @@
 use crate::db::{Database, RecordKind};
 use crate::dns_cache::DnsCache;
+use crate::metrics::{AnswerSource, Proto, QueryObservation, metrics};
 use crate::rbl::RblChecker;
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
@@ -17,6 +18,83 @@ use tokio::task::AbortHandle;
 use tracing::{debug, error, info, warn};
 
 const FORWARD_POOL_SIZE: usize = 8;
+
+/// Indices into [`crate::metrics::BLOCK_KINDS`].
+const BLOCK_RBL_PROVIDER: usize = 0;
+const BLOCK_RBL_LOCAL: usize = 1;
+const BLOCK_DNSBL_PROVIDER: usize = 2;
+
+/// Indices into [`crate::metrics::FAMILIES`].
+const FAMILY_V4: usize = 0;
+const FAMILY_V6: usize = 1;
+
+/// Indices into the `direction` label of
+/// [`crate::metrics::Metrics::tier_switches`].
+const TIER_SWITCH_RECOVER: usize = 0;
+const TIER_SWITCH_DEGRADE: usize = 1;
+
+/// Indices into [`crate::metrics::FLUSH_REASONS`].
+const FLUSH_MUTATION: usize = 0;
+const FLUSH_EXPLICIT: usize = 1;
+const FLUSH_TIER_SWITCH: usize = 2;
+
+/// Carries what only `resolve_query` knows out to the metrics wrapper: which
+/// stage of the resolution order answered, and — where the wire form is
+/// ambiguous — the response code.
+///
+/// `resolve_query` has around thirty exits. Rather than instrument each one,
+/// each exit that is *not* plain upstream resolution tags itself here and the
+/// single wrapper records the observation. The initial value is therefore
+/// [`AnswerSource::Upstream`]: the function's fall-through ending is the upstream
+/// path, so an exit that sets nothing is already labelled correctly.
+///
+/// Atomics rather than `Cell` because a `Cell` borrow held across an `await`
+/// would make the query future `!Send`, and every listener spawns its queries.
+struct QueryTag {
+    /// An [`AnswerSource::index`].
+    source: AtomicUsize,
+    /// An index into [`crate::metrics::RCODES`], or [`RCODE_FROM_WIRE`] to read
+    /// it off the response header instead.
+    rcode: AtomicUsize,
+}
+
+/// Sentinel for [`QueryTag::rcode`]: derive the response code from the response
+/// bytes. This is the normal case — the header nibble is authoritative for every
+/// code the server actually returns except the EDNS extended ones, whose low
+/// nibble is zero and would otherwise be misreported as NOERROR.
+const RCODE_FROM_WIRE: usize = usize::MAX;
+
+impl QueryTag {
+    fn new() -> Self {
+        Self {
+            source: AtomicUsize::new(AnswerSource::Upstream.index()),
+            rcode: AtomicUsize::new(RCODE_FROM_WIRE),
+        }
+    }
+
+    /// Declares which stage produced the answer.
+    fn set(&self, source: AnswerSource) {
+        self.source.store(source.index(), Ordering::Relaxed);
+    }
+
+    /// Declares both the stage and an explicit response-code label, for the
+    /// extended rcodes that the header nibble cannot express.
+    fn set_with_rcode(&self, source: AnswerSource, rcode_index: usize) {
+        self.set(source);
+        self.rcode.store(rcode_index, Ordering::Relaxed);
+    }
+
+    fn source(&self) -> AnswerSource {
+        AnswerSource::from_index(self.source.load(Ordering::Relaxed))
+    }
+
+    fn rcode_index(&self, response: &[u8]) -> usize {
+        match self.rcode.load(Ordering::Relaxed) {
+            RCODE_FROM_WIRE => crate::metrics::rcode_index_from_wire(wire_rcode(response)),
+            explicit => explicit,
+        }
+    }
+}
 
 /// Upstream resolution strategy for queries not satisfied locally.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -460,14 +538,32 @@ impl DnsServer {
         };
         let answers = msg.take_answers();
         let before = answers.len();
+        let mut dropped_v4 = 0u64;
+        let mut dropped_v6 = 0u64;
         let kept: Vec<Record> = answers
             .into_iter()
             .filter(|r| match r.record_type() {
-                RecordType::A => v4,
-                RecordType::AAAA => v6,
+                RecordType::A => {
+                    if !v4 {
+                        dropped_v4 += 1;
+                    }
+                    v4
+                }
+                RecordType::AAAA => {
+                    if !v6 {
+                        dropped_v6 += 1;
+                    }
+                    v6
+                }
                 _ => true,
             })
             .collect();
+        if dropped_v4 > 0 {
+            metrics().answers_family_filtered.add(FAMILY_V4, dropped_v4);
+        }
+        if dropped_v6 > 0 {
+            metrics().answers_family_filtered.add(FAMILY_V6, dropped_v6);
+        }
         if kept.len() == before {
             // Nothing suppressed for this query; return the original bytes as-is
             // (msg is discarded — no need to re-serialize).
@@ -503,6 +599,21 @@ impl DnsServer {
     /// the delegation cache in the first place. Cross-tier invalidation lives in
     /// [`Self::flush_upstream_state`] instead.
     pub fn flush_cache(&self) {
+        self.flush_cache_for(FLUSH_MUTATION);
+    }
+
+    /// Clears the response cache on an operator's explicit `FlushDnsCache`
+    /// request. Identical to [`Self::flush_cache`] except for the metric label —
+    /// an operator-driven flush and the automatic one that follows every record
+    /// mutation are worth telling apart when working out why a cache is cold.
+    pub fn flush_cache_explicit(&self) {
+        self.flush_cache_for(FLUSH_EXPLICIT);
+    }
+
+    /// Clears the response cache, attributing it to `reason` (an index into
+    /// [`crate::metrics::FLUSH_REASONS`]).
+    fn flush_cache_for(&self, reason: usize) {
+        metrics().cache_flushes.inc(reason);
         if let Some(ref cache) = self.dns_cache {
             cache.flush();
         }
@@ -516,7 +627,7 @@ impl DnsServer {
     /// talking to a different one — and on a degrade (say, to a network that
     /// filters :53) the cached nameserver addresses are unreachable anyway.
     pub fn flush_upstream_state(&self) {
-        self.flush_cache();
+        self.flush_cache_for(FLUSH_TIER_SWITCH);
         let resolver = self.resolver.load();
         resolver.delegations().flush();
         resolver.records().flush();
@@ -636,7 +747,10 @@ impl DnsServer {
             let server = Arc::clone(&self);
             let socket = Arc::clone(&socket);
             tokio::spawn(async move {
-                match server.handle_query_on(&data, src.ip(), local_ip).await {
+                match server
+                    .handle_query_proto(&data, Some(src.ip()), local_ip, Proto::Udp)
+                    .await
+                {
                     Ok(resp) => {
                         if let Err(e) = socket.send_to(&resp, src).await {
                             error!("UDP send error to {}: {}", src, e);
@@ -703,7 +817,9 @@ impl DnsServer {
             let mut msg_buf = vec![0u8; msg_len];
             reader.read_exact(&mut msg_buf).await?;
 
-            let response = self.handle_query_on(&msg_buf, src.ip(), local_ip).await?;
+            let response = self
+                .handle_query_proto(&msg_buf, Some(src.ip()), local_ip, Proto::Tcp)
+                .await?;
             let resp_len = (response.len() as u16).to_be_bytes();
             writer.write_all(&resp_len).await?;
             writer.write_all(&response).await?;
@@ -714,8 +830,8 @@ impl DnsServer {
     /// This is a convenience method that does not enforce network scoping.
     /// Used for tests where source IP context is not available.
     pub async fn handle_query(&self, query_data: &[u8]) -> Result<Vec<u8>> {
-        let response = self.resolve_query(query_data, None, None).await?;
-        Ok(self.apply_family_filter(response))
+        self.handle_query_proto(query_data, None, None, Proto::Udp)
+            .await
     }
 
     /// Handles a raw DNS query with source IP context for network scoping.
@@ -738,36 +854,93 @@ impl DnsServer {
         source_ip: IpAddr,
         local_ip: Option<IpAddr>,
     ) -> Result<Vec<u8>> {
+        self.handle_query_proto(query_data, Some(source_ip), local_ip, Proto::Udp)
+            .await
+    }
+
+    /// The single instrumented entry point every transport funnels through.
+    ///
+    /// `proto` only labels metrics — it does not change resolution. The
+    /// `handle_query`/`handle_query_from`/`handle_query_on` wrappers above keep
+    /// their existing signatures (they are what the tests and the DoH handler
+    /// call) and report `udp`; the UDP, TCP, DoT, DoH and DoQ listeners call
+    /// this directly with their own transport so the `proto` label is accurate
+    /// for real traffic.
+    ///
+    /// Putting the observation here rather than inside `resolve_query` is
+    /// deliberate: `resolve_query` has some thirty exits, and instrumenting each
+    /// would mean a new early return could silently escape the metrics. Here
+    /// there is exactly one exit, and it is after `apply_family_filter`, so the
+    /// recorded response size and rcode are what the client actually receives.
+    pub async fn handle_query_proto(
+        &self,
+        query_data: &[u8],
+        source_ip: Option<IpAddr>,
+        local_ip: Option<IpAddr>,
+        proto: Proto,
+    ) -> Result<Vec<u8>> {
+        let started = std::time::Instant::now();
+        let tag = QueryTag::new();
         let response = self
-            .resolve_query(query_data, Some(source_ip), local_ip)
+            .resolve_query(query_data, source_ip, local_ip, &tag)
             .await?;
-        Ok(self.apply_family_filter(response))
+        let response = self.apply_family_filter(response);
+
+        metrics().observe_query(QueryObservation {
+            proto,
+            rcode_index: tag.rcode_index(&response),
+            qtype_index: crate::metrics::qtype_index(
+                wire_qtype(query_data).unwrap_or(RecordType::Unknown(0)),
+            ),
+            source: tag.source(),
+            query_bytes: query_data.len(),
+            response_bytes: response.len(),
+            truncated: wire_truncated(&response),
+            elapsed: started.elapsed(),
+        });
+
+        Ok(response)
     }
 
     /// Core DNS resolution logic with optional network scope context and the
     /// optional local listener IP (used for the per-TLD ingress rewrite).
+    ///
+    /// `tag` collects which stage answered, for metrics; see [`QueryTag`].
     async fn resolve_query(
         &self,
         query_data: &[u8],
         source_ip: Option<IpAddr>,
         local_ip: Option<IpAddr>,
+        tag: &QueryTag,
     ) -> Result<Vec<u8>> {
         let message = match hickory_proto::op::Message::from_bytes(query_data) {
             Ok(m) => m,
             Err(e) => {
                 warn!("Failed to parse DNS query: {}", e);
+                tag.set(AnswerSource::Error);
+                metrics().malformed_queries.inc();
                 return Ok(make_error_response(query_data, ResponseCode::FormErr));
             }
         };
 
         // Extract EDNS context from the query
         let edns_ctx = crate::edns::EdnsContext::from_message(&message);
+        if edns_ctx.as_ref().is_some_and(|c| c.dnssec_ok) {
+            metrics().edns_do_queries.inc();
+        }
 
         // If EDNS version > 0, return BADVERS (RFC 6891 section 6.1.3)
         if let Some(ref ctx) = edns_ctx
             && ctx.is_unsupported_version()
         {
             debug!("Rejecting EDNS version {} query", ctx.version);
+            // BADVERS is an extended rcode: its low nibble is 0, so the wire
+            // header alone would report this as NOERROR. Label it explicitly.
+            tag.set_with_rcode(
+                AnswerSource::Error,
+                crate::metrics::rcode_index(ResponseCode::BADVERS),
+            );
+            metrics().edns_unsupported_version.inc();
             return Ok(build_response_edns(
                 &message,
                 ResponseCode::from(0, 16), // BADVERS
@@ -778,15 +951,21 @@ impl DnsServer {
         }
 
         if message.message_type() != MessageType::Query {
+            tag.set(AnswerSource::Error);
+            metrics().malformed_queries.inc();
             return Ok(make_error_response(query_data, ResponseCode::NotImp));
         }
 
         if message.op_code() != OpCode::Query {
+            tag.set(AnswerSource::Error);
+            metrics().malformed_queries.inc();
             return Ok(make_error_response(query_data, ResponseCode::NotImp));
         }
 
         let questions = message.queries();
         if questions.is_empty() {
+            tag.set(AnswerSource::Error);
+            metrics().malformed_queries.inc();
             return Ok(make_error_response(query_data, ResponseCode::FormErr));
         }
 
@@ -802,6 +981,9 @@ impl DnsServer {
         // its resolved value) and on the main listeners, which carry no concrete
         // local IP.
         let ingress_override = self.ingress_target(local_ip, &qname).map(|(_, ip)| ip);
+        if ingress_override.is_some() {
+            metrics().ingress_rewrites.inc();
+        }
 
         // Determine network scope for this query.
         //
@@ -840,6 +1022,7 @@ impl DnsServer {
                     // An overlay peer that has not joined any network. It is not a
                     // member of anything, so refuse it.
                     debug!("Refusing DNS query from unassociated overlay peer {}", ip);
+                    tag.set(AnswerSource::Refused);
                     return Ok(build_response_edns(
                         &message,
                         ResponseCode::Refused,
@@ -860,17 +1043,28 @@ impl DnsServer {
 
         // If we have a network scope, check scoped RBL first
         if let Some(ref scope) = scope_name {
-            if let Some(ip) = extract_ip_from_name(&qname)
-                && (self.rbl.is_listed(&ip).await || self.db.lookup_local_rbl(&ip.to_string()))
-            {
-                debug!("RBL block in scope {}: {} is blacklisted", scope, qname);
-                return Ok(build_response_edns(
-                    &message,
-                    ResponseCode::NXDomain,
-                    vec![],
-                    true,
-                    edns_ctx.as_ref(),
-                ));
+            if let Some(ip) = extract_ip_from_name(&qname) {
+                // Split out of the original `a || b` so the metric can say which
+                // list matched. The short-circuit is unchanged: the local lookup
+                // still only runs when no provider listed the address.
+                let by_provider = self.rbl.is_listed(&ip).await;
+                let by_local = !by_provider && self.db.lookup_local_rbl(&ip.to_string());
+                if by_provider || by_local {
+                    debug!("RBL block in scope {}: {} is blacklisted", scope, qname);
+                    metrics().blocklist_blocks.inc(if by_provider {
+                        BLOCK_RBL_PROVIDER
+                    } else {
+                        BLOCK_RBL_LOCAL
+                    });
+                    tag.set(AnswerSource::Rbl);
+                    return Ok(build_response_edns(
+                        &message,
+                        ResponseCode::NXDomain,
+                        vec![],
+                        true,
+                        edns_ctx.as_ref(),
+                    ));
+                }
             }
 
             // Try scoped records first
@@ -894,6 +1088,7 @@ impl DnsServer {
                             cached.len()
                         );
                         let dns_records = build_scoped_answers(&cached, ingress_override);
+                        tag.set(AnswerSource::Cache);
                         return Ok(build_response_edns(
                             &message,
                             ResponseCode::NoError,
@@ -921,6 +1116,7 @@ impl DnsServer {
                         cache.insert_local(&scoped_cache_name, Some(kind), records.clone());
                     }
                     let dns_records = build_scoped_answers(&records, ingress_override);
+                    tag.set(AnswerSource::Scoped);
                     return Ok(build_response_edns(
                         &message,
                         ResponseCode::NoError,
@@ -947,6 +1143,7 @@ impl DnsServer {
                                         Some(rec)
                                     })
                                     .collect();
+                            tag.set(AnswerSource::Scoped);
                             return Ok(build_response_edns(
                                 &message,
                                 ResponseCode::NoError,
@@ -969,6 +1166,7 @@ impl DnsServer {
                         .iter()
                         .filter_map(db_record_to_dns_record)
                         .collect();
+                    tag.set(AnswerSource::Scoped);
                     return Ok(build_response_edns(
                         &message,
                         ResponseCode::NoError,
@@ -981,6 +1179,7 @@ impl DnsServer {
 
             // Check DNAME in scoped records (walk up labels)
             if let Some(dname_result) = self.check_dname_scoped(scope, &qname, qtype, &message) {
+                tag.set(AnswerSource::Scoped);
                 return Ok(dname_result);
             }
 
@@ -1001,12 +1200,14 @@ impl DnsServer {
                             "Scoped TLD peer answer for {} (scope {} tld {})",
                             qname, scope, owned_tld
                         );
+                        tag.set(AnswerSource::TldPeer);
                         return Ok(resp);
                     }
                     debug!(
                         "Scoped authoritative NXDOMAIN for {} (scope {} owns tld {}, no local/peer answer)",
                         qname, scope, owned_tld
                     );
+                    tag.set(AnswerSource::AuthoritativeNxdomain);
                     return Ok(build_response_edns(
                         &message,
                         ResponseCode::NXDomain,
@@ -1020,6 +1221,7 @@ impl DnsServer {
                     "Hiding {} from scope {} (owned by scope {} tld {})",
                     qname, scope, owner, owned_tld
                 );
+                tag.set(AnswerSource::AuthoritativeNxdomain);
                 return Ok(build_response_edns(
                     &message,
                     ResponseCode::NXDomain,
@@ -1040,6 +1242,7 @@ impl DnsServer {
                                 "Scoped authoritative NXDOMAIN for {} (scope {} zone {} exists)",
                                 qname, scope, zone
                             );
+                            tag.set(AnswerSource::AuthoritativeNxdomain);
                             return Ok(build_response_edns(
                                 &message,
                                 ResponseCode::NXDomain,
@@ -1058,16 +1261,25 @@ impl DnsServer {
         // Check RBL for reverse DNS queries (global, non-scoped)
         if scope_name.is_none()
             && let Some(ip) = extract_ip_from_name(&qname)
-            && (self.rbl.is_listed(&ip).await || self.db.lookup_local_rbl(&ip.to_string()))
         {
-            debug!("RBL block: {} is blacklisted", qname);
-            return Ok(build_response_edns(
-                &message,
-                ResponseCode::NXDomain,
-                vec![],
-                false,
-                edns_ctx.as_ref(),
-            ));
+            let by_provider = self.rbl.is_listed(&ip).await;
+            let by_local = !by_provider && self.db.lookup_local_rbl(&ip.to_string());
+            if by_provider || by_local {
+                debug!("RBL block: {} is blacklisted", qname);
+                metrics().blocklist_blocks.inc(if by_provider {
+                    BLOCK_RBL_PROVIDER
+                } else {
+                    BLOCK_RBL_LOCAL
+                });
+                tag.set(AnswerSource::Rbl);
+                return Ok(build_response_edns(
+                    &message,
+                    ResponseCode::NXDomain,
+                    vec![],
+                    false,
+                    edns_ctx.as_ref(),
+                ));
+            }
         }
 
         // Determine if this query is for an authoritative zone
@@ -1092,6 +1304,7 @@ impl DnsServer {
                         cached.len()
                     );
                     let dns_records = cached.iter().filter_map(db_record_to_dns_record).collect();
+                    tag.set(AnswerSource::Cache);
                     return Ok(build_response_edns(
                         &message,
                         ResponseCode::NoError,
@@ -1128,6 +1341,7 @@ impl DnsServer {
                         cache.insert_local(&qname, Some(kind), records.clone());
                     }
                     let dns_records = records.iter().filter_map(db_record_to_dns_record).collect();
+                    tag.set(AnswerSource::Local);
                     return Ok(build_response_edns(
                         &message,
                         ResponseCode::NoError,
@@ -1151,6 +1365,7 @@ impl DnsServer {
                                 Some(rec)
                             })
                             .collect();
+                        tag.set(AnswerSource::Local);
                         return Ok(build_response_edns(
                             &message,
                             ResponseCode::NoError,
@@ -1168,6 +1383,7 @@ impl DnsServer {
                         .iter()
                         .filter_map(db_record_to_dns_record)
                         .collect();
+                    tag.set(AnswerSource::Local);
                     return Ok(build_response_edns(
                         &message,
                         ResponseCode::NoError,
@@ -1201,6 +1417,7 @@ impl DnsServer {
                         records.len()
                     );
                     let dns_records = build_scoped_answers(&records, ingress_override);
+                    tag.set(AnswerSource::ScopeFallback);
                     return Ok(build_response_edns(
                         &message,
                         ResponseCode::NoError,
@@ -1218,6 +1435,7 @@ impl DnsServer {
                         .iter()
                         .filter_map(db_record_to_dns_record)
                         .collect();
+                    tag.set(AnswerSource::ScopeFallback);
                     return Ok(build_response_edns(
                         &message,
                         ResponseCode::NoError,
@@ -1237,12 +1455,14 @@ impl DnsServer {
                     "LAN fallback peer answer for {} (owning scope {} tld {})",
                     qname, owner, owned_tld
                 );
+                tag.set(AnswerSource::TldPeer);
                 return Ok(resp);
             }
             debug!(
                 "LAN fallback authoritative NXDOMAIN for {} (owning scope {} owns tld {})",
                 qname, owner, owned_tld
             );
+            tag.set(AnswerSource::AuthoritativeNxdomain);
             return Ok(build_response_edns(
                 &message,
                 ResponseCode::NXDomain,
@@ -1254,6 +1474,7 @@ impl DnsServer {
 
         // Check DNAME (walk up labels checking for DNAME records, synthesize CNAME)
         if let Some(dname_result) = self.check_dname_global(&qname, qtype, &message) {
+            tag.set(AnswerSource::Local);
             return Ok(dname_result);
         }
 
@@ -1267,6 +1488,7 @@ impl DnsServer {
                     "Authoritative NXDOMAIN for {} (zone {} exists)",
                     qname, zone
                 );
+                tag.set(AnswerSource::AuthoritativeNxdomain);
                 return Ok(build_response_edns(
                     &message,
                     ResponseCode::NXDomain,
@@ -1283,6 +1505,7 @@ impl DnsServer {
                 "Authoritative NXDOMAIN for {} (authoritative zone {})",
                 qname, zone
             );
+            tag.set(AnswerSource::AuthoritativeNxdomain);
             return Ok(build_response_edns(
                 &message,
                 ResponseCode::NXDomain,
@@ -1306,18 +1529,29 @@ impl DnsServer {
         // external providers and any local RBL entry, and it must run *before*
         // `is_name_listed` so an exempted name never even issues a provider
         // lookup.
-        if extract_ip_from_name(&qname).is_none()
-            && !self.db.is_dnsbl_allowlisted(&qname)
-            && (self.local_rbl_lists_name(&qname) || self.rbl.is_name_listed(&qname).await)
-        {
-            debug!("RBL block (domain): {} is blacklisted", qname);
-            return Ok(build_response_edns(
-                &message,
-                ResponseCode::NXDomain,
-                vec![],
-                false,
-                edns_ctx.as_ref(),
-            ));
+        if extract_ip_from_name(&qname).is_none() {
+            if self.db.is_dnsbl_allowlisted(&qname) {
+                metrics().blocklist_allowlisted.inc();
+            } else {
+                let by_local = self.local_rbl_lists_name(&qname);
+                let by_provider = !by_local && self.rbl.is_name_listed(&qname).await;
+                if by_local || by_provider {
+                    debug!("RBL block (domain): {} is blacklisted", qname);
+                    metrics().blocklist_blocks.inc(if by_local {
+                        BLOCK_RBL_LOCAL
+                    } else {
+                        BLOCK_DNSBL_PROVIDER
+                    });
+                    tag.set(AnswerSource::Blocklist);
+                    return Ok(build_response_edns(
+                        &message,
+                        ResponseCode::NXDomain,
+                        vec![],
+                        false,
+                        edns_ctx.as_ref(),
+                    ));
+                }
+            }
         }
 
         // Check DNS cache before forwarding upstream
@@ -1331,6 +1565,7 @@ impl DnsServer {
                     cached.len()
                 );
                 let dns_records = cached.iter().filter_map(db_record_to_dns_record).collect();
+                tag.set(AnswerSource::Cache);
                 return Ok(build_response_edns(
                     &message,
                     ResponseCode::NoError,
@@ -1349,6 +1584,7 @@ impl DnsServer {
                     crate::dns_cache::NegativeKind::NxDomain => ResponseCode::NXDomain,
                     crate::dns_cache::NegativeKind::NoData => ResponseCode::NoError,
                 };
+                tag.set(AnswerSource::Cache);
                 return Ok(build_response_edns(
                     &message,
                     rcode,
@@ -1405,6 +1641,7 @@ impl DnsServer {
                             synthesized.len(),
                             qname
                         );
+                        tag.set(AnswerSource::Dns64);
                         return Ok(build_response_edns(
                             &message,
                             ResponseCode::NoError,
@@ -1580,14 +1817,23 @@ impl DnsServer {
 
         let start = self.auto_start_tier();
         for tier in start..TIER_COUNT {
+            let tier_started = std::time::Instant::now();
+            metrics().tier_attempts.inc(tier);
             if let Some(response) = self.try_tier(tier, query_data, &message, edns_ctx).await {
+                metrics().tier_wins.inc(tier);
+                metrics().upstream_duration.observe(
+                    tier,
+                    tier_started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+                );
                 // Commit any tier change (flushing the cache first) BEFORE caching
                 // this answer, so the fresh answer survives the flush.
                 self.note_auto_winner(tier);
                 self.cache_from_wire(&response);
                 return Ok(response);
             }
+            metrics().tier_failures.inc(tier);
         }
+        metrics().upstream_exhausted.inc();
         Ok(make_error_response(query_data, ResponseCode::ServFail))
     }
 
@@ -1642,6 +1888,7 @@ impl DnsServer {
                 .compare_exchange(last, now, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
         {
+            metrics().recovery_probes.inc();
             TIER_ROOTS
         } else {
             active
@@ -1663,6 +1910,7 @@ impl DnsServer {
             self.flush_upstream_state();
             self.active_tier.store(winner, Ordering::Relaxed);
             self.deviation_streak.store(0, Ordering::Relaxed);
+            metrics().tier_switches.inc(TIER_SWITCH_RECOVER);
             info!(
                 "auto resolution recovered to tier {} (was {}); cache flushed",
                 winner, active
@@ -1676,6 +1924,7 @@ impl DnsServer {
                 self.flush_upstream_state();
                 self.active_tier.store(winner, Ordering::Relaxed);
                 self.deviation_streak.store(0, Ordering::Relaxed);
+                metrics().tier_switches.inc(TIER_SWITCH_DEGRADE);
                 warn!(
                     "auto resolution degraded to tier {} after {} failures (was {}); cache flushed",
                     winner, streak, active
@@ -1740,6 +1989,7 @@ impl DnsServer {
     async fn tier_secure(&self, query_data: &[u8]) -> Option<Vec<u8>> {
         let upstreams = self.secure_upstreams.load();
         for up in upstreams.iter() {
+            metrics().upstream_queries.inc(&up.label);
             match crate::secure_client::query(query_data, up, SECURE_TIER_TIMEOUT).await {
                 Ok(resp) if response_is_definitive(&resp) => return Some(resp),
                 Ok(_) => continue,
@@ -1756,10 +2006,18 @@ impl DnsServer {
     /// local-forwarder and public-fallback tiers).
     async fn tier_forward(&self, query_data: &[u8], targets: &[SocketAddr]) -> Option<Vec<u8>> {
         for target in targets {
+            let label = target.to_string();
             match self.forward_one(query_data, target).await {
-                Ok(resp) if response_is_definitive(&resp) => return Some(resp),
-                Ok(_) => continue,
+                Ok(resp) if response_is_definitive(&resp) => {
+                    metrics().upstream_queries.inc(&label);
+                    return Some(resp);
+                }
+                Ok(_) => {
+                    metrics().upstream_queries.inc(&label);
+                    continue;
+                }
                 Err(e) => {
+                    metrics().upstream_queries.inc(&label);
                     debug!("auto: forward to {} failed: {}", target, e);
                     continue;
                 }
@@ -1885,11 +2143,13 @@ impl DnsServer {
     async fn forward_query(&self, query_data: &[u8]) -> Result<Vec<u8>> {
         let forwarders = self.forwarders.load();
         if forwarders.is_empty() {
+            metrics().upstream_exhausted.inc();
             return Ok(make_error_response(query_data, ResponseCode::ServFail));
         }
 
         // Try each forwarder in order
         for forwarder in forwarders.iter() {
+            metrics().upstream_queries.inc(&forwarder.to_string());
             match self.forward_one(query_data, forwarder).await {
                 Ok(response) => {
                     self.cache_from_wire(&response);
@@ -1902,6 +2162,7 @@ impl DnsServer {
             }
         }
 
+        metrics().upstream_exhausted.inc();
         Ok(make_error_response(query_data, ResponseCode::ServFail))
     }
 
@@ -2464,6 +2725,45 @@ fn synthesize_dns64_address(prefix: &Ipv6Addr, ipv4: &Ipv4Addr) -> Ipv6Addr {
     octets[14] = v4_octets[2];
     octets[15] = v4_octets[3];
     Ipv6Addr::from(octets)
+}
+
+/// Reads the question's QTYPE straight off the wire.
+///
+/// Read from bytes rather than from a parsed `Message` because the metrics
+/// wrapper sits outside `resolve_query`, which has already done the real parse —
+/// re-parsing the whole message just to label a counter would put a second
+/// allocation-heavy parse on every query. Question names are never compressed,
+/// so walking the labels is enough; a malformed or truncated query yields `None`
+/// and folds into the `OTHER` label.
+fn wire_qtype(query: &[u8]) -> Option<RecordType> {
+    // 12-byte header, then QNAME labels, then QTYPE.
+    let mut pos = 12;
+    loop {
+        let label_len = *query.get(pos)? as usize;
+        // A compression pointer (top two bits set) has no business in a
+        // question; treat it as unparseable rather than chasing it.
+        if label_len & 0xc0 != 0 {
+            return None;
+        }
+        pos += 1;
+        if label_len == 0 {
+            break;
+        }
+        pos += label_len;
+    }
+    let hi = *query.get(pos)? as u16;
+    let lo = *query.get(pos + 1)? as u16;
+    Some(RecordType::from((hi << 8) | lo))
+}
+
+/// Reads the RCODE nibble from a response header.
+fn wire_rcode(response: &[u8]) -> u8 {
+    response.get(3).map(|b| b & 0x0f).unwrap_or(0)
+}
+
+/// Whether a response has the TC (truncated) bit set.
+fn wire_truncated(response: &[u8]) -> bool {
+    response.get(2).is_some_and(|b| b & 0x02 != 0)
 }
 
 /// Extracts a DNS QNAME from wire-format label encoding into a dotted string.

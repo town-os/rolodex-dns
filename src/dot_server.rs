@@ -72,7 +72,9 @@ async fn handle_dot_connection(
         let mut msg_buf = vec![0u8; msg_len];
         stream.read_exact(&mut msg_buf).await?;
 
-        let response = dns_server.handle_query_from(&msg_buf, peer.ip()).await?;
+        let response = dns_server
+            .handle_query_proto(&msg_buf, Some(peer.ip()), None, crate::metrics::Proto::Dot)
+            .await?;
 
         let resp_len = (response.len() as u16).to_be_bytes();
         stream.write_all(&resp_len).await?;

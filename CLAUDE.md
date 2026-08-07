@@ -942,6 +942,46 @@ Implements DANE protocol retrieval directly on the DNS wire format (Node's resol
 - **Unit tests** (`js/test/*.test.js`, `node:test`) — DNS wire codec round-trips (including compression pointers and pointer-loop rejection), TLSA retrieval against in-process mock UDP/TCP DNS servers (truncation fallback, NXDOMAIN, SERVFAIL, timeout), portal client against a mock self-signed HTTPS portal, and the UI server's proxy + DANE endpoints. The browser extension's `ca_dns.js` module is tested here too (`extension.test.js`): codec interop against the Node encoder, X.509 DER field extraction cross-checked against `node:crypto`, TXT chunk reassembly (shuffled/incomplete/foreign data), CERT-preferred retrieval with TXT fallback, and DANE-TA verification — all with mocked DoH. Certificate association data is checked against openssl-generated Ed25519 fixtures in `js/test/fixtures/` whose expected SPKI/cert digests were computed with openssl — an oracle independent of `node:crypto`.
 - **Integration tests** (`js/test/integration.test.js`, `js/test/ca_dns_integration.test.js`, shared harness in `js/test/server_helper.js`) — gated on `ROLODEX_DNS_BINARY`; spawn a real server with the ACME issuer (and DoH) enabled in an isolated temp dir with random ports. They exercise the portal flow (EAB minting, zone listing, root CA download) and a cross-implementation DANE check: the Rust side publishes a DANE-TA TLSA record for the zone intermediate (via `ensure-zone-ca` + `generate-tlsa` over the Unix socket CLI), and the JS client retrieves it over real UDP and TCP DNS and independently recomputes the SPKI SHA-256 from the intermediate PEM. The two implementations must agree. The CA-over-DNS suite retrieves the published chain via CERT records over DoH and plain UDP, reassembles the TXT fallback, compares both byte-for-byte with `ensure-zone-ca` output and the portal root CA, and runs DANE-TA verification end to end.
 
+## Prometheus Metrics
+
+An optional `metrics` config section starts a plain-HTTP scrape endpoint at `/metrics` (default `127.0.0.1:9153`; `/` serves a link to it). The section is **absent by default**, so no listener is started and an upgrade opens no new port.
+
+**Plain HTTP, loopback by default.** The endpoint is unauthenticated and carries only aggregate counts — no query names, no record values, no certificate material. TLS here would mean shipping the self-signed certificate to every scraper for an endpoint that should be bound to a private address regardless, so the default bind is loopback instead.
+
+### Implementation (`src/metrics.rs`)
+
+The registry is hand-rolled on the same lock-free primitives as the rest of the server — `AtomicU64` counters/gauges, `DashMap` for label dimensions known only at runtime — and renders the text exposition format directly. **No metrics crate dependency.** A hot-path counter bump is one relaxed `fetch_add` into a pre-allocated series: no hashing, no allocation, no lock.
+
+- **Global registry.** Instrumentation calls `metrics()`, a `LazyLock<Metrics>`. Threading an `Arc<Metrics>` through the query path, both caches, the resolver, the blocklists, DHCP, the ACME issuer and the gRPC service would have meant changing every constructor and every test call site. Consequence for tests: counters accumulate across a test binary, so assertions are deltas taken under a serializing lock (`tests/metrics_test.rs`).
+- **Bounded cardinality.** Every label is a fixed enum (`Proto`, `RCODES`, `ANSWER_SOURCES`, `TIERS`, `FAMILIES`, …) or bounded by configuration (upstream server addresses, gRPC method names). Query *type* — the one dimension a client controls — folds unrecognized types into `OTHER`, so a flood of `TYPE4242` queries cannot mint series. Query **names are never labels**.
+- **Push vs. pull.** Counters are pushed where the work happens. Gauges with no natural push point (row counts, cache sizes, active tier, per-nameserver latency) are pulled once per scrape by `metrics::collect`, which reads every database count in a single `Database::metrics_counts` call under one lock acquisition rather than a dozen `list_*` calls that would materialize whole zones to take a `.len()`.
+- **Histograms** store observations in an integer native unit (nanoseconds, bytes) so the running sum needs no float CAS, dividing by a scale at render time; bucket counts accumulate into the cumulative `le` form at render.
+
+### Query attribution
+
+`rolodex_dns_answers_total{source}` reports which stage of the resolution order produced each answer — `cache`, `local`, `scoped`, `scope_fallback`, `tld_peer`, `blocklist`, `rbl`, `dns64`, `upstream`, `authoritative_nxdomain`, `refused`, `error`. This is what makes the split-horizon pipeline legible from outside, and its total equals the query total.
+
+`resolve_query` has roughly thirty exits. Rather than instrument each — where a new early return would silently escape the metrics — a `QueryTag` is threaded through and each non-upstream exit tags itself; the initial value is `upstream`, which is what the function's fall-through ending is. The observation is then recorded at **one** instrumented exit, `DnsServer::handle_query_proto`, which every transport funnels through, *after* the address-family filter, so the recorded rcode and response size are what the client actually receives. The `proto` label (`udp`/`tcp`/`dot`/`doh`/`doq`) only labels metrics and never affects resolution; the pre-existing `handle_query`/`handle_query_from`/`handle_query_on` wrappers keep their signatures and report `udp`.
+
+### What is exposed
+
+66 metric families, all prefixed `rolodex_dns_`:
+
+| Area | Metrics |
+| ---- | ------- |
+| Process | `build_info{version}`, `start_time_seconds`, `uptime_seconds`, `metrics_scrapes_total` |
+| Queries | `queries_total{proto,rcode}`, `queries_by_type_total{qtype}`, `answers_total{source}`, `query_duration_seconds{proto}` (histogram), `query_size_bytes`, `response_size_bytes`, `responses_truncated_total`, `malformed_queries_total`, `edns_unsupported_version_total`, `edns_do_queries_total`, `ingress_rewrites_total`, `answers_family_filtered_total{family}` |
+| Response cache | `cache_hits_total`, `cache_misses_total`, `cache_negative_hits_total`, `cache_expired_total`, `cache_flushes_total{reason}` (`mutation`/`explicit`/`tier_switch`), `cache_entries`, `cache_negative_entries` |
+| Blocklists | `blocklist_blocks_total{kind}`, `blocklist_allowlisted_total`, `blocklist_lookups_total{kind,result}`, `blocklist_skipped_total`, `blocklist_cache_entries` |
+| Upstream | `upstream_active_tier`, `upstream_tier_attempts_total{tier}`, `_wins_total{tier}`, `_failures_total{tier}`, `upstream_tier_switches_total{direction}`, `upstream_recovery_probes_total`, `upstream_duration_seconds{tier}`, `upstream_queries_total{server}`, `upstream_exhausted_total` |
+| Resolver | `resolver_lookups_total`, `_referrals_total`, `_cname_hops_total`, `_budget_exhausted_total`, `_tcp_retries_total`, `resolver_priming_total{result}`, `resolver_nameserver_latency_milliseconds{server}`, `delegation_cache_entries`, `record_cache_entries` |
+| Split-horizon | `records`, `scoped_records`, `scopes`, `scope_associations`, `authoritative_zones`, `managed_zones`, `owned_tlds`, `ingress_listeners`, `address_family_reachable{family}` |
+| DHCP | `dhcp_messages_total{type}`, `dhcp_leases{state}`, `dhcp_pools`, `dhcp_allocation_failures_total`, `dhcp_sweeps_total` |
+| ACME | `acme_accounts`, `acme_certificates`, `acme_issued_total`, `acme_validations_total{result}` |
+| gRPC | `grpc_requests_total{method}`, `grpc_auth_failures_total` |
+
+`dhcp_messages_total` deliberately has no `nak` label: the server never sends one, and a series pinned at zero forever reads like a signal when it is only an unimplemented branch.
+
 ## Configuration
 
 Configuration is loaded from a YAML file (default path `rolodex-dns.yml`, overridable via `-c`/`--config` CLI flag). If the file does not exist, sensible defaults are used.
@@ -1035,8 +1075,9 @@ dns:
 | `acme.tlsa_port` / `acme.tlsa_proto`| `443` / `tcp`                  | Where the DANE-TA TLSA record is published per name    |
 | `acme.require_eab`                  | `true`                         | Require External Account Binding for account registration |
 | `acme.issuance_scope`               | `managed_zones`                | `managed_zones` (zone must have a CA) or `any`          |
+| `metrics.bind`                      | `127.0.0.1:9153`               | Prometheus `/metrics` HTTP listener; supports interface:port (section optional) |
 
-The `dot`, `doh`, `doq`, `proxy`, and `acme` sections are optional. When omitted, the corresponding transport/service is not started. When `acme` is present, the root CA is created at boot and both the ACME and portal listeners start.
+The `dot`, `doh`, `doq`, `proxy`, `acme`, and `metrics` sections are optional. When omitted, the corresponding transport/service is not started. When `acme` is present, the root CA is created at boot and both the ACME and portal listeners start.
 
 ## Build System
 
@@ -1049,7 +1090,7 @@ The project uses a top-level Makefile with the following targets:
 | `test`                | Run all tests: lint, Go integration tests, Go unit tests, Rust tests (`cargo test`), and JavaScript tests.                                                 |
 | `test-log`            | Same as `test`, tee'd into a timestamped log file under `/tmp/rolodex-dns/log` (override with `LOG_DIR`). The log path is printed at the end even when the run fails. |
 | `rust-test`           | Run the Rust integration test files, then `cargo test`.                                                                                                     |
-| `rust-integration-test` | Build, then run each Rust integration test file explicitly (`integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`). |
+| `rust-integration-test` | Build, then run each Rust integration test file explicitly (`integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`). |
 | `lint`                | Run `cargo fmt -- --check` and `cargo clippy --all-targets -- -D warnings`.                                                                                |
 | `deps`                | Install build dependencies: the Rust cross-compilation toolchain (`cross-deps`) and the JavaScript dev dependencies (`npm install` in `js/`).              |
 | `cross-deps`          | Install the Rust cross toolchain: `rustup target add` for both triples, `cargo-zigbuild`, and zig. Rootless — see Cross-Compilation.                       |
@@ -1201,6 +1242,11 @@ Performance-related unit tests cover the optimized hot-path code:
 - **Arc-based cache** (`src/dns_cache.rs`): Tests for local insert with no TTL decay, empty-vec no-op, and multiple records under same key.
 - **DoH connection pool** (`src/doh_proxy.rs`): Tests for pool cap enforcement (max 8), new connection creation, and pooled connection reuse.
 
+### Metrics Tests
+
+- **Registry unit tests** (`src/metrics.rs`): counter/gauge/vec semantics including out-of-range label indices (which must never panic on the query path), cumulative histogram bucketing, nanosecond→seconds and byte rendering, dynamic series creation, label-value escaping, float formatting that avoids scientific notation, rcode/qtype folding of unknowns, and a guard that every emitted series is preceded by its own `# HELP`/`# TYPE`.
+- **Endpoint and attribution tests** (`tests/metrics_test.rs`): the router is served on an ephemeral port and scraped over a real TCP socket with a hand-written HTTP/1.1 request — status, content type, and that every non-comment line parses as `name[{labels}] value` with a numeric value, since one malformed line makes Prometheus reject the whole scrape. Query-path tests assert that a local hit, a cache hit, an authoritative NXDOMAIN, a malformed query and an unknown query type each land in the right series, that gauges are sampled at scrape time (a row added after the listener started shows up), and that the three cache-flush reasons stay distinct. Because the registry is a process-global, each test holds a shared lock and asserts exact deltas — serializing rather than loosening to `>=` is what catches an observation being recorded *twice*.
+
 ### Resolver Tests
 
 The iterative resolver has a dedicated suite built on a **mock delegation hierarchy** (`tests/mock_hierarchy/mod.rs`) — real in-process nameservers whose queries are counted, because query counts (not returned records) are what distinguish these bugs from their fixes:
@@ -1237,7 +1283,7 @@ The Go client has two test layers:
 - **Unit tests** — Use an in-process mock gRPC server via `bufconn` to test all client methods, authentication token propagation, transport modes, error handling, and edge cases (idempotent close, lazy dial, custom dial options).
 - **Integration tests** — Gated behind the `integration` build tag. Each test starts a real Rolodex DNS server subprocess with a unique temporary directory, random ports, and isolated database. Tests cover record CRUD, wildcard filtering, forwarder configuration, RBL round-trip, cache flushing, Unix socket transport, authentication failure, default TTL behavior, concurrent clients (5 simultaneous), network scoping, DNS64, and TTL drift.
 
-The `make test` target runs the full test suite: lint, Go integration tests, Go unit tests, Rust integration tests (each test file explicitly: `integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`), all Rust tests via `cargo test` (which also covers the resolver suite above), and the JavaScript lint/integration/unit tests. Individual targets are available: `make go-integration-test`, `make go-test`, `make rust-integration-test`, `make rust-test`, `make js-integration-test`, `make js-test`. Use `make test-log` to capture the whole run to a timestamped log file.
+The `make test` target runs the full test suite: lint, Go integration tests, Go unit tests, Rust integration tests (each test file explicitly: `integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`), all Rust tests via `cargo test` (which also covers the resolver suite above), and the JavaScript lint/integration/unit tests. Individual targets are available: `make go-integration-test`, `make go-test`, `make rust-integration-test`, `make rust-test`, `make js-integration-test`, `make js-test`. Use `make test-log` to capture the whole run to a timestamped log file.
 
 ## Key Dependencies
 
@@ -1285,6 +1331,8 @@ The server runs on the tokio multi-threaded async runtime. Each UDP listen addre
 At boot, in-memory caches are populated from the database: scope count (`AtomicUsize`), local RBL entries (`DashSet`), DNSBL allowlist entries (`DashSet`), authoritative zones (`DashSet`), managed zones (`DashSet`), TLD ownership (`tld_owner_cache`), per-TLD ingress IPs (`tld_ingress_cache`), and the persisted delegation cache. These caches avoid SQL queries on the hot path and are updated incrementally as records are added or removed via gRPC.
 
 The `auto` resolution state machine is entirely lock-free: the active tier, deviation streak, last-probe timestamp, and grace/probe parameters are atomics, and the recovery probe is gated by a compare-exchange so only one concurrent query probes per interval. The secure upstream list, public fallback list, resolution mode, and overlay CIDR list use `ArcSwap`. Answer-family suppression is a pair of `AtomicBool`s written by the background probe task. Ingress listeners are tracked in a `DashMap<IpAddr, Vec<AbortHandle>>`; the delegation cache persists through a background SQLite write worker fed by an `mpsc` channel, and the delegation/record caches are `DashMap`.
+
+The Prometheus registry is lock-free by the same means: counters and gauges are `AtomicU64`, fixed-label families are pre-allocated arrays indexed directly (so an increment is an index plus one relaxed `fetch_add`, with no hashing and no allocation), histograms are per-bucket atomics accumulated into cumulative form only at render, and the runtime-labelled families are `DashMap`. Nothing on the query path takes a lock to record a metric. The scrape path pulls its gauges through a single `Database::metrics_counts` call so it holds the SQLite mutex once per scrape rather than a dozen times.
 
 Upstream DNS forwarding uses a pool of 8 UDP sockets, allowing concurrent forwarding without contention on a single socket. Socket selection uses round-robin via `AtomicUsize`.
 
