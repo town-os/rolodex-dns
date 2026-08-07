@@ -388,6 +388,11 @@ pub struct Database {
     scope_count: Arc<AtomicUsize>,
     /// In-memory cache of local RBL entries for fast lookup.
     local_rbl_cache: Arc<DashSet<String>>,
+    /// In-memory cache of DNSBL allowlist entries — names exempted from the
+    /// name-based blocklist check. Held normalized (lowercase, trailing dot) so
+    /// the hot path can suffix-match in O(labels), which is what makes an entry
+    /// cover the name *and* everything under it.
+    dnsbl_allowlist_cache: Arc<DashSet<String>>,
     /// In-memory cache of authoritative zones.
     authoritative_zones_cache: Arc<DashSet<String>>,
     /// In-memory cache of managed zones (derived from dns_records names).
@@ -421,6 +426,7 @@ impl Database {
             scoped_record_cache: Arc::new(DashMap::new()),
             scope_count: Arc::new(AtomicUsize::new(0)),
             local_rbl_cache: Arc::new(DashSet::new()),
+            dnsbl_allowlist_cache: Arc::new(DashSet::new()),
             authoritative_zones_cache: Arc::new(DashSet::new()),
             managed_zones_cache: Arc::new(DashSet::new()),
             tld_owner_cache: Arc::new(DashMap::new()),
@@ -443,6 +449,7 @@ impl Database {
             scoped_record_cache: Arc::new(DashMap::new()),
             scope_count: Arc::new(AtomicUsize::new(0)),
             local_rbl_cache: Arc::new(DashSet::new()),
+            dnsbl_allowlist_cache: Arc::new(DashSet::new()),
             authoritative_zones_cache: Arc::new(DashSet::new()),
             managed_zones_cache: Arc::new(DashSet::new()),
             tld_owner_cache: Arc::new(DashMap::new()),
@@ -578,6 +585,14 @@ impl Database {
                 ON delegation_cache(cached_at, ttl);
 
             CREATE TABLE IF NOT EXISTS local_rbl_entries (
+                name TEXT PRIMARY KEY NOT NULL,
+                reason TEXT NOT NULL DEFAULT ''
+            );
+
+            -- Names exempted from the name-based blocklist check (DNSBL
+            -- providers and local RBL name entries). Stored normalized, and
+            -- matched as a suffix so an entry covers its subdomains too.
+            CREATE TABLE IF NOT EXISTS dnsbl_allowlist (
                 name TEXT PRIMARY KEY NOT NULL,
                 reason TEXT NOT NULL DEFAULT ''
             );
@@ -823,8 +838,9 @@ impl Database {
         Ok(())
     }
 
-    /// Loads scope_count, local_rbl_cache, authoritative_zones_cache, and
-    /// managed_zones_cache from the database at boot time.
+    /// Loads scope_count, local_rbl_cache, dnsbl_allowlist_cache,
+    /// authoritative_zones_cache, and managed_zones_cache from the database at
+    /// boot time.
     fn load_caches_at_boot(&self) -> Result<()> {
         let conn = self.lock()?;
 
@@ -838,6 +854,13 @@ impl Database {
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         for row in rows {
             self.local_rbl_cache.insert(row?);
+        }
+
+        // DNSBL allowlist entries
+        let mut stmt = conn.prepare_cached("SELECT name FROM dnsbl_allowlist")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        for row in rows {
+            self.dnsbl_allowlist_cache.insert(row?);
         }
 
         // Authoritative zones
@@ -2199,6 +2222,71 @@ impl Database {
 
     pub fn lookup_local_rbl(&self, name: &str) -> bool {
         self.local_rbl_cache.contains(name)
+    }
+
+    // ================================================================
+    // DNSBL Allowlist Management
+    // ================================================================
+
+    /// Adds a name to the DNSBL allowlist, exempting it (and everything under
+    /// it) from the name-based blocklist check. The name is normalized on the
+    /// way in so that `Example.COM`, `example.com`, and `example.com.` are one
+    /// entry rather than three.
+    pub fn add_dnsbl_allowlist_entry(&self, name: &str, reason: &str) -> Result<()> {
+        let normalized = normalize_name(name.trim());
+        if normalized.is_empty() || normalized == "." {
+            anyhow::bail!("DNSBL allowlist entry name must not be empty");
+        }
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO dnsbl_allowlist (name, reason) VALUES (?1, ?2)",
+            params![normalized, reason],
+        )
+        .context("failed to add DNSBL allowlist entry")?;
+        self.dnsbl_allowlist_cache.insert(normalized);
+        Ok(())
+    }
+
+    /// Removes a name from the DNSBL allowlist. Returns whether an entry was
+    /// removed.
+    pub fn remove_dnsbl_allowlist_entry(&self, name: &str) -> Result<bool> {
+        let normalized = normalize_name(name.trim());
+        let conn = self.lock()?;
+        let count = conn
+            .execute(
+                "DELETE FROM dnsbl_allowlist WHERE name = ?1",
+                params![normalized],
+            )
+            .context("failed to remove DNSBL allowlist entry")?;
+        if count > 0 {
+            self.dnsbl_allowlist_cache.remove(&normalized);
+        }
+        Ok(count > 0)
+    }
+
+    /// Returns every DNSBL allowlist entry as `(name, reason)`.
+    pub fn list_dnsbl_allowlist_entries(&self) -> Result<Vec<(String, String)>> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare_cached("SELECT name, reason FROM dnsbl_allowlist")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?);
+        }
+        Ok(entries)
+    }
+
+    /// Whether `name` is exempt from the name-based blocklist check. Matches the
+    /// allowlisted name itself and any name beneath it, so one entry for a
+    /// domain covers its whole subtree.
+    pub fn is_dnsbl_allowlisted(&self, name: &str) -> bool {
+        if self.dnsbl_allowlist_cache.is_empty() {
+            return false;
+        }
+        let normalized = normalize_name(name);
+        self.matches_zone_suffix(&normalized, &self.dnsbl_allowlist_cache)
     }
 
     // ================================================================
@@ -5525,6 +5613,115 @@ mod tests {
     fn test_matches_zone_suffix_empty_cache() {
         let db = test_db();
         assert!(!db.matches_zone_suffix("anything.com.", &db.authoritative_zones_cache));
+    }
+
+    // ================================================================
+    // DNSBL allowlist tests
+    // ================================================================
+
+    #[test]
+    fn test_dnsbl_allowlist_exact_and_subdomain() {
+        let db = test_db();
+        db.add_dnsbl_allowlist_entry("example.com", "false positive")
+            .unwrap();
+        // The entry covers the name itself...
+        assert!(db.is_dnsbl_allowlisted("example.com."));
+        // ... and everything under it.
+        assert!(db.is_dnsbl_allowlisted("www.example.com."));
+        assert!(db.is_dnsbl_allowlisted("deep.sub.example.com."));
+        // But not a sibling that merely ends with the same characters.
+        assert!(!db.is_dnsbl_allowlisted("notexample.com."));
+        assert!(!db.is_dnsbl_allowlisted("example.org."));
+    }
+
+    #[test]
+    fn test_dnsbl_allowlist_normalizes_name() {
+        let db = test_db();
+        // Stored with mixed case and no trailing dot; queried in every other
+        // spelling — one entry, not three.
+        db.add_dnsbl_allowlist_entry("  Example.COM  ", "").unwrap();
+        assert!(db.is_dnsbl_allowlisted("example.com."));
+        assert!(db.is_dnsbl_allowlisted("EXAMPLE.com"));
+        let entries = db.list_dnsbl_allowlist_entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "example.com.");
+    }
+
+    #[test]
+    fn test_dnsbl_allowlist_empty_is_not_allowlisted() {
+        let db = test_db();
+        assert!(!db.is_dnsbl_allowlisted("example.com."));
+    }
+
+    #[test]
+    fn test_dnsbl_allowlist_rejects_empty_and_root() {
+        let db = test_db();
+        // An empty or root entry would exempt the entire namespace.
+        assert!(db.add_dnsbl_allowlist_entry("", "").is_err());
+        assert!(db.add_dnsbl_allowlist_entry(".", "").is_err());
+        assert!(db.list_dnsbl_allowlist_entries().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_dnsbl_allowlist_remove() {
+        let db = test_db();
+        db.add_dnsbl_allowlist_entry("example.com", "temporary")
+            .unwrap();
+        assert!(db.is_dnsbl_allowlisted("www.example.com."));
+
+        // Removal accepts any spelling of the name.
+        assert!(db.remove_dnsbl_allowlist_entry("EXAMPLE.com.").unwrap());
+        assert!(!db.is_dnsbl_allowlisted("www.example.com."));
+        assert!(db.list_dnsbl_allowlist_entries().unwrap().is_empty());
+
+        // Removing again reports that nothing was there.
+        assert!(!db.remove_dnsbl_allowlist_entry("example.com").unwrap());
+    }
+
+    #[test]
+    fn test_dnsbl_allowlist_list_returns_reason() {
+        let db = test_db();
+        db.add_dnsbl_allowlist_entry("cdn.example.com", "vendor CDN")
+            .unwrap();
+        db.add_dnsbl_allowlist_entry("mail.example.net", "")
+            .unwrap();
+        let mut entries = db.list_dnsbl_allowlist_entries().unwrap();
+        entries.sort();
+        assert_eq!(
+            entries,
+            vec![
+                ("cdn.example.com.".to_string(), "vendor CDN".to_string()),
+                ("mail.example.net.".to_string(), String::new()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_dnsbl_allowlist_replaces_reason() {
+        let db = test_db();
+        db.add_dnsbl_allowlist_entry("example.com", "first")
+            .unwrap();
+        db.add_dnsbl_allowlist_entry("example.com.", "second")
+            .unwrap();
+        let entries = db.list_dnsbl_allowlist_entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].1, "second");
+    }
+
+    #[test]
+    fn test_dnsbl_allowlist_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("allowlist-boot.db");
+        {
+            let db = Database::open(&path).unwrap();
+            db.add_dnsbl_allowlist_entry("example.com", "vendor")
+                .unwrap();
+        }
+        // Reopen: the hot-path cache is rebuilt from disk in load_caches_at_boot,
+        // so an allowlisted name is still exempt after a restart.
+        let db = Database::open(&path).unwrap();
+        assert!(db.is_dnsbl_allowlisted("www.example.com."));
+        assert_eq!(db.list_dnsbl_allowlist_entries().unwrap().len(), 1);
     }
 
     #[test]

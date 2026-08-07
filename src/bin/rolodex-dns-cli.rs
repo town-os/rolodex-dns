@@ -512,6 +512,33 @@ enum Commands {
     #[command(name = "list-local-rbl")]
     ListLocalRbl,
 
+    /// Exempt a name (and its subdomains) from the DNSBL/blocklist check.
+    /// gRPC path: /rolodex_dns.RolodexDnsService/AddDnsblAllowlistEntry
+    #[command(name = "add-dnsbl-allow")]
+    AddDnsblAllow {
+        /// The name to exempt (covers the name and everything under it)
+        #[arg(short, long)]
+        name: String,
+
+        /// Reason for the exemption
+        #[arg(short, long, default_value = "")]
+        reason: String,
+    },
+
+    /// Remove a DNSBL allowlist entry.
+    /// gRPC path: /rolodex_dns.RolodexDnsService/RemoveDnsblAllowlistEntry
+    #[command(name = "remove-dnsbl-allow")]
+    RemoveDnsblAllow {
+        /// The name to stop exempting
+        #[arg(short, long)]
+        name: String,
+    },
+
+    /// List all DNSBL allowlist entries.
+    /// gRPC path: /rolodex_dns.RolodexDnsService/ListDnsblAllowlistEntries
+    #[command(name = "list-dnsbl-allow")]
+    ListDnsblAllow,
+
     /// Set TTL drift configuration.
     /// gRPC path: /rolodex_dns.RolodexDnsService/SetTtlDriftConfig
     #[command(name = "set-ttl-drift")]
@@ -1478,6 +1505,61 @@ async fn main() -> Result<()> {
             let entries = response.into_inner().entries;
             if entries.is_empty() {
                 println!("No local RBL entries configured.");
+            } else {
+                println!("{:<40} REASON", "NAME");
+                println!("{}", "-".repeat(60));
+                for e in &entries {
+                    println!("{:<40} {}", e.name, e.reason);
+                }
+                println!("\n{} entry(ies) found.", entries.len());
+            }
+        }
+
+        Commands::AddDnsblAllow { name, reason } => {
+            let response = client
+                .add_dnsbl_allowlist_entry(AddDnsblAllowlistEntryRequest {
+                    entry: Some(DnsblAllowlistEntry {
+                        name: name.clone(),
+                        reason: reason.clone(),
+                    }),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("add-dnsbl-allow RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("Added DNSBL allowlist entry: {}", name);
+            } else {
+                anyhow::bail!("Failed to add DNSBL allowlist entry: {}", resp.message);
+            }
+        }
+
+        Commands::RemoveDnsblAllow { name } => {
+            let response = client
+                .remove_dnsbl_allowlist_entry(RemoveDnsblAllowlistEntryRequest {
+                    name: name.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("remove-dnsbl-allow RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                println!("Removed DNSBL allowlist entry: {}", name);
+            } else {
+                anyhow::bail!("Failed to remove DNSBL allowlist entry: {}", resp.message);
+            }
+        }
+
+        Commands::ListDnsblAllow => {
+            let response = client
+                .list_dnsbl_allowlist_entries(ListDnsblAllowlistEntriesRequest {
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("list-dnsbl-allow RPC failed")?;
+            let entries = response.into_inner().entries;
+            if entries.is_empty() {
+                println!("No DNSBL allowlist entries configured.");
             } else {
                 println!("{:<40} REASON", "NAME");
                 println!("{}", "-".repeat(60));

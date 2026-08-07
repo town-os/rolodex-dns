@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **DNSBL allowlist — specific hosts can be exempted from the blocklist check.** A blocklist provider that false-positives on a name previously left the operator with no recourse short of disabling the provider or the whole DNSBL. Names on the allowlist (stored in the `dnsbl_allowlist` table, with a reason) skip step 7 of resolution entirely.
+
+  An entry is **suffix-matched on label boundaries**, so allowlisting `example.com` also exempts `www.example.com` but not `notexample.com`, and it is stored normalized (lowercase, trailing dot) so any spelling adds or removes the same entry. The check short-circuits the whole name-based step — neither the configured DNSBL providers nor the local RBL blocklist can block an exempt name — and it runs *before* the provider lookup, so an exempt name issues no blocklist query at all. Reverse-DNS IP blocking is unaffected. Lookups are O(labels) against a `DashSet` mirrored from the table and reloaded at boot, so the hot path costs an empty-set check when no allowlist is configured.
+
+  Managed via `AddDnsblAllowlistEntry` / `RemoveDnsblAllowlistEntry` / `ListDnsblAllowlistEntries` (gRPC and Go client), or `add-dnsbl-allow` / `remove-dnsbl-allow` / `list-dnsbl-allow` on the CLI.
+
 ## v0.4.2 (2026-08-06)
 
 ### Bug Fixes

@@ -213,6 +213,54 @@ message GetDnsblConfigResponse {
   repeated DnsblConfig providers = 2;
 }
 
+// DnsblAllowlistEntry exempts a name from the domain-blocklist check.
+//
+// An entry covers the name itself and every name under it, so allowlisting
+// "example.com" also exempts "www.example.com". Allowlisted names skip the
+// name-based blocklist step entirely — both the configured DNSBL providers and
+// any matching local RBL entry — so an allowlist entry is the operator's escape
+// hatch from a blocklist false positive.
+message DnsblAllowlistEntry {
+  // The name to exempt (matched on the name and all subdomains)
+  string name = 1;
+  // Reason for the exemption
+  string reason = 2;
+}
+
+// AddDnsblAllowlistEntryRequest adds a DNSBL allowlist entry.
+message AddDnsblAllowlistEntryRequest {
+  DnsblAllowlistEntry entry = 1;
+  string auth_token = 2;
+}
+
+// AddDnsblAllowlistEntryResponse is returned after adding an allowlist entry.
+message AddDnsblAllowlistEntryResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// RemoveDnsblAllowlistEntryRequest removes a DNSBL allowlist entry.
+message RemoveDnsblAllowlistEntryRequest {
+  string name = 1;
+  string auth_token = 2;
+}
+
+// RemoveDnsblAllowlistEntryResponse is returned after removing an entry.
+message RemoveDnsblAllowlistEntryResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// ListDnsblAllowlistEntriesRequest retrieves all DNSBL allowlist entries.
+message ListDnsblAllowlistEntriesRequest {
+  string auth_token = 1;
+}
+
+// ListDnsblAllowlistEntriesResponse contains all DNSBL allowlist entries.
+message ListDnsblAllowlistEntriesResponse {
+  repeated DnsblAllowlistEntry entries = 1;
+}
+
 // FlushCacheRequest clears the DNS and/or RBL cache.
 message FlushCacheRequest {
   // Shared secret for authentication
@@ -1317,6 +1365,19 @@ service RolodexDnsService {
   // ListLocalRblEntries retrieves all local RBL entries.
   // Path: /rolodex_dns.RolodexDnsService/ListLocalRblEntries
   rpc ListLocalRblEntries(ListLocalRblEntriesRequest) returns (ListLocalRblEntriesResponse);
+
+  // AddDnsblAllowlistEntry exempts a name (and its subdomains) from the
+  // name-based blocklist check.
+  // Path: /rolodex_dns.RolodexDnsService/AddDnsblAllowlistEntry
+  rpc AddDnsblAllowlistEntry(AddDnsblAllowlistEntryRequest) returns (AddDnsblAllowlistEntryResponse);
+
+  // RemoveDnsblAllowlistEntry removes a DNSBL allowlist entry.
+  // Path: /rolodex_dns.RolodexDnsService/RemoveDnsblAllowlistEntry
+  rpc RemoveDnsblAllowlistEntry(RemoveDnsblAllowlistEntryRequest) returns (RemoveDnsblAllowlistEntryResponse);
+
+  // ListDnsblAllowlistEntries retrieves all DNSBL allowlist entries.
+  // Path: /rolodex_dns.RolodexDnsService/ListDnsblAllowlistEntries
+  rpc ListDnsblAllowlistEntries(ListDnsblAllowlistEntriesRequest) returns (ListDnsblAllowlistEntriesResponse);
 
   // SetDotConfig sets the DNS-over-TLS configuration.
   // Path: /rolodex_dns.RolodexDnsService/SetDotConfig

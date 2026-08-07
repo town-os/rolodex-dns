@@ -105,6 +105,10 @@ type QueryLatencyStats = pb.QueryLatencyStat
 // LocalRblEntry represents a local RBL blocklist entry.
 type LocalRblEntry = pb.LocalRblEntry
 
+// DnsblAllowlistEntry represents a name exempted from the name-based blocklist
+// check. An entry covers the name and every name beneath it.
+type DnsblAllowlistEntry = pb.DnsblAllowlistEntry
+
 // DotConfig represents DNS-over-TLS configuration.
 type DotConfig = pb.DotConfig
 
@@ -920,6 +924,61 @@ func (c *Client) ListLocalRblEntries(ctx context.Context) ([]*LocalRblEntry, err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("rolodex-dns: list local rbl entries: %w", err)
+	}
+	return resp.Entries, nil
+}
+
+// AddDnsblAllowlistEntry exempts a name (and every name beneath it) from the
+// name-based blocklist check, overriding both the configured DNSBL providers
+// and any matching local RBL entry.
+//
+// Parameters:
+//   - entry: the allowlist entry to add (name and reason)
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/AddDnsblAllowlistEntry
+func (c *Client) AddDnsblAllowlistEntry(ctx context.Context, entry *DnsblAllowlistEntry) error {
+	resp, err := c.rpc.AddDnsblAllowlistEntry(ctx, &pb.AddDnsblAllowlistEntryRequest{
+		Entry:     entry,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex-dns: add dnsbl allowlist entry: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex-dns: add dnsbl allowlist entry: %s", resp.Message)
+	}
+	return nil
+}
+
+// RemoveDnsblAllowlistEntry removes a name from the DNSBL allowlist.
+//
+// Parameters:
+//   - name: the name to stop exempting
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/RemoveDnsblAllowlistEntry
+func (c *Client) RemoveDnsblAllowlistEntry(ctx context.Context, name string) error {
+	resp, err := c.rpc.RemoveDnsblAllowlistEntry(ctx, &pb.RemoveDnsblAllowlistEntryRequest{
+		Name:      name,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return fmt.Errorf("rolodex-dns: remove dnsbl allowlist entry: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("rolodex-dns: remove dnsbl allowlist entry: %s", resp.Message)
+	}
+	return nil
+}
+
+// ListDnsblAllowlistEntries retrieves all DNSBL allowlist entries.
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/ListDnsblAllowlistEntries
+func (c *Client) ListDnsblAllowlistEntries(ctx context.Context) ([]*DnsblAllowlistEntry, error) {
+	resp, err := c.rpc.ListDnsblAllowlistEntries(ctx, &pb.ListDnsblAllowlistEntriesRequest{
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex-dns: list dnsbl allowlist entries: %w", err)
 	}
 	return resp.Entries, nil
 }

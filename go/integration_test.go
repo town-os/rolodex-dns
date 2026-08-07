@@ -1091,6 +1091,53 @@ func TestIntegrationLocalRblLifecycle(t *testing.T) {
 	}
 }
 
+func TestIntegrationDnsblAllowlistLifecycle(t *testing.T) {
+	client, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	// Add an allowlist entry.
+	err := client.AddDnsblAllowlistEntry(ctx, &DnsblAllowlistEntry{
+		Name:   "Vendor.Example.com",
+		Reason: "blocklist false positive",
+	})
+	if err != nil {
+		t.Fatalf("AddDnsblAllowlistEntry: %v", err)
+	}
+
+	// It is stored normalized (lowercase, trailing dot).
+	entries, err := client.ListDnsblAllowlistEntries(ctx)
+	if err != nil {
+		t.Fatalf("ListDnsblAllowlistEntries: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(entries))
+	}
+	if entries[0].Name != "vendor.example.com." {
+		t.Errorf("name = %q, want %q", entries[0].Name, "vendor.example.com.")
+	}
+	if entries[0].Reason != "blocklist false positive" {
+		t.Errorf("reason = %q, want %q", entries[0].Reason, "blocklist false positive")
+	}
+
+	// Remove it, in a different spelling than it was added.
+	if err := client.RemoveDnsblAllowlistEntry(ctx, "vendor.example.com."); err != nil {
+		t.Fatalf("RemoveDnsblAllowlistEntry: %v", err)
+	}
+
+	entries, err = client.ListDnsblAllowlistEntries(ctx)
+	if err != nil {
+		t.Fatalf("ListDnsblAllowlistEntries after remove: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("got %d entries after remove, want 0", len(entries))
+	}
+
+	// Removing an entry that is not there is reported as an error.
+	if err := client.RemoveDnsblAllowlistEntry(ctx, "vendor.example.com"); err == nil {
+		t.Error("expected an error removing a name that is not allowlisted")
+	}
+}
+
 func TestIntegrationCacheStatsAndFlush(t *testing.T) {
 	client, _ := setupTestServer(t)
 	ctx := context.Background()

@@ -50,6 +50,9 @@ type mockRolodexDnsService struct {
 	addLocalRblEntryFn       func(ctx context.Context, req *pb.AddLocalRblEntryRequest) (*pb.AddLocalRblEntryResponse, error)
 	removeLocalRblEntryFn    func(ctx context.Context, req *pb.RemoveLocalRblEntryRequest) (*pb.RemoveLocalRblEntryResponse, error)
 	listLocalRblEntriesFn    func(ctx context.Context, req *pb.ListLocalRblEntriesRequest) (*pb.ListLocalRblEntriesResponse, error)
+	addDnsblAllowlistEntryFn func(ctx context.Context, req *pb.AddDnsblAllowlistEntryRequest) (*pb.AddDnsblAllowlistEntryResponse, error)
+	removeDnsblAllowlistEntryFn func(ctx context.Context, req *pb.RemoveDnsblAllowlistEntryRequest) (*pb.RemoveDnsblAllowlistEntryResponse, error)
+	listDnsblAllowlistEntriesFn func(ctx context.Context, req *pb.ListDnsblAllowlistEntriesRequest) (*pb.ListDnsblAllowlistEntriesResponse, error)
 	setDotConfigFn           func(ctx context.Context, req *pb.SetDotConfigRequest) (*pb.SetDotConfigResponse, error)
 	getDotConfigFn           func(ctx context.Context, req *pb.GetDotConfigRequest) (*pb.GetDotConfigResponse, error)
 	setDohConfigFn           func(ctx context.Context, req *pb.SetDohConfigRequest) (*pb.SetDohConfigResponse, error)
@@ -329,6 +332,27 @@ func (m *mockRolodexDnsService) RemoveLocalRblEntry(ctx context.Context, req *pb
 func (m *mockRolodexDnsService) ListLocalRblEntries(ctx context.Context, req *pb.ListLocalRblEntriesRequest) (*pb.ListLocalRblEntriesResponse, error) {
 	if m.listLocalRblEntriesFn != nil {
 		return m.listLocalRblEntriesFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexDnsService) AddDnsblAllowlistEntry(ctx context.Context, req *pb.AddDnsblAllowlistEntryRequest) (*pb.AddDnsblAllowlistEntryResponse, error) {
+	if m.addDnsblAllowlistEntryFn != nil {
+		return m.addDnsblAllowlistEntryFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexDnsService) RemoveDnsblAllowlistEntry(ctx context.Context, req *pb.RemoveDnsblAllowlistEntryRequest) (*pb.RemoveDnsblAllowlistEntryResponse, error) {
+	if m.removeDnsblAllowlistEntryFn != nil {
+		return m.removeDnsblAllowlistEntryFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexDnsService) ListDnsblAllowlistEntries(ctx context.Context, req *pb.ListDnsblAllowlistEntriesRequest) (*pb.ListDnsblAllowlistEntriesResponse, error) {
+	if m.listDnsblAllowlistEntriesFn != nil {
+		return m.listDnsblAllowlistEntriesFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
@@ -2013,6 +2037,93 @@ func TestListLocalRblEntries(t *testing.T) {
 	}
 	if entries[1].Reason != "phishing" {
 		t.Errorf("entries[1].Reason = %q, want %q", entries[1].Reason, "phishing")
+	}
+}
+
+func TestAddDnsblAllowlistEntry(t *testing.T) {
+	var captured *pb.AddDnsblAllowlistEntryRequest
+	mock := &mockRolodexDnsService{
+		addDnsblAllowlistEntryFn: func(_ context.Context, req *pb.AddDnsblAllowlistEntryRequest) (*pb.AddDnsblAllowlistEntryResponse, error) {
+			captured = req
+			return &pb.AddDnsblAllowlistEntryResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	entry := &DnsblAllowlistEntry{
+		Name:   "vendor.example.com",
+		Reason: "blocklist false positive",
+	}
+	if err := client.AddDnsblAllowlistEntry(context.Background(), entry); err != nil {
+		t.Fatalf("AddDnsblAllowlistEntry: %v", err)
+	}
+	if captured.Entry.Name != "vendor.example.com" {
+		t.Errorf("name = %q, want %q", captured.Entry.Name, "vendor.example.com")
+	}
+	if captured.Entry.Reason != "blocklist false positive" {
+		t.Errorf("reason = %q, want %q", captured.Entry.Reason, "blocklist false positive")
+	}
+	if captured.AuthToken != "tok" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tok")
+	}
+}
+
+func TestAddDnsblAllowlistEntryFailure(t *testing.T) {
+	mock := &mockRolodexDnsService{
+		addDnsblAllowlistEntryFn: func(_ context.Context, _ *pb.AddDnsblAllowlistEntryRequest) (*pb.AddDnsblAllowlistEntryResponse, error) {
+			return &pb.AddDnsblAllowlistEntryResponse{Success: false, Message: "boom"}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	err := client.AddDnsblAllowlistEntry(context.Background(), &DnsblAllowlistEntry{Name: "x.example.com"})
+	if err == nil {
+		t.Fatal("expected an error when the server reports failure")
+	}
+}
+
+func TestRemoveDnsblAllowlistEntry(t *testing.T) {
+	var captured *pb.RemoveDnsblAllowlistEntryRequest
+	mock := &mockRolodexDnsService{
+		removeDnsblAllowlistEntryFn: func(_ context.Context, req *pb.RemoveDnsblAllowlistEntryRequest) (*pb.RemoveDnsblAllowlistEntryResponse, error) {
+			captured = req
+			return &pb.RemoveDnsblAllowlistEntryResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	if err := client.RemoveDnsblAllowlistEntry(context.Background(), "vendor.example.com"); err != nil {
+		t.Fatalf("RemoveDnsblAllowlistEntry: %v", err)
+	}
+	if captured.Name != "vendor.example.com" {
+		t.Errorf("name = %q, want %q", captured.Name, "vendor.example.com")
+	}
+	if captured.AuthToken != "tok" {
+		t.Errorf("auth token = %q, want %q", captured.AuthToken, "tok")
+	}
+}
+
+func TestListDnsblAllowlistEntries(t *testing.T) {
+	mock := &mockRolodexDnsService{
+		listDnsblAllowlistEntriesFn: func(_ context.Context, _ *pb.ListDnsblAllowlistEntriesRequest) (*pb.ListDnsblAllowlistEntriesResponse, error) {
+			return &pb.ListDnsblAllowlistEntriesResponse{
+				Entries: []*pb.DnsblAllowlistEntry{
+					{Name: "vendor.example.com.", Reason: "false positive"},
+					{Name: "cdn.example.net.", Reason: ""},
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	entries, err := client.ListDnsblAllowlistEntries(context.Background())
+	if err != nil {
+		t.Fatalf("ListDnsblAllowlistEntries: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("got %d entries, want 2", len(entries))
+	}
+	if entries[0].Name != "vendor.example.com." {
+		t.Errorf("entries[0].Name = %q, want %q", entries[0].Name, "vendor.example.com.")
+	}
+	if entries[0].Reason != "false positive" {
+		t.Errorf("entries[0].Reason = %q, want %q", entries[0].Reason, "false positive")
 	}
 }
 

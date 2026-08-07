@@ -1116,6 +1116,96 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         }
     }
 
+    async fn add_dnsbl_allowlist_entry(
+        &self,
+        request: Request<AddDnsblAllowlistEntryRequest>,
+    ) -> Result<Response<AddDnsblAllowlistEntryResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        let entry = req
+            .entry
+            .ok_or_else(|| Status::invalid_argument("entry is required"))?;
+
+        if entry.name.trim().is_empty() {
+            return Err(Status::invalid_argument("entry name is required"));
+        }
+
+        match self
+            .db
+            .add_dnsbl_allowlist_entry(&entry.name, &entry.reason)
+        {
+            Ok(_) => {
+                info!("Added DNSBL allowlist entry: {}", entry.name);
+                Ok(Response::new(AddDnsblAllowlistEntryResponse {
+                    success: true,
+                    message: String::new(),
+                }))
+            }
+            Err(e) => Ok(Response::new(AddDnsblAllowlistEntryResponse {
+                success: false,
+                message: format!("failed to add DNSBL allowlist entry: {}", e),
+            })),
+        }
+    }
+
+    async fn remove_dnsbl_allowlist_entry(
+        &self,
+        request: Request<RemoveDnsblAllowlistEntryRequest>,
+    ) -> Result<Response<RemoveDnsblAllowlistEntryResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        if req.name.trim().is_empty() {
+            return Err(Status::invalid_argument("name is required"));
+        }
+
+        match self.db.remove_dnsbl_allowlist_entry(&req.name) {
+            Ok(true) => {
+                info!("Removed DNSBL allowlist entry: {}", req.name);
+                Ok(Response::new(RemoveDnsblAllowlistEntryResponse {
+                    success: true,
+                    message: String::new(),
+                }))
+            }
+            Ok(false) => Ok(Response::new(RemoveDnsblAllowlistEntryResponse {
+                success: false,
+                message: format!("entry '{}' not found", req.name),
+            })),
+            Err(e) => Ok(Response::new(RemoveDnsblAllowlistEntryResponse {
+                success: false,
+                message: format!("failed to remove DNSBL allowlist entry: {}", e),
+            })),
+        }
+    }
+
+    async fn list_dnsbl_allowlist_entries(
+        &self,
+        request: Request<ListDnsblAllowlistEntriesRequest>,
+    ) -> Result<Response<ListDnsblAllowlistEntriesResponse>, Status> {
+        let req = request.into_inner();
+        self.check_auth(&req.auth_token)?;
+
+        match self.db.list_dnsbl_allowlist_entries() {
+            Ok(entries) => {
+                let proto_entries = entries
+                    .iter()
+                    .map(|(name, reason)| DnsblAllowlistEntry {
+                        name: name.clone(),
+                        reason: reason.clone(),
+                    })
+                    .collect();
+                Ok(Response::new(ListDnsblAllowlistEntriesResponse {
+                    entries: proto_entries,
+                }))
+            }
+            Err(e) => Err(Status::internal(format!(
+                "failed to list DNSBL allowlist entries: {}",
+                e
+            ))),
+        }
+    }
+
     // ================================================================
     // Transport Configuration (DoT/DoH/DoQ/Proxy)
     // ================================================================
@@ -2646,6 +2736,160 @@ mod tests {
             .unwrap()
             .into_inner();
         assert!(!rbl.enabled);
+    }
+
+    #[tokio::test]
+    async fn test_dnsbl_allowlist_lifecycle() {
+        let service = make_test_service();
+
+        // Nothing configured to start with.
+        let list_req = Request::new(ListDnsblAllowlistEntriesRequest {
+            auth_token: "secret123".to_string(),
+        });
+        assert!(
+            service
+                .list_dnsbl_allowlist_entries(list_req)
+                .await
+                .unwrap()
+                .into_inner()
+                .entries
+                .is_empty()
+        );
+
+        // Add an entry.
+        let add_req = Request::new(AddDnsblAllowlistEntryRequest {
+            entry: Some(DnsblAllowlistEntry {
+                name: "Vendor.Example.com".to_string(),
+                reason: "false positive".to_string(),
+            }),
+            auth_token: "secret123".to_string(),
+        });
+        assert!(
+            service
+                .add_dnsbl_allowlist_entry(add_req)
+                .await
+                .unwrap()
+                .into_inner()
+                .success
+        );
+
+        // It comes back normalized, with its reason, and takes effect on lookup.
+        let list_req = Request::new(ListDnsblAllowlistEntriesRequest {
+            auth_token: "secret123".to_string(),
+        });
+        let entries = service
+            .list_dnsbl_allowlist_entries(list_req)
+            .await
+            .unwrap()
+            .into_inner()
+            .entries;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "vendor.example.com.");
+        assert_eq!(entries[0].reason, "false positive");
+        assert!(service.db.is_dnsbl_allowlisted("cdn.vendor.example.com."));
+
+        // Remove it.
+        let remove_req = Request::new(RemoveDnsblAllowlistEntryRequest {
+            name: "vendor.example.com".to_string(),
+            auth_token: "secret123".to_string(),
+        });
+        assert!(
+            service
+                .remove_dnsbl_allowlist_entry(remove_req)
+                .await
+                .unwrap()
+                .into_inner()
+                .success
+        );
+        assert!(!service.db.is_dnsbl_allowlisted("cdn.vendor.example.com."));
+
+        // Removing a name that is not listed reports failure, not an error.
+        let remove_req = Request::new(RemoveDnsblAllowlistEntryRequest {
+            name: "vendor.example.com".to_string(),
+            auth_token: "secret123".to_string(),
+        });
+        let resp = service
+            .remove_dnsbl_allowlist_entry(remove_req)
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!resp.success);
+        assert!(resp.message.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_dnsbl_allowlist_rejects_empty_name() {
+        let service = make_test_service();
+        let add_req = Request::new(AddDnsblAllowlistEntryRequest {
+            entry: Some(DnsblAllowlistEntry {
+                name: "   ".to_string(),
+                reason: String::new(),
+            }),
+            auth_token: "secret123".to_string(),
+        });
+        assert!(service.add_dnsbl_allowlist_entry(add_req).await.is_err());
+
+        let add_req = Request::new(AddDnsblAllowlistEntryRequest {
+            entry: None,
+            auth_token: "secret123".to_string(),
+        });
+        assert!(service.add_dnsbl_allowlist_entry(add_req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_dnsbl_allowlist_requires_auth() {
+        let service = make_test_service();
+        let add_req = Request::new(AddDnsblAllowlistEntryRequest {
+            entry: Some(DnsblAllowlistEntry {
+                name: "vendor.example.com".to_string(),
+                reason: String::new(),
+            }),
+            auth_token: "wrong".to_string(),
+        });
+        assert!(service.add_dnsbl_allowlist_entry(add_req).await.is_err());
+
+        let remove_req = Request::new(RemoveDnsblAllowlistEntryRequest {
+            name: "vendor.example.com".to_string(),
+            auth_token: "wrong".to_string(),
+        });
+        assert!(
+            service
+                .remove_dnsbl_allowlist_entry(remove_req)
+                .await
+                .is_err()
+        );
+
+        let list_req = Request::new(ListDnsblAllowlistEntriesRequest {
+            auth_token: "wrong".to_string(),
+        });
+        assert!(
+            service
+                .list_dnsbl_allowlist_entries(list_req)
+                .await
+                .is_err()
+        );
+    }
+
+    /// The Unix socket transport bypasses authentication, so the allowlist RPCs
+    /// are reachable with no token at all.
+    #[tokio::test]
+    async fn test_dnsbl_allowlist_unix_socket_bypasses_auth() {
+        let service = make_unix_service();
+        let add_req = Request::new(AddDnsblAllowlistEntryRequest {
+            entry: Some(DnsblAllowlistEntry {
+                name: "vendor.example.com".to_string(),
+                reason: String::new(),
+            }),
+            auth_token: String::new(),
+        });
+        assert!(
+            service
+                .add_dnsbl_allowlist_entry(add_req)
+                .await
+                .unwrap()
+                .into_inner()
+                .success
+        );
     }
 
     #[tokio::test]

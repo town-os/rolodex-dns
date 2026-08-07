@@ -536,6 +536,9 @@ rolodex-dns-cli [OPTIONS] <COMMAND>
 | `add-local-rbl` | Add a local RBL blocklist entry |
 | `remove-local-rbl` | Remove a local RBL blocklist entry |
 | `list-local-rbl` | List all local RBL blocklist entries |
+| `add-dnsbl-allow` | Exempt a name (and its subdomains) from the blocklist check |
+| `remove-dnsbl-allow` | Remove a DNSBL allowlist entry |
+| `list-dnsbl-allow` | List all DNSBL allowlist entries |
 | **Network Scoping** | |
 | `create-scope` | Create a new network scope |
 | `delete-scope` | Delete a network scope and all its data |
@@ -1226,6 +1229,9 @@ The following methods are also available. See `proto/rolodex_dns.proto` for full
 | `RemoveLocalRblEntry` | Remove a local RBL blocklist entry |
 | `ListLocalRblEntries` | List all local RBL blocklist entries |
 | `SetDnsblConfig` / `GetDnsblConfig` | Configure/retrieve domain-blocklist (DNSBL) settings |
+| `AddDnsblAllowlistEntry` | Exempt a name (and its subdomains) from the blocklist check |
+| `RemoveDnsblAllowlistEntry` | Remove a DNSBL allowlist entry |
+| `ListDnsblAllowlistEntries` | List all DNSBL allowlist entries |
 | `AddScopeRblProvider` / `RemoveScopeRblProvider` / `ListScopeRblProviders` | Manage additional RBL providers for one scope |
 | `AddScopeTld` | Register a globally-unique owned TLD for a scope; an optional `listen_ip` also starts an ingress DNS listener |
 | `RemoveScopeTld` | Remove an owned TLD (and its ingress listener, once unused) |
@@ -1502,6 +1508,23 @@ rolodex-dns-cli set-dnsbl-config --enabled --providers dbl.spamhaus.org:true
 rolodex-dns-cli get-dnsbl-config
 ```
 
+### Allowlisting a Host
+
+Specific hosts can be exempted from the blocklist check. An entry covers the name **and every name beneath it**, so allowlisting `example.com` also exempts `www.example.com`; matching is on label boundaries, so `notexample.com` is not exempt. Names are normalized (lowercase, trailing dot), so any spelling adds or removes the same entry, and entries persist in the database across restarts.
+
+The allowlist short-circuits the whole name-based check — an exempt name is checked against neither the configured DNSBL providers nor the local RBL blocklist, and never issues a blocklist lookup at all. It does not affect reverse-DNS IP blocking, which is IP-based. Changes take effect on the next query.
+
+```bash
+# Exempt a host that a provider is false-positiving on
+rolodex-dns-cli add-dnsbl-allow --name vendor.example.com --reason "blocklist false positive"
+
+# List the allowlist
+rolodex-dns-cli list-dnsbl-allow
+
+# Remove an entry
+rolodex-dns-cli remove-dnsbl-allow --name vendor.example.com
+```
+
 ## Network Scoping
 
 Network scoping provides split-horizon DNS views, allowing different DNS responses based on which network scope a client IP is associated with.
@@ -1673,6 +1696,9 @@ All methods accept a `context.Context` for cancellation and deadlines.
 | `AddLocalRblEntry(ctx, entry) error` | Add a local RBL blocklist entry |
 | `RemoveLocalRblEntry(ctx, name) error` | Remove a local RBL blocklist entry |
 | `ListLocalRblEntries(ctx) ([]*LocalRblEntry, error)` | List local RBL entries |
+| `AddDnsblAllowlistEntry(ctx, entry) error` | Exempt a name (and its subdomains) from the blocklist check |
+| `RemoveDnsblAllowlistEntry(ctx, name) error` | Remove a DNSBL allowlist entry |
+| `ListDnsblAllowlistEntries(ctx) ([]*DnsblAllowlistEntry, error)` | List DNSBL allowlist entries |
 
 #### Network Scoping
 

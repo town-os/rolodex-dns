@@ -477,6 +477,114 @@ async fn test_cli_set_and_get_dnsbl_config_tcp() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_cli_dnsbl_allowlist_lifecycle_tcp() {
+    let server = TestServer::start("test-secret").await;
+
+    // The allowlist starts empty.
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args(["list-dnsbl-allow"]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains(
+        "No DNSBL allowlist entries configured",
+    ));
+
+    // Add an entry.
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args([
+            "add-dnsbl-allow",
+            "-n",
+            "vendor.example.com",
+            "-r",
+            "false positive",
+        ]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains(
+        "Added DNSBL allowlist entry: vendor.example.com",
+    ));
+
+    // It lists back normalized, with its reason.
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args(["list-dnsbl-allow"]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains("vendor.example.com."))
+    .stdout(predicate::str::contains("false positive"))
+    .stdout(predicate::str::contains("1 entry(ies) found"));
+
+    // Remove it.
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args(["remove-dnsbl-allow", "-n", "vendor.example.com"]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains(
+        "Removed DNSBL allowlist entry: vendor.example.com",
+    ));
+
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args(["list-dnsbl-allow"]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains(
+        "No DNSBL allowlist entries configured",
+    ));
+
+    // Removing an entry that is not there fails with a message.
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args(["remove-dnsbl-allow", "-n", "vendor.example.com"]);
+        cmd
+    })
+    .await
+    .failure()
+    .stderr(predicate::str::contains("not found"));
+
+    server.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_cli_dnsbl_allowlist_unix() {
+    let server = TestServer::start("test-secret").await;
+
+    run_cmd({
+        let mut cmd = server.cli_unix();
+        cmd.args(["add-dnsbl-allow", "-n", "cdn.example.net", "-r", "vendor"]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains("Added DNSBL allowlist entry"));
+
+    run_cmd({
+        let mut cmd = server.cli_unix();
+        cmd.args(["list-dnsbl-allow"]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains("cdn.example.net."))
+    .stdout(predicate::str::contains("vendor"));
+
+    server.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_cli_get_rbl_config_default_tcp() {
     let server = TestServer::start("test-secret").await;
 

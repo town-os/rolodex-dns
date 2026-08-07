@@ -1300,7 +1300,14 @@ impl DnsServer {
         // is checked before the cache lookup so that a previously-cached
         // upstream answer is suppressed too. Reverse-DNS names are skipped here
         // because they are handled by the IP-based RBL checks above.
+        //
+        // The allowlist short-circuits the whole check: it is the operator's
+        // escape hatch from a blocklist false positive, so it must beat both the
+        // external providers and any local RBL entry, and it must run *before*
+        // `is_name_listed` so an exempted name never even issues a provider
+        // lookup.
         if extract_ip_from_name(&qname).is_none()
+            && !self.db.is_dnsbl_allowlisted(&qname)
             && (self.local_rbl_lists_name(&qname) || self.rbl.is_name_listed(&qname).await)
         {
             debug!("RBL block (domain): {} is blacklisted", qname);
@@ -3160,6 +3167,136 @@ mod tests {
         let allowed_resp =
             Message::from_bytes(&server.handle_query(&allowed).await.unwrap()).unwrap();
         assert_eq!(allowed_resp.response_code(), ResponseCode::ServFail);
+    }
+
+    /// A DNSBL resolver that lists everything and counts the lookups it was
+    /// asked to perform, so a test can prove an allowlisted name never reaches a
+    /// provider at all.
+    struct CountingListedResolver {
+        lookups: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl RblResolver for CountingListedResolver {
+        async fn lookup_rbl(&self, _query: &str) -> Result<Option<u32>, anyhow::Error> {
+            self.lookups.fetch_add(1, Ordering::Relaxed);
+            Ok(Some(300))
+        }
+    }
+
+    /// An allowlisted name is exempt from the DNSBL check, and the exemption
+    /// covers everything under it. With a resolver that lists every name, any
+    /// name that is *not* allowlisted is NXDOMAIN, so a SERVFAIL (no forwarders
+    /// configured) is proof the query fell through the blocklist step.
+    #[tokio::test]
+    async fn test_dnsbl_allowlist_exempts_name_and_subdomains() {
+        let db = Database::open_memory().unwrap();
+        db.add_dnsbl_allowlist_entry("vendor.example.com", "false positive")
+            .unwrap();
+        let server = make_test_server_with_dnsbl(db, Arc::new(AlwaysListedResolver)).await;
+
+        for name in [
+            "vendor.example.com.",
+            "cdn.vendor.example.com.",
+            "a.b.vendor.example.com.",
+        ] {
+            let query = build_query(name, RecordType::A);
+            let resp = Message::from_bytes(&server.handle_query(&query).await.unwrap()).unwrap();
+            assert_eq!(
+                resp.response_code(),
+                ResponseCode::ServFail,
+                "{} should be exempt from the DNSBL",
+                name
+            );
+        }
+
+        // A name outside the allowlist is still blocked.
+        let blocked = build_query("ads.example.net.", RecordType::A);
+        let blocked_resp = query_until_blocked(&server, &blocked).await;
+        assert_eq!(blocked_resp.response_code(), ResponseCode::NXDomain);
+    }
+
+    /// A near-miss of an allowlist entry is not exempt: the match is on label
+    /// boundaries, not a string suffix.
+    #[tokio::test]
+    async fn test_dnsbl_allowlist_does_not_over_match() {
+        let db = Database::open_memory().unwrap();
+        db.add_dnsbl_allowlist_entry("example.com", "vendor")
+            .unwrap();
+        let server = make_test_server_with_dnsbl(db, Arc::new(AlwaysListedResolver)).await;
+
+        let blocked = build_query("notexample.com.", RecordType::A);
+        let blocked_resp = query_until_blocked(&server, &blocked).await;
+        assert_eq!(blocked_resp.response_code(), ResponseCode::NXDomain);
+    }
+
+    /// The allowlist runs *before* the provider lookup, so an exempt name costs
+    /// no upstream blocklist query at all — the point being that an allowlist
+    /// entry removes the name from the check rather than discarding its verdict.
+    #[tokio::test]
+    async fn test_dnsbl_allowlist_issues_no_provider_lookup() {
+        let db = Database::open_memory().unwrap();
+        db.add_dnsbl_allowlist_entry("vendor.example.com", "")
+            .unwrap();
+        let lookups = Arc::new(AtomicUsize::new(0));
+        let resolver = Arc::new(CountingListedResolver {
+            lookups: lookups.clone(),
+        });
+        let server = make_test_server_with_dnsbl(db, resolver).await;
+
+        let query = build_query("cdn.vendor.example.com.", RecordType::A);
+        for _ in 0..5 {
+            let resp = Message::from_bytes(&server.handle_query(&query).await.unwrap()).unwrap();
+            assert_eq!(resp.response_code(), ResponseCode::ServFail);
+        }
+        // The fills are fire-and-forget; give any spawned task a chance to run
+        // before concluding that none was spawned.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(lookups.load(Ordering::Relaxed), 0);
+
+        // The same server does issue lookups for a name that is not exempt.
+        let other = build_query("ads.example.net.", RecordType::A);
+        query_until_blocked(&server, &other).await;
+        assert!(lookups.load(Ordering::Relaxed) > 0);
+    }
+
+    /// The allowlist is the operator's escape hatch, so it also overrides a
+    /// local RBL entry for the same name.
+    #[tokio::test]
+    async fn test_dnsbl_allowlist_overrides_local_rbl_entry() {
+        let db = Database::open_memory().unwrap();
+        db.add_local_rbl_entry("tracker.example.com", "ad tracker")
+            .unwrap();
+        db.add_dnsbl_allowlist_entry("tracker.example.com", "needed by vendor app")
+            .unwrap();
+        // DNS-based providers are disabled; only the local list would block.
+        let server = make_test_server(db);
+
+        let query = build_query("tracker.example.com.", RecordType::A);
+        let resp = Message::from_bytes(&server.handle_query(&query).await.unwrap()).unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::ServFail);
+    }
+
+    /// Removing the allowlist entry restores blocking immediately — the answer
+    /// is not served from a stale cache, because the blocklist step runs ahead
+    /// of the DNS cache lookup.
+    #[tokio::test]
+    async fn test_dnsbl_allowlist_removal_restores_blocking() {
+        let db = Database::open_memory().unwrap();
+        db.add_dnsbl_allowlist_entry("vendor.example.com", "")
+            .unwrap();
+        let server = make_test_server_with_dnsbl(db.clone(), Arc::new(AlwaysListedResolver)).await;
+
+        let query = build_query("vendor.example.com.", RecordType::A);
+        let resp = Message::from_bytes(&server.handle_query(&query).await.unwrap()).unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::ServFail);
+
+        assert!(
+            db.remove_dnsbl_allowlist_entry("vendor.example.com")
+                .unwrap()
+        );
+        let blocked = query_until_blocked(&server, &query).await;
+        assert_eq!(blocked.response_code(), ResponseCode::NXDomain);
     }
 
     /// Builds a server with both RBL and DNSBL globally ENABLED but with empty

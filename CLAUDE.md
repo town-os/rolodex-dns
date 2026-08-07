@@ -45,7 +45,7 @@ DNS queries are resolved in the following order:
 4. **CNAME chain** — If no exact type match is found locally, a CNAME lookup is attempted for the queried name. If a CNAME exists, it is returned.
 5. **LAN → owning-scope fallback** (non-scoped sources only) — For a trusted local source (loopback / LAN, `scope_name == None`) whose name matched no global record, if the name falls under a TLD owned by *some* network scope (`db::find_tld_owner`), it is resolved from that owning scope's records so **every network TLD is visible on the LAN**. This runs *after* the global lookup, so a dual-homed name (a global LAN-IP record plus a scoped overlay-IP record) still returns its LAN-facing global value; only scoped-only names (e.g. a network's zone apex) are served from the scope, at their stored value. If the owning scope has no record, the TLD's peer forwarders are consulted, and failing that an **authoritative NXDOMAIN** is returned — a privately-owned TLD is never forwarded upstream from the LAN. (Overlay peers are unaffected: they take the scoped path at step 1, which partitions owned TLDs — a peer joined to one network sees only its own TLD and gets NXDOMAIN for a sibling network's or another scope's TLD.)
 6. **Managed zone authority** — If the queried name falls under a zone that has records in the local database (determined by the last two labels of any stored FQDN), but the specific name was not found, an authoritative NXDOMAIN is returned. This prevents forwarding queries for names that should be resolved internally. Zones can also be explicitly declared authoritative via `AddAuthoritativeZone`.
-7. **DNSBL / local blocklist check** — Before any external resolution, the queried name (forward names only; reverse names are handled by step 2) is checked against the local RBL blocklist and, if DNSBL is enabled, against the configured DNSBL (domain blocklist) providers. If listed, an NXDOMAIN is returned. Because this runs after the local/managed-zone checks but before the upstream cache and forwarder, DNSBLs take precedence over any externally-resolved answer (forwarded, iterative, or upstream-cached) while local records always win.
+7. **DNSBL / local blocklist check** — Before any external resolution, the queried name (forward names only; reverse names are handled by step 2) is checked against the local RBL blocklist and, if DNSBL is enabled, against the configured DNSBL (domain blocklist) providers. If listed, an NXDOMAIN is returned. Names on the **DNSBL allowlist** (and everything under them) skip this step entirely — see DNSBL Allowlist. Because this runs after the local/managed-zone checks but before the upstream cache and forwarder, DNSBLs take precedence over any externally-resolved answer (forwarded, iterative, or upstream-cached) while local records always win.
 8. **DNS64 synthesis** — If DNS64 is enabled and the query is for AAAA but only A records exist upstream, AAAA records are synthesized using the configured NAT64 prefix.
 9. **Upstream resolution** — Unmatched queries go to the upstream path selected by `resolution.mode` (see Upstream Resolution): the `auto` tier chain by default, iterative-from-the-roots under `recursive`, or plain forwarding under `forward`. If every tier/forwarder fails, SERVFAIL is returned.
 10. **Address-family filter** — Before the response goes out, A/AAAA records of an address family the host cannot route are dropped (see Address-Family Answer Filtering). This applies to every answer, local or upstream.
@@ -183,7 +183,7 @@ The cache can be flushed via gRPC.
 
 ### Local RBL Entries
 
-In addition to DNS-based providers, Rolodex DNS supports a local RBL blocklist stored in the database. Local entries are checked alongside external providers and can block specific names or IPs with a human-readable reason. Entries are managed via `AddLocalRblEntry`, `RemoveLocalRblEntry`, and `ListLocalRblEntries`. Local entries are matched against both reverse-DNS IP lookups (step 2) and forward domain names (step 7), tolerating trailing-dot and case differences in the stored entry.
+In addition to DNS-based providers, Rolodex DNS supports a local RBL blocklist stored in the database. Local entries are checked alongside external providers and can block specific names or IPs with a human-readable reason. Entries are managed via `AddLocalRblEntry`, `RemoveLocalRblEntry`, and `ListLocalRblEntries`. Local entries are matched against both reverse-DNS IP lookups (step 2) and forward domain names (step 7), tolerating trailing-dot and case differences in the stored entry. A forward name on the DNSBL allowlist is exempt from the local blocklist too (see DNSBL Allowlist).
 
 ## Domain Blocklists (DNSBL)
 
@@ -192,6 +192,16 @@ While RBL providers block by **IP address** (queried with a reversed IP on rever
 DNSBL gives blocklists **precedence over external DNS**: the check runs after local records and managed/authoritative zones (so internal data always wins) but **before** the upstream response cache and the forwarder/iterative resolver. A listed name therefore returns NXDOMAIN even if a forwarded answer was previously cached. For example, with DNSBL enabled, `googleadservices.com` is refused while a locally-defined `gitea.default.home` (e.g. planted by a package) continues to resolve.
 
 DNSBL checking is globally togglable and **disabled by default, with an empty provider list**; providers are independently enable-able. The standard domain blocklists an operator typically adds are `dbl.spamhaus.org`, `multi.surbl.org`, and `multi.uribl.com`. An enabled-but-empty DNSBL is a no-op (nothing is queried and nothing is blocked). DNSBL configuration is independent of the IP-based RBL configuration and shares the same in-memory result cache (positive results cached for the provider TTL, negatives for 5 minutes). It is configured at startup via the `dnsbl` config section and at runtime via `SetDnsblConfig`/`GetDnsblConfig`.
+
+### DNSBL Allowlist
+
+Specific hosts can be exempted from the blocklist check entirely. Allowlist entries are stored in the database (`dnsbl_allowlist` table) with a human-readable reason and managed via `AddDnsblAllowlistEntry`, `RemoveDnsblAllowlistEntry`, and `ListDnsblAllowlistEntries` (CLI: `add-dnsbl-allow`, `remove-dnsbl-allow`, `list-dnsbl-allow`).
+
+- **Suffix-matched.** An entry covers the name itself *and* every name beneath it, so allowlisting `example.com` also exempts `www.example.com`. Matching is on label boundaries — `notexample.com` is not exempt. Lookups are O(labels) against an in-memory `DashSet` mirrored from the table (loaded at boot), the same technique used for zone matching.
+- **Normalized on storage.** Entries are lowercased with a trailing dot, so `Example.COM`, `example.com`, and `example.com.` are one entry and any spelling removes it. An empty or root (`.`) entry is rejected — it would exempt the whole namespace.
+- **The allowlist wins.** The check short-circuits step 7 in full: an exempt name is checked against neither the configured DNSBL providers nor the local RBL blocklist, so an allowlist entry is the operator's escape hatch from a false positive on either. It runs *before* the provider lookup, so an exempt name never issues a blocklist query at all.
+- **Forward names only.** The allowlist gates the forward-name check (step 7). Reverse-DNS IP blocking (step 2, `in-addr.arpa`/`ip6.arpa` against IP-based RBL providers) is unaffected.
+- Adding or removing an entry takes effect on the next query with no cache flush needed, because the blocklist step runs ahead of the DNS response cache lookup.
 
 ## Encrypted DNS Transports
 
@@ -462,6 +472,9 @@ The management API is defined in `proto/rolodex_dns.proto` under the `RolodexDns
 | `AddLocalRblEntry`    | Adds a local RBL blocklist entry (name/IP and reason).                            |
 | `RemoveLocalRblEntry` | Removes a local RBL entry by name.                                                |
 | `ListLocalRblEntries` | Retrieves all local RBL entries.                                                  |
+| `AddDnsblAllowlistEntry`     | Exempts a name (and its subdomains) from the name-based blocklist check.   |
+| `RemoveDnsblAllowlistEntry`  | Removes a DNSBL allowlist entry by name.                                   |
+| `ListDnsblAllowlistEntries`  | Retrieves all DNSBL allowlist entries.                                     |
 
 #### DNS Cache
 
@@ -631,6 +644,9 @@ The `rolodex-dns-cli` binary is a command-line client for the gRPC management in
 | `add-local-rbl`    | Add a local RBL entry. Takes `--name` and optional `--reason`.                                      |
 | `remove-local-rbl` | Remove a local RBL entry. Takes `--name`.                                                           |
 | `list-local-rbl`   | List all local RBL entries.                                                                         |
+| `add-dnsbl-allow`    | Exempt a name (and its subdomains) from the DNSBL/blocklist check. Takes `--name` and optional `--reason`. |
+| `remove-dnsbl-allow` | Remove a DNSBL allowlist entry. Takes `--name`.                                                   |
+| `list-dnsbl-allow`   | List all DNSBL allowlist entries.                                                                 |
 
 #### DNS Cache
 
@@ -765,6 +781,9 @@ An additional `WithGRPCDialOption` option allows passing custom `grpc.DialOption
 | `AddLocalRblEntry(ctx, entry)`          | Adds a local RBL entry.                                    |
 | `RemoveLocalRblEntry(ctx, name)`        | Removes a local RBL entry.                                 |
 | `ListLocalRblEntries(ctx)`              | Retrieves all local RBL entries.                           |
+| `AddDnsblAllowlistEntry(ctx, entry)`    | Exempts a name (and its subdomains) from the blocklist check. |
+| `RemoveDnsblAllowlistEntry(ctx, name)`  | Removes a DNSBL allowlist entry.                           |
+| `ListDnsblAllowlistEntries(ctx)`        | Retrieves all DNSBL allowlist entries.                     |
 
 #### DNS Cache
 
@@ -863,6 +882,7 @@ The client automatically includes the auth token in every RPC call. All methods 
 - `TtlDriftConfig` — TTL drift configuration (mode, fixed adjustment, log multiplier).
 - `QueryLatencyStats` — Per-server latency statistics.
 - `LocalRblEntry` — Local RBL entry (name and reason).
+- `DnsblAllowlistEntry` — DNSBL allowlist entry (name and reason); covers the name and everything beneath it.
 - `DotConfig` / `DohConfig` / `DoqConfig` — Encrypted transport configurations.
 - `TlsConfig` — TLS certificate configuration (cert path, key path, auto self-signed).
 - `ProxyConfig` — Proxy transport configuration (URL, auth, mode).
@@ -1262,7 +1282,7 @@ The `make test` target runs the full test suite: lint, Go integration tests, Go 
 
 The server runs on the tokio multi-threaded async runtime. Each UDP listen address is **sharded across `SO_REUSEPORT` sockets** (`dns.udp_shards`, default one per core): a single socket serialises the listener — one task drains it with `recv_from` and every reply contends on it — which caps throughput far below CPU saturation no matter how many cores are idle. Each shard runs its own receive loop and replies on its own socket, so the kernel hashes arriving datagrams across cores in both directions. `SO_REUSEPORT` is set only when more than one shard is requested, so a single-shard listener still fails loudly on an occupied port (which the ingress bind-failure handling depends on) instead of silently sharing it; a port-`0` (ephemeral) bind is forced to one shard, since the kernel would otherwise hand each shard a different port. Shards live in a `JoinSet` owned by the `serve_udp` future, so aborting the driving task — as `stop_ingress_listener` does — tears every shard down with it. Within a shard, a task is spawned per received query. DNS TCP connections spawn a new task per connection. DoT, DoH, and DoQ connections each spawn a new task per connection. gRPC servers (TCP and Unix socket) run as separate tasks. Upstream forwarder configuration is protected by `ArcSwap` for lock-free reads. RBL state uses lock-free primitives: the enabled flag is an `AtomicBool` and the provider list uses `ArcSwap` for zero-contention reads. The RBL cache and DNS response cache use lock-free `DashMap`. The SQLite database is protected by a `Mutex` with `prepare_cached` for statement reuse.
 
-At boot, in-memory caches are populated from the database: scope count (`AtomicUsize`), local RBL entries (`DashSet`), authoritative zones (`DashSet`), managed zones (`DashSet`), TLD ownership (`tld_owner_cache`), per-TLD ingress IPs (`tld_ingress_cache`), and the persisted delegation cache. These caches avoid SQL queries on the hot path and are updated incrementally as records are added or removed via gRPC.
+At boot, in-memory caches are populated from the database: scope count (`AtomicUsize`), local RBL entries (`DashSet`), DNSBL allowlist entries (`DashSet`), authoritative zones (`DashSet`), managed zones (`DashSet`), TLD ownership (`tld_owner_cache`), per-TLD ingress IPs (`tld_ingress_cache`), and the persisted delegation cache. These caches avoid SQL queries on the hot path and are updated incrementally as records are added or removed via gRPC.
 
 The `auto` resolution state machine is entirely lock-free: the active tier, deviation streak, last-probe timestamp, and grace/probe parameters are atomics, and the recovery probe is gated by a compare-exchange so only one concurrent query probes per interval. The secure upstream list, public fallback list, resolution mode, and overlay CIDR list use `ArcSwap`. Answer-family suppression is a pair of `AtomicBool`s written by the background probe task. Ingress listeners are tracked in a `DashMap<IpAddr, Vec<AbortHandle>>`; the delegation cache persists through a background SQLite write worker fed by an `mpsc` channel, and the delegation/record caches are `DashMap`.
 
