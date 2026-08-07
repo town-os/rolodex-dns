@@ -13,6 +13,7 @@ use rand::Rng;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::time::Duration;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::task::AbortHandle;
 use tracing::{debug, error, info, warn};
@@ -128,6 +129,35 @@ const SECURE_TIER_TIMEOUT: std::time::Duration = std::time::Duration::from_milli
 const MAX_UDP_SIZE: usize = 4096;
 /// Maximum TCP DNS message size (with 2-byte length prefix).
 const MAX_TCP_SIZE: usize = 65535;
+
+/// How long a stream-transport connection may sit idle between messages before
+/// the server closes it.
+///
+/// Without a bound, a client that connects and sends nothing parks a task and a
+/// file descriptor indefinitely: `dns.bind` defaults to `0.0.0.0:53`, so on a
+/// routable interface that is a pre-auth remote resource exhaustion — hold
+/// enough connections open and `accept` starts failing for everyone. RFC 7766
+/// §6.2.1 leaves the value to the server; this is at the short end of the range
+/// it describes, which suits a resolver whose clients are on the same network.
+pub const TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long the body of an *announced* message may take to arrive.
+///
+/// Separate from the idle timeout because the two are different claims: idle is
+/// "I have nothing to say yet", which is legitimate between queries on a reused
+/// connection, while a half-delivered message is a client that said it was
+/// sending 65535 bytes and then stopped. Tighter, since the data is supposedly
+/// already in flight.
+pub const TCP_MESSAGE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Maximum concurrent stream-transport connections per listener.
+///
+/// The idle timeout bounds how long one connection can be held; this bounds how
+/// many can be held at once, which is the other half — without it an attacker
+/// simply opens them faster than they time out. Generous next to real load: a
+/// resolver serving a network sees tens of concurrent TCP connections, not
+/// hundreds.
+pub const MAX_TCP_CONNECTIONS: usize = 1024;
 
 /// The DNS server handles both UDP and TCP DNS queries.
 /// It performs split-horizon resolution: local database records are preferred,
@@ -833,6 +863,11 @@ impl DnsServer {
             .with_context(|| format!("failed to bind TCP listener to {}", bind_addr))?;
         info!("DNS TCP server listening on {}", bind_addr);
         let local_ip = concrete_bind_ip(bind_addr);
+        // Bounds concurrent connections. A permit is acquired per accepted
+        // connection and released when its task ends, so the listener keeps
+        // accepting (and immediately dropping) once saturated rather than
+        // queueing — a backlog would only move the exhaustion.
+        let slots = Arc::new(tokio::sync::Semaphore::new(MAX_TCP_CONNECTIONS));
 
         loop {
             let (stream, src) = match listener.accept().await {
@@ -843,11 +878,21 @@ impl DnsServer {
                 }
             };
 
+            let Ok(permit) = Arc::clone(&slots).try_acquire_owned() else {
+                debug!(
+                    "dropping TCP connection from {}: {} concurrent connections in use",
+                    src, MAX_TCP_CONNECTIONS
+                );
+                drop(stream);
+                continue;
+            };
+
             let server = Arc::clone(&self);
             tokio::spawn(async move {
                 if let Err(e) = server.handle_tcp_connection(stream, src, local_ip).await {
                     debug!("TCP connection error from {}: {}", src, e);
                 }
+                drop(permit);
             });
         }
     }
@@ -863,12 +908,21 @@ impl DnsServer {
         let (mut reader, mut writer) = stream.into_split();
 
         loop {
-            // Read 2-byte length prefix
+            // Read 2-byte length prefix. Timed from the last thing that happened
+            // on the connection, so a client reusing it across queries (RFC 7766)
+            // is not disconnected mid-conversation, but one that stops talking is
+            // reclaimed.
             let mut len_buf = [0u8; 2];
-            match reader.read_exact(&mut len_buf).await {
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
-                Err(e) => return Err(e.into()),
+            let read =
+                tokio::time::timeout(TCP_IDLE_TIMEOUT, reader.read_exact(&mut len_buf)).await;
+            match read {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+                Ok(Err(e)) => return Err(e.into()),
+                Err(_) => {
+                    debug!("closing idle TCP connection from {}", src);
+                    return Ok(());
+                }
             }
             let msg_len = u16::from_be_bytes(len_buf) as usize;
             if msg_len > MAX_TCP_SIZE {
@@ -877,7 +931,11 @@ impl DnsServer {
             }
 
             let mut msg_buf = vec![0u8; msg_len];
-            reader.read_exact(&mut msg_buf).await?;
+            tokio::time::timeout(TCP_MESSAGE_TIMEOUT, reader.read_exact(&mut msg_buf))
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!("{} announced {} bytes and did not send them", src, msg_len)
+                })??;
 
             let response = self
                 .handle_query_proto(&msg_buf, Some(src.ip()), local_ip, Proto::Tcp)

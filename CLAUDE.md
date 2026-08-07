@@ -26,6 +26,21 @@ Rolodex DNS is a split-horizon DNS server and recursive/forwarding resolver with
 
 Rolodex DNS serves DNS queries over UDP, TCP, DNS-over-TLS (DoT), DNS-over-HTTPS (DoH), and DNS-over-QUIC (DoQ) on configurable bind addresses (default `0.0.0.0:53` for UDP/TCP). TCP and DoT use the standard 2-byte length prefix framing. Maximum UDP message size is 4096 bytes; maximum TCP message size is 65535 bytes.
 
+### Stream Transport Limits
+
+TCP and DoT connections are bounded, because `dns.bind` defaults to `0.0.0.0:53` and an unbounded listener on a routable interface is a pre-auth resource exhaustion: a client that connects and sends nothing holds a task and a file descriptor, and once descriptors run out `accept` fails for everyone.
+
+| Bound | Value | Applies to |
+| ----- | ----- | ---------- |
+| `TCP_IDLE_TIMEOUT` | 10s | Waiting for the next message's length prefix |
+| `TCP_MESSAGE_TIMEOUT` | 5s | The body of a message whose length was already announced |
+| `TLS_HANDSHAKE_TIMEOUT` | 10s | DoT only: waiting for the ClientHello and the rest of the handshake |
+| `MAX_TCP_CONNECTIONS` | 1024 | Concurrent connections per listener; a connection over the cap is dropped at accept |
+
+The idle timeout is measured from the **last activity**, not from the connection opening, so RFC 7766 connection reuse works — a client may hold one connection open and send many queries down it. That matters more on DoT, where reconnecting costs a fresh handshake. Idle and message timeouts are separate because they are different claims: "I have nothing to say yet" is legitimate between queries, while a half-delivered message is a client that announced 65535 bytes and stopped.
+
+The DoT handshake timeout is the bound plain TCP does not need. `acceptor.accept()` waits for a ClientHello, so without it a bare `connect()` — no TLS implementation required — parks a task before any DNS is exchanged, where a timeout on the DNS read loop never applies. DoQ sets `max_idle_timeout` (30s) through Quinn and needs no equivalent.
+
 ### Supported Record Types
 
 **Basic**: A, AAAA, CNAME, MX, TXT, NS, SOA, SRV, PTR.
@@ -99,6 +114,7 @@ Walks the delegation chain from the roots: query a root, follow the NS referral 
 - **Root priming.** At startup (never on the query path) the roots are asked who the roots are, and the live `.` NS set is cached as a delegation with its real TTL. The hardcoded hints become a bootstrap and the fallback when priming fails.
 - **Server selection.** Lowest `hits * ema_latency` — this drives the product toward equality across the server set, allocating queries as `hits ∝ 1/latency`, so fast servers carry more and every healthy server carries some (rather than one "fastest" root absorbing everything and earning a rate-limit). An unqueried server scores 0, is tried first, and learns its latency from a query that had to happen anyway. Latency is an EMA (α = 0.3).
 - **Failure backoff.** Tracked separately from latency as an explicit exponential backoff (2s, doubling, capped at 300s, cleared on the first success). Backed-off servers sort behind healthy ones within their address family but are never removed, so resolution still proceeds when everything is failing.
+- **Bailiwick.** A referral is followed and cached only if it moves **strictly down** from the zone that answered *and* covers the name being resolved (`referral_in_bailiwick`). Without it, any nameserver the resolver ever talks to can return `AUTHORITY: com. NS <attacker>` for a query about its own zone and have it cached — and since `best_match` walks suffixes and long-TTL delegations are persisted to SQLite, that is a resolver takeover that survives a restart. A violating referral fails the lookup rather than being silently skipped, so a hostile delegation cannot masquerade as progress. Glue is filtered to names inside the **answering** zone rather than the delegated one, because a root referral for `com.` legitimately carries glue for `a.gtld-servers.net.` — outside `com.`, inside `.`. Discards are counted by `rolodex_dns_resolver_out_of_bailiwick_total`.
 - **Bounds.** 1.5s per-nameserver timeout (short so a black-holed `:53` fails over to the secure tier quickly), max 30 referrals, 16 CNAME hops, depth 16, 4 nameservers tried per glue-less delegation, and a hard cap of **64 upstream queries per client lookup**. The per-axis limits multiply — a zone that keeps referring without glue costs `O(4^16)` queries — so the total is bounded outright to prevent a self-inflicted DoS/amplifier.
 
 ### Resolver Caches
@@ -405,7 +421,7 @@ Lease states: `active` (in use), `expired` (past duration), `released` (client r
 
 ### DNS Integration
 
-When a DHCP client provides a hostname (option 12), the server automatically registers:
+When a DHCP client provides a hostname (option 12), the server automatically registers the records below — **provided the hostname is a valid DNS label**. Option 12 arrives verbatim from an unauthenticated device on the LAN and is interpolated straight into a record name, so `valid_hostname_label` requires a single LDH label per RFC 1123 §2.1 (1–63 bytes, letters/digits/hyphen, no leading or trailing hyphen) and lowercases it. A hostname that fails is **rejected, not sanitized** — registration is skipped with a warning rather than a different name being silently assigned — and deregistration applies the same rule so the name removed is the name that was added. The check matters most for `*`: `*.lan.<tld>.` is a real wildcard to `lookup_scoped`, so without it a client naming itself `*` answers for every unregistered name in its scope.
 
 - An A record: `<hostname>.lan.<tld>.` → assigned IP (as a scoped record)
 - A PTR record: `<reversed-ip>.in-addr.arpa.` → `<hostname>.lan.<tld>.` (as a scoped record)
@@ -1288,6 +1304,12 @@ The iterative resolver has a dedicated suite built on a **mock delegation hierar
 | `tests/root_balance_test.rs` | `hits * latency` selection spreads load across the roots instead of pinning the fastest one. |
 | `tests/root_priming_test.rs` | Priming happens at startup (never on the query path) and the hints are a bootstrap/fallback. |
 | `tests/query_budget_test.rs` | One client lookup costs a bounded number of upstream queries (the pathological glue-less zone that produced 65,536 queries in 42s). |
+
+### Security Regression Suites
+
+The `tests/security_*.rs` files each pin the behaviour one security finding requires, stated in observable terms and paired with a control that must stay green. They cover: the Do53 forwarder and iterative resolver response validation (`security_forwarder_test`, `security_resolver_test`), referral and glue bailiwick (`security_bailiwick_test`), the ACME issuer's CSR confinement, authorization, replay and expiry handling (`security_acme_test`), the enrollment portal's zone scoping and CSRF defences (`security_portal_test`), IPv4-mapped source classification (`security_scope_test`), open recursion and amplification (`security_open_resolver_test`), DHCP-supplied hostname validation (`security_dhcp_hostname_test`), stream-transport connection limits (`security_tcp_limits_test`, `security_dot_limits_test`), filesystem permissions and startup refusal of an unauthenticated routable gRPC bind (`security_local_access_test`), and constant-time secret comparison plus brute-force throttling (`security_auth_hardening_test`).
+
+A failure in one of these is the finding, not a broken test — the module docs at the top of each file state the invariant and why it is written the way it is. Never weaken an assertion to make one pass.
 
 ### IPAM Unit Tests
 

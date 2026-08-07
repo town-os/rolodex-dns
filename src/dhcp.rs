@@ -380,6 +380,9 @@ impl DhcpServer {
     }
 
     /// Registers A and PTR records for a DHCP hostname.
+    ///
+    /// A hostname that is not a valid DNS label is not registered at all — see
+    /// [`valid_hostname_label`].
     fn register_dns_hostname(
         &self,
         hostname: &str,
@@ -387,7 +390,14 @@ impl DhcpServer {
         scope_name: &str,
         ttl: u32,
     ) -> Result<()> {
-        let fqdn = format!("{}.lan.{}.", hostname, self.config.tld);
+        let Some(label) = valid_hostname_label(hostname) else {
+            warn!(
+                "ignoring DHCP hostname {:?} from {}: not a valid DNS label",
+                hostname, ip
+            );
+            return Ok(());
+        };
+        let fqdn = format!("{}.lan.{}.", label, self.config.tld);
 
         // Add A record
         let a_record = DnsRecord {
@@ -419,8 +429,15 @@ impl DhcpServer {
     }
 
     /// Removes DNS records for a DHCP hostname.
+    ///
+    /// Runs the same validation as registration, so the name removed is the name
+    /// that was added — and a hostname that was never registered is a no-op
+    /// rather than a removal aimed at some other name.
     fn unregister_dns_hostname(&self, hostname: &str, ip: &str, scope_name: &str) -> Result<()> {
-        let fqdn = format!("{}.lan.{}.", hostname, self.config.tld);
+        let Some(label) = valid_hostname_label(hostname) else {
+            return Ok(());
+        };
+        let fqdn = format!("{}.lan.{}.", label, self.config.tld);
 
         // Remove A record
         if let Err(e) = self
@@ -560,9 +577,95 @@ async fn send_reply(socket: &UdpSocket, reply: &Message, src: SocketAddr) -> Res
     Ok(())
 }
 
+/// Validates a DHCP-supplied hostname (option 12) as a single DNS label,
+/// returning it normalized to lowercase.
+///
+/// The hostname arrives verbatim from an unauthenticated device on the LAN and
+/// is interpolated straight into a record name, so this is the only thing
+/// standing between a client and the namespace of its scope:
+///
+/// - **`*` is the sharp edge.** `*.lan.<tld>.` is not a decorative name —
+///   `lookup_scoped` falls back to the wildcard whenever an exact match misses,
+///   so a client that names itself `*` answers for every unregistered host in
+///   the scope.
+/// - **A hostname is one label.** Dots would let a client place itself at a
+///   depth it was never allocated, or collide with a name some other convention
+///   owns.
+/// - **The wire format has limits.** A label over 63 bytes cannot be encoded at
+///   all; storing one defers the failure to serialization time, where it recurs
+///   on every query for the zone instead of being rejected once, here.
+///
+/// LDH (letters, digits, hyphen) with no leading or trailing hyphen, per RFC
+/// 1123 §2.1. Rejected rather than sanitized: a client that sends a name this
+/// strict rule refuses does not get a *different* name silently assigned to it.
+fn valid_hostname_label(hostname: &str) -> Option<String> {
+    let trimmed = hostname.trim();
+    if trimmed.is_empty() || trimmed.len() > 63 {
+        return None;
+    }
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return None;
+    }
+    if trimmed.starts_with('-') || trimmed.ends_with('-') {
+        return None;
+    }
+    Some(trimmed.to_ascii_lowercase())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hostname_label_accepts_ordinary_names() {
+        assert_eq!(
+            valid_hostname_label("my-laptop").as_deref(),
+            Some("my-laptop")
+        );
+        assert_eq!(valid_hostname_label("NAS01").as_deref(), Some("nas01"));
+        assert_eq!(
+            valid_hostname_label("  printer  ").as_deref(),
+            Some("printer")
+        );
+        assert_eq!(
+            valid_hostname_label(&"a".repeat(63)).as_deref(),
+            Some("a".repeat(63).as_str())
+        );
+    }
+
+    #[test]
+    fn hostname_label_rejects_a_wildcard() {
+        // The one that captures the scope's whole namespace.
+        assert_eq!(valid_hostname_label("*"), None);
+        assert_eq!(valid_hostname_label("*.evil"), None);
+    }
+
+    #[test]
+    fn hostname_label_rejects_dots() {
+        assert_eq!(valid_hostname_label("www.internal"), None);
+        assert_eq!(valid_hostname_label("trailing."), None);
+    }
+
+    #[test]
+    fn hostname_label_rejects_oversized_and_empty() {
+        assert_eq!(valid_hostname_label(&"a".repeat(64)), None);
+        assert_eq!(valid_hostname_label(""), None);
+        assert_eq!(valid_hostname_label("   "), None);
+    }
+
+    #[test]
+    fn hostname_label_rejects_non_ldh() {
+        assert_eq!(valid_hostname_label("bad host"), None);
+        assert_eq!(valid_hostname_label("nul\u{0}name"), None);
+        assert_eq!(valid_hostname_label("under_score"), None);
+        assert_eq!(valid_hostname_label("caf\u{e9}"), None);
+        // A hyphen may sit inside a label but not at either end.
+        assert_eq!(valid_hostname_label("-leading"), None);
+        assert_eq!(valid_hostname_label("trailing-"), None);
+    }
 
     #[test]
     fn test_format_mac() {

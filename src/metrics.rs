@@ -974,6 +974,8 @@ pub struct Metrics {
     pub resolver_lookups: Counter,
     /// Delegation referrals followed.
     pub resolver_referrals: Counter,
+    /// Referrals and glue records discarded for being out of bailiwick.
+    pub resolver_out_of_bailiwick: Counter,
     /// CNAME hops followed.
     pub resolver_cname_hops: Counter,
     /// Lookups aborted by the 64-query budget.
@@ -1243,6 +1245,11 @@ impl Metrics {
                 "rolodex_dns_resolver_referrals_total",
                 "Delegation referrals followed while walking down from the roots.",
             ),
+            resolver_out_of_bailiwick: Counter::new(
+                "rolodex_dns_resolver_out_of_bailiwick_total",
+                "Referrals and glue records discarded for delegating or naming \
+                 something outside the zone that answered.",
+            ),
             resolver_cname_hops: Counter::new(
                 "rolodex_dns_resolver_cname_hops_total",
                 "CNAME hops followed during iterative resolution.",
@@ -1446,6 +1453,7 @@ impl Metrics {
 
         self.resolver_lookups.encode(&mut out);
         self.resolver_referrals.encode(&mut out);
+        self.resolver_out_of_bailiwick.encode(&mut out);
         self.resolver_cname_hops.encode(&mut out);
         self.resolver_budget_exhausted.encode(&mut out);
         self.resolver_tcp_retries.encode(&mut out);

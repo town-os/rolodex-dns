@@ -118,6 +118,10 @@ rust-integration-test: build ## Run each Rust integration test file
 	cargo test --test security_open_resolver_test
 	cargo test --test security_local_access_test
 	cargo test --test security_auth_hardening_test
+	cargo test --test security_bailiwick_test
+	cargo test --test security_dhcp_hostname_test
+	cargo test --test security_tcp_limits_test
+	cargo test --test security_dot_limits_test
 
 build: ## Compile binaries for TARGET (debug natively; cross-compiled release for a foreign TARGET)
 	@$(if $(CROSS),make/cross.sh build $(BUILD_ARCH),cargo build)

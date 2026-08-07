@@ -37,20 +37,45 @@ async fn chain_with_ttl(delegation_ttl: u32) -> Chain {
     let tld_sock = socks.pop().unwrap();
     let root_sock = socks.pop().unwrap();
 
+    // The root refers `.com` names to the TLD server, and `a.example.org.` — the
+    // one name the isolation test uses to reach an *uncached* TLD — to `org.`.
+    // A root that referred `com.` whatever it was asked would be handing back an
+    // out-of-bailiwick delegation, which a resolver must reject; the route keeps
+    // the fixture answering the way a real root does.
     let root = serve(
         root_sock,
-        Behavior::Refer {
-            zone: "com.".to_string(),
-            next: TLD_IP,
-            ttl: delegation_ttl,
+        Behavior::Router {
+            routes: vec![(
+                "a.example.org.".to_string(),
+                Box::new(Behavior::Refer {
+                    zone: "org.".to_string(),
+                    next: TLD_IP,
+                    ttl: delegation_ttl,
+                }),
+            )],
+            default: Box::new(Behavior::Refer {
+                zone: "com.".to_string(),
+                next: TLD_IP,
+                ttl: delegation_ttl,
+            }),
         },
     );
     let tld = serve(
         tld_sock,
-        Behavior::Refer {
-            zone: "example.com.".to_string(),
-            next: AUTH_IP,
-            ttl: delegation_ttl,
+        Behavior::Router {
+            routes: vec![(
+                "a.example.org.".to_string(),
+                Box::new(Behavior::Refer {
+                    zone: "example.org.".to_string(),
+                    next: AUTH_IP,
+                    ttl: delegation_ttl,
+                }),
+            )],
+            default: Box::new(Behavior::Refer {
+                zone: "example.com.".to_string(),
+                next: AUTH_IP,
+                ttl: delegation_ttl,
+            }),
         },
     );
     let auth = serve(
@@ -401,9 +426,8 @@ async fn cached_zones_are_isolated_from_each_other() {
     );
     c.root.reset();
 
-    // The mock root refers everything to the TLD server regardless of name, so an
-    // .org lookup still works — the point is that it must go back to the root,
-    // because no .org delegation is cached.
+    // A name under a different TLD: the root must be consulted again, because the
+    // cached delegation covers `com.` and nothing else.
     assert_eq!(
         resolve_a(&c.resolver, "a.example.org.").await,
         ResponseCode::NoError

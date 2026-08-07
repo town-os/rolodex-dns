@@ -231,9 +231,9 @@ enum Step {
     /// A delegation to a more specific zone.
     Referral {
         zone: Name,
-        glue: Vec<IpAddr>,
-        /// The additional-section glue records themselves, TTLs intact, so they
-        /// can be cached rather than being reduced to bare addresses and dropped.
+        /// The additional-section glue records, TTLs intact. Addresses are derived
+        /// from these *after* the bailiwick filter, so an out-of-bailiwick glue
+        /// record cannot be used even transiently.
         glue_records: Vec<Record>,
         ns_targets: Vec<Name>,
         /// Shortest TTL across the delegation's NS (and glue) records — how long
@@ -491,10 +491,11 @@ impl IterativeResolver {
             .min()
             .unwrap_or(self.default_ttl);
 
-        // ...and their addresses as glue in the additional section. `collect_glue`
-        // keeps only records whose owner is one of the NS names we just asked about
-        // (so an off-topic additional record cannot slip in) and orders v4 first.
-        let addrs = collect_glue(&response, &ns_names);
+        // ...and their addresses as glue in the additional section.
+        // `collect_glue_records` keeps only records whose owner is one of the NS
+        // names we just asked about, so an off-topic additional record cannot slip
+        // in; `glue_addresses` orders v4 first.
+        let addrs = glue_addresses(&collect_glue_records(&response, &ns_names));
         if addrs.is_empty() {
             debug!("root priming returned no usable glue; keeping the static hints");
             crate::metrics::metrics()
@@ -557,6 +558,7 @@ impl IterativeResolver {
                 &mut attempt_seen,
                 budget,
                 servers,
+                Name::from_ascii(&zone).unwrap_or_else(|_| Name::root()),
             ))
             .await
             {
@@ -595,6 +597,7 @@ impl IterativeResolver {
             cname_seen,
             budget,
             self.root_hints.clone(),
+            Name::root(),
         ))
         .await
     }
@@ -614,8 +617,12 @@ impl IterativeResolver {
         cname_seen: &mut Vec<Name>,
         budget: &QueryBudget,
         mut servers: Vec<IpAddr>,
+        start_zone: Name,
     ) -> Result<Resolution> {
         let mut visited_zones: HashSet<String> = HashSet::new();
+        // The zone whose servers we are currently talking to. A referral is only
+        // usable if it moves strictly *down* from here — see `referral_in_bailiwick`.
+        let mut current_zone = start_zone;
 
         for _hop in 0..MAX_REFERRALS {
             let response = self
@@ -662,12 +669,22 @@ impl IterativeResolver {
                 }
                 Step::Referral {
                     zone,
-                    glue,
                     glue_records,
                     ns_targets,
                     ttl,
                 } => {
+                    let glue_count = glue_records.len();
                     crate::metrics::metrics().resolver_referrals.inc();
+                    if !referral_in_bailiwick(&current_zone, &zone, name) {
+                        crate::metrics::metrics().resolver_out_of_bailiwick.inc();
+                        bail!(
+                            "out-of-bailiwick referral: a server for {} delegated {} \
+                             while resolving {}",
+                            current_zone,
+                            zone,
+                            name
+                        );
+                    }
                     let zone_key = zone.to_ascii().to_lowercase();
                     if !visited_zones.insert(zone_key) {
                         bail!("delegation loop at zone {} resolving {}", zone, name);
@@ -677,7 +694,28 @@ impl IterativeResolver {
                     // describes, instead of reducing it to bare addresses and
                     // dropping it — that is what forced a fresh sub-recursion every
                     // time a glueless delegation came round again.
-                    self.cache_glue(&glue_records);
+                    // Glue is only this server's to give for names inside the zone
+                    // it is authoritative for. Note the test is against
+                    // `current_zone`, the *answering* zone, not the delegated one:
+                    // a root referral for `com.` legitimately carries glue for
+                    // `a.gtld-servers.net.`, which is outside `com.` but well
+                    // inside `.`. Anything further out is unverifiable, and caching
+                    // it would let any zone dictate where a foreign nameserver
+                    // lives for every later glue-less lookup.
+                    let in_bailiwick: Vec<Record> = glue_records
+                        .into_iter()
+                        .filter(|rec| current_zone.zone_of(rec.name()))
+                        .collect();
+                    if in_bailiwick.len() != glue_count {
+                        crate::metrics::metrics().resolver_out_of_bailiwick.inc();
+                        debug!(
+                            "discarded {} out-of-bailiwick glue record(s) from the {} delegation",
+                            glue_count - in_bailiwick.len(),
+                            zone
+                        );
+                    }
+                    let glue = glue_addresses(&in_bailiwick);
+                    self.cache_glue(&in_bailiwick);
 
                     servers = if !glue.is_empty() {
                         glue
@@ -691,6 +729,7 @@ impl IterativeResolver {
                     // Remember the delegation so the next name in this zone starts
                     // here instead of back at the root.
                     self.delegations.insert(&zone, servers.clone(), ttl);
+                    current_zone = zone;
                 }
             }
         }
@@ -1134,10 +1173,9 @@ fn classify(response: &Message, qtype: RecordType) -> Step {
             _ => None,
         })
         .collect();
-    let glue = collect_glue(response, &ns_targets);
-
     // Keep the glue records themselves, not just the addresses: they carry TTLs,
-    // and the caller caches them instead of throwing them away.
+    // the caller caches them instead of throwing them away, and the bailiwick
+    // filter needs their owner names.
     let glue_records = collect_glue_records(response, &ns_targets);
 
     // The delegation may only be cached for as long as its shortest component
@@ -1151,11 +1189,45 @@ fn classify(response: &Message, qtype: RecordType) -> Step {
 
     Step::Referral {
         zone,
-        glue,
         glue_records,
         ns_targets,
         ttl,
     }
+}
+
+/// Whether a referral may be followed and cached.
+///
+/// Two conditions, and both are load-bearing:
+///
+/// - **It must move strictly down from the zone that answered.** A server
+///   authoritative for `current` may delegate a zone beneath it and nothing else.
+///   Without this, any nameserver the resolver ever talks to — one ad domain, one
+///   link — can hand back `NS com.` or `NS .` and have it cached, and
+///   `best_match` walks suffixes, so every later lookup in that zone starts at
+///   the attacker's server. A delegation whose TTL clears
+///   `delegation_persist_min_ttl` is written to SQLite too, so the hijack
+///   outlives a restart. "Strictly" also rules out the lame referral that
+///   delegates the zone back to itself.
+/// - **It must cover the name being resolved.** A delegation for a zone the
+///   qname does not sit under is not on the path to an answer; following it is
+///   how a referral for an unrelated branch gets treated as progress.
+fn referral_in_bailiwick(current: &Name, zone: &Name, qname: &Name) -> bool {
+    current.zone_of(zone) && zone != current && zone.zone_of(qname)
+}
+
+/// Reduces glue records to addresses, IPv4 before IPv6 for reachability.
+fn glue_addresses(glue_records: &[Record]) -> Vec<IpAddr> {
+    let mut v4 = Vec::new();
+    let mut v6 = Vec::new();
+    for rec in glue_records {
+        match rec.data() {
+            RData::A(rdata::A(ip)) => v4.push(IpAddr::V4(*ip)),
+            RData::AAAA(rdata::AAAA(ip)) => v6.push(IpAddr::V6(*ip)),
+            _ => {}
+        }
+    }
+    v4.extend(v6);
+    v4
 }
 
 /// Extracts the authority-section SOA of a negative response, used to derive the
@@ -1181,25 +1253,6 @@ fn collect_glue_records(response: &Message, ns_targets: &[Name]) -> Vec<Record> 
         .filter(|rec| matches!(rec.data(), RData::A(_) | RData::AAAA(_)))
         .cloned()
         .collect()
-}
-
-/// Extracts glue address records from the additional section for the given
-/// NS targets, ordering IPv4 before IPv6 for reachability.
-fn collect_glue(response: &Message, ns_targets: &[Name]) -> Vec<IpAddr> {
-    let mut v4 = Vec::new();
-    let mut v6 = Vec::new();
-    for rec in response.additionals() {
-        if !ns_targets.iter().any(|t| names_equal(t, rec.name())) {
-            continue;
-        }
-        match rec.data() {
-            RData::A(rdata::A(ip)) => v4.push(IpAddr::V4(*ip)),
-            RData::AAAA(rdata::AAAA(ip)) => v6.push(IpAddr::V6(*ip)),
-            _ => {}
-        }
-    }
-    v4.extend(v6);
-    v4
 }
 
 #[cfg(test)]
@@ -1305,13 +1358,15 @@ mod tests {
         match classify(&msg, RecordType::A) {
             Step::Referral {
                 zone,
-                glue,
                 glue_records,
                 ns_targets,
                 ttl,
             } => {
                 assert!(names_equal(&zone, &name("com.")));
-                assert_eq!(glue, vec![IpAddr::V4(Ipv4Addr::new(192, 5, 6, 30))]);
+                assert_eq!(
+                    glue_addresses(&glue_records),
+                    vec![IpAddr::V4(Ipv4Addr::new(192, 5, 6, 30))]
+                );
                 assert_eq!(ns_targets.len(), 1);
                 // Shortest of the NS record TTL and the glue TTL — both 300 here.
                 assert_eq!(ttl, 300);
@@ -1325,14 +1380,82 @@ mod tests {
     }
 
     #[test]
+    fn referral_bailiwick_requires_downward_progress() {
+        // The root may delegate a TLD.
+        assert!(referral_in_bailiwick(
+            &Name::root(),
+            &name("com."),
+            &name("www.example.com.")
+        ));
+        // A TLD may delegate a zone under it.
+        assert!(referral_in_bailiwick(
+            &name("com."),
+            &name("example.com."),
+            &name("www.example.com.")
+        ));
+        // A leaf zone may not redelegate its parent...
+        assert!(!referral_in_bailiwick(
+            &name("attacker.test."),
+            &name("test."),
+            &name("victim.attacker.test.")
+        ));
+        // ...nor an unrelated TLD, which is the cache-poisoning case.
+        assert!(!referral_in_bailiwick(
+            &name("attacker.test."),
+            &name("com."),
+            &name("www.example.com.")
+        ));
+        // ...nor the root, from anywhere below it.
+        assert!(!referral_in_bailiwick(
+            &name("attacker.test."),
+            &Name::root(),
+            &name("victim.attacker.test.")
+        ));
+        // A lame referral back to the same zone is not progress.
+        assert!(!referral_in_bailiwick(
+            &name("example.com."),
+            &name("example.com."),
+            &name("www.example.com.")
+        ));
+    }
+
+    #[test]
+    fn referral_bailiwick_requires_covering_the_qname() {
+        // A delegation the queried name does not sit under is not on the path to
+        // an answer, however well-formed it looks.
+        assert!(!referral_in_bailiwick(
+            &name("com."),
+            &name("example.com."),
+            &name("www.other.com.")
+        ));
+        // The zone apex itself counts as covered.
+        assert!(referral_in_bailiwick(
+            &name("com."),
+            &name("example.com."),
+            &name("example.com.")
+        ));
+    }
+
+    #[test]
+    fn referral_bailiwick_is_case_insensitive() {
+        assert!(referral_in_bailiwick(
+            &name("COM."),
+            &name("Example.com."),
+            &name("WWW.example.COM.")
+        ));
+    }
+
+    #[test]
     fn classify_referral_glueless() {
         let mut msg = Message::new();
         msg.add_name_server(ns_record("example.com.", "ns1.example.net."));
         match classify(&msg, RecordType::A) {
             Step::Referral {
-                glue, ns_targets, ..
+                glue_records,
+                ns_targets,
+                ..
             } => {
-                assert!(glue.is_empty());
+                assert!(glue_addresses(&glue_records).is_empty());
                 assert_eq!(ns_targets.len(), 1);
             }
             other => panic!("expected glueless referral, got {:?}", other),
@@ -1406,7 +1529,7 @@ mod tests {
             "other.example.net.",
             Ipv4Addr::new(203, 0, 113, 9),
         ));
-        let glue = collect_glue(&msg, &[name("ns1.example.net.")]);
+        let glue = glue_addresses(&collect_glue_records(&msg, &[name("ns1.example.net.")]));
         assert_eq!(glue.len(), 2);
         assert!(glue[0].is_ipv4());
         assert!(glue[1].is_ipv6());
