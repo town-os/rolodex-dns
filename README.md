@@ -62,7 +62,7 @@ make build
 make test
 ```
 
-Runs lint (`cargo fmt --check` + `clippy --all-targets -D warnings`), the Go integration and unit tests, the Rust integration and unit tests, and the JavaScript lint/integration/unit tests. Use `make test-log` for the same run tee'd into a timestamped log file under `/tmp/rolodex-dns/log` (override with `LOG_DIR`), printed at the end even on failure. Individual layers: `make lint`, `make rust-test`, `make rust-integration-test`, `make go-test`, `make go-integration-test`, `make js-test`, `make js-integration-test`.
+Runs lint (`cargo fmt --check` + `clippy --all-targets -D warnings`), the Go integration and unit tests, the Rust integration and unit tests, and the JavaScript lint/integration/unit tests. The Rust integration layer includes real-socket suites for DNSSEC signing and validation (against a signed mock hierarchy whose responses are tampered with at serialization time, so each test is "a valid deployment, attacked"), the blocklist NXDOMAIN contract, blocklist refusal codes, DoQ, proxying, TLS reload, ZONEMD, ACME administration, and a `security_*` suite per security finding. Use `make test-log` for the same run tee'd into a timestamped log file under `/tmp/rolodex-dns/log` (override with `LOG_DIR`), printed at the end even on failure. Individual layers: `make lint`, `make rust-test`, `make rust-integration-test`, `make go-test`, `make go-integration-test`, `make js-test`, `make js-integration-test`.
 
 ## Development
 
@@ -1455,7 +1455,7 @@ Signing supports the following algorithms:
 
 Ed448 is not supported due to a limitation in the ring cryptography crate.
 
-### DNSSEC Workflow
+#### Signing Workflow
 
 1. Generate a Key Signing Key (KSK) and Zone Signing Key (ZSK) for your zone:
    ```bash
@@ -1921,6 +1921,7 @@ All methods accept a `context.Context` for cancellation and deadlines.
 | `ListScopeTldForwarders(ctx, scope, tld) ([]string, error)` | List a TLD's peer forwarders |
 | `ListScopeTldListeners(ctx, scope) ([]*TldListener, error)` | List a scope's ingress DNS listeners |
 | `AddScopeRblProvider(ctx, scope, zone, enabled) error` | Add a per-scope RBL provider |
+| `AddScopeRblProviderWithRefusal(ctx, scope, zone, enabled, codes, secs) error` | The same, with the provider's refusal codes and rotate-out duration |
 | `RemoveScopeRblProvider(ctx, scope, zone) error` | Remove a per-scope RBL provider |
 | `ListScopeRblProviders(ctx, scope) ([]*ScopeRblProvider, error)` | List per-scope RBL providers |
 
@@ -2115,10 +2116,11 @@ All methods accept a `context.Context` for cancellation and deadlines.
        │  │ from roots│  │  upstream  │ │ (Do53)  │ │  (Do53)  │
        │  └────┬─────┘  └────────────┘ └─────────┘ └──────────┘
        │       │  (tier 0)     (tier 1)   (tier 2)    (tier 3)
-       │  ┌────▼──────────────┐
-       │  │ Delegation cache   │
-       │  │ + record cache     │
-       │  └───────────────────┘
+       │  ┌────▼──────────────┐   ┌────────────────────┐
+       │  │ Delegation cache   │   │ DNSSEC validation  │
+       │  │ + record cache     │◄──┤ (chain from root)  │
+       │  └───────────────────┘   │  + key cache       │
+       │                           └────────────────────┘
        │
  ┌─────▼──────┐   ┌────────────┐   ┌─────────────┐   ┌────────────┐
  │ gRPC Mgmt   │   │ HTTP Proxy │   │ DHCPv4 + AF │   │ ACME + CA  │

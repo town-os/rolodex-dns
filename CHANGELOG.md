@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Documentation
+
+- **`CONFIGURATION.md` — a configuration guide.** The README's configuration section is a field reference, which answers "what does this option do" and not "what should my config look like". The guide is task-oriented: how the file is loaded (and that a missing one is not an error), the smallest working config, four worked deployment shapes (home resolver, purely authoritative, split-horizon overlay node, resolver on a network that filters `:53`), then one section per subsystem. It states plainly which settings are *not* configuration at all — records, scopes, zones, blocklist entries, DNSSEC keys and ACME CAs are runtime state in SQLite — with a table of what needs a restart, the four conditions the server deliberately refuses to start under, and a troubleshooting table keyed by symptom.
+
+  The two CIDR lists get a side-by-side comparison, because `overlay_cidrs` (who is scope-*enforced*) and `recursion_cidrs` (who may make this server ask upstream) are different questions that read alike.
+
+- **README brought up to v0.4.4.** DNSSEC now documents both halves — the signer and the upstream validator, with the four verdicts and why Insecure-vs-Bogus is the distinction carrying the security. Blocklist refusal codes and provider rotation, the allowlist's reach across every list and both gates, and recursion access control (previously shipped but never written down) each have a section. The configuration example and options table gained `dnssec.*`, `security.recursion_cidrs`, `metrics.bind` and the per-provider refusal fields; the CLI docs gained the refusal flags and the current `get-rbl-config` output; and the RFC table gained the DNSSEC family (4033/4034/4035, 5155, 6605/8080, 6840, 9276) and 7766.
+
 ## v0.4.4 (2026-08-08)
 
 ### Features
