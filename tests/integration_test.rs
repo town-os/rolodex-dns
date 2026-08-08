@@ -19,7 +19,10 @@ struct NeverListedResolver;
 
 #[async_trait::async_trait]
 impl RblResolver for NeverListedResolver {
-    async fn lookup_rbl(&self, _query: &str) -> Result<Option<u32>, anyhow::Error> {
+    async fn lookup_rbl(
+        &self,
+        _query: &str,
+    ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
         Ok(None)
     }
 }
@@ -28,8 +31,11 @@ struct AlwaysListedResolver;
 
 #[async_trait::async_trait]
 impl RblResolver for AlwaysListedResolver {
-    async fn lookup_rbl(&self, _query: &str) -> Result<Option<u32>, anyhow::Error> {
-        Ok(Some(300))
+    async fn lookup_rbl(
+        &self,
+        _query: &str,
+    ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
+        Ok(Some(rolodex_dns::rbl::RblAnswer::listed(300)))
     }
 }
 
@@ -256,6 +262,7 @@ async fn test_rbl_integration() {
         vec![RblProvider {
             zone: "test.rbl".to_string(),
             enabled: true,
+            ..Default::default()
         }],
         Arc::new(AlwaysListedResolver),
     ));
@@ -281,6 +288,7 @@ async fn test_rbl_integration() {
         enabled: false,
         providers: vec![],
         auth_token: "test-secret".to_string(),
+        ..Default::default()
     });
     service.set_rbl_config(rbl_req).await.unwrap();
 
@@ -308,13 +316,16 @@ async fn test_rbl_config_roundtrip() {
             rolodex_dns::grpc_service::proto::RblConfig {
                 zone: "zen.spamhaus.org".to_string(),
                 enabled: true,
+                ..Default::default()
             },
             rolodex_dns::grpc_service::proto::RblConfig {
                 zone: "bl.spamcop.net".to_string(),
                 enabled: false,
+                ..Default::default()
             },
         ],
         auth_token: "test-secret".to_string(),
+        ..Default::default()
     });
     service.set_rbl_config(req).await.unwrap();
 
@@ -1938,6 +1949,7 @@ async fn test_rbl_with_scoping() {
         vec![RblProvider {
             zone: "test.rbl".to_string(),
             enabled: true,
+            ..Default::default()
         }],
         Arc::new(AlwaysListedResolver),
     ));

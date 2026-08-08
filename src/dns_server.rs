@@ -3118,7 +3118,7 @@ fn dns_record_to_db_record(record: &Record) -> Option<crate::db::DnsRecord> {
 mod tests {
     use super::*;
     use crate::db::{Database, DnsRecord, RecordKind};
-    use crate::rbl::{RblChecker, RblProvider, RblResolver};
+    use crate::rbl::{RblAnswer, RblChecker, RblProvider, RblResolver};
     use hickory_proto::op::Message;
     use hickory_proto::rr::{DNSClass, Name, RecordType};
     use hickory_proto::serialize::binary::BinDecodable;
@@ -3128,7 +3128,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RblResolver for NeverListedResolver {
-        async fn lookup_rbl(&self, _query: &str) -> Result<Option<u32>, anyhow::Error> {
+        async fn lookup_rbl(&self, _query: &str) -> Result<Option<RblAnswer>, anyhow::Error> {
             Ok(None)
         }
     }
@@ -3137,8 +3137,8 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RblResolver for AlwaysListedResolver {
-        async fn lookup_rbl(&self, _query: &str) -> Result<Option<u32>, anyhow::Error> {
-            Ok(Some(300))
+        async fn lookup_rbl(&self, _query: &str) -> Result<Option<RblAnswer>, anyhow::Error> {
+            Ok(Some(RblAnswer::listed(300)))
         }
     }
 
@@ -3151,13 +3151,13 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RblResolver for PrefixListedResolver {
-        async fn lookup_rbl(&self, query: &str) -> Result<Option<u32>, anyhow::Error> {
+        async fn lookup_rbl(&self, query: &str) -> Result<Option<RblAnswer>, anyhow::Error> {
             if self
                 .listed_prefixes
                 .iter()
                 .any(|p| query.starts_with(p.as_str()))
             {
-                Ok(Some(300))
+                Ok(Some(RblAnswer::listed(300)))
             } else {
                 Ok(None)
             }
@@ -3177,6 +3177,7 @@ mod tests {
             vec![RblProvider {
                 zone: "dbl.test".to_string(),
                 enabled: true,
+                ..Default::default()
             }],
         )
         .await;
@@ -3203,6 +3204,7 @@ mod tests {
             vec![RblProvider {
                 zone: "test.rbl".to_string(),
                 enabled: true,
+                ..Default::default()
             }],
             resolver,
         ));
@@ -3652,6 +3654,7 @@ mod tests {
             vec![RblProvider {
                 zone: "dbl.test".to_string(),
                 enabled: true,
+                ..Default::default()
             }],
         )
         .await;
@@ -3721,9 +3724,9 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RblResolver for CountingListedResolver {
-        async fn lookup_rbl(&self, _query: &str) -> Result<Option<u32>, anyhow::Error> {
+        async fn lookup_rbl(&self, _query: &str) -> Result<Option<RblAnswer>, anyhow::Error> {
             self.lookups.fetch_add(1, Ordering::Relaxed);
-            Ok(Some(300))
+            Ok(Some(RblAnswer::listed(300)))
         }
     }
 

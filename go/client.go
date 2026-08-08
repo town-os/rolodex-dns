@@ -154,6 +154,10 @@ type DhcpLease = pb.DhcpLease
 // ScopeRblProvider represents a per-scope RBL provider.
 type ScopeRblProvider = pb.ScopeRblProvider
 
+// RotatedProvider reports a blocklist provider currently taken out of the
+// lookup rotation because it refused a query.
+type RotatedProvider = pb.RotatedProvider
+
 // DhcpCertOption represents a DHCP certificate option.
 type DhcpCertOption = pb.DhcpCertOption
 
@@ -386,10 +390,29 @@ func (c *Client) SetForwarders(ctx context.Context, forwarders []string) error {
 //
 // Remote API path: /rolodex_dns.RolodexDnsService/SetRblConfig
 func (c *Client) SetRblConfig(ctx context.Context, enabled bool, providers []*RblConfig) error {
+	return c.SetRblConfigWithRefusalCooldown(ctx, enabled, providers, 0)
+}
+
+// SetRblConfigWithRefusalCooldown is [Client.SetRblConfig] with the list-wide
+// rotate-out duration.
+//
+// A provider that answers with a refusal code — a documented "I refused your
+// query" reply such as 127.255.255.254, as opposed to a listing — is taken out
+// of the lookup rotation for this long, so a blocklist that has stopped
+// answering us is backed off rather than queried on every request. Providers
+// may override it individually via RblConfig.RefusalCooldownSecs.
+//
+// Parameters:
+//   - refusalCooldownSecs: seconds to rotate a refusing provider out; 0 uses
+//     the server's built-in default (3600)
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/SetRblConfig
+func (c *Client) SetRblConfigWithRefusalCooldown(ctx context.Context, enabled bool, providers []*RblConfig, refusalCooldownSecs uint32) error {
 	resp, err := c.rpc.SetRblConfig(ctx, &pb.SetRblConfigRequest{
-		Enabled:   enabled,
-		Providers: providers,
-		AuthToken: c.authToken,
+		Enabled:             enabled,
+		Providers:           providers,
+		AuthToken:           c.authToken,
+		RefusalCooldownSecs: refusalCooldownSecs,
 	})
 	if err != nil {
 		return fmt.Errorf("rolodex-dns: set rbl config: %w", err)
@@ -404,8 +427,16 @@ func (c *Client) SetRblConfig(ctx context.Context, enabled bool, providers []*Rb
 type RblStatus struct {
 	// Enabled indicates whether RBL checking is globally enabled.
 	Enabled bool
-	// Providers lists the configured RBL providers.
+	// Providers lists the configured RBL providers, with their refusal codes
+	// resolved to what is actually in effect (so a provider configured with an
+	// empty list reads back as the built-in codes).
 	Providers []*RblConfig
+	// RefusalCooldownSecs is the list-wide rotate-out duration applied to
+	// providers that set none of their own.
+	RefusalCooldownSecs uint32
+	// RotatedOut lists providers currently out of rotation after refusing a
+	// query, with the code they refused with and the time remaining.
+	RotatedOut []*RotatedProvider
 }
 
 // GetRblConfig retrieves the current RBL configuration from the Rolodex DNS server.
@@ -419,8 +450,10 @@ func (c *Client) GetRblConfig(ctx context.Context) (*RblStatus, error) {
 		return nil, fmt.Errorf("rolodex-dns: get rbl config: %w", err)
 	}
 	return &RblStatus{
-		Enabled:   resp.Enabled,
-		Providers: resp.Providers,
+		Enabled:             resp.Enabled,
+		Providers:           resp.Providers,
+		RefusalCooldownSecs: resp.RefusalCooldownSecs,
+		RotatedOut:          resp.RotatedOut,
 	}, nil
 }
 
@@ -436,10 +469,21 @@ func (c *Client) GetRblConfig(ctx context.Context) (*RblStatus, error) {
 //
 // Remote API path: /rolodex_dns.RolodexDnsService/SetDnsblConfig
 func (c *Client) SetDnsblConfig(ctx context.Context, enabled bool, providers []*DnsblConfig) error {
+	return c.SetDnsblConfigWithRefusalCooldown(ctx, enabled, providers, 0)
+}
+
+// SetDnsblConfigWithRefusalCooldown is [Client.SetDnsblConfig] with the
+// list-wide rotate-out duration for providers that refuse our queries; see
+// [Client.SetRblConfigWithRefusalCooldown]. The DNSBL value is independent of
+// the RBL one.
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/SetDnsblConfig
+func (c *Client) SetDnsblConfigWithRefusalCooldown(ctx context.Context, enabled bool, providers []*DnsblConfig, refusalCooldownSecs uint32) error {
 	resp, err := c.rpc.SetDnsblConfig(ctx, &pb.SetDnsblConfigRequest{
-		Enabled:   enabled,
-		Providers: providers,
-		AuthToken: c.authToken,
+		Enabled:             enabled,
+		Providers:           providers,
+		AuthToken:           c.authToken,
+		RefusalCooldownSecs: refusalCooldownSecs,
 	})
 	if err != nil {
 		return fmt.Errorf("rolodex-dns: set dnsbl config: %w", err)
@@ -454,8 +498,15 @@ func (c *Client) SetDnsblConfig(ctx context.Context, enabled bool, providers []*
 type DnsblStatus struct {
 	// Enabled indicates whether DNSBL checking is globally enabled.
 	Enabled bool
-	// Providers lists the configured DNSBL providers.
+	// Providers lists the configured DNSBL providers, with their refusal codes
+	// resolved to what is actually in effect.
 	Providers []*DnsblConfig
+	// RefusalCooldownSecs is the list-wide rotate-out duration applied to
+	// providers that set none of their own.
+	RefusalCooldownSecs uint32
+	// RotatedOut lists providers currently out of rotation after refusing a
+	// query.
+	RotatedOut []*RotatedProvider
 }
 
 // GetDnsblConfig retrieves the current DNSBL configuration from the Rolodex DNS server.
@@ -469,8 +520,10 @@ func (c *Client) GetDnsblConfig(ctx context.Context) (*DnsblStatus, error) {
 		return nil, fmt.Errorf("rolodex-dns: get dnsbl config: %w", err)
 	}
 	return &DnsblStatus{
-		Enabled:   resp.Enabled,
-		Providers: resp.Providers,
+		Enabled:             resp.Enabled,
+		Providers:           resp.Providers,
+		RefusalCooldownSecs: resp.RefusalCooldownSecs,
+		RotatedOut:          resp.RotatedOut,
 	}, nil
 }
 
@@ -1479,11 +1532,30 @@ func (c *Client) DeleteDhcpLease(ctx context.Context, mac string) error {
 //
 // Remote API path: /rolodex_dns.RolodexDnsService/AddScopeRblProvider
 func (c *Client) AddScopeRblProvider(ctx context.Context, scopeName, zone string, enabled bool) error {
+	return c.AddScopeRblProviderWithRefusal(ctx, scopeName, zone, enabled, nil, 0)
+}
+
+// AddScopeRblProviderWithRefusal is [Client.AddScopeRblProvider] with the
+// provider's refusal-code handling.
+//
+// Parameters:
+//   - refusalCodes: codes this provider returns to mean "I refused your query"
+//     rather than "this is listed"; each is an IPv4 address or
+//     "address/prefix". nil or empty uses the server's built-in set; the single
+//     entry "none" disables refusal detection for this provider. An
+//     unparseable code is rejected rather than ignored.
+//   - refusalCooldownSecs: seconds to rotate this provider out after a
+//     refusal; 0 uses the server-wide RBL default.
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/AddScopeRblProvider
+func (c *Client) AddScopeRblProviderWithRefusal(ctx context.Context, scopeName, zone string, enabled bool, refusalCodes []string, refusalCooldownSecs uint32) error {
 	resp, err := c.rpc.AddScopeRblProvider(ctx, &pb.AddScopeRblProviderRequest{
 		Provider: &pb.ScopeRblProvider{
-			ScopeName: scopeName,
-			Zone:      zone,
-			Enabled:   enabled,
+			ScopeName:           scopeName,
+			Zone:                zone,
+			Enabled:             enabled,
+			RefusalCodes:        refusalCodes,
+			RefusalCooldownSecs: refusalCooldownSecs,
 		},
 		AuthToken: c.authToken,
 	})

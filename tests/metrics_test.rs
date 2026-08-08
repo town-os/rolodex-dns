@@ -42,7 +42,10 @@ struct NeverListedResolver;
 
 #[async_trait::async_trait]
 impl RblResolver for NeverListedResolver {
-    async fn lookup_rbl(&self, _query: &str) -> Result<Option<u32>, anyhow::Error> {
+    async fn lookup_rbl(
+        &self,
+        _query: &str,
+    ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
         Ok(None)
     }
 }
@@ -441,4 +444,70 @@ async fn cache_flushes_are_attributed_to_their_trigger() {
         tier_before + 1,
         "a tier-switch flush must not be counted as a mutation"
     );
+}
+
+/// A provider refusing our queries is a distinct signal from a provider finding
+/// nothing, and it has to be visible as one: without the counter, "the blocklist
+/// went quiet" and "the blocklist is clean" look identical from outside, and the
+/// second is what an operator will assume.
+#[tokio::test]
+async fn a_refusal_is_counted_and_the_provider_shows_as_rotated_out() {
+    let _serial = SERIAL.lock().await;
+
+    /// Answers every lookup with Spamhaus's "excessive queries" code.
+    struct RefusingResolver;
+    #[async_trait::async_trait]
+    impl RblResolver for RefusingResolver {
+        async fn lookup_rbl(
+            &self,
+            _query: &str,
+        ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
+            Ok(Some(rolodex_dns::rbl::RblAnswer::single(
+                std::net::Ipv4Addr::new(127, 255, 255, 255),
+                300,
+            )))
+        }
+    }
+
+    let rbl = Arc::new(RblChecker::with_resolver(
+        true,
+        vec![rolodex_dns::rbl::RblProvider {
+            zone: "refusing.test".to_string(),
+            enabled: true,
+            cooldown: Some(std::time::Duration::from_secs(3600)),
+            ..Default::default()
+        }],
+        Arc::new(RefusingResolver),
+    ));
+
+    let m = metrics();
+    // Index 0 of BLOCK_KINDS is "rbl_provider"; index 3 of the lookup outcomes
+    // is "refused".
+    let refusals_before = m.blocklist_refusals.get(0);
+    let refused_before = m.blocklist_lookups.get(0, 3);
+    let listed_before = m.blocklist_lookups.get(0, 0);
+
+    assert!(
+        !rbl.is_listed(&std::net::IpAddr::V4(std::net::Ipv4Addr::new(1, 2, 3, 4)))
+            .await,
+        "a refusal code must never block"
+    );
+    for _ in 0..250 {
+        if m.blocklist_refusals.get(0) > refusals_before {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+
+    assert_eq!(m.blocklist_refusals.get(0), refusals_before + 1);
+    assert_eq!(m.blocklist_lookups.get(0, 3), refused_before + 1);
+    assert_eq!(
+        m.blocklist_lookups.get(0, 0),
+        listed_before,
+        "a refusal must not also be counted as a listing"
+    );
+
+    // The gauge is pulled at scrape time from the checker.
+    m.blocklist_rotated_out.set(rbl.rotated_out_count() as u64);
+    assert_eq!(m.blocklist_rotated_out.get(), 1);
 }

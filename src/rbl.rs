@@ -1,8 +1,9 @@
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::fmt;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
@@ -16,6 +17,142 @@ const BLOCK_DNSBL_PROVIDER: usize = 2;
 const LOOKUP_LISTED: usize = 0;
 const LOOKUP_NOT_LISTED: usize = 1;
 const LOOKUP_ERROR: usize = 2;
+const LOOKUP_REFUSED: usize = 3;
+
+/// How long a provider stays rotated out after a refusal when neither the
+/// provider nor its list configures a value.
+pub const DEFAULT_REFUSAL_COOLDOWN_SECS: u64 = 3600;
+
+/// The `refusal_codes` spelling that means "this provider has no refusal codes"
+/// — i.e. disable refusal detection rather than fall back to
+/// [`DEFAULT_REFUSAL_CODES`]. An empty list cannot mean that, because an empty
+/// list is what every configuration written before this feature existed has.
+pub const REFUSAL_CODES_NONE: &str = "none";
+
+/// The documented "your query was refused" codes of the blocklists an operator
+/// is likely to configure. A DNSxL answers both a listing and a complaint about
+/// the querier with an `A` record under `127.0.0.0/8`, so the *only* thing that
+/// separates "this name is malicious" from "stop querying me from a public
+/// resolver" is which address came back. Treating the latter as a listing makes
+/// the server return NXDOMAIN for **every** name checked against that provider,
+/// which is why Spamhaus states these must never be read as reputation.
+///
+/// | Code | Meaning |
+/// | ---- | ------- |
+/// | `127.255.255.0/24` | Spamhaus error range: `.252` typo in the zone name, `.254` query via a public/open resolver, `.255` excessive queries |
+/// | `127.0.1.255` | Spamhaus DBL answering an IP query — "IP queries not supported" |
+/// | `127.0.2.255` | Spamhaus ZRD answering an IP query — same |
+/// | `127.0.0.1` | URIBL/SURBL "query blocked" (public resolver / over quota). RFC 5782 §5 also forbids a DNSxL from listing `127.0.0.1`, so it is never a legitimate listing |
+/// | `127.0.0.255` | URIBL "query blocked" (over quota) |
+///
+/// Used when a provider's `refusal_codes` list is empty, so an existing
+/// deployment gets the safe reading without editing its configuration. A
+/// provider whose *listings* legitimately collide with one of these (a private
+/// blocklist answering `127.0.0.1`, say) sets its own list, or
+/// [`REFUSAL_CODES_NONE`] to opt out.
+pub const DEFAULT_REFUSAL_CODES: &[&str] = &[
+    "127.255.255.0/24",
+    "127.0.1.255",
+    "127.0.2.255",
+    "127.0.0.1",
+    "127.0.0.255",
+];
+
+/// One refusal-code pattern: an IPv4 address, optionally with a prefix length.
+///
+/// A prefix rather than a bare address because the providers document whole
+/// ranges — Spamhaus reserves all of `127.255.255.0/24` for errors and adds
+/// codes to it over time, so enumerating today's three would silently start
+/// treating tomorrow's fourth as a listing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefusalCode {
+    /// The base address, masked to `prefix`.
+    base: Ipv4Addr,
+    /// Prefix length in bits; 32 for a bare address.
+    prefix: u8,
+}
+
+impl RefusalCode {
+    /// Parses `127.0.0.1` or `127.255.255.0/24`. The base is masked to the
+    /// prefix, so `127.255.255.9/24` and `127.255.255.0/24` are the same code.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let s = s.trim();
+        let (addr_str, prefix) = match s.split_once('/') {
+            Some((a, p)) => {
+                let prefix: u8 = p
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("invalid prefix in refusal code '{s}'"))?;
+                if prefix > 32 {
+                    return Err(format!("prefix /{prefix} too long in refusal code '{s}'"));
+                }
+                (a, prefix)
+            }
+            None => (s, 32),
+        };
+        let addr: Ipv4Addr = addr_str
+            .trim()
+            .parse()
+            .map_err(|_| format!("invalid IPv4 address in refusal code '{s}'"))?;
+        Ok(Self {
+            base: mask_v4(addr, prefix),
+            prefix,
+        })
+    }
+
+    /// Whether `ip` — a code a provider returned — falls in this pattern.
+    pub fn matches(&self, ip: Ipv4Addr) -> bool {
+        mask_v4(ip, self.prefix) == self.base
+    }
+}
+
+impl fmt::Display for RefusalCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.prefix == 32 {
+            write!(f, "{}", self.base)
+        } else {
+            write!(f, "{}/{}", self.base, self.prefix)
+        }
+    }
+}
+
+/// Zeroes all bits of `ip` below the top `prefix` bits.
+fn mask_v4(ip: Ipv4Addr, prefix: u8) -> Ipv4Addr {
+    let m = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - u32::from(prefix))
+    };
+    (u32::from(ip) & m).into()
+}
+
+/// Resolves a configured `refusal_codes` list into the patterns to match with.
+///
+/// - empty ⇒ [`DEFAULT_REFUSAL_CODES`], so a configuration written before this
+///   existed still stops reading error codes as listings;
+/// - exactly [`REFUSAL_CODES_NONE`] ⇒ no patterns, refusal detection off;
+/// - anything else ⇒ exactly those patterns, with the defaults **not** merged in,
+///   so an operator who spells the list out gets the list they spelled out.
+pub fn resolve_refusal_codes(specs: &[String]) -> Result<Vec<RefusalCode>, String> {
+    if specs.is_empty() {
+        return DEFAULT_REFUSAL_CODES
+            .iter()
+            .map(|s| RefusalCode::parse(s))
+            .collect();
+    }
+    if specs.len() == 1 && specs[0].trim().eq_ignore_ascii_case(REFUSAL_CODES_NONE) {
+        return Ok(Vec::new());
+    }
+    if let Some(bad) = specs
+        .iter()
+        .find(|s| s.trim().eq_ignore_ascii_case(REFUSAL_CODES_NONE))
+    {
+        return Err(format!(
+            "refusal code '{bad}' disables refusal detection and must be the only entry"
+        ));
+    }
+    specs.iter().map(|s| RefusalCode::parse(s)).collect()
+}
 
 /// A cached RBL lookup result.
 #[derive(Debug, Clone)]
@@ -33,15 +170,138 @@ pub struct RblProvider {
     pub zone: String,
     /// Whether this provider is enabled.
     pub enabled: bool,
+    /// Codes this provider returns to mean "I refused your query", already
+    /// resolved from configuration by [`resolve_refusal_codes`]. Empty disables
+    /// refusal detection for this provider. An `Arc` so the hot path clones a
+    /// refcount rather than a `Vec` per provider per query.
+    pub refusal_codes: Arc<[RefusalCode]>,
+    /// How long this provider is rotated out of the lookup rotation after a
+    /// refusal. `None` uses the list-wide default (see
+    /// [`RblChecker::set_refusal_cooldown`]).
+    pub cooldown: Option<Duration>,
+}
+
+impl Default for RblProvider {
+    fn default() -> Self {
+        Self {
+            zone: String::new(),
+            enabled: true,
+            refusal_codes: default_refusal_codes(),
+            cooldown: None,
+        }
+    }
+}
+
+impl RblProvider {
+    /// A provider with the built-in default refusal codes and the list-wide
+    /// cooldown. Use struct-update syntax to override either.
+    pub fn new(zone: impl Into<String>, enabled: bool) -> Self {
+        Self {
+            zone: zone.into(),
+            enabled,
+            ..Self::default()
+        }
+    }
+
+    /// The configured refusal codes rendered back to their configuration
+    /// spelling, for `Get*Config` round-trips and the CLI.
+    pub fn refusal_code_strings(&self) -> Vec<String> {
+        if self.refusal_codes.is_empty() {
+            return vec![REFUSAL_CODES_NONE.to_string()];
+        }
+        self.refusal_codes.iter().map(|c| c.to_string()).collect()
+    }
+}
+
+/// [`DEFAULT_REFUSAL_CODES`] parsed. The constants are checked by a unit test,
+/// so a parse failure here is unreachable and yields an empty list rather than
+/// a panic on a code path that runs at boot.
+fn default_refusal_codes() -> Arc<[RefusalCode]> {
+    DEFAULT_REFUSAL_CODES
+        .iter()
+        .filter_map(|s| RefusalCode::parse(s).ok())
+        .collect()
+}
+
+/// What a blocklist zone returned for one query.
+///
+/// The `A` records are kept rather than reduced to a boolean because a DNSxL
+/// encodes *both* its verdict and its complaints in them: `127.0.0.2` is a
+/// listing and `127.255.255.254` is "you are querying via a public resolver",
+/// and only the address tells them apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RblAnswer {
+    /// The returned `A` records, in the order the provider sent them.
+    pub codes: Vec<Ipv4Addr>,
+    /// TTL of the first `A` record.
+    pub ttl: u32,
+}
+
+impl RblAnswer {
+    /// An answer carrying one code.
+    pub fn single(code: Ipv4Addr, ttl: u32) -> Self {
+        Self {
+            codes: vec![code],
+            ttl,
+        }
+    }
+
+    /// The conventional listing answer, `127.0.0.2` (RFC 5782 §2.1).
+    pub fn listed(ttl: u32) -> Self {
+        Self::single(Ipv4Addr::new(127, 0, 0, 2), ttl)
+    }
+}
+
+/// How one provider answered one lookup, after the returned codes have been
+/// read against the provider's refusal codes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RblVerdict {
+    /// The provider listed the queried IP/name.
+    Listed,
+    /// The provider answered, and did not list it.
+    NotListed,
+    /// The provider refused the query; the code it refused with is carried.
+    /// **Not** a listing, and not a negative either — we learned nothing about
+    /// the queried name.
+    Refused(Ipv4Addr),
+}
+
+/// Reads a provider's answer against its refusal codes.
+///
+/// A refusal anywhere in the answer wins over a listing in the same answer.
+/// A provider that is complaining is not simultaneously reporting reputation,
+/// and erring this way fails *open* (nothing is blocked) where the other order
+/// fails closed on every name the provider is asked about.
+pub fn classify(answer: Option<&RblAnswer>, refusal_codes: &[RefusalCode]) -> RblVerdict {
+    let Some(answer) = answer else {
+        return RblVerdict::NotListed;
+    };
+    if let Some(code) = answer
+        .codes
+        .iter()
+        .find(|c| refusal_codes.iter().any(|r| r.matches(**c)))
+    {
+        return RblVerdict::Refused(*code);
+    }
+    if answer.codes.is_empty() {
+        RblVerdict::NotListed
+    } else {
+        RblVerdict::Listed
+    }
 }
 
 /// Trait for performing RBL DNS lookups, enabling mock testing.
 /// Uses async_trait for dyn-compatibility.
 #[async_trait::async_trait]
 pub trait RblResolver: Send + Sync {
-    /// Looks up whether the given query name resolves to an A record.
-    /// Returns Ok(Some(ttl)) if listed, Ok(None) if not listed.
-    async fn lookup_rbl(&self, query: &str) -> Result<Option<u32>, anyhow::Error>;
+    /// Looks up the given query name's `A` records.
+    ///
+    /// Returns `Ok(Some(answer))` with the codes the zone returned, or
+    /// `Ok(None)` when it returned none (NXDOMAIN/NODATA — definitively not
+    /// listed). The codes are returned rather than a verdict because whether a
+    /// code means "listed" or "refused" is per-provider configuration, which
+    /// the resolver does not hold.
+    async fn lookup_rbl(&self, query: &str) -> Result<Option<RblAnswer>, anyhow::Error>;
 }
 
 /// Default RBL resolver using hickory-resolver.
@@ -66,22 +326,9 @@ impl HickoryRblResolver {
 
 #[async_trait::async_trait]
 impl RblResolver for HickoryRblResolver {
-    async fn lookup_rbl(&self, query: &str) -> Result<Option<u32>, anyhow::Error> {
+    async fn lookup_rbl(&self, query: &str) -> Result<Option<RblAnswer>, anyhow::Error> {
         match self.resolver.lookup_ip(query).await {
-            Ok(response) => {
-                if response.iter().next().is_some() {
-                    // Use the TTL from the lookup, default to 300 seconds
-                    let ttl = response
-                        .as_lookup()
-                        .records()
-                        .first()
-                        .map(|r| r.ttl())
-                        .unwrap_or(300);
-                    Ok(Some(ttl))
-                } else {
-                    Ok(None)
-                }
-            }
+            Ok(response) => Ok(a_answer(response.as_lookup().records())),
             Err(e) => {
                 // On any error (including NXDOMAIN), treat as not listed
                 // to avoid false positives
@@ -129,7 +376,7 @@ impl RecursiveRblResolver {
 
 #[async_trait::async_trait]
 impl RblResolver for RecursiveRblResolver {
-    async fn lookup_rbl(&self, query: &str) -> Result<Option<u32>, anyhow::Error> {
+    async fn lookup_rbl(&self, query: &str) -> Result<Option<RblAnswer>, anyhow::Error> {
         use hickory_proto::op::ResponseCode;
         use hickory_proto::rr::{DNSClass, Name, RecordType};
 
@@ -150,7 +397,7 @@ impl RblResolver for RecursiveRblResolver {
             .await
         {
             Ok(res) => match res.rcode {
-                ResponseCode::NoError => return Ok(first_a_ttl(&res.answers)),
+                ResponseCode::NoError => return Ok(a_answer(&res.answers)),
                 ResponseCode::NXDomain => return Ok(None),
                 // ServFail/Refused/etc. are not definitive — try a forwarder.
                 other => debug!(
@@ -180,24 +427,38 @@ impl RblResolver for RecursiveRblResolver {
     }
 }
 
-/// Returns the TTL of the first A record in `answers`, or `None` when there is
-/// none — a listed name resolves to an A record (typically `127.0.0.x`), so its
-/// presence is what "listed" means and its absence (NODATA) means "not listed".
-fn first_a_ttl(answers: &[hickory_proto::rr::Record]) -> Option<u32> {
-    answers
-        .iter()
-        .find(|r| r.record_type() == hickory_proto::rr::RecordType::A)
-        .map(|r| r.ttl())
+/// Collects the `A` records in `answers` into an [`RblAnswer`], or `None` when
+/// there are none — a DNSxL answers with an `A` record (`127.0.0.x`), so its
+/// absence (NODATA) means the zone had nothing to say. The addresses are kept
+/// because they are the provider's verdict *or* its refusal; see [`classify`].
+fn a_answer(answers: &[hickory_proto::rr::Record]) -> Option<RblAnswer> {
+    use hickory_proto::rr::{RData, rdata};
+    let mut codes = Vec::new();
+    let mut ttl = 0;
+    for rec in answers {
+        if let RData::A(rdata::A(ip)) = rec.data() {
+            if codes.is_empty() {
+                ttl = rec.ttl();
+            }
+            codes.push(*ip);
+        }
+    }
+    if codes.is_empty() {
+        None
+    } else {
+        Some(RblAnswer { codes, ttl })
+    }
 }
 
 /// Resolves `name`/A against a single forwarder over UDP and classifies it:
-/// `Ok(Some(ttl))` listed, `Ok(None)` definitively not listed (NXDOMAIN/NODATA),
-/// `Err` when the forwarder gave no usable answer (so the caller tries the next).
+/// `Ok(Some(answer))` with the returned codes, `Ok(None)` definitively nothing
+/// (NXDOMAIN/NODATA), `Err` when the forwarder gave no usable answer (so the
+/// caller tries the next).
 async fn query_forwarder_a(
     name: &hickory_proto::rr::Name,
     forwarder: SocketAddr,
     timeout: Duration,
-) -> Result<Option<u32>, anyhow::Error> {
+) -> Result<Option<RblAnswer>, anyhow::Error> {
     use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
     use hickory_proto::rr::{DNSClass, RecordType};
     use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
@@ -221,7 +482,7 @@ async fn query_forwarder_a(
         .map_err(|_| anyhow::anyhow!("forwarder {} timed out", forwarder))??;
     let resp = Message::from_bytes(&buf[..n])?;
     match resp.response_code() {
-        ResponseCode::NoError => Ok(first_a_ttl(resp.answers())),
+        ResponseCode::NoError => Ok(a_answer(resp.answers())),
         ResponseCode::NXDomain => Ok(None),
         other => anyhow::bail!("forwarder {} returned {:?}", forwarder, other),
     }
@@ -262,6 +523,52 @@ pub struct RblChecker {
     /// query. This set dedups concurrent misses for the same `<ip-or-name>/<zone>`
     /// so they don't fan out duplicate lookups.
     inflight: Arc<DashMap<String, ()>>,
+    /// Providers currently rotated out of the lookup rotation because they
+    /// refused a query, keyed by zone. See [`RblChecker::rotated_out`].
+    rotated: Arc<DashMap<String, RotatedOut>>,
+    /// Seconds a refusing RBL provider stays rotated out when the provider
+    /// itself configures no value.
+    refusal_cooldown_secs: AtomicU64,
+    /// The same for DNSBL providers, configured independently because the two
+    /// lists have independent configuration sections.
+    dnsbl_refusal_cooldown_secs: AtomicU64,
+}
+
+/// A provider taken out of rotation after refusing a query.
+#[derive(Debug, Clone)]
+struct RotatedOut {
+    /// The code it refused with, kept so the operator is told *which* complaint
+    /// it was — a typo in the zone name and an over-quota resolver need
+    /// different fixes.
+    code: Ipv4Addr,
+    /// When the provider returns to rotation.
+    until: Instant,
+}
+
+/// A provider currently out of rotation, as reported over the management API.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RotatedProvider {
+    /// The provider's zone.
+    pub zone: String,
+    /// The refusal code that took it out of rotation.
+    pub code: String,
+    /// Seconds until it is queried again.
+    pub seconds_remaining: u64,
+}
+
+/// One provider's share of a blocklist check: the cache slot to consult and
+/// what to do on a miss.
+struct ProviderLookup {
+    /// `<ip-or-name>/<zone>` — the shared result cache's key.
+    cache_key: String,
+    /// The name to resolve, e.g. `4.3.2.1.zen.spamhaus.org`.
+    query: String,
+    /// The provider's zone, which is what rotation is keyed on.
+    zone: String,
+    /// The provider's refusal codes.
+    refusal_codes: Arc<[RefusalCode]>,
+    /// How long a refusal from this provider rotates it out.
+    cooldown: Duration,
 }
 
 impl RblChecker {
@@ -288,7 +595,87 @@ impl RblChecker {
             resolver,
             resolver_available: AtomicBool::new(true),
             inflight: Arc::new(DashMap::new()),
+            rotated: Arc::new(DashMap::new()),
+            refusal_cooldown_secs: AtomicU64::new(DEFAULT_REFUSAL_COOLDOWN_SECS),
+            dnsbl_refusal_cooldown_secs: AtomicU64::new(DEFAULT_REFUSAL_COOLDOWN_SECS),
         }
+    }
+
+    /// Sets how long a refusing provider is rotated out when the provider does
+    /// not configure its own value. `0` restores
+    /// [`DEFAULT_REFUSAL_COOLDOWN_SECS`] — a zero cooldown would mean the next
+    /// query re-asks the provider that just told us to stop, which is the
+    /// behaviour rotation exists to prevent.
+    pub fn set_refusal_cooldown(&self, secs: u64) {
+        let secs = if secs == 0 {
+            DEFAULT_REFUSAL_COOLDOWN_SECS
+        } else {
+            secs
+        };
+        self.refusal_cooldown_secs.store(secs, Ordering::Relaxed);
+    }
+
+    /// The RBL list's default rotate-out duration.
+    pub fn refusal_cooldown(&self) -> Duration {
+        Duration::from_secs(self.refusal_cooldown_secs.load(Ordering::Relaxed))
+    }
+
+    /// [`set_refusal_cooldown`](Self::set_refusal_cooldown) for the DNSBL list.
+    pub fn set_dnsbl_refusal_cooldown(&self, secs: u64) {
+        let secs = if secs == 0 {
+            DEFAULT_REFUSAL_COOLDOWN_SECS
+        } else {
+            secs
+        };
+        self.dnsbl_refusal_cooldown_secs
+            .store(secs, Ordering::Relaxed);
+    }
+
+    /// The DNSBL list's default rotate-out duration.
+    pub fn dnsbl_refusal_cooldown(&self) -> Duration {
+        Duration::from_secs(self.dnsbl_refusal_cooldown_secs.load(Ordering::Relaxed))
+    }
+
+    /// Providers currently out of rotation, with the code that removed them and
+    /// the seconds until they return. Expired entries are pruned in passing, so
+    /// this is also what keeps the map from growing across a long uptime.
+    pub fn rotated_out(&self) -> Vec<RotatedProvider> {
+        let now = Instant::now();
+        self.rotated.retain(|_, r| r.until > now);
+        self.rotated
+            .iter()
+            .map(|e| RotatedProvider {
+                zone: e.key().clone(),
+                code: e.value().code.to_string(),
+                seconds_remaining: e.value().until.saturating_duration_since(now).as_secs(),
+            })
+            .collect()
+    }
+
+    /// How many providers are currently out of rotation. Sampled by the
+    /// Prometheus collector; synchronous and allocation-free because a scrape
+    /// must not await.
+    pub fn rotated_out_count(&self) -> usize {
+        let now = Instant::now();
+        self.rotated
+            .iter()
+            .filter(|e| e.value().until > now)
+            .count()
+    }
+
+    /// Returns `Some(remaining)` while `zone` is out of rotation, evicting the
+    /// entry once it has expired.
+    fn rotated_out_for(&self, zone: &str) -> Option<Duration> {
+        if let Some(entry) = self.rotated.get(zone) {
+            let now = Instant::now();
+            if entry.until > now {
+                return Some(entry.until.saturating_duration_since(now));
+            }
+            drop(entry);
+            self.rotated.remove(zone);
+            info!("blocklist provider {} returned to rotation", zone);
+        }
+        None
     }
 
     /// Whether resolver-backed RBL/DNSBL lookups are currently usable (outbound
@@ -327,10 +714,11 @@ impl RblChecker {
         }
 
         let providers = self.providers.load();
+        let default_cooldown = self.refusal_cooldown();
         let lookups = providers
             .iter()
             .filter(|p| p.enabled)
-            .map(|p| (format!("{}/{}", ip, p.zone), build_rbl_query(ip, &p.zone)));
+            .map(|p| ip_lookup(ip, p, default_cooldown));
         self.check_cached_or_fill(lookups, BLOCK_RBL_PROVIDER)
     }
 
@@ -349,8 +737,8 @@ impl RblChecker {
         None
     }
 
-    /// Cache-only verdict across a set of `(cache_key, query)` provider lookups,
-    /// with fire-and-forget async fill of any misses.
+    /// Cache-only verdict across a set of provider lookups, with fire-and-forget
+    /// async fill of any misses.
     ///
     /// Returns `true` as soon as any provider has a fresh **positive** in cache —
     /// a warm listing blocks immediately, and we never wait for the other
@@ -359,31 +747,51 @@ impl RblChecker {
     /// [`fill_cache_async`](Self::fill_cache_async)); the current query is NOT
     /// blocked on the network — a cold name is allowed now and its verdict is
     /// served from cache on a later query once the lookup lands.
+    ///
+    /// A provider that is **rotated out** (see [`rotate_out`](Self::rotate_out))
+    /// is skipped for the *fill* only. Its already-cached verdicts still count:
+    /// rotation says "this provider will not answer new questions", not "the
+    /// answers it already gave were wrong", and dropping those would unblock
+    /// genuinely-listed names for the length of the cooldown.
     fn check_cached_or_fill(
         &self,
-        lookups: impl IntoIterator<Item = (String, String)>,
+        lookups: impl IntoIterator<Item = ProviderLookup>,
         kind: usize,
     ) -> bool {
         let mut misses = Vec::new();
-        for (cache_key, query) in lookups {
-            match self.cached_verdict(&cache_key) {
+        for lookup in lookups {
+            match self.cached_verdict(&lookup.cache_key) {
                 Some(true) => return true, // warm positive → block now
                 Some(false) => {}          // warm negative → nothing to do
-                None => misses.push((cache_key, query)),
+                None => misses.push(lookup),
             }
         }
         // No warm positive: answer now, fill the cold verdicts in the background.
-        for (cache_key, query) in misses {
-            self.fill_cache_async(cache_key, query, kind);
+        for lookup in misses {
+            if self.rotated_out_for(&lookup.zone).is_some() {
+                crate::metrics::metrics().blocklist_skipped.inc();
+                continue;
+            }
+            self.fill_cache_async(lookup, kind);
         }
         false
     }
 
-    /// Fire-and-forget: unless a fill for `cache_key` is already in flight, spawn
-    /// a background task that resolves `query` and populates the result cache
-    /// (positive with the RBL TTL, negative for 5 minutes; errors are left
-    /// uncached so the next query retries). The hot path never awaits this.
-    fn fill_cache_async(&self, cache_key: String, query: String, kind: usize) {
+    /// Fire-and-forget: unless a fill for this cache key is already in flight,
+    /// spawn a background task that resolves the query and populates the result
+    /// cache (positive with the provider's TTL, negative for 5 minutes; errors
+    /// are left uncached so the next query retries). The hot path never awaits
+    /// this.
+    ///
+    /// A refusal is neither: nothing is cached and the provider is rotated out.
+    fn fill_cache_async(&self, lookup: ProviderLookup, kind: usize) {
+        let ProviderLookup {
+            cache_key,
+            query,
+            zone,
+            refusal_codes,
+            cooldown,
+        } = lookup;
         // Dedup: if a lookup for this key is already running, don't fan out.
         if self.inflight.insert(cache_key.clone(), ()).is_some() {
             return;
@@ -391,33 +799,44 @@ impl RblChecker {
         let resolver = self.resolver.clone();
         let cache = self.cache.clone();
         let inflight = self.inflight.clone();
+        let rotated = self.rotated.clone();
         tokio::spawn(async move {
             match resolver.lookup_rbl(&query).await {
-                Ok(Some(ttl)) => {
-                    debug!("RBL async fill: {} listed (TTL: {})", query, ttl);
-                    crate::metrics::metrics()
-                        .blocklist_lookups
-                        .inc(kind, LOOKUP_LISTED);
-                    cache.insert(
-                        cache_key.clone(),
-                        CacheEntry {
-                            listed: true,
-                            expires_at: Instant::now() + Duration::from_secs(ttl as u64),
-                        },
-                    );
-                }
-                Ok(None) => {
-                    crate::metrics::metrics()
-                        .blocklist_lookups
-                        .inc(kind, LOOKUP_NOT_LISTED);
-                    cache.insert(
-                        cache_key.clone(),
-                        CacheEntry {
-                            listed: false,
-                            expires_at: Instant::now() + Duration::from_secs(300),
-                        },
-                    );
-                }
+                Ok(answer) => match classify(answer.as_ref(), &refusal_codes) {
+                    RblVerdict::Listed => {
+                        // `classify` only returns Listed for a non-empty answer.
+                        let ttl = answer.as_ref().map(|a| a.ttl).unwrap_or(300);
+                        debug!("RBL async fill: {} listed (TTL: {})", query, ttl);
+                        crate::metrics::metrics()
+                            .blocklist_lookups
+                            .inc(kind, LOOKUP_LISTED);
+                        cache.insert(
+                            cache_key.clone(),
+                            CacheEntry {
+                                listed: true,
+                                expires_at: Instant::now() + Duration::from_secs(ttl as u64),
+                            },
+                        );
+                    }
+                    RblVerdict::NotListed => {
+                        crate::metrics::metrics()
+                            .blocklist_lookups
+                            .inc(kind, LOOKUP_NOT_LISTED);
+                        cache.insert(
+                            cache_key.clone(),
+                            CacheEntry {
+                                listed: false,
+                                expires_at: Instant::now() + Duration::from_secs(300),
+                            },
+                        );
+                    }
+                    RblVerdict::Refused(code) => {
+                        let m = crate::metrics::metrics();
+                        m.blocklist_lookups.inc(kind, LOOKUP_REFUSED);
+                        m.blocklist_refusals.inc(kind);
+                        rotate_out(&rotated, &zone, code, cooldown, &query);
+                    }
+                },
                 Err(e) => {
                     debug!("RBL async lookup failed for {}: {}", query, e);
                     crate::metrics::metrics()
@@ -455,19 +874,21 @@ impl RblChecker {
         }
 
         let providers = self.dnsbl_providers.load();
-        let lookups = providers.iter().filter(|p| p.enabled).map(|p| {
-            (
-                format!("{}/{}", normalized, p.zone),
-                format!("{}.{}", normalized, p.zone),
-            )
-        });
+        let default_cooldown = self.dnsbl_refusal_cooldown();
+        let lookups = providers
+            .iter()
+            .filter(|p| p.enabled)
+            .map(|p| name_lookup(&normalized, p, default_cooldown));
         self.check_cached_or_fill(lookups, BLOCK_DNSBL_PROVIDER)
     }
 
-    /// Updates the RBL configuration.
+    /// Updates the RBL configuration. Rotations are cleared: a reconfiguration
+    /// is an operator saying "try this again", and a provider that was rotated
+    /// out for a typo in its zone name is exactly the one being fixed here.
     pub async fn set_config(&self, enabled: bool, providers: Vec<RblProvider>) {
         self.enabled.store(enabled, Ordering::Relaxed);
         self.providers.store(Arc::new(providers));
+        self.rotated.clear();
     }
 
     /// Returns the current RBL configuration.
@@ -484,6 +905,7 @@ impl RblChecker {
         self.dnsbl_enabled.store(enabled, Ordering::Relaxed);
         self.dnsbl_providers.store(Arc::new(providers));
         self.cache.clear();
+        self.rotated.clear();
     }
 
     /// Returns the current DNSBL configuration.
@@ -498,9 +920,13 @@ impl RblChecker {
         self.dnsbl_enabled.load(Ordering::Relaxed)
     }
 
-    /// Flushes the RBL cache.
+    /// Flushes the RBL cache, and returns every rotated-out provider to
+    /// rotation — a flush is the operator's "re-check everything", and a
+    /// provider held out for the rest of an hour's cooldown would not be
+    /// re-checked.
     pub async fn flush_cache(&self) {
         self.cache.clear();
+        self.rotated.clear();
     }
 
     /// Number of entries in the shared RBL/DNSBL result cache. Sampled by the
@@ -523,11 +949,73 @@ impl RblChecker {
         }
 
         // Check extra per-scope providers (same cache-first, fire-and-forget fill).
+        let default_cooldown = self.refusal_cooldown();
         let lookups = extra
             .iter()
             .filter(|p| p.enabled)
-            .map(|p| (format!("{}/{}", ip, p.zone), build_rbl_query(ip, &p.zone)));
+            .map(|p| ip_lookup(ip, p, default_cooldown));
         self.check_cached_or_fill(lookups, BLOCK_RBL_PROVIDER)
+    }
+}
+
+/// Builds the per-provider lookup for an IP-based (reversed-IP) RBL check.
+fn ip_lookup(ip: &IpAddr, provider: &RblProvider, default_cooldown: Duration) -> ProviderLookup {
+    ProviderLookup {
+        cache_key: format!("{}/{}", ip, provider.zone),
+        query: build_rbl_query(ip, &provider.zone),
+        zone: provider.zone.clone(),
+        refusal_codes: provider.refusal_codes.clone(),
+        cooldown: provider.cooldown.unwrap_or(default_cooldown),
+    }
+}
+
+/// Builds the per-provider lookup for a name-based (DNSBL) check. `normalized`
+/// must already have been through [`normalize_rbl_name`].
+fn name_lookup(
+    normalized: &str,
+    provider: &RblProvider,
+    default_cooldown: Duration,
+) -> ProviderLookup {
+    ProviderLookup {
+        cache_key: format!("{}/{}", normalized, provider.zone),
+        query: format!("{}.{}", normalized, provider.zone),
+        zone: provider.zone.clone(),
+        refusal_codes: provider.refusal_codes.clone(),
+        cooldown: provider.cooldown.unwrap_or(default_cooldown),
+    }
+}
+
+/// Takes `zone` out of rotation for `cooldown` after it refused `query`.
+///
+/// Nothing is cached for the query that triggered it: a refusal is not a
+/// negative answer, and caching it as one would assert "not listed" for a name
+/// the provider never actually judged. Takes the map rather than `&self`
+/// because the background fill task owns clones, not a borrow of the checker.
+fn rotate_out(
+    rotated: &DashMap<String, RotatedOut>,
+    zone: &str,
+    code: Ipv4Addr,
+    cooldown: Duration,
+    query: &str,
+) {
+    let already = rotated
+        .insert(
+            zone.to_string(),
+            RotatedOut {
+                code,
+                until: Instant::now() + cooldown,
+            },
+        )
+        .is_some();
+    if !already {
+        warn!(
+            "blocklist provider {} refused query {} with code {} — rotating it out for {}s (its \
+             answers are complaints, not reputation, and must not be read as listings)",
+            zone,
+            query,
+            code,
+            cooldown.as_secs()
+        );
     }
 }
 
@@ -630,6 +1118,197 @@ mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
+    // ================================================================
+    // Refusal codes
+    //
+    // A DNSxL answers a listing and a complaint about the querier with the same
+    // record type in the same address block, so every test here is really about
+    // one question: does an error code get read as reputation? A validator that
+    // says "listed" for 127.255.255.254 blocks the entire internet, and it does
+    // so only once the provider decides we are over quota — long after the
+    // deployment looked fine.
+    // ================================================================
+
+    #[test]
+    fn refusal_code_parses_bare_address_and_prefix() {
+        let bare = RefusalCode::parse("127.0.0.1").unwrap();
+        assert!(bare.matches(Ipv4Addr::new(127, 0, 0, 1)));
+        assert!(!bare.matches(Ipv4Addr::new(127, 0, 0, 2)));
+        assert_eq!(bare.to_string(), "127.0.0.1");
+
+        let range = RefusalCode::parse("127.255.255.0/24").unwrap();
+        for last in [252u8, 253, 254, 255] {
+            assert!(
+                range.matches(Ipv4Addr::new(127, 255, 255, last)),
+                "the Spamhaus error range must cover 127.255.255.{last}, including codes \
+                 they have not published yet"
+            );
+        }
+        assert!(!range.matches(Ipv4Addr::new(127, 0, 0, 2)));
+        assert_eq!(range.to_string(), "127.255.255.0/24");
+    }
+
+    #[test]
+    fn refusal_code_masks_base_to_prefix() {
+        // A prefix written with host bits set is the same network.
+        assert_eq!(
+            RefusalCode::parse("127.255.255.254/24").unwrap(),
+            RefusalCode::parse("127.255.255.0/24").unwrap()
+        );
+    }
+
+    #[test]
+    fn refusal_code_rejects_malformed() {
+        for bad in [
+            "",
+            "notanip",
+            "127.0.0.1/33",
+            "127.0.0.1/x",
+            "::1",
+            "127.0.0.256",
+        ] {
+            assert!(
+                RefusalCode::parse(bad).is_err(),
+                "'{bad}' must not parse — a code that silently does not apply is a code \
+                 that reads as a listing"
+            );
+        }
+    }
+
+    #[test]
+    fn default_refusal_codes_all_parse() {
+        // `default_refusal_codes` drops unparseable entries rather than
+        // panicking at boot, so without this a typo in the constant would
+        // silently remove a code from the built-in set.
+        let parsed = default_refusal_codes();
+        assert_eq!(parsed.len(), DEFAULT_REFUSAL_CODES.len());
+        // Spot-check that each documented provider code is covered.
+        for (code, why) in [
+            ([127, 255, 255, 252], "Spamhaus: typo in the DNSBL name"),
+            (
+                [127, 255, 255, 254],
+                "Spamhaus: query via a public resolver",
+            ),
+            ([127, 255, 255, 255], "Spamhaus: excessive queries"),
+            ([127, 0, 1, 255], "Spamhaus DBL: IP queries not supported"),
+            ([127, 0, 2, 255], "Spamhaus ZRD: IP queries not supported"),
+            ([127, 0, 0, 1], "URIBL/SURBL: query blocked"),
+            ([127, 0, 0, 255], "URIBL: query blocked"),
+        ] {
+            let ip = Ipv4Addr::from(code);
+            assert!(
+                parsed.iter().any(|c| c.matches(ip)),
+                "{ip} must be a refusal code by default ({why})"
+            );
+        }
+        // …and that real listings are not.
+        for listing in [
+            [127, 0, 0, 2],
+            [127, 0, 0, 3],
+            [127, 0, 0, 4],
+            [127, 0, 0, 10],
+        ] {
+            let ip = Ipv4Addr::from(listing);
+            assert!(
+                !parsed.iter().any(|c| c.matches(ip)),
+                "{ip} is a Spamhaus listing and must not be read as a refusal"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_refusal_codes_empty_uses_defaults() {
+        // Every configuration written before this feature existed has an empty
+        // list; it must get the safe reading without being edited.
+        let resolved = resolve_refusal_codes(&[]).unwrap();
+        assert_eq!(resolved.len(), DEFAULT_REFUSAL_CODES.len());
+    }
+
+    #[test]
+    fn resolve_refusal_codes_none_disables() {
+        let resolved = resolve_refusal_codes(&["none".to_string()]).unwrap();
+        assert!(resolved.is_empty());
+        // Case-insensitive, because it is a configuration keyword.
+        assert!(
+            resolve_refusal_codes(&["NONE".to_string()])
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn resolve_refusal_codes_explicit_does_not_merge_defaults() {
+        let resolved = resolve_refusal_codes(&["127.9.9.9".to_string()]).unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert!(resolved[0].matches(Ipv4Addr::new(127, 9, 9, 9)));
+        assert!(
+            !resolved[0].matches(Ipv4Addr::new(127, 255, 255, 254)),
+            "an explicit list is the list; silently adding the defaults would mean an \
+             operator cannot narrow it"
+        );
+    }
+
+    #[test]
+    fn resolve_refusal_codes_rejects_none_mixed_with_codes() {
+        let err = resolve_refusal_codes(&["none".to_string(), "127.0.0.1".to_string()])
+            .expect_err("'none' plus a code is contradictory and must not be guessed at");
+        assert!(err.contains("only entry"), "unhelpful error: {err}");
+    }
+
+    #[test]
+    fn resolve_refusal_codes_rejects_bad_code() {
+        assert!(resolve_refusal_codes(&["127.0.0.1".to_string(), "junk".to_string()]).is_err());
+    }
+
+    #[test]
+    fn classify_reads_refusal_over_listing() {
+        let codes = default_refusal_codes();
+        let listing = RblAnswer::listed(300);
+        assert_eq!(classify(Some(&listing), &codes), RblVerdict::Listed);
+
+        // A refusal alongside a listing is still a refusal: a provider that is
+        // complaining is not simultaneously reporting reputation, and this
+        // direction fails open rather than blocking every name.
+        let mixed = RblAnswer {
+            codes: vec![
+                Ipv4Addr::new(127, 0, 0, 2),
+                Ipv4Addr::new(127, 255, 255, 254),
+            ],
+            ttl: 300,
+        };
+        assert_eq!(
+            classify(Some(&mixed), &codes),
+            RblVerdict::Refused(Ipv4Addr::new(127, 255, 255, 254))
+        );
+    }
+
+    #[test]
+    fn classify_verdicts() {
+        let codes = default_refusal_codes();
+        assert_eq!(classify(None, &codes), RblVerdict::NotListed);
+        assert_eq!(
+            classify(Some(&RblAnswer::listed(300)), &codes),
+            RblVerdict::Listed
+        );
+        assert_eq!(
+            classify(
+                Some(&RblAnswer::single(Ipv4Addr::new(127, 255, 255, 255), 300)),
+                &codes
+            ),
+            RblVerdict::Refused(Ipv4Addr::new(127, 255, 255, 255))
+        );
+        // With detection disabled the same code reads as a listing — which is
+        // exactly the failure the defaults exist to prevent, and is why `none`
+        // is opt-in rather than the default.
+        assert_eq!(
+            classify(
+                Some(&RblAnswer::single(Ipv4Addr::new(127, 255, 255, 255), 300)),
+                &[]
+            ),
+            RblVerdict::Listed
+        );
+    }
+
     #[test]
     fn test_build_rbl_query_ipv4() {
         let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
@@ -660,6 +1339,366 @@ mod tests {
         assert!(query.starts_with("1.0.0.0.0.0.0.0"));
     }
 
+    /// A resolver that always answers with a fixed code, counting its calls —
+    /// the query *count* is what distinguishes "rotated out" from "still being
+    /// asked", which is the whole point of rotation.
+    struct FixedCodeResolver {
+        code: Ipv4Addr,
+        count: Arc<std::sync::atomic::AtomicU32>,
+    }
+
+    impl FixedCodeResolver {
+        fn new(code: [u8; 4]) -> Self {
+            Self {
+                code: Ipv4Addr::from(code),
+                count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            }
+        }
+
+        fn counter(&self) -> Arc<std::sync::atomic::AtomicU32> {
+            self.count.clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RblResolver for FixedCodeResolver {
+        async fn lookup_rbl(&self, _query: &str) -> Result<Option<RblAnswer>, anyhow::Error> {
+            self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Some(RblAnswer::single(self.code, 300)))
+        }
+    }
+
+    /// Waits for the background fill to have run at least `n` times.
+    async fn wait_for_lookups(counter: &std::sync::atomic::AtomicU32, n: u32) {
+        for _ in 0..200 {
+            if counter.load(std::sync::atomic::Ordering::SeqCst) >= n {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        panic!(
+            "expected at least {n} lookups, saw {}",
+            counter.load(std::sync::atomic::Ordering::SeqCst)
+        );
+    }
+
+    /// A checker with one enabled provider using the built-in refusal codes.
+    fn refusal_checker(resolver: Arc<dyn RblResolver>, cooldown: Option<Duration>) -> RblChecker {
+        RblChecker::with_resolver(
+            true,
+            vec![RblProvider {
+                zone: "test.rbl".to_string(),
+                enabled: true,
+                cooldown,
+                ..Default::default()
+            }],
+            resolver,
+        )
+    }
+
+    /// The finding this whole mechanism exists for: a provider answering with
+    /// its documented "excessive queries" code must not block the queried IP.
+    /// Before refusal codes existed, any `A` record meant "listed", so the
+    /// moment a blocklist rate-limited us the server NXDOMAINed every name it
+    /// checked — a self-inflicted outage that looks exactly like the blocklist
+    /// working.
+    #[tokio::test]
+    async fn refusal_code_does_not_list() {
+        let resolver = Arc::new(FixedCodeResolver::new([127, 255, 255, 255]));
+        let counter = resolver.counter();
+        let checker = refusal_checker(resolver, None);
+        let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+
+        assert!(
+            !checker.is_listed(&ip).await,
+            "cold query is never blocking"
+        );
+        wait_for_lookups(&counter, 1).await;
+        assert!(
+            !checker.is_listed(&ip).await,
+            "127.255.255.255 is 'excessive queries', not a listing"
+        );
+    }
+
+    /// …and the provider is taken out of rotation, so we stop hammering a
+    /// blocklist that has just told us to stop.
+    #[tokio::test]
+    async fn refusal_rotates_provider_out() {
+        let resolver = Arc::new(FixedCodeResolver::new([127, 255, 255, 254]));
+        let counter = resolver.counter();
+        // An hour, so nothing can expire mid-test.
+        let checker = refusal_checker(resolver, Some(Duration::from_secs(3600)));
+
+        assert!(
+            !checker
+                .is_listed(&IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)))
+                .await
+        );
+        wait_for_lookups(&counter, 1).await;
+
+        let rotated = checker.rotated_out();
+        assert_eq!(rotated.len(), 1);
+        assert_eq!(rotated[0].zone, "test.rbl");
+        assert_eq!(rotated[0].code, "127.255.255.254");
+        assert!(rotated[0].seconds_remaining > 3500);
+        assert_eq!(checker.rotated_out_count(), 1);
+
+        // Different IPs, so no cache entry can be what suppresses the lookups.
+        for last in 5..15u8 {
+            assert!(
+                !checker
+                    .is_listed(&IpAddr::V4(Ipv4Addr::new(1, 2, 3, last)))
+                    .await
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(
+            counter.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a rotated-out provider must not be queried again"
+        );
+    }
+
+    /// Rotation is for a configurable duration, not forever: once it lapses the
+    /// provider is asked again, so a transient over-quota period heals itself.
+    #[tokio::test]
+    async fn rotation_expires_after_the_configured_cooldown() {
+        let resolver = Arc::new(FixedCodeResolver::new([127, 255, 255, 255]));
+        let counter = resolver.counter();
+        let checker = refusal_checker(resolver, Some(Duration::from_millis(50)));
+        let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+
+        assert!(!checker.is_listed(&ip).await);
+        wait_for_lookups(&counter, 1).await;
+        assert_eq!(checker.rotated_out_count(), 1);
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(
+            checker.rotated_out_count(),
+            0,
+            "the cooldown must lapse on its own"
+        );
+        // A fresh key (the first is cached negative? no — a refusal caches
+        // nothing, so the same key refills).
+        assert!(!checker.is_listed(&ip).await);
+        wait_for_lookups(&counter, 2).await;
+    }
+
+    /// A refusal caches nothing. Caching it as a negative would assert "not
+    /// listed" for a name the provider never judged, and hold that for the
+    /// negative TTL after the provider recovers.
+    #[tokio::test]
+    async fn refusal_is_not_cached_as_a_negative() {
+        let resolver = Arc::new(FixedCodeResolver::new([127, 255, 255, 252]));
+        let counter = resolver.counter();
+        let checker = refusal_checker(resolver, Some(Duration::from_millis(30)));
+        let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+
+        assert!(!checker.is_listed(&ip).await);
+        wait_for_lookups(&counter, 1).await;
+        assert_eq!(checker.cache_entries(), 0, "a refusal is not a verdict");
+    }
+
+    /// A cached listing from before the refusal keeps blocking. Rotation says
+    /// "this provider will not answer new questions", not "the answers it
+    /// already gave were wrong" — dropping them would unblock genuinely-listed
+    /// names for the whole cooldown.
+    #[tokio::test]
+    async fn rotation_keeps_honouring_already_cached_listings() {
+        /// Lists the first query, then refuses every one after it.
+        struct ListThenRefuse {
+            calls: std::sync::atomic::AtomicU32,
+        }
+        #[async_trait::async_trait]
+        impl RblResolver for ListThenRefuse {
+            async fn lookup_rbl(&self, _query: &str) -> Result<Option<RblAnswer>, anyhow::Error> {
+                let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(Some(if n == 0 {
+                    RblAnswer::listed(300)
+                } else {
+                    RblAnswer::single(Ipv4Addr::new(127, 255, 255, 255), 300)
+                }))
+            }
+        }
+
+        let checker = refusal_checker(
+            Arc::new(ListThenRefuse {
+                calls: std::sync::atomic::AtomicU32::new(0),
+            }),
+            Some(Duration::from_secs(3600)),
+        );
+        let listed_ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+
+        assert!(eventually_listed_ip(&checker, &listed_ip).await);
+
+        // A second IP triggers the refusal and rotates the provider out.
+        assert!(
+            !checker
+                .is_listed(&IpAddr::V4(Ipv4Addr::new(5, 6, 7, 8)))
+                .await
+        );
+        for _ in 0..200 {
+            if checker.rotated_out_count() == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert_eq!(checker.rotated_out_count(), 1);
+
+        assert!(
+            checker.is_listed(&listed_ip).await,
+            "the cached listing predates the refusal and is still valid"
+        );
+    }
+
+    /// Flushing the cache is the operator's "re-check everything", so it must
+    /// also return rotated-out providers — otherwise the flush is answered by
+    /// a provider that is not being asked.
+    #[tokio::test]
+    async fn flush_cache_returns_providers_to_rotation() {
+        let resolver = Arc::new(FixedCodeResolver::new([127, 255, 255, 254]));
+        let counter = resolver.counter();
+        let checker = refusal_checker(resolver, Some(Duration::from_secs(3600)));
+
+        assert!(
+            !checker
+                .is_listed(&IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)))
+                .await
+        );
+        wait_for_lookups(&counter, 1).await;
+        assert_eq!(checker.rotated_out_count(), 1);
+
+        checker.flush_cache().await;
+        assert_eq!(checker.rotated_out_count(), 0);
+        assert!(
+            !checker
+                .is_listed(&IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)))
+                .await
+        );
+        wait_for_lookups(&counter, 2).await;
+    }
+
+    /// Reconfiguring likewise, since a typo in the zone name is both a cause of
+    /// refusal and the thing an operator reconfigures to fix.
+    #[tokio::test]
+    async fn set_config_returns_providers_to_rotation() {
+        let resolver = Arc::new(FixedCodeResolver::new([127, 255, 255, 252]));
+        let counter = resolver.counter();
+        let checker = refusal_checker(resolver, Some(Duration::from_secs(3600)));
+
+        assert!(
+            !checker
+                .is_listed(&IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)))
+                .await
+        );
+        wait_for_lookups(&counter, 1).await;
+        assert_eq!(checker.rotated_out_count(), 1);
+
+        checker
+            .set_config(true, vec![RblProvider::new("test.rbl", true)])
+            .await;
+        assert_eq!(checker.rotated_out_count(), 0);
+    }
+
+    /// Opting out with `none` restores the old reading, and is the only way to
+    /// get it. Pinned so the escape hatch is known to work for a private
+    /// blocklist whose listings collide with a default code.
+    #[tokio::test]
+    async fn refusal_detection_can_be_disabled_per_provider() {
+        let resolver = Arc::new(FixedCodeResolver::new([127, 0, 0, 1]));
+        let checker = RblChecker::with_resolver(
+            true,
+            vec![RblProvider {
+                zone: "test.rbl".to_string(),
+                enabled: true,
+                refusal_codes: resolve_refusal_codes(&["none".to_string()]).unwrap().into(),
+                cooldown: None,
+            }],
+            resolver,
+        );
+        let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+        assert!(
+            eventually_listed_ip(&checker, &ip).await,
+            "with detection off, 127.0.0.1 is read as a listing"
+        );
+        assert_eq!(checker.rotated_out_count(), 0);
+    }
+
+    /// The DNSBL path shares the mechanism, and has its own cooldown default.
+    #[tokio::test]
+    async fn dnsbl_refusal_rotates_out() {
+        let resolver = Arc::new(FixedCodeResolver::new([127, 0, 1, 255]));
+        let counter = resolver.counter();
+        let checker = RblChecker::with_resolver(false, vec![], resolver);
+        checker
+            .set_dnsbl_config(
+                true,
+                vec![RblProvider {
+                    zone: "dbl.test".to_string(),
+                    enabled: true,
+                    cooldown: Some(Duration::from_secs(3600)),
+                    ..Default::default()
+                }],
+            )
+            .await;
+
+        assert!(!checker.is_name_listed("example.com.").await);
+        wait_for_lookups(&counter, 1).await;
+        assert!(
+            !checker.is_name_listed("other.example.").await,
+            "127.0.1.255 is the DBL saying 'IP queries not supported', not a listing"
+        );
+        assert_eq!(checker.rotated_out_count(), 1);
+    }
+
+    /// The list-wide default applies to providers that configure none, and `0`
+    /// is refused rather than honoured: a zero cooldown re-asks the provider
+    /// that just told us to stop, which is the behaviour rotation prevents.
+    #[test]
+    fn list_wide_cooldown_defaults_and_rejects_zero() {
+        let checker = RblChecker::with_resolver(false, vec![], Arc::new(MockResolver::new(false)));
+        assert_eq!(
+            checker.refusal_cooldown(),
+            Duration::from_secs(DEFAULT_REFUSAL_COOLDOWN_SECS)
+        );
+        checker.set_refusal_cooldown(120);
+        assert_eq!(checker.refusal_cooldown(), Duration::from_secs(120));
+        checker.set_refusal_cooldown(0);
+        assert_eq!(
+            checker.refusal_cooldown(),
+            Duration::from_secs(DEFAULT_REFUSAL_COOLDOWN_SECS)
+        );
+
+        // The DNSBL default is separate.
+        checker.set_dnsbl_refusal_cooldown(45);
+        assert_eq!(checker.dnsbl_refusal_cooldown(), Duration::from_secs(45));
+        assert_eq!(
+            checker.refusal_cooldown(),
+            Duration::from_secs(DEFAULT_REFUSAL_COOLDOWN_SECS)
+        );
+    }
+
+    #[test]
+    fn refusal_code_strings_round_trip() {
+        let p = RblProvider::new("test.rbl", true);
+        assert_eq!(p.refusal_code_strings().len(), DEFAULT_REFUSAL_CODES.len());
+        assert!(
+            p.refusal_code_strings()
+                .contains(&"127.255.255.0/24".to_string())
+        );
+
+        let off = RblProvider {
+            refusal_codes: Arc::from(Vec::new()),
+            ..RblProvider::new("test.rbl", true)
+        };
+        assert_eq!(
+            off.refusal_code_strings(),
+            vec![REFUSAL_CODES_NONE.to_string()],
+            "a disabled provider must read back as 'none', not as empty — empty means \
+             'use the defaults' on the way back in"
+        );
+    }
+
     // Simple mock resolver for tests
     struct MockResolver {
         listed: bool,
@@ -673,8 +1712,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RblResolver for MockResolver {
-        async fn lookup_rbl(&self, _query: &str) -> Result<Option<u32>, anyhow::Error> {
-            if self.listed { Ok(Some(300)) } else { Ok(None) }
+        async fn lookup_rbl(&self, _query: &str) -> Result<Option<RblAnswer>, anyhow::Error> {
+            if self.listed {
+                Ok(Some(RblAnswer::listed(300)))
+            } else {
+                Ok(None)
+            }
         }
     }
 
@@ -699,9 +1742,13 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RblResolver for CountingResolver {
-        async fn lookup_rbl(&self, _query: &str) -> Result<Option<u32>, anyhow::Error> {
+        async fn lookup_rbl(&self, _query: &str) -> Result<Option<RblAnswer>, anyhow::Error> {
             self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            if self.listed { Ok(Some(300)) } else { Ok(None) }
+            if self.listed {
+                Ok(Some(RblAnswer::listed(300)))
+            } else {
+                Ok(None)
+            }
         }
     }
 
@@ -737,6 +1784,7 @@ mod tests {
             vec![RblProvider {
                 zone: "test.rbl".to_string(),
                 enabled: true,
+                ..Default::default()
             }],
             counting.clone(),
         );
@@ -746,6 +1794,7 @@ mod tests {
                 vec![RblProvider {
                     zone: "dbl.test".to_string(),
                     enabled: true,
+                    ..Default::default()
                 }],
             )
             .await;
@@ -829,8 +1878,8 @@ mod tests {
         .unwrap();
         assert_eq!(
             listed,
-            Some(111),
-            "listed name must resolve to an A → Some(ttl)"
+            Some(RblAnswer::single(Ipv4Addr::new(127, 0, 0, 2), 111)),
+            "listed name must resolve to an A → its codes and TTL"
         );
 
         let clean = query_forwarder_a(
@@ -850,6 +1899,7 @@ mod tests {
             vec![RblProvider {
                 zone: "test.rbl".to_string(),
                 enabled: true,
+                ..Default::default()
             }],
             Arc::new(MockResolver::new(false)),
         );
@@ -864,6 +1914,7 @@ mod tests {
             vec![RblProvider {
                 zone: "test.rbl".to_string(),
                 enabled: true,
+                ..Default::default()
             }],
             Arc::new(MockResolver::new(true)),
         );
@@ -878,6 +1929,7 @@ mod tests {
             vec![RblProvider {
                 zone: "test.rbl".to_string(),
                 enabled: true,
+                ..Default::default()
             }],
             Arc::new(MockResolver::new(false)),
         );
@@ -893,6 +1945,7 @@ mod tests {
             vec![RblProvider {
                 zone: "test.rbl".to_string(),
                 enabled: true,
+                ..Default::default()
             }],
             resolver.clone(),
         );
@@ -916,6 +1969,7 @@ mod tests {
             vec![RblProvider {
                 zone: "test.rbl".to_string(),
                 enabled: true,
+                ..Default::default()
             }],
             resolver.clone(),
         );
@@ -945,6 +1999,7 @@ mod tests {
                 vec![RblProvider {
                     zone: "new.rbl".to_string(),
                     enabled: true,
+                    ..Default::default()
                 }],
             )
             .await;
@@ -971,6 +2026,7 @@ mod tests {
                 vec![RblProvider {
                     zone: "dbl.test".to_string(),
                     enabled: true,
+                    ..Default::default()
                 }],
             )
             .await;
@@ -999,6 +2055,7 @@ mod tests {
                 vec![RblProvider {
                     zone: "dbl.test".to_string(),
                     enabled: true,
+                    ..Default::default()
                 }],
             )
             .await;
@@ -1014,6 +2071,7 @@ mod tests {
             vec![RblProvider {
                 zone: "test.rbl".to_string(),
                 enabled: true,
+                ..Default::default()
             }],
             Arc::new(MockResolver::new(true)),
         );
@@ -1068,6 +2126,7 @@ mod tests {
                 vec![RblProvider {
                     zone: "dbl.spamhaus.org".to_string(),
                     enabled: true,
+                    ..Default::default()
                 }],
             )
             .await;
@@ -1092,6 +2151,7 @@ mod tests {
             vec![RblProvider {
                 zone: "test.rbl".to_string(),
                 enabled: false,
+                ..Default::default()
             }],
             resolver.clone(),
         );
