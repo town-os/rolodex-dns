@@ -16,7 +16,7 @@
 
 use anyhow::{Context, Result, bail};
 use dashmap::DashMap;
-use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
+use hickory_proto::op::{Edns, Message, MessageType, OpCode, Query, ResponseCode};
 use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordType, rdata};
 use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use rand::Rng;
@@ -32,6 +32,8 @@ use tokio::net::{TcpStream, UdpSocket};
 use tracing::debug;
 
 use crate::delegation_cache::DelegationCache;
+use crate::dnssec_validate::{self as validate, Anchors, Denial, Denied, KeySource, Verdict};
+use crate::key_cache::{KeyCache, TrustState};
 use crate::record_cache::RecordCache;
 use crate::ttl_drift::LatencyTracker;
 
@@ -69,6 +71,16 @@ const MAX_GLUELESS_NS: usize = 4;
 /// Real recursors do the same; this is deliberately generous next to the ~10 queries
 /// a healthy deep lookup actually needs.
 const MAX_QUERIES_PER_RESOLUTION: usize = 64;
+
+/// Extra query allowance granted when DNSSEC validation is on.
+///
+/// Validating costs roughly one extra query per zone on the path — the child's
+/// DNSKEY RRset; the DS arrives inside the referral for free — plus the root's
+/// DNSKEY once. Those are queries a non-validating lookup never makes, so
+/// charging them against the same 64 would mean turning validation on silently
+/// shortens how deep a name may be before the budget kills it. The cap still
+/// exists, it is just sized for the work actually being done.
+const VALIDATION_QUERY_BUDGET: usize = 32;
 
 /// TTL used when a record or a negative response does not carry a usable one of
 /// its own. A present TTL is **always** honoured as sent — this is only the
@@ -117,6 +129,14 @@ pub struct Resolution {
     /// so the caller can derive an RFC 2308 negative-cache TTL. `None` for
     /// positive answers.
     pub soa: Option<Record>,
+    /// What DNSSEC validation concluded about these records.
+    ///
+    /// [`Verdict::Insecure`] when validation is switched off, because that is
+    /// the honest reading: an unvalidated answer makes no authentication claim,
+    /// which is exactly what `Insecure` means. It is deliberately not `Secure` —
+    /// `Secure` is what sets the AD bit, and a resolver that never checked
+    /// anything must never claim it did.
+    pub verdict: Verdict,
 }
 
 impl Resolution {
@@ -126,7 +146,14 @@ impl Resolution {
             rcode,
             answers,
             soa: None,
+            verdict: Verdict::Insecure,
         }
+    }
+
+    /// The same resolution, carrying `verdict`.
+    fn with_verdict(mut self, verdict: Verdict) -> Self {
+        self.verdict = verdict;
+        self
     }
 
     /// The negative-cache TTL for this resolution.
@@ -221,6 +248,21 @@ impl QueryBudget {
     }
 }
 
+/// What extending the chain of trust across one delegation produced.
+///
+/// A failure here is not an ordinary resolution error, and returning it as one
+/// would lose the distinction the whole module is built on: `Failed` carries the
+/// [`Verdict`] so a broken chain is reported as *bogus* — an attack or a
+/// misconfigured zone — rather than disappearing into a generic "lookup failed"
+/// that reads identically to a timeout.
+#[derive(Debug)]
+enum TrustOutcome {
+    /// Trust for the child zone, or `None` when validation is off.
+    Trust(Option<TrustState>),
+    /// The chain is broken; the answer must be withheld.
+    Failed(Verdict),
+}
+
 /// Classification of a single nameserver response relative to the query.
 #[derive(Debug)]
 enum Step {
@@ -283,6 +325,17 @@ pub struct IterativeResolver {
     /// every single lookup for the rest of time on any network where priming does
     /// not work. One attempt, then fall back to the hints and get on with it.
     primed: Arc<AtomicBool>,
+    /// The DNSSEC trust anchors, or `None` when validation is switched off.
+    ///
+    /// This one field decides everything: whether outbound queries carry the DO
+    /// bit, whether the walk derives a chain of trust as it descends, and
+    /// whether a bogus answer becomes SERVFAIL. `Option` rather than an empty
+    /// anchor set because "validate against nothing" and "do not validate" are
+    /// different things — the former would make every signed zone bogus.
+    anchors: Option<Anchors>,
+    /// Zone -> validated DNSKEY set (or proven-insecure), so the chain is not
+    /// re-derived from the root on every query.
+    keys: Arc<KeyCache>,
 }
 
 impl IterativeResolver {
@@ -312,6 +365,8 @@ impl IterativeResolver {
             backoff_base: DEFAULT_FAILURE_BACKOFF,
             default_ttl: DEFAULT_TTL,
             primed: Arc::new(AtomicBool::new(false)),
+            anchors: None,
+            keys: Arc::new(KeyCache::new()),
         }
     }
 
@@ -351,12 +406,47 @@ impl IterativeResolver {
             backoff_base: self.backoff_base,
             default_ttl: self.default_ttl,
             primed: Arc::clone(&self.primed),
+            anchors: self.anchors.clone(),
+            // The key cache travels with the delegation cache for the same
+            // reason: changing the root hints does not invalidate what we
+            // already proved about `com.` or anything under it.
+            keys: Arc::clone(&self.keys),
         }
+    }
+
+    /// Turns on DNSSEC validation against `anchors`.
+    ///
+    /// Everything downstream keys off this: outbound queries start carrying the
+    /// DO bit, the walk derives a chain of trust as it descends, and
+    /// [`Resolution::verdict`] stops being unconditionally `Insecure`.
+    pub fn with_validation(mut self, anchors: Anchors) -> Self {
+        self.anchors = Some(anchors);
+        self
+    }
+
+    /// Turns validation on or off in place. `None` switches it off.
+    pub fn set_anchors(&mut self, anchors: Option<Anchors>) {
+        self.anchors = anchors;
+    }
+
+    /// Whether DNSSEC validation is switched on.
+    pub fn validating(&self) -> bool {
+        self.anchors.is_some()
+    }
+
+    /// The validated-key cache backing this resolver.
+    pub fn keys(&self) -> &Arc<KeyCache> {
+        &self.keys
     }
 
     /// The delegation cache backing this resolver.
     pub fn delegations(&self) -> &Arc<DelegationCache> {
         &self.delegations
+    }
+
+    /// The port used to reach nameservers (53 in production; tests override it).
+    pub fn port(&self) -> u16 {
+        self.port
     }
 
     /// The mid-recursion record cache (glue, glueless NS lookups, CNAME hops).
@@ -417,9 +507,27 @@ impl IterativeResolver {
     ) -> Result<Resolution> {
         crate::metrics::metrics().resolver_lookups.inc();
         let mut cname_seen: Vec<Name> = Vec::new();
-        let budget = QueryBudget::new(MAX_QUERIES_PER_RESOLUTION);
-        self.resolve_inner(name, qtype, qclass, 0, &mut cname_seen, &budget)
-            .await
+        let budget = QueryBudget::new(if self.validating() {
+            MAX_QUERIES_PER_RESOLUTION + VALIDATION_QUERY_BUDGET
+        } else {
+            MAX_QUERIES_PER_RESOLUTION
+        });
+        let resolution = self
+            .resolve_inner(name, qtype, qclass, 0, &mut cname_seen, &budget)
+            .await?;
+        crate::metrics::metrics()
+            .dnssec_verdicts
+            .inc(resolution.verdict.index());
+        if let Some(reason) = resolution.verdict.reason() {
+            debug!(
+                "DNSSEC {} for {} {}: {}",
+                resolution.verdict.label(),
+                name,
+                qtype,
+                reason
+            );
+        }
+        Ok(resolution)
     }
 
     /// Primes the root zone: asks the roots who the roots are, and caches the
@@ -541,12 +649,17 @@ impl IterativeResolver {
         // Anything we already learned for this exact (name, type) — a CNAME target
         // chased earlier, an NS hostname resolved for a glueless delegation, a
         // previous answer — is still good for as long as its TTL says.
-        if let Some(records) = self.records.get(name, qtype) {
+        if let Some((records, secure)) = self.records.get_with_proof(name, qtype) {
             debug!("record cache hit for {} {}", name, qtype);
-            return Ok(Resolution::answer(ResponseCode::NoError, records));
+            let verdict = if secure {
+                Verdict::Secure
+            } else {
+                Verdict::Insecure
+            };
+            return Ok(Resolution::answer(ResponseCode::NoError, records).with_verdict(verdict));
         }
 
-        if let Some((zone, servers)) = self.delegations.best_match(name) {
+        if let Some((zone, servers, trust)) = self.warm_start(name) {
             // Work on a copy of the CNAME trail: a failed attempt must not leave
             // partial state that makes the retry look like a CNAME loop.
             let mut attempt_seen = cname_seen.clone();
@@ -559,6 +672,7 @@ impl IterativeResolver {
                 budget,
                 servers,
                 Name::from_ascii(&zone).unwrap_or_else(|_| Name::root()),
+                trust,
             ))
             .await
             {
@@ -589,6 +703,20 @@ impl IterativeResolver {
             }
         }
 
+        // From the root hints. When validating, the root's own DNSKEY RRset has to
+        // be fetched and anchored before anything it says can be believed; a
+        // failure there is fatal to the lookup rather than a downgrade, because
+        // "we could not establish the root's keys" and "the root is unsigned" are
+        // not the same statement and only one of them is ever true.
+        let trust = match self.anchors.as_ref() {
+            Some(anchors) => Some(
+                self.root_trust(anchors, qclass, budget)
+                    .await
+                    .context("could not establish the root zone's DNSSEC keys")?,
+            ),
+            None => None,
+        };
+
         Box::pin(self.walk(
             name,
             qtype,
@@ -598,8 +726,29 @@ impl IterativeResolver {
             budget,
             self.root_hints.clone(),
             Name::root(),
+            trust,
         ))
         .await
+    }
+
+    /// The deepest cached delegation covering `name` that we may actually start
+    /// from, together with the trust state for its zone.
+    ///
+    /// With validation off this is just [`DelegationCache::best_match`]. With
+    /// validation on there is an extra condition: entering the chain part-way
+    /// means skipping every DS and DNSKEY check above the entry point, so a
+    /// delegation is only a usable shortcut if the trust state for its zone is
+    /// *also* still cached. When it is not, the walk restarts at the root and
+    /// re-derives the chain — which repopulates the key cache on the way down,
+    /// so the cost is paid once per zone rather than once per query.
+    fn warm_start(&self, name: &Name) -> Option<(String, Vec<IpAddr>, Option<TrustState>)> {
+        let (zone, servers) = self.delegations.best_match(name)?;
+        if !self.validating() {
+            return Some((zone, servers, None));
+        }
+        let zone_name = Name::from_ascii(&zone).ok()?;
+        let trust = self.keys.get(&zone_name)?;
+        Some((zone, servers, Some(trust)))
     }
 
     /// Walks the delegation chain for `name`, starting at `servers`, caching each
@@ -618,11 +767,17 @@ impl IterativeResolver {
         budget: &QueryBudget,
         mut servers: Vec<IpAddr>,
         start_zone: Name,
+        start_trust: Option<TrustState>,
     ) -> Result<Resolution> {
         let mut visited_zones: HashSet<String> = HashSet::new();
         // The zone whose servers we are currently talking to. A referral is only
         // usable if it moves strictly *down* from here — see `referral_in_bailiwick`.
         let mut current_zone = start_zone;
+        // The trust state of `current_zone`, moving down the chain alongside it.
+        // `None` means validation is off; `Some(Insecure)` means the chain
+        // provably ended above here, which is a different and much stronger
+        // statement than "we are not checking".
+        let mut trust = start_trust;
 
         for _hop in 0..MAX_REFERRALS {
             let response = self
@@ -631,12 +786,31 @@ impl IterativeResolver {
 
             match classify(&response, qtype) {
                 Step::Answer(records) => {
+                    let verdict = self.validate_answer(
+                        name,
+                        qtype,
+                        &records,
+                        &response,
+                        &current_zone,
+                        &trust,
+                    );
+                    if verdict.withholds_answer() {
+                        return Ok(Resolution::answer(ResponseCode::ServFail, Vec::new())
+                            .with_verdict(verdict));
+                    }
                     // Hold onto it: a CNAME chain or a glueless NS lookup that lands
                     // here again must not re-run the whole walk.
                     if response.response_code() == ResponseCode::NoError {
-                        self.records.insert(name, qtype, records.clone());
+                        self.records.insert_with_proof(
+                            name,
+                            qtype,
+                            records.clone(),
+                            verdict == Verdict::Secure,
+                        );
                     }
-                    return Ok(Resolution::answer(response.response_code(), records));
+                    return Ok(
+                        Resolution::answer(response.response_code(), records).with_verdict(verdict)
+                    );
                 }
                 Step::Cname { target, records } => {
                     if cname_seen.iter().any(|n| n == &target) {
@@ -644,6 +818,23 @@ impl IterativeResolver {
                     }
                     if cname_seen.len() >= MAX_CNAME_CHAIN {
                         bail!("CNAME chain too long resolving {}", name);
+                    }
+                    // The CNAME itself lives in this zone and is signed by it; the
+                    // target lives wherever it lives and is validated separately by
+                    // the sub-resolution. Validating the hop here rather than
+                    // trusting the whole answer section is what stops a server from
+                    // stapling unsigned records for the target onto a signed CNAME.
+                    let hop_verdict = self.validate_answer(
+                        name,
+                        RecordType::CNAME,
+                        &records,
+                        &response,
+                        &current_zone,
+                        &trust,
+                    );
+                    if hop_verdict.withholds_answer() {
+                        return Ok(Resolution::answer(ResponseCode::ServFail, Vec::new())
+                            .with_verdict(hop_verdict));
                     }
                     cname_seen.push(target.clone());
                     crate::metrics::metrics().resolver_cname_hops.inc();
@@ -657,14 +848,35 @@ impl IterativeResolver {
                         budget,
                     ))
                     .await?;
+                    // The chain is only as trustworthy as its weakest hop: a
+                    // securely-signed CNAME into an unsigned zone yields an
+                    // Insecure answer, not a Secure one.
+                    let verdict = hop_verdict.merge(sub.verdict);
+                    if verdict.withholds_answer() {
+                        return Ok(Resolution::answer(ResponseCode::ServFail, Vec::new())
+                            .with_verdict(verdict));
+                    }
                     accumulated.extend(sub.answers);
-                    return Ok(Resolution::answer(sub.rcode, accumulated));
+                    return Ok(Resolution::answer(sub.rcode, accumulated).with_verdict(verdict));
                 }
                 Step::Negative { rcode, soa } => {
+                    let verdict = self.validate_negative(
+                        name,
+                        qtype,
+                        rcode,
+                        &response,
+                        &current_zone,
+                        &trust,
+                    );
+                    if verdict.withholds_answer() {
+                        return Ok(Resolution::answer(ResponseCode::ServFail, Vec::new())
+                            .with_verdict(verdict));
+                    }
                     return Ok(Resolution {
                         rcode,
                         answers: Vec::new(),
                         soa,
+                        verdict,
                     });
                 }
                 Step::Referral {
@@ -729,12 +941,354 @@ impl IterativeResolver {
                     // Remember the delegation so the next name in this zone starts
                     // here instead of back at the root.
                     self.delegations.insert(&zone, servers.clone(), ttl);
+
+                    // Extend the chain of trust across the delegation *before*
+                    // descending, so that whatever the child's servers say next is
+                    // already checkable. This is also the point where an insecure
+                    // delegation has to be proven rather than assumed.
+                    let outcome = self
+                        .extend_trust(
+                            &current_zone,
+                            &zone,
+                            &trust,
+                            response.name_servers(),
+                            &servers,
+                            qclass,
+                            budget,
+                        )
+                        .await;
+                    trust = match outcome {
+                        TrustOutcome::Trust(state) => state,
+                        TrustOutcome::Failed(verdict) => {
+                            return Ok(Resolution::answer(ResponseCode::ServFail, Vec::new())
+                                .with_verdict(verdict));
+                        }
+                    };
                     current_zone = zone;
                 }
             }
         }
 
         bail!("too many referrals resolving {}", name)
+    }
+
+    /// Fetches and anchors the root zone's DNSKEY RRset.
+    ///
+    /// This is the top of every chain, so it fails closed: if the root's keys
+    /// cannot be obtained and matched to a configured anchor, no answer derived
+    /// from a walk that starts here can be validated, and returning one anyway
+    /// would be validation in name only.
+    async fn root_trust(
+        &self,
+        anchors: &Anchors,
+        qclass: DNSClass,
+        budget: &QueryBudget,
+    ) -> Result<TrustState> {
+        let root = Name::root();
+        if let Some(state) = self.keys.get(&root) {
+            return Ok(state);
+        }
+
+        // Prefer the primed root NS set over the compiled-in hints, for the same
+        // reason `resolve_inner` does: the hints are a bootstrap.
+        let servers = self
+            .delegations
+            .best_match(&root)
+            .map(|(_, servers)| servers)
+            .filter(|servers| !servers.is_empty())
+            .unwrap_or_else(|| self.root_hints.clone());
+
+        let (keys, ttl) = self
+            .fetch_dnskeys(
+                &root,
+                &servers,
+                &KeySource::Anchors(anchors.get()),
+                qclass,
+                budget,
+            )
+            .await?;
+        let state = TrustState::Secure(Arc::new(keys));
+        self.keys.insert(&root, state.clone(), ttl);
+        Ok(state)
+    }
+
+    /// Queries a zone's DNSKEY RRset and validates it against `source` — the
+    /// trust anchors at the root, the parent's DS RRset everywhere else.
+    async fn fetch_dnskeys(
+        &self,
+        zone: &Name,
+        servers: &[IpAddr],
+        source: &KeySource<'_>,
+        qclass: DNSClass,
+        budget: &QueryBudget,
+    ) -> Result<(Vec<hickory_proto::dnssec::rdata::DNSKEY>, u32)> {
+        crate::metrics::metrics().dnssec_dnskey_lookups.inc();
+        let response = self
+            .query_servers(servers, zone, RecordType::DNSKEY, qclass, budget)
+            .await
+            .with_context(|| format!("could not fetch the DNSKEY RRset for {zone}"))?;
+        let answers = response.answers();
+        let now = crate::dnssec::now_secs()?;
+        // The answer section is passed as both the records and the signatures:
+        // `validate_dnskey_rrset` filters each out by type, and a DNSKEY response
+        // legitimately carries both in the one section.
+        let keys = validate::validate_dnskey_rrset(zone, answers, answers, source, now)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok((keys, validate::min_ttl(answers, self.default_ttl)))
+    }
+
+    /// Extends the chain of trust across a delegation from `parent` to `child`.
+    ///
+    /// Three outcomes, and the middle one is where DNSSEC actually earns its
+    /// keep:
+    ///
+    /// - The parent published a DS that validates, so the child's DNSKEY RRset is
+    ///   fetched and anchored to it: the chain continues, Secure.
+    /// - The parent published **no** DS and a signed NSEC/NSEC3 proves it: the
+    ///   chain legitimately ends here and everything below is Insecure. The proof
+    ///   is what makes this safe — without it "no DS arrived" is a claim any
+    ///   on-path attacker can make by deleting records, and believing it is how a
+    ///   validating resolver gets downgraded into a non-validating one.
+    /// - Neither: the delegation is unverifiable and the answer is withheld.
+    #[allow(clippy::too_many_arguments)]
+    async fn extend_trust(
+        &self,
+        parent: &Name,
+        child: &Name,
+        parent_trust: &Option<TrustState>,
+        authority: &[Record],
+        child_servers: &[IpAddr],
+        qclass: DNSClass,
+        budget: &QueryBudget,
+    ) -> TrustOutcome {
+        // Validation is off entirely.
+        let Some(parent_trust) = parent_trust.as_ref() else {
+            return TrustOutcome::Trust(None);
+        };
+
+        // Below a proven-insecure delegation there is nothing left to check: an
+        // unsigned zone cannot sign a DS for its children, so every zone under it
+        // is insecure too, and re-testing that at every level would just be an
+        // NSEC round trip per hop for a foregone conclusion.
+        let Some(parent_keys) = parent_trust.keys() else {
+            self.keys
+                .insert(child, TrustState::Insecure, self.default_ttl);
+            return TrustOutcome::Trust(Some(TrustState::Insecure));
+        };
+
+        if let Some(state) = self.keys.get(child) {
+            return TrustOutcome::Trust(Some(state));
+        }
+
+        let now = match crate::dnssec::now_secs() {
+            Ok(now) => now,
+            Err(e) => return TrustOutcome::Failed(Verdict::Indeterminate(e.to_string())),
+        };
+
+        // The DS RRset rides in the referral's authority section alongside the NS
+        // records, and unlike them it is signed — by the parent, which is exactly
+        // the key we already hold.
+        let ds_rrset = validate::records_at(authority, child, RecordType::DS);
+        if !ds_rrset.is_empty() {
+            if let Err(e) = validate::verify_rrset(
+                child,
+                RecordType::DS,
+                &ds_rrset,
+                authority,
+                parent_keys,
+                parent,
+                now,
+            ) {
+                return TrustOutcome::Failed(Verdict::Bogus(format!(
+                    "the DS RRset for {child} published by {parent} did not validate: {e}"
+                )));
+            }
+
+            let ds = validate::ds_records(&ds_rrset, child);
+            if !validate::ds_algorithms_supported(&ds) {
+                // RFC 6840 §5.11: a delegation we have no implementation for is
+                // insecure, not broken. Refusing to serve it would turn our own
+                // missing algorithm into the zone's outage.
+                debug!(
+                    "{child} is signed only with algorithms this build cannot verify; \
+                     treating the delegation as insecure"
+                );
+                let ttl = validate::min_ttl(&ds_rrset, self.default_ttl);
+                self.keys.insert(child, TrustState::Insecure, ttl);
+                return TrustOutcome::Trust(Some(TrustState::Insecure));
+            }
+
+            return match self
+                .fetch_dnskeys(child, child_servers, &KeySource::Ds(&ds), qclass, budget)
+                .await
+            {
+                Ok((keys, ttl)) => {
+                    let state = TrustState::Secure(Arc::new(keys));
+                    self.keys.insert(child, state.clone(), ttl);
+                    TrustOutcome::Trust(Some(state))
+                }
+                // A DS exists, so the zone claims to be signed; failing to get a
+                // matching DNSKEY set is a broken chain, not an unsigned zone.
+                Err(e) => TrustOutcome::Failed(Verdict::Bogus(format!(
+                    "{child} has a DS in {parent} but its DNSKEY RRset did not validate: {e}"
+                ))),
+            };
+        }
+
+        // No DS. The absence must be signed by the parent to mean anything.
+        let denial = self.verified_denial(authority, parent, parent_keys, now);
+        match validate::prove_no_ds(child, &denial) {
+            Ok(_) => {
+                crate::metrics::metrics().dnssec_insecure_delegations.inc();
+                let ttl = validate::min_ttl(authority, self.default_ttl);
+                self.keys.insert(child, TrustState::Insecure, ttl);
+                TrustOutcome::Trust(Some(TrustState::Insecure))
+            }
+            Err(e) => TrustOutcome::Failed(Verdict::Bogus(format!(
+                "the delegation from {parent} to {child} cannot be shown to be unsigned: {e}"
+            ))),
+        }
+    }
+
+    /// The NSEC/NSEC3 records from an authority section whose signatures check
+    /// out against `keys`.
+    ///
+    /// Filtering here rather than in the proofs is the point: an NSEC record is a
+    /// zone's signed assertion that something does not exist, and an *unsigned*
+    /// NSEC record is an attacker's unsigned assertion of the same thing. Only
+    /// the former may be reasoned from, so unverified ones are dropped before any
+    /// proof ever sees them.
+    fn verified_denial(
+        &self,
+        authority: &[Record],
+        zone: &Name,
+        keys: &[hickory_proto::dnssec::rdata::DNSKEY],
+        now: u32,
+    ) -> Denial {
+        let (sets, sigs) = validate::group_rrsets(authority);
+        let mut verified: Vec<Record> = Vec::new();
+        for (owner, rtype, records) in sets {
+            if !matches!(rtype, RecordType::NSEC | RecordType::NSEC3) {
+                continue;
+            }
+            match validate::verify_rrset(&owner, rtype, &records, &sigs, keys, zone, now) {
+                Ok(_) => verified.extend(records),
+                Err(e) => debug!("discarding an unvalidated {rtype} record at {owner}: {e}"),
+            }
+        }
+        Denial::from_records(&verified)
+    }
+
+    /// Validates an answer section against the current zone's keys.
+    fn validate_answer(
+        &self,
+        qname: &Name,
+        qtype: RecordType,
+        records: &[Record],
+        response: &Message,
+        zone: &Name,
+        trust: &Option<TrustState>,
+    ) -> Verdict {
+        let Some(trust) = trust.as_ref() else {
+            return Verdict::Insecure;
+        };
+        let Some(keys) = trust.keys() else {
+            return Verdict::Insecure;
+        };
+        let now = match crate::dnssec::now_secs() {
+            Ok(now) => now,
+            Err(e) => return Verdict::Indeterminate(e.to_string()),
+        };
+
+        let (sets, sigs) = validate::group_rrsets(records);
+        if sets.is_empty() {
+            return Verdict::Secure;
+        }
+
+        // Every RRset in the answer section must verify, not just the one that
+        // answers the question. A server authoritative for this zone has no
+        // business returning an RRset here that it cannot sign, and the records
+        // it staples on are precisely the ones an injection would add.
+        let mut wildcards: Vec<(Name, Name)> = Vec::new();
+        for (owner, rtype, rrset) in &sets {
+            match validate::verify_rrset(owner, *rtype, rrset, &sigs, keys, zone, now) {
+                Ok(facts) => {
+                    if let Some(encloser) = facts.wildcard_closest_encloser {
+                        wildcards.push((owner.clone(), encloser));
+                    }
+                }
+                Err(e) => {
+                    return Verdict::Bogus(format!("answer for {qname} {qtype} is bogus: {e}"));
+                }
+            }
+        }
+
+        if wildcards.is_empty() {
+            return Verdict::Secure;
+        }
+
+        // A wildcard signature is valid for every name under the closest
+        // encloser, so on its own it says nothing about *this* name. RFC 4035
+        // §5.3.4: the zone must also prove the queried name has no records of its
+        // own, or the answer could be replayed onto a name that does.
+        let denial = self.verified_denial(response.name_servers(), zone, keys, now);
+        for (owner, encloser) in wildcards {
+            match validate::prove_wildcard_expansion(&owner, &encloser, &denial) {
+                Ok(Denied::Proven) => {}
+                Ok(Denied::OptedOut) => return Verdict::Insecure,
+                Err(e) => {
+                    return Verdict::Bogus(format!(
+                        "wildcard answer for {qname} {qtype} is unsubstantiated: {e}"
+                    ));
+                }
+            }
+        }
+        Verdict::Secure
+    }
+
+    /// Validates a negative (NXDOMAIN/NODATA) response against the current zone's
+    /// keys.
+    fn validate_negative(
+        &self,
+        qname: &Name,
+        qtype: RecordType,
+        rcode: ResponseCode,
+        response: &Message,
+        zone: &Name,
+        trust: &Option<TrustState>,
+    ) -> Verdict {
+        let Some(trust) = trust.as_ref() else {
+            return Verdict::Insecure;
+        };
+        let Some(keys) = trust.keys() else {
+            return Verdict::Insecure;
+        };
+        let now = match crate::dnssec::now_secs() {
+            Ok(now) => now,
+            Err(e) => return Verdict::Indeterminate(e.to_string()),
+        };
+
+        let denial = self.verified_denial(response.name_servers(), zone, keys, now);
+        if denial.is_empty() {
+            // A signed zone that answers "no" without proving it is either broken
+            // or being spoken for. Either way there is nothing here to believe:
+            // an unproven negative is the cheapest forgery in DNS.
+            return Verdict::Bogus(format!(
+                "{rcode} for {qname} {qtype} from the signed zone {zone} carries no validated \
+                 NSEC or NSEC3 proof"
+            ));
+        }
+
+        let proof = if rcode == ResponseCode::NXDomain {
+            validate::prove_nxdomain(qname, zone, &denial)
+        } else {
+            validate::prove_nodata(qname, qtype, zone, &denial)
+        };
+        match proof {
+            Ok(Denied::Proven) => Verdict::Secure,
+            Ok(Denied::OptedOut) => Verdict::Insecure,
+            Err(e) => Verdict::Bogus(format!("{rcode} for {qname} {qtype} is unproven: {e}")),
+        }
     }
 
     /// Caches the additional-section glue, grouped by the NS hostname it belongs
@@ -819,7 +1373,7 @@ impl IterativeResolver {
         qclass: DNSClass,
         budget: &QueryBudget,
     ) -> Result<Message> {
-        let (query, id) = build_query(name, qtype, qclass)?;
+        let (query, id) = build_query(name, qtype, qclass, self.validating())?;
         for server in self.order_servers(servers) {
             // Every packet counts against the lookup's total allowance, so a
             // pathological delegation chain cannot fan out into thousands of queries.
@@ -1062,9 +1616,29 @@ impl IterativeResolver {
     }
 }
 
+/// The EDNS UDP payload size advertised on outbound iterative queries.
+///
+/// 1232 rather than [`MAX_UDP_SIZE`]: it is the largest payload that fits in the
+/// minimum IPv6 MTU without fragmentation, and a fragmented DNS response is both
+/// a reassembly-based spoofing vector and a packet many middleboxes silently
+/// drop. Anything larger comes back truncated and is refetched over TCP, which
+/// the query path already handles. Without any OPT record at all — the previous
+/// behaviour — a server is entitled to cap the response at 512 bytes, which a
+/// signed answer essentially never fits inside.
+const EDNS_UDP_PAYLOAD: u16 = 1232;
+
 /// Builds an iterative query (recursion desired cleared) for `name`/`qtype`,
 /// returning the wire bytes and the random transaction id.
-fn build_query(name: &Name, qtype: RecordType, qclass: DNSClass) -> Result<(Vec<u8>, u16)> {
+///
+/// `dnssec_ok` sets the EDNS DO bit. It is off unless validation is enabled,
+/// because DO is a request for RRSIG/NSEC/NSEC3 records that a non-validating
+/// resolver would pay for on every response and then discard.
+fn build_query(
+    name: &Name,
+    qtype: RecordType,
+    qclass: DNSClass,
+    dnssec_ok: bool,
+) -> Result<(Vec<u8>, u16)> {
     let id: u16 = rand::rng().random();
     let mut msg = Message::new();
     msg.set_id(id);
@@ -1077,6 +1651,14 @@ fn build_query(name: &Name, qtype: RecordType, qclass: DNSClass) -> Result<(Vec<
     query.set_query_type(qtype);
     query.set_query_class(qclass);
     msg.add_query(query);
+
+    if dnssec_ok {
+        let mut edns = Edns::new();
+        edns.set_version(0);
+        edns.set_max_payload(EDNS_UDP_PAYLOAD);
+        edns.set_dnssec_ok(true);
+        msg.set_edns(edns);
+    }
 
     Ok((msg.to_bytes()?, id))
 }
@@ -1297,8 +1879,8 @@ mod tests {
 
     #[test]
     fn build_query_roundtrips_with_rd_clear() {
-        let (bytes, id) =
-            build_query(&name("example.com."), RecordType::A, DNSClass::IN).expect("build query");
+        let (bytes, id) = build_query(&name("example.com."), RecordType::A, DNSClass::IN, false)
+            .expect("build query");
         let msg = Message::from_bytes(&bytes).expect("parse");
         assert_eq!(msg.id(), id);
         assert!(!msg.recursion_desired());
@@ -1306,6 +1888,30 @@ mod tests {
         let q = msg.queries().first().expect("question");
         assert!(names_equal(q.name(), &name("example.com.")));
         assert_eq!(q.query_type(), RecordType::A);
+    }
+
+    /// Without an OPT record a server may cap the response at 512 bytes, which a
+    /// signed answer essentially never fits inside — so a validating query that
+    /// forgot the OPT would fail on truncation rather than on anything DNSSEC.
+    #[test]
+    fn validating_queries_carry_the_do_bit_and_a_payload_size() {
+        let (bytes, _) = build_query(&name("example.com."), RecordType::A, DNSClass::IN, true)
+            .expect("build query");
+        let msg = Message::from_bytes(&bytes).expect("parse");
+        let edns = msg.extensions().as_ref().expect("OPT record present");
+        assert_eq!(edns.version(), 0);
+        assert!(edns.flags().dnssec_ok, "DO must be set when validating");
+        assert_eq!(edns.max_payload(), EDNS_UDP_PAYLOAD);
+    }
+
+    /// The converse: with validation off there is no reason to ask for records
+    /// we would only throw away, so no OPT record is sent at all.
+    #[test]
+    fn non_validating_queries_send_no_opt_record() {
+        let (bytes, _) = build_query(&name("example.com."), RecordType::A, DNSClass::IN, false)
+            .expect("build query");
+        let msg = Message::from_bytes(&bytes).expect("parse");
+        assert!(msg.extensions().is_none());
     }
 
     #[test]

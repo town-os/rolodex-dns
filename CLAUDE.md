@@ -60,6 +60,12 @@ DNS queries are resolved in the following order:
 4. **CNAME chain** — If no exact type match is found locally, a CNAME lookup is attempted for the queried name. If a CNAME exists, it is returned.
 5. **LAN → owning-scope fallback** (non-scoped sources only) — For a trusted local source (loopback / LAN, `scope_name == None`) whose name matched no global record, if the name falls under a TLD owned by *some* network scope (`db::find_tld_owner`), it is resolved from that owning scope's records so **every network TLD is visible on the LAN**. This runs *after* the global lookup, so a dual-homed name (a global LAN-IP record plus a scoped overlay-IP record) still returns its LAN-facing global value; only scoped-only names (e.g. a network's zone apex) are served from the scope, at their stored value. If the owning scope has no record, the TLD's peer forwarders are consulted, and failing that an **authoritative NXDOMAIN** is returned — a privately-owned TLD is never forwarded upstream from the LAN. (Overlay peers are unaffected: they take the scoped path at step 1, which partitions owned TLDs — a peer joined to one network sees only its own TLD and gets NXDOMAIN for a sibling network's or another scope's TLD.)
 6. **Managed zone authority** — If the queried name falls under a zone that has records in the local database (determined by the last two labels of any stored FQDN), but the specific name was not found, an authoritative NXDOMAIN is returned. This prevents forwarding queries for names that should be resolved internally. Zones can also be explicitly declared authoritative via `AddAuthoritativeZone`.
+
+    **Records anywhere in the zone count, not just at the apex.** A zone whose records all sit at subdomains (`www.example.com` with nothing at `example.com`) is the normal shape of a zone, and requiring an apex record would disable this step for most of them — the miss would be forwarded upstream and the inside representation would stop taking priority. The consequence is worth stating plainly: adding a single record under a public domain makes this server authoritative for **all** of it, so `foo.example.com` as a local override means `www.example.com` answers NXDOMAIN rather than resolving from the internet. That is the split-horizon bargain, and it is why zone membership is decided by the `managed_zones` cache rather than re-derived per query.
+
+    **The reverse trees are excluded.** `in-addr.arpa` and `ip6.arpa` are the case where the last-two-labels heuristic does not name a zone anyone delegated: reverse zones are cut at `1.168.192.in-addr.arpa` or shorter, never at two labels, so the heuristic always derives `in-addr.arpa.` itself. Registering that would make one stored PTR the authority for the **entire global reverse tree**, NXDOMAINing every `in-addr.arpa` lookup — and with `dns.auto_ptr` on, a single A record creates the PTR that triggers it. So the heuristic is not merely aggressive there, it is wrong, and `db::extract_zone_from_name` returns `None` for anything under `in-addr.arpa.` or `ip6.arpa.` — **not** for `arpa.` at large, because `home.arpa` (RFC 8375) is a special-use domain for exactly these networks and the heuristic gets it right there (`foo.home.arpa.` derives `home.arpa.`, the real zone); excluding it would send a miss upstream, which RFC 8375 §4 forbids. An operator who genuinely runs a reverse zone declares it with `AddAuthoritativeZone`, which matches the real zone cut instead of guessing at it.
+
+    The cache is therefore kept exact at both ends: `Database::add_record` inserts the zone, and `Database::remove_records` drops it once `zone_has_records` reports nothing left at or beneath it. Removal is the only path that deletes global records, so that is the only place staleness could enter — and a stale entry is not inert, it would keep answering NXDOMAIN for a zone that no longer exists.
 7. **DNSBL / local blocklist check** — Before any external resolution, the queried name (forward names only; reverse names are handled by step 2) is checked against the local RBL blocklist and, if DNSBL is enabled, against the configured DNSBL (domain blocklist) providers. If listed, an NXDOMAIN is returned. Names on the **DNSBL allowlist** (and everything under them) skip this step entirely — see DNSBL Allowlist. Because this runs after the local/managed-zone checks but before the upstream cache and forwarder, DNSBLs take precedence over any externally-resolved answer (forwarded, iterative, or upstream-cached) while local records always win.
 8. **DNS64 synthesis** — If DNS64 is enabled and the query is for AAAA but only A records exist upstream, AAAA records are synthesized using the configured NAT64 prefix.
 8.5. **Recursion access control** — Before anything reaches outside this server (the upstream cache, a blocklist provider, a forwarder, the roots), the source must be inside `security.recursion_cidrs`; otherwise the query is REFUSED. Steps 1–6 are unaffected, so a stranger is still served data this server is authoritative for. See Recursion Access Control.
@@ -70,7 +76,7 @@ This ordering ensures the inside representation always takes priority over exter
 
 ### EDNS Support
 
-EDNS (RFC 6891) context is extracted from incoming queries. The server respects client maximum payload size, supports the DNSSEC-OK (DO) bit, and includes OPT records in responses. Only EDNS version 0 is supported.
+EDNS (RFC 6891) context is extracted from incoming queries. The server respects client maximum payload size, supports the DNSSEC-OK (DO) bit, and includes OPT records in responses. Only EDNS version 0 is supported. Outbound iterative queries carry their own OPT with DO set when DNSSEC validation is on — see Upstream DNSSEC Validation.
 
 ### QNAME Case Randomization
 
@@ -124,7 +130,9 @@ Two caches sit *inside* the resolver, below the answer-level `DnsCache`, holding
 - **Delegation cache** (`src/delegation_cache.rs`) — zone → nameserver addresses, populated from every referral seen. Consulted before falling back to the root hints, so a warm `.com` lookup skips the root hop entirely (without it, every cache-cold name re-walked root → TLD → authoritative, hammering one root into rate-limiting). TTLs are honoured as published, capped at 7 days as an absurdity bound, with no floor; max 10,000 zones in memory. Entries whose TTL exceeds `resolution.delegation_persist_min_ttl` (default 300s) are persisted to the `delegation_cache` table by a background write worker and reloaded at boot, so a restart comes back warm — root and TLD NS sets carry multi-day TTLs, so in practice exactly the entries worth keeping survive.
 - **Record cache** (`src/record_cache.rs`) — `(name, type)` → records, in memory, for glue, glue-less NS-name lookups, and CNAME hops. Records are handed back with their **remaining** lifetime (without that decay a served record would be re-cached upstream at full TTL and a 1h record would never expire). Capped at 50,000 keys and a 7-day TTL ceiling.
 
-Both are flushed by `flush_upstream_state()` (tier switches) and **not** by `flush_cache()`, which is called from every gRPC record mutation — hanging upstream state off record mutations would mean every package add wipes the delegations and recreates the cold-start outage.
+- **Key cache** (`src/key_cache.rs`) — zone → validated DNSKEY set or proven-insecure delegation, present only when DNSSEC validation is on. See Upstream DNSSEC Validation.
+
+All three are flushed by `flush_upstream_state()` (tier switches) and **not** by `flush_cache()`, which is called from every gRPC record mutation — hanging upstream state off record mutations would mean every package add wipes the delegations and recreates the cold-start outage.
 
 ### TTL Semantics
 
@@ -187,7 +195,6 @@ The provider list ships empty; these are the standard IP DNSBL zones (as used by
 - `zen.spamhaus.org` — Combined Spamhaus blocklist (SBL + XBL + PBL + CSS)
 - `bl.spamcop.net` — SpamCop blocklist
 - `b.barracudacentral.org` — Barracuda Reputation Block List
-- `dnsbl.sorbs.net` — SORBS aggregate zone
 - `dbl.spamhaus.org` — Spamhaus Domain Block List
 
 ### Caching
@@ -210,7 +217,9 @@ While RBL providers block by **IP address** (queried with a reversed IP on rever
 
 DNSBL gives blocklists **precedence over external DNS**: the check runs after local records and managed/authoritative zones (so internal data always wins) but **before** the upstream response cache and the forwarder/iterative resolver. A listed name therefore returns NXDOMAIN even if a forwarded answer was previously cached. For example, with DNSBL enabled, `googleadservices.com` is refused while a locally-defined `gitea.default.home` (e.g. planted by a package) continues to resolve.
 
-DNSBL checking is globally togglable and **disabled by default, with an empty provider list**; providers are independently enable-able. The standard domain blocklists an operator typically adds are `dbl.spamhaus.org`, `multi.surbl.org`, and `multi.uribl.com`. An enabled-but-empty DNSBL is a no-op (nothing is queried and nothing is blocked). DNSBL configuration is independent of the IP-based RBL configuration and shares the same in-memory result cache (positive results cached for the provider TTL, negatives for 5 minutes). It is configured at startup via the `dnsbl` config section and at runtime via `SetDnsblConfig`/`GetDnsblConfig`.
+**Blocking is per queried name, not per suffix.** Each name is looked up against the provider in its own right, so `doubleclick.net` being listed does not by itself block `stats.g.doubleclick.net` — the provider has to list the subdomain too, as real domain blocklists do. This is deliberate and is the operator's call to make: silently blocking every name beneath a listed one would take out an entire domain over a single listed host. Note the asymmetry with the DNSBL **allowlist**, which *is* suffix-matched, because an escape hatch that did not cover subdomains would not be one.
+
+DNSBL checking is globally togglable and **disabled by default, with an empty provider list**; providers are independently enable-able. With it disabled no provider lookup is issued at all, so queried names are not handed to the blocklist operator. The standard domain blocklists an operator typically adds are `dbl.spamhaus.org`, `multi.surbl.org`, and `multi.uribl.com`. An enabled-but-empty DNSBL is a no-op (nothing is queried and nothing is blocked). DNSBL configuration is independent of the IP-based RBL configuration and shares the same in-memory result cache (positive results cached for the provider TTL, negatives for 5 minutes). It is configured at startup via the `dnsbl` config section and at runtime via `SetDnsblConfig`/`GetDnsblConfig`.
 
 ### DNSBL Allowlist
 
@@ -245,9 +254,9 @@ RFC 9250. Listens on a configurable UDP port (default `0.0.0.0:8853`). ALPN prot
 
 ## DNSSEC
 
-Rolodex DNS signs its own zones. It performs **no validation** of DNSSEC data received from upstream — see Upstream DNSSEC (Not Validated) below.
+Rolodex DNS signs its own zones and validates the answers it resolves from upstream — see Upstream DNSSEC Validation below for the validating half.
 
-Supported algorithms (strongest first):
+Supported **signing** algorithms (strongest first):
 
 1. **Ed25519** (RFC 8080, algorithm 15) — preferred
 2. **ECDSA P-384/SHA-384** (RFC 6605, algorithm 14)
@@ -279,22 +288,65 @@ RRSIG values are stored as `"type_covered algorithm labels original_ttl expirati
 
 DS records for parent-zone delegation are computed using SHA-256 and retrievable via `GetDsRecords`. Key tags are calculated per RFC 4034 Appendix B. Cryptographic operations use the `ring` crate.
 
-`dnssec::verify_rrsig` is the inverse of the signer and exists so signatures can be checked against something other than the code that produced them. It is deliberately **not** wired into the resolution path.
+`dnssec::verify_rrsig` is the inverse of the signer and exists so signatures can be checked against something other than the code that produced them. It is not the upstream validator — that is `src/dnssec_validate.rs`, which works on wire records and shares no code with either (see Upstream DNSSEC Validation).
 
 ### Wire Serving of DNSSEC Types
 
 DNSKEY, DS and RRSIG are served under their own type codes, with RDATA encoded by the same canonical encoder the signer hashes — so what goes on the wire is byte-for-byte what was signed. URI and ZONEMD are encoded the same way. (These were previously served as TXT records carrying the stored string, which answers a DNSKEY query with a TXT and makes any published signature unusable.) NSEC, NSEC3 and NSEC3PARAM are never generated and are not served.
 
-### Upstream DNSSEC (Not Validated)
+## Upstream DNSSEC Validation
 
-Rolodex does **not** validate DNSSEC on answers it resolves. There is no root trust anchor, the iterative resolver sets no DO bit on its outbound queries (so RRSIG/DNSKEY/NSEC are never even requested), and no signature verification runs on the resolution path.
+Rolodex validates DNSSEC on answers it resolves iteratively. The validator (`src/dnssec_validate.rs`) is a separate module from the signer (`src/dnssec.rs`) and shares no code with it: the signer works on `DnsRecord` rows we wrote ourselves, a validator works on wire records from a party whose honesty is the thing in question, and the two must be able to disagree.
 
-What does happen: a client that sets the DO bit gets the raw upstream response passed through untouched (`src/dns_server.rs`), so a client validating for itself is not interfered with. Two consequences follow, and neither is a promise of authenticity:
+Configured by the `dnssec` section — `validate` (default `true`) and `trust_anchors` (default: the IANA root keys compiled into hickory). It applies to the **iterative path only**: `recursive` mode, and the roots tier of `auto`. A forwarded response is a recursive resolver's summary, and validating it would mean re-resolving the chain ourselves, which is what the roots tier already is. An `auto` chain degraded past tier 0 is therefore unvalidated — and says so, by leaving AD clear.
 
-- The **AD bit is relayed from upstream unverified**. On the `local` and `public` tiers that is plaintext Do53, where a relayed AD is worth nothing; on the `secure` tier it is at least channel-authenticated to the configured upstream.
-- In `recursive` mode a DO client receives no RRSIGs at all, since the iterative resolver never asks for them.
+### The four states
 
-Responses built locally never set AD, so answers this server generates make no authentication claim.
+RFC 4033 §5, and conflating any two of them either breaks the unsigned internet or silently accepts forgeries:
+
+| Verdict | Meaning | Served? |
+| ------- | ------- | ------- |
+| `Secure` | Signatures chain to the trust anchor. | Yes, with AD set for a client that asked. |
+| `Insecure` | The chain **provably** stops: a delegation on the path has no DS, and that absence is itself signed. | Yes, AD clear. |
+| `Bogus` | The data claims to be signed and the claim does not hold. | **Never.** SERVFAIL. |
+| `Indeterminate` | We could not obtain what was needed to decide. | **Never.** SERVFAIL. |
+
+The distinction carrying the security is Insecure vs. Bogus. "No signature present" is *not* Insecure — an on-path attacker strips signatures from any response. It is Insecure only when a signed NSEC/NSEC3 proves the missing DS at the delegation above, which an attacker cannot forge without the parent's key. That is why the NSEC/NSEC3 machinery exists; skipping it leaves a validator that any attacker downgrades to no validator at all.
+
+### How the chain is built
+
+Validation is **top-down**, alongside the delegation walk the resolver already performs, so the chain is derived from the same responses rather than by a second set of queries:
+
+1. **Root.** `root_trust` fetches the `.` DNSKEY RRset and requires a key matching a configured anchor, which must itself have signed the RRset. Anchoring only proves one key is legitimate; the self-signature is what extends that to the set, so an appended key cannot ride along. Failure here is fatal to the lookup — "we could not establish the root's keys" and "the root is unsigned" are different statements.
+2. **Each delegation** (`extend_trust`). The DS RRset rides in the referral's authority section, signed by the parent whose keys we already hold. A validated DS anchors the child's DNSKEY RRset, fetched from the child's own servers. With **no** DS, the absence must be proven by a signed NSEC/NSEC3 (`prove_no_ds`) — an NSEC at the delegation name asserting NS but neither DS nor SOA, or the NSEC3 equivalent including opt-out. Unproven ⇒ Bogus.
+3. **Below an insecure delegation** everything is insecure without further checks: an unsigned zone cannot sign a DS for its children.
+4. **Answers.** Every RRset in the answer section must verify, not just the one answering the question — an authoritative server has no business returning an RRset here it cannot sign, and stapled-on records are exactly what an injection adds. A wildcard-derived answer additionally needs a denial that the queried name does not exist (RFC 4035 §5.3.4), or the signature — valid for every name under the closest encloser — could be replayed onto a name that does.
+5. **Negatives.** NXDOMAIN and NODATA are proven from NSEC/NSEC3 in the authority section (`prove_nxdomain` / `prove_nodata`), after those records' own signatures verify. A signed zone that answers "no" without proving it is Bogus: an unproven negative is the cheapest forgery in DNS.
+6. **CNAME chains** are validated per hop, each in its own zone, and the verdicts merged — the chain is only as trustworthy as its weakest hop, so a securely-signed CNAME into an unsigned zone yields Insecure.
+
+Every check in `verify_rrset` is one an attacker gets to skip if it is missing: the signer name must equal the zone (otherwise an attacker signs `www.bank.example` with a zone they own and supply the DS/DNSKEY for), the validity window is compared with RFC 1982 serial arithmetic (plain `<` is wrong at the 2106 wrap, and wrong in the direction that makes every live signature read as expired), and the key tag is treated as a hint rather than an identifier, so every candidate with a matching tag is tried.
+
+Records validated only against algorithms this build cannot verify are **Insecure, not Bogus** (RFC 6840 §5.11) — our own missing algorithm is not the zone's outage. `ring` cannot *generate* RSA keys, which is why signing refuses algorithm 8, but verification is a different question and RSA/SHA-1/256/512 plus both ECDSA curves and Ed25519 all verify.
+
+NSEC3 iteration counts above 100 are treated as insecure rather than computed (RFC 9276): the hashing is attacker-chosen work on our side of the wire.
+
+### Validated-key cache (`src/key_cache.rs`)
+
+Zone → validated DNSKEY set, or proven-insecure, with TTLs. Without it every query would re-derive the chain from the root, which is the cold-start problem the delegation cache exists to prevent, reintroduced one layer up. `Insecure` is cached too — re-proving a missing DS on every query to every unsigned zone would put an NSEC round trip in front of most of the internet — and it is safe to cache because the proof it records was signed by the parent.
+
+Lookups are **exact-name, never suffix**: a parent's keys say nothing about a child's, which is what the DS record is for. TTLs are floored at 60s (a zone publishing a 0-TTL DNSKEY set would otherwise force a re-validation per query) and capped at 7 days. Flushed by `flush_upstream_state()` on an `auto` tier switch, **not** by `flush_cache()`.
+
+Entering the delegation chain part-way means skipping every DS and DNSKEY check above the entry point, so `warm_start` only takes a cached delegation as a shortcut when the trust state for its zone is *also* cached. Otherwise the walk restarts at the root and re-derives the chain, repopulating the key cache on the way down.
+
+### On the wire
+
+- The iterative resolver's outbound queries carry EDNS0 with **DO set and a 1232-byte payload size** when validating (previously no OPT record at all, so a server was entitled to cap responses at 512 bytes — which a signed answer essentially never fits inside). 1232 is the largest payload that avoids IPv6 fragmentation; anything larger comes back truncated and is refetched over TCP. With validation off, no OPT is sent: DO asks for records a non-validating resolver would only discard.
+- **AD is set only for `Secure`**, and only for a client that asked — one that set DO or AD in its query (RFC 6840 §5.7). Responses built from local data never set AD, so answers this server generates itself still make no authentication claim.
+- **RRSIG/NSEC/NSEC3 are stripped for a client that did not set DO** (RFC 4035 §3.2.1), unless it asked for that type by name. A signed A record roughly triples in size, and a large answer to a small question is the amplification shape `security.recursion_cidrs` exists to close. DNSKEY and DS are never gated — they are ordinary types that happen to carry keys.
+- A bogus answer is **never cached**, positively or negatively: a cached bogus negative would suppress the real name for its whole TTL.
+- In `auto` mode a failed validation is a **definitive** answer, not a tier failure. Falling through to the secure or forwarding tier would mean any zone whose signatures do not check out is quietly re-asked of an upstream that does not validate, turning validation into something an attacker switches off by breaking one signature.
+
+Validating costs roughly one extra query per zone on the path (the DS arrives inside the referral for free), so the per-lookup query budget gains a `VALIDATION_QUERY_BUDGET` of 32 on top of the base 64 when validation is on — otherwise enabling it would silently shorten how deep a name may be before the budget kills it.
 
 ## DANE and TLSA
 
@@ -356,7 +408,7 @@ DNS64 synthesizes AAAA records from A records for IPv6-only clients. When enable
 
 - Default prefix: `64:ff9b::`
 - Disabled by default.
-- Configurable at runtime via `SetDns64Config`/`GetDns64Config`.
+- Configurable at runtime via `SetDns64Config`/`GetDns64Config`, which store the enable flag and the prefix **independently**: disabling synthesis does not discard the configured prefix, so re-enabling it does not silently fall back to the well-known default. A prefix that does not parse is refused rather than substituted.
 
 ## TTL Drift Adjustment
 
@@ -365,7 +417,7 @@ TTL drift modifies cached record TTLs to reduce thundering-herd cache expiration
 - **Fixed**: Add or subtract a fixed duration from TTLs (e.g., `"30s"`, `"-10s"`, `"5m"`, `"1h30m"`). Clamped to minimum 1 second.
 - **Logarithmic**: Adjust TTLs based on upstream server latency using the formula: `adjusted_ttl = original_ttl * (1 + multiplier * ln(avg_latency_ms / 50.0))`. Baseline: 50ms. Higher latency increases TTLs (fewer upstream queries); lower latency decreases TTLs (fresher data).
 
-Disabled by default. Configurable at runtime via `SetTtlDriftConfig`/`GetTtlDriftConfig`.
+Disabled by default. Configurable at runtime via `SetTtlDriftConfig`/`GetTtlDriftConfig`. `GetTtlDriftConfig` reports the adjustment in the same compound spelling it was set with (`1h30m`, not `5400s`) via `ttl_drift::format_duration_secs`, the inverse of `parse_duration_secs` — the config reply is what an operator reads back to confirm what they configured, and it has to round-trip for read-modify-write automation to work.
 
 ### Latency Tracking
 
@@ -776,7 +828,7 @@ The bundled `scripts/rolodex-dns01-hook.sh` provisions/removes the `_acme-challe
 | `list-dhcp-pools`   | List DHCP pools. Takes optional `--scope` filter.                                                                                                  |
 | `list-dhcp-leases`  | List DHCP leases. Takes optional `--scope` filter.                                                                                                 |
 | `delete-dhcp-lease` | Delete a DHCP lease. Takes `--mac`.                                                                                                                |
-| `add-scope-rbl`     | Add a per-scope RBL provider. Takes `--scope`, `--zone`, `--enabled` (default `true`).                                                             |
+| `add-scope-rbl`     | Add a per-scope RBL provider. Takes `--scope`, `--zone`, and `--enabled <true\|false>` (default `true`).                                             |
 | `remove-scope-rbl`  | Remove a per-scope RBL provider. Takes `--scope`, `--zone`.                                                                                        |
 | `list-scope-rbl`    | List per-scope RBL providers. Takes `--scope`.                                                                                                     |
 | `add-scope-tld`     | Register an owned TLD for a scope. Takes `--scope`, `--tld`, and optional `--listen-ip` (starts an ingress DNS listener on that IP).                |
@@ -1034,7 +1086,7 @@ The registry is hand-rolled on the same lock-free primitives as the rest of the 
 
 ### What is exposed
 
-66 metric families, all prefixed `rolodex_dns_`:
+71 metric families, all prefixed `rolodex_dns_`:
 
 | Area | Metrics |
 | ---- | ------- |
@@ -1044,6 +1096,7 @@ The registry is hand-rolled on the same lock-free primitives as the rest of the 
 | Blocklists | `blocklist_blocks_total{kind}`, `blocklist_allowlisted_total`, `blocklist_lookups_total{kind,result}`, `blocklist_skipped_total`, `blocklist_cache_entries` |
 | Upstream | `upstream_active_tier`, `upstream_tier_attempts_total{tier}`, `_wins_total{tier}`, `_failures_total{tier}`, `upstream_tier_switches_total{direction}`, `upstream_recovery_probes_total`, `upstream_duration_seconds{tier}`, `upstream_queries_total{server}`, `upstream_exhausted_total` |
 | Resolver | `resolver_lookups_total`, `_referrals_total`, `_cname_hops_total`, `_budget_exhausted_total`, `_tcp_retries_total`, `resolver_priming_total{result}`, `resolver_nameserver_latency_milliseconds{server}`, `delegation_cache_entries`, `record_cache_entries` |
+| DNSSEC | `dnssec_verdicts_total{verdict}` (`secure`/`insecure`/`bogus`/`indeterminate`), `dnssec_servfail_total`, `dnssec_dnskey_lookups_total`, `dnssec_insecure_delegations_total`, `key_cache_entries` |
 | Split-horizon | `records`, `scoped_records`, `scopes`, `scope_associations`, `authoritative_zones`, `managed_zones`, `owned_tlds`, `ingress_listeners`, `address_family_reachable{family}` |
 | DHCP | `dhcp_messages_total{type}`, `dhcp_leases{state}`, `dhcp_pools`, `dhcp_allocation_failures_total`, `dhcp_sweeps_total` |
 | ACME | `acme_accounts`, `acme_certificates`, `acme_issued_total`, `acme_validations_total{result}` |
@@ -1101,6 +1154,8 @@ dns:
 | `resolution.recovery_probe_secs`    | `60`                           | How often a degraded `auto` chain retries from the top   |
 | `resolution.delegation_persist_min_ttl` | `300`                      | Minimum TTL for a learned delegation to be persisted to SQLite |
 | `resolution.default_ttl`            | `300`                          | Fallback TTL where a record/response carries none; a present TTL is always honoured |
+| `dnssec.validate`                   | `true`                         | Validate DNSSEC on iteratively-resolved answers; bogus data becomes SERVFAIL (see Upstream DNSSEC Validation) |
+| `dnssec.trust_anchors`              | `[]` (IANA root keys)          | Trust anchors as `"<flags> <protocol> <algorithm> <base64 key>"` (a DNSKEY's RDATA fields, as `dig` prints them); every field is validated at startup and a bad one is a hard failure. An override **replaces** the IANA keys rather than adding to them |
 | `database_path`                     | `rolodex-dns.db`               | SQLite database file path                              |
 | `rbl.enabled`                       | `false`                        | Global RBL enable flag                                 |
 | `rbl.providers`                     | `[]` (empty)                   | RBL provider list                                      |
@@ -1160,7 +1215,7 @@ The project uses a top-level Makefile with the following targets:
 | `test`                | Run all tests: lint, Go integration tests, Go unit tests, Rust tests (`cargo test`), and JavaScript tests.                                                 |
 | `test-log`            | Same as `test`, tee'd into a timestamped log file under `/tmp/rolodex-dns/log` (override with `LOG_DIR`). The log path is printed at the end even when the run fails. |
 | `rust-test`           | Run the Rust integration test files, then `cargo test`.                                                                                                     |
-| `rust-integration-test` | Build, then run each Rust integration test file explicitly (`integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`, `dnssec_signing_test`). |
+| `rust-integration-test` | Build, then run each Rust integration test file explicitly (`integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `acme_admin_test`, `auto_resolution_test`, `metrics_test`, `dnssec_signing_test`, `dnssec_validation_test`, `zonemd_test`, `doq_test`, `proxy_test`, `tls_reload_test`). |
 | `lint`                | Run `cargo fmt -- --check` and `cargo clippy --all-targets -- -D warnings`.                                                                                |
 | `deps`                | Install build dependencies: the Rust cross-compilation toolchain (`cross-deps`) and the JavaScript dev dependencies (`npm install` in `js/`).              |
 | `cross-deps`          | Install the Rust cross toolchain: `rustup target add` for both triples, `cargo-zigbuild`, and zig. Rootless — see Cross-Compilation.                       |
@@ -1342,9 +1397,22 @@ The rest covers: one RRSIG per multi-record RRset and its failure to verify over
 
 Unit tests in `src/dnssec.rs` cover the canonical form itself: name lowercasing and qualification, RFC 4034 §3.1.3 label counts, character-string chunking, per-type RDATA encoding, RRset order-independence, per-algorithm sign/verify round-trips, tamper detection, refusal to load key material that contradicts its label, and that stored algorithm names round-trip through `parse`.
 
+### DNSSEC Validation Tests
+
+`tests/signed_hierarchy/mod.rs` is a **DNSSEC-signed** mock hierarchy — signed root → signed TLD → signed zone, over real UDP sockets, each zone holding its own Ed25519 key, publishing a DNSKEY RRset and handing out a DS for each signed child. Where `tests/mock_hierarchy` proves query *counts*, this one proves *verdicts*, because almost every way of getting DNSSEC wrong still returns the right records: a validator that skips the expiry check, or believes an unsigned NSEC, or accepts any signer name resolves the whole internet correctly right up until someone attacks it.
+
+Its `Tamper` enum is the point. Each variant is one specific attack, applied when the response is **serialized** — after the zone has been correctly constructed — so every test is "a valid deployment, attacked" rather than "an invalid deployment, rejected", which would prove much less.
+
+- `tests/dnssec_validation_test.rs` — the paths that must keep working: a fully signed chain validating Secure with the right address, RRSIGs surviving to the client, an NSEC-proven unsigned delegation resolving Insecure, proven NXDOMAIN and NODATA, the key cache sparing the root a second query for a warm zone, and a non-validating resolver reporting Insecure rather than Secure.
+- `tests/security_dnssec_test.rs` — the attacks, each with the finding stated in the module docs: stripped signatures (the downgrade DNSSEC exists to stop), a delegation with neither a DS nor a proof of its absence (the delegation-level downgrade), expired and premature signatures, a signature from a key the DNSKEY RRset does not publish, a foreign signer name, data mutated after signing, an unproven negative, a trust anchor matching no root key, and malformed anchors being refused at parse rather than silently falling back to IANA.
+
+Both matter equally and for the same reason: a validator that rejects everything passes every attack test, and one that accepts everything passes every happy-path test. Only the pair together says anything.
+
+Unit tests in `src/dnssec_validate.rs` cover the pieces independently of any network: verdict merging (the worst wins), base32hex against the RFC 4648 §10 vectors and its order-preservation (which is what lets the NSEC3 range checks compare encoded strings), RFC 1982 serial wrap, NSEC coverage including the wrapping last record and exclusivity at both ends, and each denial proof's refusal cases. `src/key_cache.rs` pins that lookups are exact-name rather than suffix — a suffix match would hand a parent's keys to a delegated subzone.
+
 ### Security Regression Suites
 
-The `tests/security_*.rs` files each pin the behaviour one security finding requires, stated in observable terms and paired with a control that must stay green. They cover: the Do53 forwarder and iterative resolver response validation (`security_forwarder_test`, `security_resolver_test`), referral and glue bailiwick (`security_bailiwick_test`), the ACME issuer's CSR confinement, authorization, replay and expiry handling (`security_acme_test`), the enrollment portal's zone scoping and CSRF defences (`security_portal_test`), IPv4-mapped source classification (`security_scope_test`), open recursion and amplification (`security_open_resolver_test`), DHCP-supplied hostname validation (`security_dhcp_hostname_test`), stream-transport connection limits (`security_tcp_limits_test`, `security_dot_limits_test`), filesystem permissions and startup refusal of an unauthenticated routable gRPC bind (`security_local_access_test`), and constant-time secret comparison plus brute-force throttling (`security_auth_hardening_test`).
+The `tests/security_*.rs` files each pin the behaviour one security finding requires, stated in observable terms and paired with a control that must stay green. They cover: the Do53 forwarder and iterative resolver response validation (`security_forwarder_test`, `security_resolver_test`), referral and glue bailiwick (`security_bailiwick_test`), the ACME issuer's CSR confinement, authorization, replay and expiry handling (`security_acme_test`), the enrollment portal's zone scoping and CSRF defences (`security_portal_test`), IPv4-mapped source classification (`security_scope_test`), open recursion and amplification (`security_open_resolver_test`), DHCP-supplied hostname validation (`security_dhcp_hostname_test`), stream-transport connection limits (`security_tcp_limits_test`, `security_dot_limits_test`), filesystem permissions and startup refusal of an unauthenticated routable gRPC bind (`security_local_access_test`), constant-time secret comparison plus brute-force throttling (`security_auth_hardening_test`), and DNSSEC downgrade, replay, key-binding and unproven-denial attacks (`security_dnssec_test`).
 
 A failure in one of these is the finding, not a broken test — the module docs at the top of each file state the invariant and why it is written the way it is. Never weaken an assertion to make one pass.
 
@@ -1356,9 +1424,32 @@ IPAM unit tests in `src/db.rs` cover IP address allocation logic: pool exhaustio
 
 DHCP integration tests in `tests/dhcp_integration_test.rs` cover end-to-end DHCP flows: DISCOVER/OFFER/REQUEST/ACK, sticky bindings, pool exhaustion, lease creation with DNS registration, lease release cleanup, lease sweep with DNS removal, certificate option delivery, multiple concurrent clients, and full UDP packet round-trips.
 
+### Transport, Proxy and TLS Tests
+
+Three suites cover surfaces that previously had only a compilation smoke test or a config-parsing unit test:
+
+- `tests/doq_test.rs` — a real `quinn` client against `serve_doq`: the `doq` ALPN token is negotiated (and a listener without it refuses a `doq`-only client), the 2-byte length prefix agrees with the body, several sequential and concurrent streams on one connection are answered independently, a truncated body is not answered, a zero-length message is rejected without taking the connection down, and a malformed message comes back FORMERR with its transaction ID echoed. Answers come from local database records with no forwarders, so a failure is about the transport and never about resolution.
+- `tests/proxy_test.rs` — mock HTTP CONNECT, SOCKS5 (RFC 1928/1929) and DoH proxies that **parse** what the server sends rather than replying with a canned response, so a malformed greeting or a wrong address type fails at the proxy. Each mode asserts both the answer and what was asked of the proxy (tunnel target, Basic credentials, the absolute-URI request line and unmodified body), that a refusing proxy is SERVFAIL rather than a fabricated answer, that the DoH connection pool reuses one socket across two queries, and — the control — that an unreachable proxy does **not** fall back to a direct connection.
+- `tests/tls_reload_test.rs` — `TlsManager::reload()` observed through real TLS handshakes: a rotated PEM pair is picked up by `reload()` and only by `reload()`, a self-signed manager mints a fresh certificate, ALPN survives the rebuild, a corrupt or missing file fails the reload while leaving the previous certificate serving (and recovers once repaired), and watchers subscribed before and after a reload both end up on the current config. Note that `src/main.rs` only snapshots `server_config()` per listener and never subscribes to `watch()`, so nothing swaps a running listener's certificate yet.
+
+### ZONEMD Tests
+
+`tests/zonemd_test.rs` pins the RFC 8976 RDATA layout field by field — serial (u32 BE), scheme, hash algorithm, raw digest — written out longhand rather than taken from the encoder, since comparing the encoder to itself would ratify a bug. Also covered: a serial above `i32::MAX`, an untruncated SHA-512 digest, malformed values encoding to `None` (and therefore being skipped-and-reported by the signer rather than signed over an invented encoding), gRPC storage round-trip, serving under type 63 with RDATA byte-identical to what is signed, and an RRSIG over a ZONEMD RRset verifying against the published DNSKEY.
+
+### ACME Administration Tests
+
+`tests/acme_admin_test.rs` covers the five admin RPCs. The properties, not the `success` flags: `EnsureZoneCa` is idempotent (a re-mint would break every certificate already chaining to the old intermediate and the published DANE-TA record with it) and gives each zone its own intermediate under one shared root while publishing the chain into DNS; a minted EAB is stored, zone-scoped, unused, and its returned base64url key decodes to the stored secret; removal is honest about whether it removed anything and is confined to the named credential; and `ListAcmeCertificates` suffix-matches on label boundaries, so `notexample.com.` is not listed under `example.com.`
+
 ### CLI Integration Tests
 
-The `rolodex-dns-cli` binary has integration tests that spawn a test gRPC server and execute the CLI binary against it. Tests cover all subcommands over both TCP and Unix socket transports, authentication (success, failure, and Unix socket bypass), all record types (A, AAAA, CNAME, MX, TXT, NS, SRV, PTR, and extended types), wildcard filtering, network scoping, authoritative zone management, and help output validation.
+The `rolodex-dns-cli` binary has integration tests that spawn a test gRPC server and execute the CLI binary against it, covering **every** subcommand over TCP and Unix socket transports: authentication (success, failure, and Unix socket bypass), all record types, wildcard filtering, network membership and scoped records, authoritative zones, caches, local RBL, TTL drift and DNS64, DHCP pools/leases/cert options, per-scope RBL, DNSSEC key generation and signing, DANE TLSA generation, and the ACME administration commands.
+
+The CLI is tested separately from the gRPC service because it is a separate surface: a handler can be perfectly tested and its subcommand still be broken by a mistyped `short`, a field mapped to the wrong request slot, or a `default_value` that disagrees with the server's. Two consequences are pinned explicitly:
+
+- `test_cli_every_subcommand_help_builds` walks the subcommand list out of the top-level help and runs `--help` on each. clap validates short options at parser construction and **panics** on a duplicate, so a subcommand reusing a letter taken by a global option aborts on every invocation before reading a single argument — which is how `generate-dnssec-key` (`-a`/`--algorithm`) and `set-ttl-drift` (`-a`/`--adjustment`) both collided with the global `--address` and became impossible to run at all. Both are now long-form only.
+- `--enabled` on `add-scope-rbl` **takes a value** (`--enabled false`) and defaults to `true`. Pinned in both directions, because the flag has been wrong in both: as a bare `bool` with `default_value = "true"`, clap gives the field the `SetTrue` action, and older clap versions ignored the default (omission meant `false`, contradicting the docs) while clap 4.6 applies it (making the flag decorative and a disabled provider unreachable). Taking a value is what makes both halves expressible.
+
+Where a command reads state no subcommand can create — a DHCP lease, an issued certificate, a registered ACME account — the test seeds it through the server's database and reads it back through the CLI, so the listing is proven to render real rows rather than an empty table.
 
 ### Go Client Tests
 
@@ -1367,7 +1458,7 @@ The Go client has two test layers:
 - **Unit tests** — Use an in-process mock gRPC server via `bufconn` to test all client methods, authentication token propagation, transport modes, error handling, and edge cases (idempotent close, lazy dial, custom dial options).
 - **Integration tests** — Gated behind the `integration` build tag. Each test starts a real Rolodex DNS server subprocess with a unique temporary directory, random ports, and isolated database. Tests cover record CRUD, wildcard filtering, forwarder configuration, RBL round-trip, cache flushing, Unix socket transport, authentication failure, default TTL behavior, concurrent clients (5 simultaneous), network scoping, DNS64, and TTL drift.
 
-The `make test` target runs the full test suite: lint, Go integration tests, Go unit tests, Rust integration tests (each test file explicitly: `integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`, `dnssec_signing_test`), all Rust tests via `cargo test` (which also covers the resolver suite above), and the JavaScript lint/integration/unit tests. Individual targets are available: `make go-integration-test`, `make go-test`, `make rust-integration-test`, `make rust-test`, `make js-integration-test`, `make js-test`. Use `make test-log` to capture the whole run to a timestamped log file.
+The `make test` target runs the full test suite: lint, Go integration tests, Go unit tests, Rust integration tests (each test file explicitly: `integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`, `dnssec_signing_test`, `dnssec_validation_test`), all Rust tests via `cargo test` (which also covers the resolver suite above), and the JavaScript lint/integration/unit tests. Individual targets are available: `make go-integration-test`, `make go-test`, `make rust-integration-test`, `make rust-test`, `make js-integration-test`, `make js-test`. Use `make test-log` to capture the whole run to a timestamped log file.
 
 ## Key Dependencies
 

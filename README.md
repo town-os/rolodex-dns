@@ -19,10 +19,10 @@ Rolodex DNS also supports Realtime Blackhole Lists (RBLs) and domain blocklists 
 - **Address-family awareness**: A background probe tests real IPv4/IPv6 internet reachability and suppresses A or AAAA answers for a family the host cannot route, so clients fall back instead of stalling on a dead stack
 - **Forwarding resolver**: Configurable upstream DNS forwarders, usable exclusively via `resolution.mode: forward`
 - **TLD/domain overlay**: Add records at any level (including TLDs) to override public DNS
-- **DNSSEC**: Ed25519 (preferred), ECDSA P-256/P-384, RSA/SHA-256 key generation, zone signing, and DS record computation
+- **DNSSEC**: Ed25519 (preferred) and ECDSA P-256/P-384 key generation, zone signing, and DS record computation. RSA/SHA-256 is verifiable but cannot be generated (`ring` has no RSA key generation), and authenticated denial (NSEC/NSEC3) is not produced
 - **DANE TLSA + ACME issuer**: TLSA record generation from certificates, a built-in ACME certificate authority (per-zone intermediate CAs), self-signed root CA generation, ACME DNS-01 challenge handling (serves `_acme-challenge` TXT records natively)
 - **CA distribution over DNS**: the root and per-zone intermediate CA chain is published as `CERT` records (RFC 4398) with a chunked `TXT` fallback, so any client that can resolve the zone can fetch and trust the CA — no portal access required (see [Distributing and Trusting the CA](#distributing-and-trusting-the-ca))
-- **22 record types**: A, AAAA, CNAME, MX, TXT, NS, SOA, SRV, PTR, URI, SSHFP, DNAME, ANAME, ZONEMD, TLSA, CERT, DNSKEY, DS, RRSIG, NSEC, NSEC3, NSEC3PARAM
+- **22 record types**: A, AAAA, CNAME, MX, TXT, NS, SOA, SRV, PTR, URI, SSHFP, DNAME, ANAME, ZONEMD, TLSA, CERT, DNSKEY, DS, RRSIG, NSEC, NSEC3, NSEC3PARAM. All 22 can be stored and listed; NSEC, NSEC3 and NSEC3PARAM are never generated or served (see [DNSSEC](#dnssec))
 - **DNS wildcards**: RFC 4592 compliant wildcard matching (`*.example.com.` matches single-label substitutions, exact match takes priority)
 - **Authoritative DNS**: AA bit enforcement for local zones and explicitly declared authoritative zones
 - **EDNS (RFC 6891)**: OPT record support, payload size negotiation, DO bit for DNSSEC, BADVERS for version > 0
@@ -37,8 +37,9 @@ Rolodex DNS also supports Realtime Blackhole Lists (RBLs) and domain blocklists 
 - **Integrated DHCPv4 server**: Per-scope address pools with sticky MAC bindings, automatic A/PTR registration, certificate delivery via site-specific options, and a background lease sweep
 - **Automatic reverse PTR records**: Optional (`dns.auto_ptr`) maintenance of matching `in-addr.arpa`/`ip6.arpa` PTRs for A/AAAA records added through gRPC
 - **Proxy support**: Forward DNS queries through HTTP CONNECT, SOCKS5, or DoH proxy
+- **Prometheus metrics**: an optional, off-by-default `/metrics` endpoint exposing 66 metric families with bounded label cardinality — including per-stage answer attribution, so the split-horizon pipeline is legible from outside. Query names are never labels
 - **SQLite persistence**: DNS records persist across restarts
-- **TLS hot-reload**: Certificates can be reloaded at runtime (e.g. after ACME renewal) without restarting the server
+- **TLS hot-reload (partial)**: `TlsManager` rebuilds its `rustls::ServerConfig` from the configured PEM files on demand and publishes it to watchers, keeping the previous certificate serving if the rebuild fails. **Not yet wired to the listeners** — each of DoT/DoH/DoQ/ACME takes a one-time config snapshot at startup, so a renewed certificate still requires a restart to be served
 - **Performance**: Multi-threaded tokio runtime, lock-free RBL and resolver state (`AtomicBool` + `ArcSwap` + atomics), in-memory boot caches for scopes/zones/TLDs/RBL entries, UDP socket pool for upstream forwarding, and DashMap/DashSet concurrent caching throughout
 
 ## Building
@@ -354,8 +355,6 @@ rbl:
       enabled: true
     - zone: b.barracudacentral.org
       enabled: true
-    - zone: dnsbl.sorbs.net
-      enabled: true
     - zone: dbl.spamhaus.org
       enabled: true
 
@@ -486,6 +485,7 @@ security:
 | `address_family.fail_threshold` | `2` | Consecutive failed probe cycles before a family is marked down (recovery is immediate) |
 | `address_family.probe_timeout_secs` | `2` | Per-target TCP-connect timeout for each probe |
 | `address_family.targets_v4` / `targets_v6` | Cloudflare/Google on `:443` | Probe targets per family (literal IPs) |
+| `metrics.bind` | `127.0.0.1:9153` | Prometheus `/metrics` HTTP listener; supports interface:port. The section is optional and omitted by default, in which case no listener is started (see [Prometheus Metrics](#prometheus-metrics)) |
 
 ## Usage
 
@@ -743,7 +743,7 @@ rolodex-dns-cli set-rbl-config -e -p "zen.spamhaus.org:true"
 rolodex-dns-cli set-rbl-config -e \
   -p "zen.spamhaus.org:true" \
   -p "bl.spamcop.net:false" \
-  -p "dnsbl.sorbs.net:true"
+  -p "b.barracudacentral.org:true"
 
 # Disable RBL entirely
 rolodex-dns-cli set-rbl-config
@@ -1373,7 +1373,8 @@ Rolodex DNS supports DNSSEC zone signing with the following algorithms:
 
 - **Ed25519** (preferred) -- compact keys and signatures, fast signing
 - **ECDSA P-256/SHA-256** and **ECDSA P-384/SHA-384**
-- **RSA/SHA-256** (2048-bit)
+
+**RSA/SHA-256 (algorithm 8) cannot be generated** and `generate-dnssec-key` refuses it: `ring` has no RSA key generation. It still *parses* — an existing key row filed under it remains listable — and RSA signatures from upstream zones are verifiable, but nothing here will sign with it. An algorithm that cannot be honoured end to end is refused at key generation rather than quietly substituted, because a DNSKEY advertising one algorithm over another's key material yields a DS, a DNSKEY and a set of RRSIGs that all disagree, and that failure surfaces at a validating resolver rather than locally.
 
 Ed448 is not supported due to a limitation in the ring cryptography crate.
 
@@ -1392,7 +1393,9 @@ Ed448 is not supported due to a limitation in the ring cryptography crate.
 
 3. Retrieve DS records for your registrar. There is no CLI subcommand for this — call the `GetDsRecords` gRPC method (e.g. via the Go client's `GetDsRecords(ctx, zone)`), or query the DS records from the zone with any DNS client.
 
-Signing produces DNSKEY, RRSIG, NSEC/NSEC3, and NSEC3PARAM records automatically. Re-run `sign-zone` after adding or modifying records.
+Signing republishes the apex DNSKEY RRset and produces one RRSIG per RRset. Re-run `sign-zone` after adding or modifying records; existing RRSIGs are replaced rather than accumulated.
+
+**Authenticated denial is not generated.** NSEC, NSEC3 and NSEC3PARAM are storable and listable record types, but `sign-zone` neither generates nor serves them, so a zone signed here proves what exists and not what does not.
 
 ## Distributing and Trusting the CA
 
@@ -1443,6 +1446,25 @@ dns64:
 
 Or at runtime via gRPC: `SetDns64Config` / `GetDns64Config`.
 
+## Prometheus Metrics
+
+An optional `metrics` section starts a plain-HTTP scrape endpoint at `/metrics`. The section is **absent by default**, so no listener is started and an upgrade opens no new port.
+
+```yaml
+metrics:
+  bind: "127.0.0.1:9153"
+```
+
+The endpoint is unauthenticated and carries only aggregate counts — no query names, no record values, no certificate material. Bind it to a private address; the default is loopback. TLS is deliberately not offered here, since it would mean shipping a self-signed certificate to every scraper for an endpoint that should not be publicly reachable in the first place.
+
+66 metric families are exposed, all prefixed `rolodex_dns_`, covering queries, the response cache, blocklists, upstream tiers, the iterative resolver, split-horizon state, DHCP, ACME, and gRPC. Bounded cardinality is a design constraint: every label is a fixed enum or bounded by configuration, unrecognized query types fold into `OTHER`, and **query names are never labels**.
+
+The one worth knowing about is `rolodex_dns_answers_total{source}`, which reports which stage of the resolution order produced each answer — `cache`, `local`, `scoped`, `scope_fallback`, `tld_peer`, `blocklist`, `rbl`, `dns64`, `upstream`, `authoritative_nxdomain`, `refused`, `error`. Its total equals the query total, which is what makes the split-horizon pipeline legible from outside:
+
+```
+curl -s http://127.0.0.1:9153/metrics | grep answers_total
+```
+
 ## RBL (Realtime Blackhole List)
 
 When RBL is enabled, Rolodex DNS checks IP addresses found in reverse DNS queries against configured RBL providers. If an IP is listed in any enabled provider, the query receives an `NXDOMAIN` response. RBL is **disabled by default with an empty provider list** — nothing external is queried until an operator adds providers via the `rbl` config section or `SetRblConfig`.
@@ -1471,7 +1493,6 @@ The provider list ships empty; these are the standard zones an operator typicall
 | `zen.spamhaus.org` | Combined Spamhaus blocklist (SBL + XBL + PBL + CSS) |
 | `bl.spamcop.net` | SpamCop blocklist |
 | `b.barracudacentral.org` | Barracuda Reputation Block List |
-| `dnsbl.sorbs.net` | SORBS aggregate zone |
 | `dbl.spamhaus.org` | Spamhaus Domain Block List |
 
 ### How RBL Works

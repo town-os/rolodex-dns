@@ -118,6 +118,35 @@ pub fn parse_duration_secs(s: &str) -> Option<i64> {
     Some(sign * num * unit)
 }
 
+/// Renders a signed second count back into the compound spelling
+/// [`parse_duration_secs`] accepts — the inverse of that function.
+///
+/// This exists because `GetTtlDriftConfig` used to render the stored seconds as
+/// `format!("{}s", secs)`, so an operator who set `1h30m` was told the value was
+/// `5400s`. That is not wrong arithmetically, and it is still a bad answer: the
+/// config reply is what an operator reads back to confirm what they configured,
+/// and a value that does not resemble what they typed reads as "the setting did
+/// not take". It also breaks the obvious automation — read the config, write it
+/// back — for anyone who assumed the two forms match.
+///
+/// `format_compact` rather than `Display`: the padded form is `1h 30m`, and the
+/// whitespace does not survive a round trip through a CLI argument.
+pub fn format_duration_secs(secs: i64) -> String {
+    if secs == 0 {
+        // fancy_duration renders a zero duration as a bare "0", which
+        // `parse_duration_secs` would then read as 0 seconds only by falling
+        // through to its no-unit branch. Emitting the unit keeps the output
+        // inside the documented syntax.
+        return "0s".to_string();
+    }
+    let sign = if secs < 0 { "-" } else { "" };
+    let magnitude = std::time::Duration::from_secs(secs.unsigned_abs());
+    format!(
+        "{sign}{}",
+        fancy_duration::FancyDuration::new(magnitude).format_compact()
+    )
+}
+
 /// Tracks per-server latency using exponential moving average (EMA).
 #[derive(Debug)]
 pub struct LatencyTracker {

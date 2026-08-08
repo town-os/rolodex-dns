@@ -547,7 +547,12 @@ enum Commands {
         #[arg(short, long)]
         mode: String,
         /// Fixed adjustment (e.g. "+5m", "-30s"). Only used in "fixed" mode.
-        #[arg(short, long, default_value = "0s")]
+        ///
+        /// Long form only: `-a` is taken by the global `--address`, and clap
+        /// panics at parser construction on a duplicate short option, which made
+        /// every invocation of this subcommand — including `--help` — abort
+        /// before it did anything.
+        #[arg(long, default_value = "0s")]
         adjustment: String,
         /// Logarithmic multiplier. Only used in "logarithmic" mode.
         #[arg(short, long, default_value_t = 0.1)]
@@ -636,7 +641,19 @@ enum Commands {
         scope: String,
         #[arg(short, long)]
         zone: String,
-        #[arg(short, long, default_value = "true")]
+        /// Whether the provider is checked: "true" (the default) or "false" to
+        /// register it without turning it on.
+        // Takes a value rather than being a bare switch, because a bare switch
+        // cannot express both halves. Written as `#[arg(short, long,
+        // default_value = "true")]` on a `bool`, clap gives the field the
+        // `SetTrue` action — a flag with no value — and the stated default then
+        // makes the field `true` whether or not the flag is passed, so
+        // `--enabled` becomes decorative and a disabled provider is unreachable
+        // from the CLI. Older clap versions ignored the default instead and made
+        // omission mean `false`, contradicting the documentation in the other
+        // direction. Taking a value is the spelling that means the same thing
+        // under both.
+        #[arg(short, long, default_value_t = true, action = clap::ArgAction::Set)]
         enabled: bool,
     },
 
@@ -756,7 +773,12 @@ enum Commands {
         #[arg(short, long)]
         zone: String,
         /// Algorithm: "ed25519", "ecdsa-p256", "ecdsa-p384"
-        #[arg(short, long, default_value = "ed25519")]
+        ///
+        /// Long form only: `-a` is taken by the global `--address`, and clap
+        /// panics at parser construction on a duplicate short option, which made
+        /// every invocation of this subcommand — including `--help` — abort
+        /// before it did anything.
+        #[arg(long, default_value = "ed25519")]
         algorithm: String,
         /// Key type: "ZSK" or "KSK"
         #[arg(short, long, default_value = "ZSK")]

@@ -20,6 +20,12 @@ use tracing::{debug, error, info, warn};
 
 const FORWARD_POOL_SIZE: usize = 8;
 
+/// The NAT64 prefix used when none is configured: the RFC 6052 well-known
+/// prefix. Also what `GetDns64Config` reports before anything has been set, so
+/// the documented default and the reported default are the same value rather
+/// than two constants that can drift.
+pub const DEFAULT_DNS64_PREFIX: Ipv6Addr = Ipv6Addr::new(0x64, 0xff9b, 0, 0, 0, 0, 0, 0);
+
 /// Indices into [`crate::metrics::BLOCK_KINDS`].
 const BLOCK_RBL_PROVIDER: usize = 0;
 const BLOCK_RBL_LOCAL: usize = 1;
@@ -172,8 +178,16 @@ pub struct DnsServer {
     forwarders: Arc<ArcSwap<Vec<SocketAddr>>>,
     /// Optional DNS response cache for privacy-first resolution.
     dns_cache: Option<Arc<DnsCache>>,
-    /// Optional DNS64 prefix for synthesizing AAAA records from A records.
-    dns64_prefix: Option<Ipv6Addr>,
+    /// Whether DNS64 AAAA synthesis is on.
+    ///
+    /// Held apart from the prefix rather than as an `Option<Ipv6Addr>` because
+    /// the two are set independently over gRPC: `SetDns64Config` carries both
+    /// fields, and an operator who disables synthesis has not thereby forgotten
+    /// which prefix they were using. Collapsing them would make `GetDns64Config`
+    /// answer with the compiled-in default the moment synthesis was turned off.
+    dns64_enabled: AtomicBool,
+    /// The NAT64 prefix AAAA records are synthesized into.
+    dns64_prefix: Arc<ArcSwap<Ipv6Addr>>,
     /// Whether to randomize QNAME case in forwarded queries (0x20 encoding).
     qname_randomization: bool,
     /// TTL drift configuration for adjusting cached record TTLs.
@@ -278,7 +292,8 @@ impl DnsServer {
             rbl,
             forwarders: Arc::new(ArcSwap::from_pointee(forwarders)),
             dns_cache: None,
-            dns64_prefix: None,
+            dns64_enabled: AtomicBool::new(false),
+            dns64_prefix: Arc::new(ArcSwap::from_pointee(DEFAULT_DNS64_PREFIX)),
             qname_randomization: true,
             ttl_drift_config: Arc::new(ArcSwap::from_pointee(
                 crate::ttl_drift::TtlDriftConfig::default(),
@@ -324,7 +339,10 @@ impl DnsServer {
             rbl,
             forwarders: Arc::new(ArcSwap::from_pointee(forwarders)),
             dns_cache,
-            dns64_prefix,
+            dns64_enabled: AtomicBool::new(dns64_prefix.is_some()),
+            dns64_prefix: Arc::new(ArcSwap::from_pointee(
+                dns64_prefix.unwrap_or(DEFAULT_DNS64_PREFIX),
+            )),
             qname_randomization,
             ttl_drift_config: Arc::new(ArcSwap::from_pointee(
                 crate::ttl_drift::TtlDriftConfig::default(),
@@ -568,6 +586,42 @@ impl DnsServer {
             )
             .with_default_ttl(default_ttl),
         ));
+    }
+
+    /// Turns DNSSEC validation on (or off) for the iterative resolver.
+    ///
+    /// Rebuilds the resolver through `with_root_hints`, which preserves the
+    /// delegation cache, the record cache and the latency stats — building a
+    /// fresh one here would throw all of that away and send every name back to
+    /// the roots, which is the bug `with_root_hints` exists to avoid.
+    pub fn set_dnssec_anchors(&self, anchors: Option<crate::dnssec_validate::Anchors>) {
+        let current = self.resolver.load_full();
+        let mut next = current.with_root_hints(current.root_hints().to_vec());
+        next.set_anchors(anchors);
+        self.resolver.store(Arc::new(next));
+    }
+
+    /// Whether the iterative resolver is validating.
+    pub fn dnssec_validating(&self) -> bool {
+        self.resolver.load().validating()
+    }
+
+    /// Sets DNS64 AAAA synthesis at runtime.
+    ///
+    /// Both fields are stored even when `enabled` is false, so that turning
+    /// synthesis off and back on again does not silently reset the prefix to the
+    /// well-known default.
+    pub fn set_dns64_config(&self, enabled: bool, prefix: Ipv6Addr) {
+        self.dns64_prefix.store(Arc::new(prefix));
+        self.dns64_enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    /// The current DNS64 configuration.
+    pub fn get_dns64_config(&self) -> (bool, Ipv6Addr) {
+        (
+            self.dns64_enabled.load(Ordering::Relaxed),
+            **self.dns64_prefix.load(),
+        )
     }
 
     /// Sets the auto-mode encrypted (DoH/DoT) upstreams (the secure tier).
@@ -1371,9 +1425,11 @@ impl DnsServer {
 
             // Check if name falls under a scoped managed zone
             if let Ok(zones) = self.db.get_scoped_managed_zones(scope) {
-                let normalized_qname = crate::db::normalize_name(&qname);
                 for zone in &zones {
-                    if normalized_qname.ends_with(zone) || normalized_qname == *zone {
+                    // Label boundaries, not `ends_with`: without it a scope
+                    // holding `example.com` would answer authoritatively for
+                    // `notexample.com` too, which belongs to somebody else.
+                    if crate::db::name_in_zone(&qname, zone) {
                         let zone_records = self.db.lookup_scoped(scope, zone, None);
                         if !zone_records.is_empty() {
                             debug!(
@@ -1617,24 +1673,33 @@ impl DnsServer {
         }
 
         // Check if this name falls under a managed zone (O(labels) via DashSet lookup)
+        //
+        // Cache membership is the whole test. It used to be re-checked with
+        // `lookup(&zone, None)`, which asks whether the zone *apex* has records —
+        // a different and much narrower question, since a zone whose records all
+        // sit at subdomains (`www.example.com` with nothing at `example.com`) is
+        // the normal case. The effect was that the documented behaviour never
+        // fired for such a zone: a miss inside it was forwarded upstream instead
+        // of answered NXDOMAIN, so the inside representation stopped taking
+        // priority the moment the apex happened to be empty.
+        //
+        // Dropping the re-check is safe because the cache is now pruned when the
+        // last record in a zone is deleted (`Database::remove_records`), which is
+        // the only way it could have gone stale — and it restores the hot path to
+        // the O(labels) DashSet lookup the cache exists to provide.
         if let Some(zone) = self.db.find_managed_zone(&qname) {
-            let zone_records = self.db.lookup(&zone, None);
-            if let Ok(records) = zone_records
-                && !records.is_empty()
-            {
-                debug!(
-                    "Authoritative NXDOMAIN for {} (zone {} exists)",
-                    qname, zone
-                );
-                tag.set(AnswerSource::AuthoritativeNxdomain);
-                return Ok(build_response_edns(
-                    &message,
-                    ResponseCode::NXDomain,
-                    vec![],
-                    true,
-                    edns_ctx.as_ref(),
-                ));
-            }
+            debug!(
+                "Authoritative NXDOMAIN for {} (managed zone {})",
+                qname, zone
+            );
+            tag.set(AnswerSource::AuthoritativeNxdomain);
+            return Ok(build_response_edns(
+                &message,
+                ResponseCode::NXDomain,
+                vec![],
+                true,
+                edns_ctx.as_ref(),
+            ));
         }
 
         // Check explicit authoritative zones (O(labels) via DashSet lookup)
@@ -1768,13 +1833,15 @@ impl DnsServer {
         // Upstream resolution: iterative from the roots (default) or forward.
         let forward_result = self.upstream_resolve(query_data, edns_ctx.as_ref()).await;
 
-        // DNS64 synthesis: if AAAA query returned no answers and dns64_prefix is set,
+        // DNS64 synthesis: if AAAA query returned no answers and DNS64 is on,
         // re-query for A and synthesize AAAA records by embedding IPv4 in the prefix
+        let dns64_prefix = **self.dns64_prefix.load();
         if let Ok(ref response_bytes) = forward_result
             && qtype == RecordType::AAAA
-            && let Some(prefix) = self.dns64_prefix
+            && self.dns64_enabled.load(Ordering::Relaxed)
             && let Ok(fwd_msg) = hickory_proto::op::Message::from_bytes(response_bytes)
         {
+            let prefix = dns64_prefix;
             let has_aaaa = fwd_msg
                 .answers()
                 .iter()
@@ -2143,8 +2210,30 @@ impl DnsServer {
             )
             .await
         {
+            // A failed DNSSEC validation is a *definitive* answer, not a tier
+            // failure. Falling through to the secure or forwarding tier here
+            // would mean any zone whose signatures do not check out is quietly
+            // re-asked of an upstream that does not validate and served anyway —
+            // which turns validation into something an attacker switches off by
+            // breaking one signature.
+            Ok(res) if res.verdict.withholds_answer() => {
+                metrics().dnssec_servfail.inc();
+                warn!(
+                    "DNSSEC validation failed for {} {}: {}",
+                    question.name(),
+                    question.query_type(),
+                    res.verdict.reason().unwrap_or("no reason given")
+                );
+                Some(build_response_validated(
+                    message,
+                    ResponseCode::ServFail,
+                    Vec::new(),
+                    edns_ctx,
+                    &res.verdict,
+                ))
+            }
             Ok(res) if matches!(res.rcode, ResponseCode::NoError | ResponseCode::NXDomain) => Some(
-                build_response_edns(message, res.rcode, res.answers, false, edns_ctx),
+                build_response_validated(message, res.rcode, res.answers, edns_ctx, &res.verdict),
             ),
             Ok(_) => None,
             Err(e) => {
@@ -2220,6 +2309,25 @@ impl DnsServer {
             )
             .await
         {
+            Ok(res) if res.verdict.withholds_answer() => {
+                // Never cached and never served: bogus data that reached the
+                // response cache would keep being served after the attack ended,
+                // and a cached bogus negative would suppress the real name.
+                metrics().dnssec_servfail.inc();
+                warn!(
+                    "DNSSEC validation failed for {} {}: {}",
+                    question.name(),
+                    question.query_type(),
+                    res.verdict.reason().unwrap_or("no reason given")
+                );
+                Ok(build_response_validated(
+                    &message,
+                    ResponseCode::ServFail,
+                    Vec::new(),
+                    edns_ctx,
+                    &res.verdict,
+                ))
+            }
             Ok(res) => {
                 if res.rcode == ResponseCode::NoError && !res.answers.is_empty() {
                     self.cache_answers(question, &res.answers);
@@ -2229,12 +2337,12 @@ impl DnsServer {
                     // next lookup of this name does not re-walk from the roots.
                     self.cache_negative(question, res.rcode, ttl);
                 }
-                Ok(build_response_edns(
+                Ok(build_response_validated(
                     &message,
                     res.rcode,
                     res.answers,
-                    false,
                     edns_ctx,
+                    &res.verdict,
                 ))
             }
             Err(e) => {
@@ -2926,7 +3034,15 @@ fn build_response_edns(
         response.add_query(q.clone());
     }
 
+    let qtype = query
+        .queries()
+        .first()
+        .map(hickory_proto::op::Query::query_type);
+    let dnssec_ok = edns_ctx.is_some_and(|ctx| ctx.dnssec_ok);
     for answer in answers {
+        if !dnssec_records_wanted(&answer, qtype, dnssec_ok) {
+            continue;
+        }
         response.add_answer(answer);
     }
 
@@ -2936,6 +3052,63 @@ fn build_response_edns(
     }
 
     response.to_bytes().unwrap_or_default()
+}
+
+/// Whether a record may be included in a response to this client.
+///
+/// RFC 4035 §3.2.1: RRSIG, NSEC and NSEC3 records exist to be verified, and a
+/// client that did not set the DO bit did not ask to verify anything — sending
+/// them anyway inflates every answer (a signed A record roughly triples in size)
+/// for a resolver that will discard them, and a large answer to a small question
+/// is the amplification shape the recursion CIDRs exist to close.
+///
+/// The exception is a client that asked for one of those types *by name*: `dig
+/// RRSIG example.com` is an ordinary query for an ordinary type and must be
+/// answered whether or not DO is set. DNSKEY and DS are not gated at all — they
+/// are normal record types that happen to carry keys.
+fn dnssec_records_wanted(record: &Record, qtype: Option<RecordType>, dnssec_ok: bool) -> bool {
+    if dnssec_ok {
+        return true;
+    }
+    match record.record_type() {
+        rtype @ (RecordType::RRSIG | RecordType::NSEC | RecordType::NSEC3) => qtype == Some(rtype),
+        _ => true,
+    }
+}
+
+/// As [`build_response_edns`], for a response whose DNSSEC verdict is known.
+///
+/// The verdict reaches the wire in exactly one way: the AD bit, and only for
+/// [`Verdict::Secure`]. Everything else — an unsigned zone, a degraded `auto`
+/// tier, validation switched off — leaves AD clear, because AD is a claim that
+/// *this* resolver verified the data, and there is no half-strength version of
+/// that claim to make.
+///
+/// RFC 6840 §5.7: the bit is set only for a client that asked, which is one that
+/// set DO or AD in its query. A stub that asked for neither is not expecting the
+/// flag and cannot act on it.
+fn build_response_validated(
+    query: &hickory_proto::op::Message,
+    rcode: ResponseCode,
+    answers: Vec<Record>,
+    edns_ctx: Option<&crate::edns::EdnsContext>,
+    verdict: &crate::dnssec_validate::Verdict,
+) -> Vec<u8> {
+    let bytes = build_response_edns(query, rcode, answers, false, edns_ctx);
+    let client_asked = query.authentic_data() || edns_ctx.is_some_and(|ctx| ctx.dnssec_ok);
+    if !client_asked || *verdict != crate::dnssec_validate::Verdict::Secure {
+        return bytes;
+    }
+    // Re-parse rather than duplicating the builder: this runs only for a
+    // validated answer to a DO/AD client, and the alternative is a second copy
+    // of `build_response_edns` that has to be kept in step with the first.
+    match hickory_proto::op::Message::from_bytes(&bytes) {
+        Ok(mut response) => {
+            response.set_authentic_data(true);
+            response.to_bytes().unwrap_or(bytes)
+        }
+        Err(_) => bytes,
+    }
 }
 
 /// Builds a DNS query message for a specific record type (used for DNS64 A re-query).
@@ -3157,6 +3330,79 @@ mod tests {
                 .iter()
                 .any(|p| query.starts_with(p.as_str()))
             {
+                Ok(Some(300))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+
+    /// A domain blocklist that lists exactly the provider queries it was given,
+    /// and records every query it was asked.
+    ///
+    /// The recording half is what lets a test assert *what* was looked up rather
+    /// than only what came back — the two failures it catches are a wrongly
+    /// composed provider query (which silently lists nothing) and a lookup that
+    /// happens when it should not (which leaks queried names to the blocklist
+    /// operator). Neither is visible in the response code.
+    struct RecordingDnsblResolver {
+        listed: Vec<String>,
+        seen: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RecordingDnsblResolver {
+        fn listing(listed: &[&str]) -> Self {
+            Self {
+                listed: listed.iter().map(|s| s.to_string()).collect(),
+                seen: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn queries(&self) -> Vec<String> {
+            self.seen.lock().map(|q| q.clone()).unwrap_or_default()
+        }
+
+        fn saw(&self, query: &str) -> bool {
+            self.queries().iter().any(|q| q == query)
+        }
+    }
+
+    /// Waits until the blocklist resolver has been asked `query`.
+    ///
+    /// Blocklist fills are fire-and-forget background tasks (`fill_cache_async`),
+    /// so the query path returns before the provider has been contacted. Reading
+    /// the recorded queries straight after a lookup would be a race that usually
+    /// passes on a warm machine and fails under load, which is worse than a test
+    /// that does not exist.
+    async fn await_dnsbl_query(resolver: &RecordingDnsblResolver, query: &str) -> bool {
+        for _ in 0..200 {
+            if resolver.saw(query) {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        resolver.saw(query)
+    }
+
+    /// Gives any spawned blocklist fill time to run.
+    ///
+    /// Needed before asserting that *no* lookup happened: without it the
+    /// assertion passes whenever the spawned task simply has not been polled
+    /// yet, so a regression that reintroduced the lookup would go unnoticed.
+    async fn settle_dnsbl() {
+        for _ in 0..64 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    #[async_trait::async_trait]
+    impl RblResolver for RecordingDnsblResolver {
+        async fn lookup_rbl(&self, query: &str) -> Result<Option<u32>, anyhow::Error> {
+            if let Ok(mut seen) = self.seen.lock() {
+                seen.push(query.to_string());
+            }
+            if self.listed.iter().any(|l| l == query) {
                 Ok(Some(300))
             } else {
                 Ok(None)
@@ -3635,6 +3881,212 @@ mod tests {
         let allowed_resp =
             Message::from_bytes(&server.handle_query(&allowed).await.unwrap()).unwrap();
         assert_eq!(allowed_resp.response_code(), ResponseCode::ServFail);
+    }
+
+    /// `doubleclick.net` is unreachable while the DNSBL that lists it is in use.
+    ///
+    /// The name is the point: an ad/tracking domain is the case a DNSBL is
+    /// actually deployed for, and the assertion pairs a block with a control so
+    /// it cannot pass for the wrong reason. NXDOMAIN rather than SERVFAIL is what
+    /// proves the blocklist fired *before* the forwarder — with no forwarders
+    /// configured, anything that reaches the upstream path SERVFAILs, so the two
+    /// rcodes distinguish "blocked" from "merely unresolvable".
+    ///
+    /// The recorded provider query pins the other half: the name the blocklist is
+    /// asked about must be `doubleclick.net.dbl.test`, the queried name's labels
+    /// prepended to the provider zone. Get that composition wrong and every
+    /// lookup misses, which looks exactly like a blocklist that lists nothing.
+    #[tokio::test]
+    async fn test_dnsbl_blocks_doubleclick_net() {
+        let db = Database::open_memory().unwrap();
+        let resolver = Arc::new(RecordingDnsblResolver::listing(&[
+            "doubleclick.net.dbl.test",
+        ]));
+        let server = make_test_server_with_dnsbl(db, resolver.clone()).await;
+
+        let blocked = build_query("doubleclick.net.", RecordType::A);
+        let resp = query_until_blocked(&server, &blocked).await;
+        assert_eq!(
+            resp.response_code(),
+            ResponseCode::NXDomain,
+            "a DNSBL-listed name must be refused, not resolved"
+        );
+        assert!(
+            resp.answers().is_empty(),
+            "a blocked name must carry no answers"
+        );
+
+        // Safe to read without waiting: NXDOMAIN only follows a *warm positive*
+        // verdict, which only exists once the provider has answered.
+        assert!(
+            resolver.saw("doubleclick.net.dbl.test"),
+            "the provider must be asked about <qname>.<zone>, saw: {:?}",
+            resolver.queries()
+        );
+
+        // The control: an unlisted name is not swept up. Without this the test
+        // would pass just as happily against a blocklist that blocks everything.
+        let allowed = build_query("example.org.", RecordType::A);
+        let allowed_resp =
+            Message::from_bytes(&server.handle_query(&allowed).await.unwrap()).unwrap();
+        assert_eq!(
+            allowed_resp.response_code(),
+            ResponseCode::ServFail,
+            "an unlisted name must fall through to the upstream path, not be blocked"
+        );
+    }
+
+    /// Blocking is **per queried name**, not per suffix: the provider is asked
+    /// about the exact name, so `doubleclick.net` being listed does not by itself
+    /// block `stats.g.doubleclick.net`.
+    ///
+    /// This is the difference between working and cosmetic ad-blocking — real
+    /// tracking traffic goes to subdomains — and it is the operator's decision to
+    /// make, not ours: a DNSBL that silently blocked every name under a listed
+    /// one would take out an entire domain over a single listed host. So the
+    /// behaviour is pinned rather than assumed, in both directions: the subdomain
+    /// resolves while unlisted, and is blocked once the provider lists it.
+    ///
+    /// Note the asymmetry with the allowlist, which *is* suffix-matched — see
+    /// `test_dnsbl_allowlist_exempts_doubleclick_and_its_subdomains`.
+    #[tokio::test]
+    async fn test_dnsbl_blocking_is_per_name_not_per_suffix() {
+        let db = Database::open_memory().unwrap();
+        let resolver = Arc::new(RecordingDnsblResolver::listing(&[
+            "doubleclick.net.dbl.test",
+        ]));
+        let server = make_test_server_with_dnsbl(db, resolver.clone()).await;
+
+        let apex = build_query("doubleclick.net.", RecordType::A);
+        assert_eq!(
+            query_until_blocked(&server, &apex).await.response_code(),
+            ResponseCode::NXDomain,
+            "the listed name itself is blocked"
+        );
+
+        let sub = build_query("stats.g.doubleclick.net.", RecordType::A);
+        server.handle_query(&sub).await.unwrap();
+        assert!(
+            await_dnsbl_query(&resolver, "stats.g.doubleclick.net.dbl.test").await,
+            "the subdomain must be looked up in its own right, saw: {:?}",
+            resolver.queries()
+        );
+        // Re-query now that the provider's not-listed verdict is cached: the
+        // subdomain must still resolve. Asserting before the verdict landed
+        // would only prove the answer had not been blocked *yet*.
+        let sub_resp = Message::from_bytes(&server.handle_query(&sub).await.unwrap()).unwrap();
+        assert_eq!(
+            sub_resp.response_code(),
+            ResponseCode::ServFail,
+            "a subdomain the provider does not list is not blocked by the parent's listing"
+        );
+
+        // Now list the subdomain too, as a real domain blocklist does. The
+        // config change flushes the result cache, so it takes effect at once
+        // rather than after the negative TTL runs out.
+        let listing = Arc::new(RecordingDnsblResolver::listing(&[
+            "doubleclick.net.dbl.test",
+            "stats.g.doubleclick.net.dbl.test",
+        ]));
+        let server = make_test_server_with_dnsbl(Database::open_memory().unwrap(), listing).await;
+        let sub = build_query("stats.g.doubleclick.net.", RecordType::A);
+        assert_eq!(
+            query_until_blocked(&server, &sub).await.response_code(),
+            ResponseCode::NXDomain,
+            "a subdomain the provider lists must be blocked"
+        );
+    }
+
+    /// With the DNSBL switched off, `doubleclick.net` resolves like any other
+    /// name — and the provider is never asked.
+    ///
+    /// The second half matters as much as the first: a disabled check that still
+    /// issues the lookup leaks every queried name to the blocklist operator,
+    /// which is a privacy failure that no rcode assertion would ever catch.
+    #[tokio::test]
+    async fn test_dnsbl_disabled_does_not_block_doubleclick() {
+        let db = Database::open_memory().unwrap();
+        let resolver = Arc::new(RecordingDnsblResolver::listing(&[
+            "doubleclick.net.dbl.test",
+        ]));
+        // Providers configured but the global flag off — the case an operator
+        // reaches for to turn blocking off without losing their provider list.
+        let rbl = Arc::new(RblChecker::with_resolver(
+            false,
+            vec![],
+            resolver.clone() as Arc<dyn RblResolver>,
+        ));
+        rbl.set_dnsbl_config(
+            false,
+            vec![RblProvider {
+                zone: "dbl.test".to_string(),
+                enabled: true,
+            }],
+        )
+        .await;
+        let server = Arc::new(DnsServer::new(db, rbl, vec![]));
+
+        let query = build_query("doubleclick.net.", RecordType::A);
+        let resp = Message::from_bytes(&server.handle_query(&query).await.unwrap()).unwrap();
+        assert_eq!(
+            resp.response_code(),
+            ResponseCode::ServFail,
+            "with DNSBL disabled the name must reach the upstream path, not be blocked"
+        );
+        settle_dnsbl().await;
+        assert!(
+            resolver.queries().is_empty(),
+            "a disabled DNSBL must issue no provider lookups, saw: {:?}",
+            resolver.queries()
+        );
+    }
+
+    /// The allowlist is the operator's escape hatch, and unlike the blocklist it
+    /// **is** suffix-matched: allowlisting `doubleclick.net` exempts every name
+    /// beneath it.
+    ///
+    /// It must also short-circuit before the provider lookup — an exempted name
+    /// that still issued a query would hand the blocklist operator exactly the
+    /// names the operator decided to keep private.
+    #[tokio::test]
+    async fn test_dnsbl_allowlist_exempts_doubleclick_and_its_subdomains() {
+        let db = Database::open_memory().unwrap();
+        db.add_dnsbl_allowlist_entry("doubleclick.net", "ad platform needed by a vendor tool")
+            .unwrap();
+
+        let resolver = Arc::new(RecordingDnsblResolver::listing(&[
+            "doubleclick.net.dbl.test",
+            "ad.doubleclick.net.dbl.test",
+        ]));
+        let server = make_test_server_with_dnsbl(db, resolver.clone()).await;
+
+        for name in ["doubleclick.net.", "ad.doubleclick.net."] {
+            let query = build_query(name, RecordType::A);
+            let resp = Message::from_bytes(&server.handle_query(&query).await.unwrap()).unwrap();
+            assert_eq!(
+                resp.response_code(),
+                ResponseCode::ServFail,
+                "{name} is allowlisted and must not be blocked"
+            );
+        }
+        settle_dnsbl().await;
+        assert!(
+            resolver.queries().is_empty(),
+            "an allowlisted name must never reach the provider, saw: {:?}",
+            resolver.queries()
+        );
+
+        // Label-boundary matching: a name that merely ends in the same text is
+        // not covered by the entry, so the exemption cannot be widened by
+        // registering a lookalike.
+        let lookalike = build_query("notdoubleclick.net.", RecordType::A);
+        let resp = Message::from_bytes(&server.handle_query(&lookalike).await.unwrap()).unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::ServFail);
+        assert!(
+            await_dnsbl_query(&resolver, "notdoubleclick.net.dbl.test").await,
+            "a lookalike name is not exempt and must still be checked, saw: {:?}",
+            resolver.queries()
+        );
     }
 
     /// RBL precedence must also override a previously-cached upstream answer:

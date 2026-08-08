@@ -1061,7 +1061,54 @@ impl Database {
             )?
         };
 
+        // Keep the managed-zone cache honest. This is the only path that deletes
+        // global records, so it is the only place the cache can go stale — and a
+        // stale entry is not harmless: `find_managed_zone` is what turns a miss
+        // into an *authoritative* NXDOMAIN, so a zone whose last record was
+        // deleted would keep swallowing every name under it instead of letting
+        // them resolve upstream.
+        //
+        // Off the hot path by construction: removal is a control-plane
+        // operation, so paying a query here is what lets the query path trust
+        // the cache without one.
+        if count > 0
+            && let Some(zone) = extract_zone_from_name(&normalized)
+            && !Self::zone_has_records_conn(&conn, &zone)?
+        {
+            self.managed_zones_cache.remove(&zone);
+        }
+
         Ok(count)
+    }
+
+    /// Whether any record remains at or beneath `zone`.
+    ///
+    /// "Beneath" is the operative word. The obvious spelling — look up the zone
+    /// apex — asks a different and much narrower question, because a zone
+    /// commonly has records only at subdomains: storing `www.example.com` with
+    /// nothing at `example.com` is the normal case, not an edge case.
+    pub fn zone_has_records(&self, zone: &str) -> Result<bool> {
+        let conn = self.lock()?;
+        Self::zone_has_records_conn(&conn, &normalize_name(zone))
+    }
+
+    /// [`Self::zone_has_records`] against a connection the caller already holds.
+    fn zone_has_records_conn(conn: &rusqlite::Connection, zone: &str) -> Result<bool> {
+        // `LIKE '%.<zone>'` cannot use the index, but it stops at the first row
+        // (`LIMIT 1`), so a zone that still has records costs almost nothing.
+        // Only a genuinely empty zone pays a scan, and that is the case where
+        // the entry is about to be dropped anyway.
+        //
+        // The pattern is escaped because `_` is a LIKE wildcard *and* a legal
+        // DNS label character (`_tcp`, `_acme-challenge`). Unescaped, `_x.test.`
+        // would match `ax.test.` and the zone would look occupied when it is
+        // not — leaving the stale entry this function exists to remove.
+        let pattern = format!(".{}", like_escape(zone));
+        let mut stmt = conn.prepare_cached(
+            "SELECT 1 FROM dns_records WHERE name = ?1 OR name LIKE '%' || ?2 ESCAPE '\\' LIMIT 1",
+        )?;
+        let found = stmt.exists(params![zone, pattern])?;
+        Ok(found)
     }
 
     /// Looks up all records for a given name and optional type.
@@ -2900,12 +2947,15 @@ impl Database {
                 expires_at: row.get(6)?,
             })
         })?;
+        // Label-boundary matching, not `ends_with`: an operator auditing
+        // `example.com` must not be shown a certificate for `notexample.com`,
+        // which is somebody else's name.
         let suffix = zone.map(normalize_name);
         let mut out = Vec::new();
         for row in rows {
             let row = row?;
             match &suffix {
-                Some(s) if !normalize_name(&row.domain).ends_with(s.as_str()) => continue,
+                Some(s) if !name_in_zone(&row.domain, s) => continue,
                 _ => out.push(row),
             }
         }
@@ -4029,11 +4079,98 @@ pub fn make_wildcard_name(normalized: &str) -> Option<String> {
         .map(|dot_pos| format!("*.{}.", &trimmed[dot_pos + 1..]))
 }
 
-/// Extracts the zone (last two labels + trailing dot) from a DNS name.
+/// Whether `name` sits at or beneath `zone`, matching on label boundaries.
+///
+/// The naive spelling is `name.ends_with(zone)`, and it is wrong in a way that
+/// reads as correct: `notexample.com.` ends with `example.com.` — the trailing
+/// dot does not save it, because the mismatch is at the *front* of the zone
+/// label. So the two names have to differ by a label separator, not merely by
+/// text.
+///
+/// Every use of this is a place where the answer decides who owns a name: which
+/// records a zone key signs, which certificates an operator is shown when they
+/// audit a zone, and whether a miss inside a zone is an authoritative NXDOMAIN.
+/// A false positive in any of them hands one party another party's names.
+pub fn name_in_zone(name: &str, zone: &str) -> bool {
+    let name = normalize_name(name);
+    let zone = normalize_name(zone);
+    if name == zone {
+        return true;
+    }
+    // The root zone encloses everything.
+    if zone == "." {
+        return true;
+    }
+    name.ends_with(&format!(".{}", zone))
+}
+
+/// Escapes a string for use inside a SQL `LIKE` pattern with `ESCAPE '\'`.
+///
+/// `%` and `_` are LIKE wildcards, and `_` is also a perfectly legal DNS label
+/// character — `_tcp`, `_acme-challenge` and every TLSA/SRV owner name uses it.
+/// Interpolating one unescaped turns an exact suffix test into a fuzzy one.
+fn like_escape(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// The reverse-DNS trees, where the last-two-labels heuristic does not name a
+/// zone anyone could have delegated.
+///
+/// Deliberately *not* `arpa.` wholesale. `home.arpa.` (RFC 8375) is a
+/// special-use domain for exactly the residential networks this server is built
+/// for, and the heuristic handles it correctly — `foo.home.arpa.` yields
+/// `home.arpa.`, which is the real zone. Excluding all of `arpa.` would stop a
+/// miss under `home.arpa` being an authoritative NXDOMAIN and send it upstream,
+/// where RFC 8375 §4 says it must never go.
+const REVERSE_SUFFIXES: [&str; 2] = ["in-addr.arpa.", "ip6.arpa."];
+
+/// Extracts the managed zone a stored record name implies — the last two labels
+/// — or `None` where that heuristic does not describe a real zone.
+///
 /// E.g. "sub.example.com." -> Some("example.com.")
 ///      "tld." -> Some("tld.")
+///
+/// # Why the reverse trees are excluded
+///
+/// A managed zone makes this server *authoritative* for everything beneath it:
+/// a miss inside one is an NXDOMAIN rather than a query passed upstream. For a
+/// forward name that is the split-horizon bargain and the operator chose the
+/// domain — storing `foo.example.com` claims `example.com`, which is a domain
+/// they had in mind.
+///
+/// Under `in-addr.arpa` nobody chose anything. Reverse zones are delegated at
+/// `1.168.192.in-addr.arpa` (a /24) or shorter, never at two labels, so the
+/// heuristic always yields `in-addr.arpa.` itself — and registering *that* makes
+/// one stored PTR turn this server into the authority for **the entire global
+/// reverse tree**, NXDOMAINing every `in-addr.arpa` lookup on the internet. With
+/// `dns.auto_ptr` enabled a single A record is enough to trigger it.
+///
+/// So the heuristic is not merely aggressive here, it is wrong: the zone it
+/// derives is never the zone being managed. An operator who really does run a
+/// reverse zone declares it with `AddAuthoritativeZone`, which matches on the
+/// actual zone cut instead of guessing at it.
+///
+/// Note that the exclusion is the two reverse trees and not `arpa.` at large —
+/// see [`REVERSE_SUFFIXES`].
+///
+/// # A note on the label arithmetic
+///
+/// "Last two labels" means a name that *is* two labels yields itself:
+/// `host.example.` derives `host.example.`, not `example.`. That is why a
+/// single stored record does not claim a whole TLD, and it is easy to get
+/// backwards when reasoning about which names a stored record makes
+/// authoritative.
 fn extract_zone_from_name(name: &str) -> Option<String> {
-    let parts: Vec<&str> = name.trim_end_matches('.').split('.').collect();
+    let normalized = normalize_name(name);
+    if REVERSE_SUFFIXES
+        .iter()
+        .any(|suffix| name_in_zone(&normalized, suffix))
+    {
+        return None;
+    }
+    let parts: Vec<&str> = normalized.trim_end_matches('.').split('.').collect();
     if parts.len() >= 2 {
         Some(format!("{}.", parts[parts.len() - 2..].join(".")))
     } else if parts.len() == 1 && !parts[0].is_empty() {
@@ -6038,6 +6175,248 @@ mod tests {
         .unwrap();
 
         assert_eq!(db.find_managed_zone("other.org."), None);
+    }
+
+    fn a_record(name: &str, value: &str) -> DnsRecord {
+        DnsRecord {
+            id: None,
+            name: name.to_string(),
+            record_type: RecordKind::A,
+            value: value.to_string(),
+            ttl: 300,
+            priority: 0,
+        }
+    }
+
+    /// A zone is "has records" when anything lives *under* it, not only when its
+    /// apex does. Storing `www.example.com` with nothing at `example.com` is the
+    /// normal shape of a zone, and the query path turns this answer into an
+    /// authoritative NXDOMAIN — so reading it as "the apex must have records"
+    /// silently disables the whole managed-zone step for most real zones.
+    #[test]
+    fn zone_has_records_counts_names_beneath_the_apex() {
+        let db = test_db();
+        db.add_record(&a_record("www.example.com.", "192.0.2.1"))
+            .unwrap();
+
+        assert!(
+            db.zone_has_records("example.com.").unwrap(),
+            "a record under the zone must count"
+        );
+        assert!(
+            !db.zone_has_records("other.org.").unwrap(),
+            "an unrelated zone must not"
+        );
+    }
+
+    /// Label-boundary matching: a zone name that merely shares a text suffix is
+    /// a different zone.
+    #[test]
+    fn zone_has_records_matches_on_label_boundaries() {
+        let db = test_db();
+        db.add_record(&a_record("www.notexample.com.", "192.0.2.1"))
+            .unwrap();
+        assert!(!db.zone_has_records("example.com.").unwrap());
+        assert!(db.zone_has_records("notexample.com.").unwrap());
+    }
+
+    /// `_` is a LIKE wildcard and a legal DNS label character. Unescaped, the
+    /// suffix test would match any single character in its place and report a
+    /// zone as occupied when it is empty — leaving a stale cache entry that
+    /// NXDOMAINs a zone with nothing in it.
+    #[test]
+    fn zone_has_records_does_not_treat_underscores_as_wildcards() {
+        let db = test_db();
+        db.add_record(&a_record("host.ax.test.", "192.0.2.1"))
+            .unwrap();
+        assert!(
+            !db.zone_has_records("_x.test.").unwrap(),
+            "`_x.test.` must not be matched by `ax.test.`"
+        );
+    }
+
+    /// The one that matters: `notexample.com.` genuinely *ends with*
+    /// `example.com.`, so the trailing dot is not what makes a suffix test
+    /// correct — the names must differ by a label separator.
+    ///
+    /// Every caller of this decides who owns a name: which records a zone key
+    /// signs, which certificates an operator sees when auditing a zone, and
+    /// whether a miss inside a zone is an authoritative NXDOMAIN. A false
+    /// positive hands one party another party's names.
+    #[test]
+    fn name_in_zone_matches_on_label_boundaries() {
+        assert!(name_in_zone("www.example.com.", "example.com."));
+        assert!(name_in_zone("deep.sub.example.com.", "example.com."));
+        assert!(name_in_zone("example.com.", "example.com."));
+
+        assert!(
+            !name_in_zone("notexample.com.", "example.com."),
+            "a name sharing a text suffix is a different zone"
+        );
+        assert!(!name_in_zone("example.com.evil.test.", "example.com."));
+        assert!(!name_in_zone("api.other.test.", "example.com."));
+        assert!(!name_in_zone("com.", "example.com."));
+    }
+
+    #[test]
+    fn name_in_zone_normalizes_case_and_trailing_dots() {
+        assert!(name_in_zone("WWW.Example.COM", "example.com."));
+        assert!(name_in_zone("www.example.com.", "EXAMPLE.com"));
+    }
+
+    /// The root encloses everything, which is what makes it usable as the signer
+    /// zone for a root-zone signing run.
+    #[test]
+    fn name_in_zone_treats_the_root_as_enclosing_everything() {
+        assert!(name_in_zone("anything.test.", "."));
+        assert!(name_in_zone(".", "."));
+    }
+
+    /// A stored PTR must not make this server authoritative for the whole
+    /// reverse tree.
+    ///
+    /// The last-two-labels heuristic yields `in-addr.arpa.` for every reverse
+    /// name, so registering it as managed would NXDOMAIN every `in-addr.arpa`
+    /// lookup on the internet — and with `dns.auto_ptr` enabled a single A
+    /// record is enough to trigger it, because the PTR is created for you.
+    #[test]
+    fn a_stored_ptr_does_not_manage_the_whole_reverse_tree() {
+        let db = test_db();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "100.1.168.192.in-addr.arpa.".to_string(),
+            record_type: RecordKind::PTR,
+            value: "host.local.".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        assert_eq!(
+            db.find_managed_zone("200.1.168.192.in-addr.arpa."),
+            None,
+            "another address in the same /24 must not be answered authoritatively"
+        );
+        assert_eq!(
+            db.find_managed_zone("1.2.3.4.in-addr.arpa."),
+            None,
+            "an unrelated address must certainly not be"
+        );
+    }
+
+    #[test]
+    fn a_stored_ipv6_ptr_does_not_manage_ip6_arpa() {
+        let db = test_db();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa."
+                .to_string(),
+            record_type: RecordKind::PTR,
+            value: "host.local.".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        assert_eq!(db.find_managed_zone("2.0.0.2.ip6.arpa."), None);
+    }
+
+    /// The exclusion is confined to the reverse trees: a forward name that
+    /// merely *contains* "arpa" is an ordinary domain.
+    #[test]
+    fn the_reverse_exclusion_does_not_swallow_forward_names() {
+        let db = test_db();
+        db.add_record(&a_record("www.arpanet.example.", "192.0.2.1"))
+            .unwrap();
+        assert_eq!(
+            db.find_managed_zone("other.arpanet.example."),
+            Some("arpanet.example.".to_string())
+        );
+
+        // A single-label name is the only thing that derives a bare TLD as its
+        // zone — "last two labels" makes a two-label name yield *itself*, so
+        // `host.notarpa.` would derive `host.notarpa.`, not `notarpa.`.
+        let db = test_db();
+        db.add_record(&a_record("notarpa.", "192.0.2.1")).unwrap();
+        assert_eq!(
+            db.find_managed_zone("elsewhere.notarpa."),
+            Some("notarpa.".to_string()),
+            "`notarpa.` is not `arpa.`; the exclusion matches on label boundaries"
+        );
+    }
+
+    /// `home.arpa.` (RFC 8375) is a special-use domain for residential networks —
+    /// exactly what this server serves — and the last-two-labels heuristic gets
+    /// it right: `foo.home.arpa.` derives `home.arpa.`, the real zone.
+    ///
+    /// It must therefore survive the reverse-tree exclusion. Excluding `arpa.`
+    /// wholesale would send a miss under `home.arpa` upstream, which RFC 8375 §4
+    /// says must never happen.
+    #[test]
+    fn home_arpa_is_still_a_managed_zone() {
+        let db = test_db();
+        db.add_record(&a_record("nas.home.arpa.", "192.0.2.1"))
+            .unwrap();
+
+        assert_eq!(
+            db.find_managed_zone("absent.home.arpa."),
+            Some("home.arpa.".to_string()),
+            "home.arpa must stay locally authoritative, not be forwarded upstream"
+        );
+    }
+
+    /// The label arithmetic itself, because it is easy to get backwards and it
+    /// decides how much of the namespace one stored record claims.
+    #[test]
+    fn a_two_label_name_derives_itself_not_its_tld() {
+        let db = test_db();
+        db.add_record(&a_record("host.example.", "192.0.2.1"))
+            .unwrap();
+
+        assert_eq!(
+            db.find_managed_zone("sub.host.example."),
+            Some("host.example.".to_string()),
+            "a name beneath the derived zone is covered"
+        );
+        assert_eq!(
+            db.find_managed_zone("other.example."),
+            None,
+            "one two-label record must not claim the whole `example.` TLD"
+        );
+    }
+
+    /// Deleting the last record in a zone must drop it from the managed-zone
+    /// cache. A stale entry is not inert: `find_managed_zone` is what turns a
+    /// miss into an *authoritative* NXDOMAIN, so a zone that no longer exists
+    /// would keep swallowing every name under it instead of letting them resolve
+    /// upstream.
+    #[test]
+    fn removing_the_last_record_unmanages_the_zone() {
+        let db = test_db();
+        db.add_record(&a_record("www.example.com.", "192.0.2.1"))
+            .unwrap();
+        db.add_record(&a_record("mail.example.com.", "192.0.2.2"))
+            .unwrap();
+        assert_eq!(
+            db.find_managed_zone("absent.example.com."),
+            Some("example.com.".to_string())
+        );
+
+        // One of two: the zone is still managed.
+        db.remove_records("www.example.com.", None, "").unwrap();
+        assert_eq!(
+            db.find_managed_zone("absent.example.com."),
+            Some("example.com.".to_string()),
+            "a zone with records left must stay managed"
+        );
+
+        // The last one: the zone stops being managed.
+        db.remove_records("mail.example.com.", None, "").unwrap();
+        assert_eq!(
+            db.find_managed_zone("absent.example.com."),
+            None,
+            "an emptied zone must stop being managed"
+        );
     }
 
     // ================================================================

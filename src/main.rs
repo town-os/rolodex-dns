@@ -272,6 +272,30 @@ async fn main() -> Result<()> {
         warn!("No valid root hints parsed from config; using built-in root hints");
     }
 
+    // DNSSEC validation. Applied after the delegation cache and the root hints,
+    // both of which rebuild the resolver, so that turning validation on is the
+    // last word rather than something a later builder call quietly drops.
+    if config.dnssec.validate {
+        let anchors = if config.dnssec.trust_anchors.is_empty() {
+            rolodex_dns::dnssec_validate::Anchors::iana_defaults()
+        } else {
+            // A bad anchor is a hard startup failure, not a warning that
+            // degrades to the IANA keys: an operator who configured a private
+            // root and got the real one instead would have a resolver that
+            // validates, reports success, and is anchored to the wrong thing.
+            rolodex_dns::dnssec_validate::Anchors::from_dnskey_strings(&config.dnssec.trust_anchors)
+                .map_err(|e| anyhow::anyhow!("invalid dnssec.trust_anchors: {e}"))?
+        };
+        info!(
+            "DNSSEC validation enabled with {} trust anchor(s); bogus answers become SERVFAIL",
+            anchors.len()
+        );
+        dns_server.set_dnssec_anchors(Some(anchors));
+    } else {
+        info!("DNSSEC validation disabled (dnssec.validate: false)");
+        dns_server.set_dnssec_anchors(None);
+    }
+
     // Prime the root zone in the background: ask the roots who the roots are and
     // cache the live NS set with its TTL, so the compiled-in hints are a bootstrap
     // rather than the only root servers we ever know about. Backgrounded because a

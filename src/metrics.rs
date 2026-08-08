@@ -756,6 +756,11 @@ pub enum AnswerSource {
     Error,
 }
 
+/// Label values for `dnssec_validate::Verdict`, in the order its `index()`
+/// returns. The two live next to each other on purpose: an index that drifts
+/// from this list relabels every DNSSEC series silently.
+pub const DNSSEC_VERDICTS: &[&str] = &["secure", "insecure", "bogus", "indeterminate"];
+
 /// Label values for [`AnswerSource`].
 pub const ANSWER_SOURCES: &[&str] = &[
     "cache",
@@ -990,6 +995,23 @@ pub struct Metrics {
     pub delegation_cache_entries: Gauge,
     /// Keys in the resolver's record cache (sampled at scrape).
     pub record_cache_entries: Gauge,
+
+    // --- DNSSEC validation ---
+    /// Resolutions by DNSSEC verdict.
+    ///
+    /// `bogus` is the series to alert on: it is data that claimed to be signed
+    /// and was not, which is either an attack or a zone that has broken its own
+    /// signing. `indeterminate` is kept separate because it means we could not
+    /// obtain what we needed — a network fault, not a forgery.
+    pub dnssec_verdicts: CounterVec,
+    /// Answers withheld and turned into SERVFAIL because validation failed.
+    pub dnssec_servfail: Counter,
+    /// DNSKEY RRsets fetched and validated while walking a chain of trust.
+    pub dnssec_dnskey_lookups: Counter,
+    /// Delegations proven to carry no DS, i.e. legitimately unsigned zones.
+    pub dnssec_insecure_delegations: Counter,
+    /// Zones held in the validated-key cache (sampled at scrape).
+    pub key_cache_entries: Gauge,
 
     // --- split-horizon state ---
     /// Records in the global database (sampled at scrape).
@@ -1283,6 +1305,29 @@ impl Metrics {
                 "Keys held in the resolver's record cache.",
             ),
 
+            dnssec_verdicts: CounterVec::new(
+                "rolodex_dns_dnssec_verdicts_total",
+                "Upstream resolutions by DNSSEC validation verdict.",
+                "verdict",
+                DNSSEC_VERDICTS,
+            ),
+            dnssec_servfail: Counter::new(
+                "rolodex_dns_dnssec_servfail_total",
+                "Answers withheld as SERVFAIL because DNSSEC validation failed.",
+            ),
+            dnssec_dnskey_lookups: Counter::new(
+                "rolodex_dns_dnssec_dnskey_lookups_total",
+                "DNSKEY RRsets fetched and validated while building a chain of trust.",
+            ),
+            dnssec_insecure_delegations: Counter::new(
+                "rolodex_dns_dnssec_insecure_delegations_total",
+                "Delegations proven to carry no DS record.",
+            ),
+            key_cache_entries: Gauge::new(
+                "rolodex_dns_key_cache_entries",
+                "Zones held in the resolver's validated-key cache.",
+            ),
+
             records: Gauge::new(
                 "rolodex_dns_records",
                 "Records in the global (unscoped) database.",
@@ -1462,6 +1507,12 @@ impl Metrics {
         self.delegation_cache_entries.encode(&mut out);
         self.record_cache_entries.encode(&mut out);
 
+        self.dnssec_verdicts.encode(&mut out);
+        self.dnssec_servfail.encode(&mut out);
+        self.dnssec_dnskey_lookups.encode(&mut out);
+        self.dnssec_insecure_delegations.encode(&mut out);
+        self.key_cache_entries.encode(&mut out);
+
         self.records.encode(&mut out);
         self.scoped_records.encode(&mut out);
         self.scopes.encode(&mut out);
@@ -1614,6 +1665,7 @@ pub fn collect(state: &MetricsState) {
     m.delegation_cache_entries
         .set(resolver.delegations().len() as u64);
     m.record_cache_entries.set(resolver.records().len() as u64);
+    m.key_cache_entries.set(resolver.keys().len() as u64);
 
     // Replace rather than update: a nameserver that has aged out of the
     // resolver's stats should stop being reported, not freeze.

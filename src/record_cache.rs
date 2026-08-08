@@ -31,6 +31,14 @@ pub const MAX_RECORD_ENTRIES: usize = 50_000;
 struct CachedRecords {
     records: Vec<Record>,
     expires_at: Instant,
+    /// Whether these records were DNSSEC-validated when they were cached.
+    ///
+    /// Carried through the cache because the alternative is worse in both
+    /// directions: assuming `true` would let unvalidated glue re-emerge as a
+    /// Secure answer, and assuming `false` would make a name validate Secure on
+    /// its first lookup and Insecure on the next, flapping the AD bit for no
+    /// reason the operator can see.
+    secure: bool,
 }
 
 /// `(name, type)` -> records, TTL-respecting, in memory.
@@ -65,7 +73,22 @@ impl RecordCache {
     }
 
     /// Caches `records` under `(name, rtype)`, honouring their TTL.
+    ///
+    /// Records cached this way are marked unvalidated, which is right for
+    /// everything that arrives without a chain of trust behind it — glue,
+    /// glue-less NS addresses, anything cached while validation is off.
     pub fn insert(&self, name: &Name, rtype: RecordType, records: Vec<Record>) {
+        self.insert_with_proof(name, rtype, records, false);
+    }
+
+    /// Caches `records`, recording whether DNSSEC validation proved them secure.
+    pub fn insert_with_proof(
+        &self,
+        name: &Name,
+        rtype: RecordType,
+        records: Vec<Record>,
+        secure: bool,
+    ) {
         if records.is_empty() {
             return;
         }
@@ -79,6 +102,7 @@ impl RecordCache {
             CachedRecords {
                 records,
                 expires_at: Instant::now() + Duration::from_secs(ttl as u64),
+                secure,
             },
         );
     }
@@ -91,6 +115,12 @@ impl RecordCache {
     /// for the full duration again, and so on — a record with a 1h TTL would never
     /// actually expire.
     pub fn get(&self, name: &Name, rtype: RecordType) -> Option<Vec<Record>> {
+        self.get_with_proof(name, rtype).map(|(records, _)| records)
+    }
+
+    /// As [`Self::get`], also reporting whether the records were DNSSEC-validated
+    /// when they were cached.
+    pub fn get_with_proof(&self, name: &Name, rtype: RecordType) -> Option<(Vec<Record>, bool)> {
         let key = Self::key(name, rtype);
         let entry = self.entries.get(&key).map(|e| e.value().clone())?;
 
@@ -101,7 +131,7 @@ impl RecordCache {
         }
 
         let remaining = entry.expires_at.duration_since(now).as_secs() as u32;
-        Some(
+        Some((
             entry
                 .records
                 .into_iter()
@@ -110,7 +140,8 @@ impl RecordCache {
                     r
                 })
                 .collect(),
-        )
+            entry.secure,
+        ))
     }
 
     /// Clears everything.
@@ -261,6 +292,7 @@ mod tests {
             CachedRecords {
                 records: vec![a_rec("gone.example.net.", 30, 1)],
                 expires_at: Instant::now() - Duration::from_secs(1),
+                secure: false,
             },
         );
         assert!(

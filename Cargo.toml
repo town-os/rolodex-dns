@@ -13,7 +13,12 @@ categories = ["network-programming"]
 # DNS
 domain = { version = "0.11", features = ["std", "bytes", "resolv"] }
 hickory-resolver = { version = "0.25", features = ["system-config", "tokio"] }
-hickory-proto = "0.25"
+# `dnssec-ring` is what makes DNSKEY/DS/RRSIG/NSEC/NSEC3 parse as typed RDATA
+# instead of opaque blobs, and brings the RSA verification (algorithm 8) that
+# most of the real DNS is still signed with — `ring` cannot *generate* RSA keys,
+# which is why we refuse to sign with it, but verifying is a different question
+# and a validator that cannot check RSA cannot validate the root.
+hickory-proto = { version = "0.25", features = ["dnssec-ring"] }
 
 # gRPC
 tonic = "0.14"

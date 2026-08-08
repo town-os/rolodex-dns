@@ -21,6 +21,13 @@ rbl:
   enabled: false
   providers: []
 
+# DNSSEC validation of upstream answers. On by default; bogus data becomes
+# SERVFAIL rather than being served. Anchored to the IANA root keys unless
+# `trust_anchors` names others. Only the iterative path validates, so this has
+# no effect in `resolution.mode: forward`.
+dnssec:
+  validate: true
+
 # Prometheus scrape endpoint (plain HTTP). Remove this section to disable it.
 metrics:
   bind: "127.0.0.1:9153"

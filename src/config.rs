@@ -13,6 +13,9 @@ pub struct Config {
     /// Upstream resolution strategy (recursive-from-roots by default).
     #[serde(default)]
     pub resolution: ResolutionConfig,
+    /// DNSSEC validation of upstream answers.
+    #[serde(default)]
+    pub dnssec: DnssecConfig,
     /// Database file path for persistent DNS records.
     pub database_path: String,
     /// RBL (Realtime Blackhole List) configuration.
@@ -688,6 +691,56 @@ impl Default for ResolutionConfig {
     }
 }
 
+/// DNSSEC validation of answers resolved from upstream.
+///
+/// Validation applies to the **iterative** path only — `recursive` mode, and the
+/// roots tier of `auto` mode. It cannot apply to the forwarding tiers: a
+/// forwarded response is a recursive resolver's summary, and validating it would
+/// mean re-resolving the whole chain ourselves, which is what the roots tier
+/// already is. An `auto` chain that has degraded past tier 0 is therefore
+/// unvalidated, and says so — see the `AD` handling in `dns_server.rs`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DnssecConfig {
+    /// Whether to validate. On by default: a validating resolver that ships
+    /// switched off validates nothing until someone remembers to turn it on,
+    /// which in practice means never.
+    ///
+    /// Set to `false` to resolve exactly as before — no DO bit on outbound
+    /// queries, no chain of trust, no SERVFAIL for bogus data.
+    #[serde(default = "default_dnssec_validate")]
+    pub validate: bool,
+    /// Trust anchors, in DNSKEY presentation form: `"<flags> <protocol>
+    /// <algorithm> <base64 key>"`, e.g. `"257 3 8 AwEAAaz/..."` — the four RDATA
+    /// fields as `dig DNSKEY <zone>` prints them.
+    ///
+    /// Every field is validated at startup and a bad one is a hard failure, not
+    /// a fallback to the IANA keys: an anchor that cannot match a real DNSKEY
+    /// makes every signed zone fail with nothing pointing at the anchor as the
+    /// cause. See `dnssec_validate::Anchors::from_dnskey_strings`.
+    ///
+    /// Empty means the IANA root keys compiled into hickory (KSK-2017 and its
+    /// 2024 successor), which is what any deployment resolving the real internet
+    /// wants. An override replaces them outright rather than adding to them, so
+    /// a test hierarchy or a private root is anchored to its own key and to
+    /// nothing else — an anchor list that still trusted IANA would let the real
+    /// root vouch for names inside a private namespace.
+    #[serde(default)]
+    pub trust_anchors: Vec<String>,
+}
+
+impl Default for DnssecConfig {
+    fn default() -> Self {
+        Self {
+            validate: default_dnssec_validate(),
+            trust_anchors: Vec::new(),
+        }
+    }
+}
+
+fn default_dnssec_validate() -> bool {
+    true
+}
+
 /// A single encrypted upstream (DoH/DoT) used in `auto` mode. The `addr` is
 /// dialed by IP:port (so it needs no prior DNS), and `hostname` is the TLS SNI /
 /// certificate name validated against it (both Cloudflare's and Google's certs
@@ -1001,6 +1054,7 @@ impl Default for Config {
             },
             forwarders: vec!["8.8.8.8:53".to_string(), "8.8.4.4:53".to_string()],
             resolution: ResolutionConfig::default(),
+            dnssec: DnssecConfig::default(),
             database_path: "rolodex-dns.db".to_string(),
             rbl: RblSettings {
                 enabled: false,

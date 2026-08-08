@@ -1,4 +1,9 @@
-use crate::db::{Database, DnsRecord, NetworkAssociation, NetworkScope, RecordKind};
+// `name_in_zone` lives in `db` rather than here because the same question is
+// asked from the query path and the certificate listing too, and three copies of
+// a label-boundary test is three chances for one of them to be the naive
+// `ends_with` that puts `notexample.com.` inside `example.com.` — which during
+// signing means signing another zone's records with this zone's key.
+use crate::db::{Database, DnsRecord, NetworkAssociation, NetworkScope, RecordKind, name_in_zone};
 use crate::dns_server::DnsServer;
 use crate::rbl::{RblChecker, RblProvider};
 use crate::ttl_drift::{TtlDriftConfig as TtlDriftCfg, TtlDriftMode};
@@ -41,22 +46,6 @@ const UNKNOWN_PEER: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 
 /// TTL for the DNSKEY records `SignZone` publishes at the zone apex.
 const DNSKEY_TTL: u32 = 3600;
-
-/// Whether `name` sits at or beneath `zone`, matching on label boundaries.
-///
-/// `ends_with` alone would put `notexample.com.` inside `example.com.`, which
-/// during signing means signing another zone's records with this zone's key.
-fn name_in_zone(name: &str, zone: &str) -> bool {
-    let name = crate::db::normalize_name(name);
-    let zone = crate::db::normalize_name(zone);
-    if name == zone {
-        return true;
-    }
-    if zone == "." {
-        return true;
-    }
-    name.ends_with(&format!(".{}", zone))
-}
 
 /// Failed-authentication state for one source address.
 struct AuthFailures {
@@ -1216,9 +1205,13 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         let drift = self.dns_server.get_ttl_drift_config().await;
         let (mode_str, fixed_adj, log_mult) = match &drift.mode {
             TtlDriftMode::Disabled => ("disabled".to_string(), String::new(), 0.0),
-            TtlDriftMode::Fixed { adjustment_secs } => {
-                ("fixed".to_string(), format!("{}s", adjustment_secs), 0.0)
-            }
+            TtlDriftMode::Fixed { adjustment_secs } => (
+                "fixed".to_string(),
+                // The compound spelling the operator typed, not the raw second
+                // count — see `ttl_drift::format_duration_secs`.
+                crate::ttl_drift::format_duration_secs(*adjustment_secs),
+                0.0,
+            ),
             TtlDriftMode::Logarithmic { multiplier } => {
                 ("logarithmic".to_string(), String::new(), *multiplier)
             }
@@ -2176,7 +2169,31 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         let req = request.into_inner();
         self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("set_dns64_config");
-        info!("DNS64 config set: {:?}", req.config);
+
+        let config = req
+            .config
+            .ok_or_else(|| Status::invalid_argument("config is required"))?;
+
+        // An unparseable prefix is refused rather than silently replaced with
+        // the default. This RPC previously logged its argument and returned
+        // success without storing anything, so every caller was told the
+        // configuration had been applied when nothing had changed at all —
+        // reporting success for work not done is the failure being fixed here,
+        // and quietly substituting a different prefix would be the same failure
+        // in a new place.
+        let prefix: std::net::Ipv6Addr = if config.prefix.trim().is_empty() {
+            crate::dns_server::DEFAULT_DNS64_PREFIX
+        } else {
+            config.prefix.trim().parse().map_err(|_| {
+                Status::invalid_argument(format!("invalid DNS64 prefix '{}'", config.prefix))
+            })?
+        };
+
+        self.dns_server.set_dns64_config(config.enabled, prefix);
+        info!(
+            "DNS64 config set: enabled={}, prefix={}",
+            config.enabled, prefix
+        );
         Ok(Response::new(SetDns64ConfigResponse {
             success: true,
             message: String::new(),
@@ -2191,10 +2208,11 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         let req = request.into_inner();
         self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("get_dns64_config");
+        let (enabled, prefix) = self.dns_server.get_dns64_config();
         Ok(Response::new(GetDns64ConfigResponse {
             config: Some(Dns64Config {
-                enabled: false,
-                prefix: "64:ff9b::".to_string(),
+                enabled,
+                prefix: prefix.to_string(),
             }),
         }))
     }

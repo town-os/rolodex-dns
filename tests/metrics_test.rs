@@ -348,9 +348,10 @@ async fn an_unknown_query_type_folds_into_other() {
 async fn an_authoritative_nxdomain_is_attributed_to_the_zone() {
     let _serial = SERIAL.lock().await;
     let (db, dns_server, _rbl, _cache) = test_server();
-    // Declaring the zone authoritative is what stops a miss inside it being
-    // forwarded upstream. (Merely having a record *under* the zone is not
-    // enough — the implicit managed-zone path needs records at the apex.)
+    // An explicitly declared authoritative zone, which is the other route to the
+    // same attribution. (A zone that merely *has* records reaches it too, via
+    // the implicit managed-zone path; declaring one here keeps this test about
+    // the metric rather than about which route got there.)
     db.add_authoritative_zone("managed-zone.test.")
         .expect("declare authoritative zone");
 

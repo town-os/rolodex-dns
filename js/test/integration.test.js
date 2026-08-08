@@ -148,11 +148,15 @@ test("portal API and DANE retrieval against a live server", { skip }, async (t) 
     assert.equal(match.certIndex, 1);
   });
 
-  await t.test("unpublished names SERVFAIL while unforwardable", async () => {
-    // No apex records exist for example.com and no forwarders are configured,
-    // so an unpublished name is neither locally authoritative nor resolvable.
+  await t.test("names in a zone with no records at all SERVFAIL", async () => {
+    // A zone this server holds nothing for is neither locally authoritative nor
+    // resolvable: no forwarders are configured, so there is nowhere to ask.
+    //
+    // Deliberately *not* example.com — the subtests above published CERT, TXT
+    // and TLSA records under it, which makes it a managed zone and therefore
+    // locally authoritative. See the next test.
     await assert.rejects(
-      fetchTlsaRecords("other.example.com", {
+      fetchTlsaRecords("other.no-such-zone.test", {
         port: servicePort,
         protocol: "tcp",
         dnsServer: "127.0.0.1",
@@ -162,14 +166,32 @@ test("portal API and DANE retrieval against a live server", { skip }, async (t) 
     );
   });
 
-  await t.test("unpublished names NXDOMAIN once the zone is authoritative", async () => {
+  await t.test("unpublished names under a zone with records NXDOMAIN", async () => {
+    // The implicit path: `ensure-zone-ca` and `generate-tlsa` published records
+    // under example.com, so the zone is managed and a miss inside it is an
+    // authoritative NXDOMAIN rather than a query passed upstream — no explicit
+    // declaration needed. `fetchTlsaRecords` reports NXDOMAIN as an empty list.
+    assert.deepEqual(
+      await fetchTlsaRecords("other.example.com", {
+        port: servicePort,
+        protocol: "tcp",
+        dnsServer: "127.0.0.1",
+        dnsPort: srv.dnsPort,
+      }),
+      [],
+    );
+
+    // The explicit path reaches the same answer, and must keep doing so: an
+    // operator declaring a zone authoritative should never make it *less* so.
     await cli(srv.socketPath, ["add-auth-zone", "--zone", "example.com"]);
-    const records = await fetchTlsaRecords("other.example.com", {
-      port: servicePort,
-      protocol: "tcp",
-      dnsServer: "127.0.0.1",
-      dnsPort: srv.dnsPort,
-    });
-    assert.deepEqual(records, []);
+    assert.deepEqual(
+      await fetchTlsaRecords("other.example.com", {
+        port: servicePort,
+        protocol: "tcp",
+        dnsServer: "127.0.0.1",
+        dnsPort: srv.dnsPort,
+      }),
+      [],
+    );
   });
 });
