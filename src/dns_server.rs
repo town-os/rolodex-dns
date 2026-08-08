@@ -1181,28 +1181,19 @@ impl DnsServer {
 
         // If we have a network scope, check scoped RBL first
         if let Some(ref scope) = scope_name {
-            if let Some(ip) = extract_ip_from_name(&qname) {
-                // Split out of the original `a || b` so the metric can say which
-                // list matched. The short-circuit is unchanged: the local lookup
-                // still only runs when no provider listed the address.
-                let by_provider = self.rbl.is_listed(&ip).await;
-                let by_local = !by_provider && self.db.lookup_local_rbl(&ip.to_string());
-                if by_provider || by_local {
-                    debug!("RBL block in scope {}: {} is blacklisted", scope, qname);
-                    metrics().blocklist_blocks.inc(if by_provider {
-                        BLOCK_RBL_PROVIDER
-                    } else {
-                        BLOCK_RBL_LOCAL
-                    });
-                    tag.set(AnswerSource::Rbl);
-                    return Ok(build_response_edns(
-                        &message,
-                        ResponseCode::NXDomain,
-                        vec![],
-                        true,
-                        edns_ctx.as_ref(),
-                    ));
-                }
+            if let Some(ip) = extract_ip_from_name(&qname)
+                && let Some(kind) = self.ip_blocklist_kind(&qname, ip, Some(scope)).await
+            {
+                debug!("RBL block in scope {}: {} is blacklisted", scope, qname);
+                metrics().blocklist_blocks.inc(kind);
+                tag.set(AnswerSource::Rbl);
+                return Ok(build_response_edns(
+                    &message,
+                    ResponseCode::NXDomain,
+                    vec![],
+                    true,
+                    edns_ctx.as_ref(),
+                ));
             }
 
             // Try scoped records first
@@ -1399,25 +1390,18 @@ impl DnsServer {
         // Check RBL for reverse DNS queries (global, non-scoped)
         if scope_name.is_none()
             && let Some(ip) = extract_ip_from_name(&qname)
+            && let Some(kind) = self.ip_blocklist_kind(&qname, ip, None).await
         {
-            let by_provider = self.rbl.is_listed(&ip).await;
-            let by_local = !by_provider && self.db.lookup_local_rbl(&ip.to_string());
-            if by_provider || by_local {
-                debug!("RBL block: {} is blacklisted", qname);
-                metrics().blocklist_blocks.inc(if by_provider {
-                    BLOCK_RBL_PROVIDER
-                } else {
-                    BLOCK_RBL_LOCAL
-                });
-                tag.set(AnswerSource::Rbl);
-                return Ok(build_response_edns(
-                    &message,
-                    ResponseCode::NXDomain,
-                    vec![],
-                    false,
-                    edns_ctx.as_ref(),
-                ));
-            }
+            debug!("RBL block: {} is blacklisted", qname);
+            metrics().blocklist_blocks.inc(kind);
+            tag.set(AnswerSource::Rbl);
+            return Ok(build_response_edns(
+                &message,
+                ResponseCode::NXDomain,
+                vec![],
+                false,
+                edns_ctx.as_ref(),
+            ));
         }
 
         // Determine if this query is for an authoritative zone
@@ -1700,7 +1684,7 @@ impl DnsServer {
         // `is_name_listed` so an exempted name never even issues a provider
         // lookup.
         if extract_ip_from_name(&qname).is_none() {
-            if self.db.is_dnsbl_allowlisted(&qname) {
+            if self.blocklist_exempt(&qname, None) {
                 metrics().blocklist_allowlisted.inc();
             } else {
                 let by_local = self.local_rbl_lists_name(&qname);
@@ -2254,6 +2238,85 @@ impl DnsServer {
         }
         let normalized = crate::rbl::normalize_rbl_name(qname);
         !normalized.is_empty() && normalized != qname && self.db.lookup_local_rbl(&normalized)
+    }
+
+    /// Whether every blocklist must be skipped for this query.
+    ///
+    /// The allowlist is the operator's escape hatch from a false positive, and a
+    /// false positive on a reverse-DNS name is as real as one on a forward name —
+    /// a wrongly-listed address makes `dig -x` fail for a host that is running
+    /// fine. So the exemption covers **both** spellings a reverse query has: the
+    /// `in-addr.arpa`/`ip6.arpa` name (suffix-matched, like any DNS name, so
+    /// allowlisting a reverse zone exempts the addresses under it) and the IP
+    /// literal it encodes (matched exactly — see
+    /// [`Database::is_dnsbl_allowlisted_exact`]), which is the spelling a local
+    /// RBL entry uses to block the address in the first place.
+    ///
+    /// Every blocklist decision runs through here, so there is one exemption
+    /// rather than one per call site.
+    fn blocklist_exempt(&self, qname: &str, ip: Option<IpAddr>) -> bool {
+        self.db.is_dnsbl_allowlisted(qname)
+            || ip.is_some_and(|ip| self.db.is_dnsbl_allowlisted_exact(&ip.to_string()))
+    }
+
+    /// The IP-address blocklist gate (resolution step 2), shared by the scoped and
+    /// the global reverse-DNS paths. Returns the [`crate::metrics::BLOCK_KINDS`]
+    /// index of the list that matched, or `None` to keep resolving.
+    ///
+    /// A positive from *any* list here is an NXDOMAIN at the call site. Providers
+    /// are consulted before the local table, and the local lookups only run when
+    /// no provider listed the address, so an address on both lists is attributed
+    /// to the provider — the same order (and the same metric) as before this was
+    /// factored out of the two call sites.
+    ///
+    /// `scope` pulls in that scope's opted-in RBL providers alongside the global
+    /// ones. They are read from SQLite per query rather than cached, which is
+    /// affordable because this path is reached only by a reverse-DNS query
+    /// arriving inside a scope — the same query already pays a
+    /// `get_scope_for_ip` lookup.
+    async fn ip_blocklist_kind(
+        &self,
+        qname: &str,
+        ip: IpAddr,
+        scope: Option<&str>,
+    ) -> Option<usize> {
+        if self.blocklist_exempt(qname, Some(ip)) {
+            metrics().blocklist_allowlisted.inc();
+            return None;
+        }
+
+        let by_provider = match scope {
+            Some(scope) => {
+                let extra: Vec<crate::rbl::RblProvider> = self
+                    .db
+                    .list_scope_rbl_providers(scope)
+                    .unwrap_or_else(|e| {
+                        warn!("Failed to read RBL providers for scope {}: {}", scope, e);
+                        Vec::new()
+                    })
+                    .into_iter()
+                    .map(|p| crate::rbl::RblProvider {
+                        zone: p.zone,
+                        enabled: p.enabled,
+                    })
+                    .collect();
+                self.rbl.is_listed_with_extra_providers(&ip, &extra).await
+            }
+            None => self.rbl.is_listed(&ip).await,
+        };
+        if by_provider {
+            return Some(BLOCK_RBL_PROVIDER);
+        }
+
+        // The address as a literal is how a local entry blocks an IP; the reverse
+        // name is how an operator who typed what `dig -x` prints blocks the same
+        // thing. Both are local-list positives, so both are NXDOMAIN — otherwise
+        // an entry that reads as a block sits in the table doing nothing.
+        if self.db.lookup_local_rbl(&ip.to_string()) || self.local_rbl_lists_name(qname) {
+            return Some(BLOCK_RBL_LOCAL);
+        }
+
+        None
     }
 
     /// Inserts a set of answer records into the DNS cache, keyed by the QUESTION
@@ -3771,6 +3834,344 @@ mod tests {
         let blocked = build_query("notexample.com.", RecordType::A);
         let blocked_resp = query_until_blocked(&server, &blocked).await;
         assert_eq!(blocked_resp.response_code(), ResponseCode::NXDomain);
+    }
+
+    // ================================================================
+    // Every blocklist positive is NXDOMAIN; the allowlist is the only exemption
+    //
+    // These pin the IP/reverse-DNS half of the blocklist (resolution step 2),
+    // which the DNSBL tests above do not reach. Two invariants:
+    //
+    //   * a positive from **any** list — a global provider, a per-scope
+    //     provider, or the local table under either the IP literal or the
+    //     reverse name — is answered NXDOMAIN, and
+    //   * an allowlist entry is the **only** thing that suppresses one.
+    //
+    // Both halves have to be asserted together: a gate that blocks everything
+    // satisfies the first and a gate that blocks nothing satisfies the second,
+    // so each test carries its own control.
+    // ================================================================
+
+    /// Builds a server with the IP-based RBL enabled and an explicit provider
+    /// list, so a test can distinguish "listed by a global provider" from
+    /// "listed by a provider this scope opted into" — the latter needs the
+    /// global list to be *empty*.
+    fn make_test_server_with_rbl_providers(
+        db: Database,
+        providers: Vec<RblProvider>,
+        resolver: Arc<dyn RblResolver>,
+    ) -> Arc<DnsServer> {
+        let rbl = Arc::new(RblChecker::with_resolver(true, providers, resolver));
+        Arc::new(DnsServer::new(db, rbl, vec![]))
+    }
+
+    /// Fails if `query` is ever answered NXDOMAIN.
+    ///
+    /// The counterpart to [`query_until_blocked`], and it has to poll for the
+    /// same reason: provider verdicts land asynchronously, so a single
+    /// non-NXDOMAIN answer only proves the cache was still cold. An exemption
+    /// that merely delayed the block would pass a one-shot assertion.
+    async fn assert_never_blocked(
+        server: &Arc<DnsServer>,
+        query: &[u8],
+        source: std::net::IpAddr,
+        what: &str,
+    ) {
+        for _ in 0..100 {
+            let resp = Message::from_bytes(&server.handle_query_from(query, source).await.unwrap())
+                .unwrap();
+            assert_ne!(
+                resp.response_code(),
+                ResponseCode::NXDomain,
+                "{what} must never be blocked"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+    }
+
+    const LOOPBACK: std::net::IpAddr = std::net::IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+    /// A reverse-DNS name on the allowlist is exempt from the IP-based RBL. The
+    /// allowlist is the operator's escape hatch from a false positive, and a
+    /// wrongly-listed address breaks `dig -x` for a host that is running fine —
+    /// so it has to reach this list too, not only the domain blocklist.
+    #[tokio::test]
+    async fn test_rbl_allowlist_exempts_reverse_name() {
+        let db = Database::open_memory().unwrap();
+        db.add_dnsbl_allowlist_entry(
+            "100.1.168.192.in-addr.arpa",
+            "false positive on our mail host",
+        )
+        .unwrap();
+        let server = make_test_server_with_rbl(db, true);
+
+        let exempt = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
+        assert_never_blocked(&server, &exempt, LOOPBACK, "an allowlisted reverse name").await;
+
+        // Control: the neighbouring address is not allowlisted and is blocked,
+        // so the exemption above is the allowlist and not a dead RBL.
+        let blocked = build_query("101.1.168.192.in-addr.arpa.", RecordType::PTR);
+        assert_eq!(
+            query_until_blocked(&server, &blocked).await.response_code(),
+            ResponseCode::NXDomain
+        );
+    }
+
+    /// The IP literal is the other spelling of the same exemption: it is how a
+    /// local RBL entry blocks an address, so it has to be how an operator lifts
+    /// that block — without having to hand-reverse the octets.
+    #[tokio::test]
+    async fn test_rbl_allowlist_exempts_ip_literal() {
+        let db = Database::open_memory().unwrap();
+        db.add_dnsbl_allowlist_entry("192.168.1.100", "our mail host")
+            .unwrap();
+        let server = make_test_server_with_rbl(db, true);
+
+        let exempt = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
+        assert_never_blocked(&server, &exempt, LOOPBACK, "an allowlisted IP literal").await;
+
+        let blocked = build_query("101.1.168.192.in-addr.arpa.", RecordType::PTR);
+        assert_eq!(
+            query_until_blocked(&server, &blocked).await.response_code(),
+            ResponseCode::NXDomain
+        );
+    }
+
+    /// An IP literal is matched exactly, never as a suffix. An address is
+    /// written most-significant-octet first, so `1.100` is not a parent of
+    /// `192.168.1.100` the way `example.com` is a parent of `www.example.com` —
+    /// suffix-matching it would exempt addresses the operator never named.
+    #[tokio::test]
+    async fn test_rbl_allowlist_ip_literal_is_exact_not_suffix() {
+        let db = Database::open_memory().unwrap();
+        db.add_dnsbl_allowlist_entry("1.100", "not a parent of any address")
+            .unwrap();
+        let server = make_test_server_with_rbl(db, true);
+
+        let blocked = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
+        assert_eq!(
+            query_until_blocked(&server, &blocked).await.response_code(),
+            ResponseCode::NXDomain
+        );
+    }
+
+    /// The reverse *name* is a real DNS name, so it is suffix-matched like any
+    /// other allowlist entry: exempting a reverse zone exempts the addresses
+    /// under it. This is what lets an operator lift a block on a whole /24.
+    #[tokio::test]
+    async fn test_rbl_allowlist_reverse_zone_exempts_subtree() {
+        let db = Database::open_memory().unwrap();
+        db.add_dnsbl_allowlist_entry("1.168.192.in-addr.arpa", "our own /24")
+            .unwrap();
+        let server = make_test_server_with_rbl(db, true);
+
+        for name in ["100.1.168.192.in-addr.arpa.", "101.1.168.192.in-addr.arpa."] {
+            let query = build_query(name, RecordType::PTR);
+            assert_never_blocked(&server, &query, LOOPBACK, name).await;
+        }
+
+        // A different /24 is untouched by the entry.
+        let blocked = build_query("100.2.168.192.in-addr.arpa.", RecordType::PTR);
+        assert_eq!(
+            query_until_blocked(&server, &blocked).await.response_code(),
+            ResponseCode::NXDomain
+        );
+    }
+
+    /// The exemption runs *before* the provider lookup, so an allowlisted
+    /// address is never handed to the blocklist operator at all. An allowlist
+    /// that still issued the query would leak exactly the lookups the operator
+    /// asked to stop making.
+    #[tokio::test]
+    async fn test_rbl_allowlist_issues_no_provider_lookup() {
+        let db = Database::open_memory().unwrap();
+        db.add_dnsbl_allowlist_entry("100.1.168.192.in-addr.arpa", "")
+            .unwrap();
+        let lookups = Arc::new(AtomicUsize::new(0));
+        let resolver = Arc::new(CountingListedResolver {
+            lookups: lookups.clone(),
+        });
+        let server = make_test_server_with_rbl_providers(
+            db,
+            vec![RblProvider {
+                zone: "test.rbl".to_string(),
+                enabled: true,
+            }],
+            resolver,
+        );
+
+        let query = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
+        for _ in 0..5 {
+            let resp = Message::from_bytes(&server.handle_query(&query).await.unwrap()).unwrap();
+            assert_ne!(resp.response_code(), ResponseCode::NXDomain);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            lookups.load(Ordering::Relaxed),
+            0,
+            "an allowlisted address must never reach an RBL provider"
+        );
+    }
+
+    /// A local RBL entry written as the reverse name blocks, just as one written
+    /// as the IP literal does. `dig -x` prints the reverse name, so it is what an
+    /// operator pastes into the blocklist; an entry that reads as a block but
+    /// silently matches nothing is worse than a rejected one.
+    #[tokio::test]
+    async fn test_local_rbl_entry_on_reverse_name_blocks() {
+        let db = Database::open_memory().unwrap();
+        db.add_local_rbl_entry("100.1.168.192.in-addr.arpa", "compromised host")
+            .unwrap();
+        // RBL providers disabled entirely: the block can only come from the
+        // local table, so this also proves no provider lookup is involved.
+        let server = make_test_server(db);
+
+        let blocked = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
+        let resp = Message::from_bytes(&server.handle_query(&blocked).await.unwrap()).unwrap();
+        assert_eq!(resp.response_code(), ResponseCode::NXDomain);
+        assert!(resp.answers().is_empty());
+
+        // Control: an address with no entry falls through (ServFail, no
+        // forwarders), so the NXDOMAIN above is the entry and not a blanket
+        // refusal of reverse queries.
+        let allowed = build_query("101.1.168.192.in-addr.arpa.", RecordType::PTR);
+        let allowed_resp =
+            Message::from_bytes(&server.handle_query(&allowed).await.unwrap()).unwrap();
+        assert_eq!(allowed_resp.response_code(), ResponseCode::ServFail);
+    }
+
+    /// The local table is a blocklist like any other, so the allowlist overrides
+    /// an entry of it — under either spelling.
+    #[tokio::test]
+    async fn test_rbl_allowlist_overrides_local_entry() {
+        for entry in ["192.168.1.100", "100.1.168.192.in-addr.arpa"] {
+            let db = Database::open_memory().unwrap();
+            db.add_local_rbl_entry(entry, "listed").unwrap();
+            db.add_dnsbl_allowlist_entry("100.1.168.192.in-addr.arpa", "false positive")
+                .unwrap();
+            let server = make_test_server(db);
+
+            let query = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
+            let resp = Message::from_bytes(&server.handle_query(&query).await.unwrap()).unwrap();
+            assert_eq!(
+                resp.response_code(),
+                ResponseCode::ServFail,
+                "the allowlist must override a local entry written as {entry}"
+            );
+        }
+    }
+
+    /// A provider a scope opted into blocks within that scope. Without this the
+    /// per-scope RBL configuration is stored, listed back by the API, and never
+    /// consulted — a blocklist positive that resolves normally.
+    #[tokio::test]
+    async fn test_scope_rbl_provider_blocks_reverse_dns() {
+        let db = Database::open_memory().unwrap();
+        db.create_network_scope(&NetworkScope {
+            name: "scoperbl".to_string(),
+            home_domain: "scoperbl.home".to_string(),
+        })
+        .unwrap();
+        db.join_network(&NetworkAssociation {
+            ip_address: "10.64.0.7".to_string(),
+            scope_name: "scoperbl".to_string(),
+            ttl_seconds: 3600,
+        })
+        .unwrap();
+        db.add_scope_rbl_provider(&crate::db::ScopeRblProvider {
+            scope_name: "scoperbl".to_string(),
+            zone: "scope.rbl".to_string(),
+            enabled: true,
+        })
+        .unwrap();
+
+        // No *global* providers: any block here is the scope's own list.
+        let server =
+            make_test_server_with_rbl_providers(db, vec![], Arc::new(AlwaysListedResolver));
+
+        let query = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
+        let peer: std::net::IpAddr = "10.64.0.7".parse().unwrap();
+        assert_eq!(
+            query_from_until_blocked(&server, &query, peer)
+                .await
+                .response_code(),
+            ResponseCode::NXDomain
+        );
+
+        // Control: the same query from outside the scope is not blocked, which
+        // is what "per-scope" means — the provider is the scope's, not the box's.
+        assert_never_blocked(&server, &query, LOOPBACK, "a query outside the scope").await;
+    }
+
+    /// A disabled per-scope provider is not consulted, so it blocks nothing.
+    #[tokio::test]
+    async fn test_disabled_scope_rbl_provider_does_not_block() {
+        let db = Database::open_memory().unwrap();
+        db.create_network_scope(&NetworkScope {
+            name: "scoperbl".to_string(),
+            home_domain: "scoperbl.home".to_string(),
+        })
+        .unwrap();
+        db.join_network(&NetworkAssociation {
+            ip_address: "10.64.0.7".to_string(),
+            scope_name: "scoperbl".to_string(),
+            ttl_seconds: 3600,
+        })
+        .unwrap();
+        db.add_scope_rbl_provider(&crate::db::ScopeRblProvider {
+            scope_name: "scoperbl".to_string(),
+            zone: "scope.rbl".to_string(),
+            enabled: false,
+        })
+        .unwrap();
+
+        let server =
+            make_test_server_with_rbl_providers(db, vec![], Arc::new(AlwaysListedResolver));
+        let query = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
+        let peer: std::net::IpAddr = "10.64.0.7".parse().unwrap();
+        assert_never_blocked(&server, &query, peer, "a disabled per-scope provider").await;
+    }
+
+    /// The allowlist reaches the scoped path too. A source's scope decides which
+    /// lists apply to it; it must not decide whether the escape hatch exists.
+    #[tokio::test]
+    async fn test_scoped_rbl_allowlist_exempts_reverse_name() {
+        let db = Database::open_memory().unwrap();
+        db.create_network_scope(&NetworkScope {
+            name: "scoperbl".to_string(),
+            home_domain: "scoperbl.home".to_string(),
+        })
+        .unwrap();
+        db.join_network(&NetworkAssociation {
+            ip_address: "10.64.0.7".to_string(),
+            scope_name: "scoperbl".to_string(),
+            ttl_seconds: 3600,
+        })
+        .unwrap();
+        db.add_scope_rbl_provider(&crate::db::ScopeRblProvider {
+            scope_name: "scoperbl".to_string(),
+            zone: "scope.rbl".to_string(),
+            enabled: true,
+        })
+        .unwrap();
+        db.add_dnsbl_allowlist_entry("192.168.1.100", "false positive")
+            .unwrap();
+
+        let server =
+            make_test_server_with_rbl_providers(db, vec![], Arc::new(AlwaysListedResolver));
+        let peer: std::net::IpAddr = "10.64.0.7".parse().unwrap();
+
+        let exempt = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
+        assert_never_blocked(&server, &exempt, peer, "an allowlisted address in a scope").await;
+
+        // Control: the scope's provider still blocks everything else.
+        let blocked = build_query("101.1.168.192.in-addr.arpa.", RecordType::PTR);
+        assert_eq!(
+            query_from_until_blocked(&server, &blocked, peer)
+                .await
+                .response_code(),
+            ResponseCode::NXDomain
+        );
     }
 
     /// The allowlist runs *before* the provider lookup, so an exempt name costs

@@ -516,10 +516,24 @@ impl RblChecker {
 
     /// Checks if an IP address is listed in any enabled global RBL
     /// or in the provided extra per-scope RBL providers.
+    ///
+    /// A scope opts into its extra providers row by row, so they are not gated on
+    /// the global `enabled` flag — a scope may run a blocklist the box as a whole
+    /// does not. They *are* gated on `resolver_available`, because that flag is
+    /// not a policy switch: it says plaintext :53 is unusable, and a lookup that
+    /// can only time out is latency with no verdict at the end of it.
     pub async fn is_listed_with_extra_providers(&self, ip: &IpAddr, extra: &[RblProvider]) -> bool {
         // Check global providers first
         if self.is_listed(ip).await {
             return true;
+        }
+
+        if extra.is_empty() {
+            return false;
+        }
+        if !self.resolver_available.load(Ordering::Relaxed) {
+            crate::metrics::metrics().blocklist_skipped.inc();
+            return false;
         }
 
         // Check extra per-scope providers (same cache-first, fire-and-forget fill).

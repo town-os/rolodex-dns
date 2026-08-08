@@ -2357,6 +2357,25 @@ impl Database {
         self.matches_zone_suffix(&normalized, &self.dnsbl_allowlist_cache)
     }
 
+    /// Whether `literal` is allowlisted as an **exact** entry, with no subtree
+    /// match. This is the form used for IP literals, which is how the local RBL
+    /// blocks an address (`lookup_local_rbl` is given `ip.to_string()`), so it is
+    /// the form an exemption for that address has to take.
+    ///
+    /// Suffix matching is meaningless on an address: an IPv4 literal is written
+    /// most-significant-octet first, so `1.100` is not a parent of
+    /// `192.168.1.100` the way `example.com` is a parent of `www.example.com` —
+    /// treating it as one would exempt addresses the operator never named. The
+    /// reverse *name* (`100.1.168.192.in-addr.arpa.`) is a real DNS name and is
+    /// matched by [`is_dnsbl_allowlisted`](Self::is_dnsbl_allowlisted) as usual.
+    pub fn is_dnsbl_allowlisted_exact(&self, literal: &str) -> bool {
+        if self.dnsbl_allowlist_cache.is_empty() {
+            return false;
+        }
+        self.dnsbl_allowlist_cache
+            .contains(&normalize_name(literal))
+    }
+
     // ================================================================
     // Latency Stats
     // ================================================================
@@ -5919,6 +5938,41 @@ mod tests {
     fn test_dnsbl_allowlist_empty_is_not_allowlisted() {
         let db = test_db();
         assert!(!db.is_dnsbl_allowlisted("example.com."));
+    }
+
+    /// The exact form matches the entry and nothing else. It exists for IP
+    /// literals, where the suffix rule is not merely useless but wrong: octets
+    /// run most-significant-first, so `1.100` is not a parent of `192.168.1.100`
+    /// and must not exempt it.
+    #[test]
+    fn test_dnsbl_allowlist_exact_does_not_suffix_match() {
+        let db = test_db();
+        db.add_dnsbl_allowlist_entry("192.168.1.100", "mail host")
+            .unwrap();
+        assert!(db.is_dnsbl_allowlisted_exact("192.168.1.100"));
+        assert!(db.is_dnsbl_allowlisted_exact("192.168.1.100."));
+
+        db.add_dnsbl_allowlist_entry("1.100", "").unwrap();
+        assert!(
+            !db.is_dnsbl_allowlisted_exact("10.168.1.100"),
+            "an exact match must not treat a trailing octet run as a parent"
+        );
+    }
+
+    /// IPv6 literals carry no dots at all, so the exact form is the only one
+    /// that can match them; normalization still folds case and trailing dot.
+    #[test]
+    fn test_dnsbl_allowlist_exact_matches_ipv6_literal() {
+        let db = test_db();
+        db.add_dnsbl_allowlist_entry("2001:DB8::1", "").unwrap();
+        assert!(db.is_dnsbl_allowlisted_exact("2001:db8::1"));
+        assert!(!db.is_dnsbl_allowlisted_exact("2001:db8::2"));
+    }
+
+    #[test]
+    fn test_dnsbl_allowlist_exact_empty_is_not_allowlisted() {
+        let db = test_db();
+        assert!(!db.is_dnsbl_allowlisted_exact("192.168.1.100"));
     }
 
     #[test]
