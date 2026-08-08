@@ -383,11 +383,19 @@ pub struct DhcpLease {
 }
 
 /// Per-scope RBL provider configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ScopeRblProvider {
     pub scope_name: String,
     pub zone: String,
     pub enabled: bool,
+    /// Codes this provider returns to mean "I refused your query" rather than
+    /// "this is listed", as configuration spellings (an IPv4 address or
+    /// `address/prefix`). Empty uses the built-in set; the single entry `none`
+    /// disables refusal detection. Stored as a comma-separated column.
+    pub refusal_codes: Vec<String>,
+    /// Seconds this provider is rotated out after a refusal; 0 uses the
+    /// server-wide RBL default.
+    pub refusal_cooldown_secs: u64,
 }
 
 /// DHCP certificate option delivered to clients.
@@ -804,6 +812,8 @@ impl Database {
                 scope_name TEXT NOT NULL,
                 zone TEXT NOT NULL,
                 enabled BOOLEAN NOT NULL DEFAULT 1,
+                refusal_codes TEXT NOT NULL DEFAULT '',
+                refusal_cooldown_secs INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (scope_name) REFERENCES network_scopes(name) ON DELETE CASCADE,
                 UNIQUE(scope_name, zone)
             );
@@ -820,6 +830,49 @@ impl Database {
             );",
         )
         .context("failed to create tables")?;
+        drop(conn);
+        self.migrate_columns()?;
+        Ok(())
+    }
+
+    /// Adds columns introduced after a table shipped.
+    ///
+    /// `CREATE TABLE IF NOT EXISTS` is a no-op against a database created by an
+    /// older build, so a column added to the statement above exists only on
+    /// databases created fresh. Every entry here must therefore carry a
+    /// `DEFAULT`, so the existing rows have a defined value the moment the
+    /// column appears.
+    fn migrate_columns(&self) -> Result<()> {
+        const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
+            // Per-scope RBL providers gained refusal-code handling: which codes
+            // a provider returns to mean "I refused your query", and how long a
+            // refusal rotates it out. '' means "the built-in codes" and 0 means
+            // "the server-wide cooldown", so pre-existing rows land on the same
+            // defaults a fresh row would.
+            (
+                "scope_rbl_providers",
+                "refusal_codes",
+                "TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "scope_rbl_providers",
+                "refusal_cooldown_secs",
+                "INTEGER NOT NULL DEFAULT 0",
+            ),
+        ];
+        let conn = self.lock()?;
+        for (table, column, decl) in ADDED_COLUMNS {
+            let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+            let existing: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<std::result::Result<_, _>>()?;
+            if existing.iter().any(|c| c == column) {
+                continue;
+            }
+            drop(stmt);
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))
+                .with_context(|| format!("failed to add column {table}.{column}"))?;
+        }
         Ok(())
     }
 
@@ -3760,12 +3813,23 @@ impl Database {
     // ================================================================
 
     /// Adds or replaces a per-scope RBL provider.
+    ///
+    /// Refusal codes are stored comma-separated in one column rather than in a
+    /// side table: the list is a handful of short literals that is always read
+    /// and written whole with its provider, so a join would buy nothing.
     pub fn add_scope_rbl_provider(&self, provider: &ScopeRblProvider) -> Result<()> {
         let conn = self.lock()?;
         conn.execute(
-            "INSERT OR REPLACE INTO scope_rbl_providers (scope_name, zone, enabled)
-             VALUES (?1, ?2, ?3)",
-            params![provider.scope_name, provider.zone, provider.enabled],
+            "INSERT OR REPLACE INTO scope_rbl_providers
+             (scope_name, zone, enabled, refusal_codes, refusal_cooldown_secs)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                provider.scope_name,
+                provider.zone,
+                provider.enabled,
+                provider.refusal_codes.join(","),
+                provider.refusal_cooldown_secs as i64,
+            ],
         )
         .context("failed to add scope RBL provider")?;
         Ok(())
@@ -3785,13 +3849,18 @@ impl Database {
     pub fn list_scope_rbl_providers(&self, scope_name: &str) -> Result<Vec<ScopeRblProvider>> {
         let conn = self.lock()?;
         let mut stmt = conn.prepare_cached(
-            "SELECT scope_name, zone, enabled FROM scope_rbl_providers WHERE scope_name = ?1",
+            "SELECT scope_name, zone, enabled, refusal_codes, refusal_cooldown_secs
+             FROM scope_rbl_providers WHERE scope_name = ?1",
         )?;
         let rows = stmt.query_map(params![scope_name], |row| {
+            let codes: String = row.get(3)?;
+            let cooldown: i64 = row.get(4)?;
             Ok(ScopeRblProvider {
                 scope_name: row.get(0)?,
                 zone: row.get(1)?,
                 enabled: row.get(2)?,
+                refusal_codes: split_refusal_codes(&codes),
+                refusal_cooldown_secs: cooldown.max(0) as u64,
             })
         })?;
         let mut providers = Vec::new();
@@ -3919,6 +3988,18 @@ pub struct MetricsCounts {
     /// collector does not recognize are simply not reported, so a future state
     /// value cannot land in the wrong series.
     pub leases_by_state: Vec<(String, u64)>,
+}
+
+/// Splits the comma-separated `refusal_codes` column back into entries,
+/// dropping empties so an empty column reads back as an empty list (which means
+/// "the built-in codes") rather than as one blank entry.
+fn split_refusal_codes(stored: &str) -> Vec<String> {
+    stored
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn row_mapper(row: &rusqlite::Row) -> rusqlite::Result<DnsRecord> {
@@ -5400,12 +5481,14 @@ mod tests {
             scope_name: "rbl-scope".to_string(),
             zone: "zen.spamhaus.org".to_string(),
             enabled: true,
+            ..Default::default()
         })
         .unwrap();
         db.add_scope_rbl_provider(&ScopeRblProvider {
             scope_name: "rbl-scope".to_string(),
             zone: "bl.spamcop.net".to_string(),
             enabled: false,
+            ..Default::default()
         })
         .unwrap();
 
@@ -5430,6 +5513,7 @@ mod tests {
             scope_name: "rbl-scope".to_string(),
             zone: "bl.spamcop.net".to_string(),
             enabled: true,
+            ..Default::default()
         })
         .unwrap();
         let updated = db.list_scope_rbl_providers("rbl-scope").unwrap();
@@ -5453,6 +5537,87 @@ mod tests {
         // Empty scope
         let empty = db.list_scope_rbl_providers("nonexistent").unwrap();
         assert!(empty.is_empty());
+    }
+
+    /// Refusal codes and the per-provider cooldown survive a round trip, and an
+    /// unset list comes back empty rather than as one blank entry — empty means
+    /// "the built-in codes", and a stray `""` would fail to parse as one.
+    #[test]
+    fn scope_rbl_provider_refusal_fields_round_trip() {
+        let db = test_db();
+        db.create_network_scope(&NetworkScope {
+            name: "refusal-scope".to_string(),
+            home_domain: "refusal.home".to_string(),
+        })
+        .unwrap();
+
+        db.add_scope_rbl_provider(&ScopeRblProvider {
+            scope_name: "refusal-scope".to_string(),
+            zone: "explicit.rbl".to_string(),
+            enabled: true,
+            refusal_codes: vec!["127.255.255.0/24".to_string(), "127.0.0.1".to_string()],
+            refusal_cooldown_secs: 1800,
+        })
+        .unwrap();
+        db.add_scope_rbl_provider(&ScopeRblProvider {
+            scope_name: "refusal-scope".to_string(),
+            zone: "default.rbl".to_string(),
+            enabled: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let providers = db.list_scope_rbl_providers("refusal-scope").unwrap();
+        let explicit = providers.iter().find(|p| p.zone == "explicit.rbl").unwrap();
+        assert_eq!(
+            explicit.refusal_codes,
+            vec!["127.255.255.0/24".to_string(), "127.0.0.1".to_string()]
+        );
+        assert_eq!(explicit.refusal_cooldown_secs, 1800);
+
+        let defaulted = providers.iter().find(|p| p.zone == "default.rbl").unwrap();
+        assert!(defaulted.refusal_codes.is_empty());
+        assert_eq!(defaulted.refusal_cooldown_secs, 0);
+    }
+
+    /// The refusal columns are added by migration, so a database created by a
+    /// build that predates them must gain them rather than failing every read.
+    /// Simulated by dropping the columns back off a fresh schema.
+    #[test]
+    fn scope_rbl_refusal_columns_are_migrated_onto_an_old_database() {
+        let db = test_db();
+        db.create_network_scope(&NetworkScope {
+            name: "old-scope".to_string(),
+            home_domain: "old.home".to_string(),
+        })
+        .unwrap();
+        {
+            let conn = db.lock().unwrap();
+            conn.execute_batch(
+                "ALTER TABLE scope_rbl_providers DROP COLUMN refusal_codes;
+                 ALTER TABLE scope_rbl_providers DROP COLUMN refusal_cooldown_secs;",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO scope_rbl_providers (scope_name, zone, enabled)
+                 VALUES ('old-scope', 'legacy.rbl', 1)",
+                [],
+            )
+            .unwrap();
+        }
+
+        db.migrate_columns().unwrap();
+
+        let providers = db.list_scope_rbl_providers("old-scope").unwrap();
+        assert_eq!(providers.len(), 1);
+        assert!(
+            providers[0].refusal_codes.is_empty(),
+            "a pre-existing row must land on the built-in codes"
+        );
+        assert_eq!(providers[0].refusal_cooldown_secs, 0);
+
+        // Re-running is a no-op rather than an error.
+        db.migrate_columns().unwrap();
     }
 
     // ================================================================

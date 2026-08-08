@@ -26,7 +26,10 @@ struct NeverListedResolver;
 
 #[async_trait::async_trait]
 impl RblResolver for NeverListedResolver {
-    async fn lookup_rbl(&self, _query: &str) -> Result<Option<u32>, anyhow::Error> {
+    async fn lookup_rbl(
+        &self,
+        _query: &str,
+    ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
         Ok(None)
     }
 }
@@ -2678,13 +2681,16 @@ struct DnsblPrefixResolver {
 
 #[async_trait::async_trait]
 impl RblResolver for DnsblPrefixResolver {
-    async fn lookup_rbl(&self, query: &str) -> Result<Option<u32>, anyhow::Error> {
+    async fn lookup_rbl(
+        &self,
+        query: &str,
+    ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
         if self
             .blocked_prefixes
             .iter()
             .any(|p| query.starts_with(p.as_str()))
         {
-            Ok(Some(300))
+            Ok(Some(rolodex_dns::rbl::RblAnswer::listed(300)))
         } else {
             Ok(None)
         }
@@ -2738,6 +2744,7 @@ async fn test_dnsbl_blocks_forwarded_domain_full_pipeline() {
         vec![RblProvider {
             zone: "dbl.test".to_string(),
             enabled: true,
+            ..Default::default()
         }],
     )
     .await;
@@ -2784,6 +2791,7 @@ async fn test_dnsbl_disabled_does_not_block() {
         vec![RblProvider {
             zone: "dbl.test".to_string(),
             enabled: true,
+            ..Default::default()
         }],
     )
     .await;
@@ -2836,8 +2844,10 @@ async fn test_dnsbl_programmed_via_grpc_then_blocks() {
             providers: vec![proto::DnsblConfig {
                 zone: "dbl.test".to_string(),
                 enabled: true,
+                ..Default::default()
             }],
             auth_token: String::new(),
+            ..Default::default()
         }))
         .await
         .unwrap();

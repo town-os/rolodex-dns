@@ -312,6 +312,17 @@ pub struct RblProviderConfig {
     pub zone: String,
     /// Whether this provider is enabled.
     pub enabled: bool,
+    /// Codes this provider returns to mean "I refused your query" rather than
+    /// "this is listed" — see [`crate::rbl::DEFAULT_REFUSAL_CODES`]. Each entry
+    /// is an IPv4 address or `address/prefix`. Empty (the default, and what
+    /// every configuration predating this field has) uses the built-in set; the
+    /// single entry `none` disables refusal detection for this provider.
+    #[serde(default)]
+    pub refusal_codes: Vec<String>,
+    /// How long this provider is rotated out of the lookup rotation after a
+    /// refusal. Absent uses the list-wide `refusal_cooldown_secs`.
+    #[serde(default)]
+    pub refusal_cooldown_secs: Option<u64>,
 }
 
 /// RBL settings.
@@ -321,6 +332,44 @@ pub struct RblSettings {
     pub enabled: bool,
     /// List of RBL providers.
     pub providers: Vec<RblProviderConfig>,
+    /// Default seconds a refusing provider stays rotated out, for providers
+    /// that do not set their own. `0` means the built-in default.
+    #[serde(default = "default_refusal_cooldown_secs")]
+    pub refusal_cooldown_secs: u64,
+}
+
+/// The built-in rotate-out duration, used when nothing configures one.
+fn default_refusal_cooldown_secs() -> u64 {
+    crate::rbl::DEFAULT_REFUSAL_COOLDOWN_SECS
+}
+
+impl RblProviderConfig {
+    /// Converts to the runtime provider, resolving the refusal codes.
+    ///
+    /// An unparseable code is an error rather than a skipped entry: a code that
+    /// silently does not apply turns back into "the provider's complaint reads
+    /// as a listing", which is the failure this whole mechanism exists to stop,
+    /// and it would do so invisibly.
+    pub fn to_provider(&self) -> Result<crate::rbl::RblProvider, String> {
+        let refusal_codes = crate::rbl::resolve_refusal_codes(&self.refusal_codes)
+            .map_err(|e| format!("blocklist provider '{}': {e}", self.zone))?;
+        Ok(crate::rbl::RblProvider {
+            zone: self.zone.clone(),
+            enabled: self.enabled,
+            refusal_codes: refusal_codes.into(),
+            cooldown: self
+                .refusal_cooldown_secs
+                .filter(|s| *s > 0)
+                .map(std::time::Duration::from_secs),
+        })
+    }
+}
+
+/// Converts a configured provider list, reporting the first bad entry.
+pub fn to_providers(
+    providers: &[RblProviderConfig],
+) -> Result<Vec<crate::rbl::RblProvider>, String> {
+    providers.iter().map(|p| p.to_provider()).collect()
 }
 
 /// DNSBL (domain blocklist) settings.
@@ -330,12 +379,27 @@ pub struct RblSettings {
 /// with a reversed IP. DNSBL listings take precedence over forwarded/iterative
 /// answers. Disabled with no providers by default; operators add the providers
 /// they want via config or `SetDnsblConfig`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DnsblSettings {
     /// Whether DNSBL checking is globally enabled.
     pub enabled: bool,
     /// List of DNSBL providers.
     pub providers: Vec<RblProviderConfig>,
+    /// Default seconds a refusing provider stays rotated out, for providers
+    /// that do not set their own. `0` means the built-in default. Independent
+    /// of the RBL setting because the two lists are configured independently.
+    #[serde(default = "default_refusal_cooldown_secs")]
+    pub refusal_cooldown_secs: u64,
+}
+
+impl Default for DnsblSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            providers: Vec::new(),
+            refusal_cooldown_secs: default_refusal_cooldown_secs(),
+        }
+    }
 }
 
 /// TLS configuration for encrypted DNS transports.
@@ -1059,6 +1123,7 @@ impl Default for Config {
             rbl: RblSettings {
                 enabled: false,
                 providers: Vec::new(),
+                refusal_cooldown_secs: default_refusal_cooldown_secs(),
             },
             dnsbl: DnsblSettings::default(),
             dot: None,
@@ -1123,6 +1188,67 @@ mod tests {
             "cloudflare-dns.com"
         );
         assert_eq!(config.resolution.secure_upstreams[0].transport, "https");
+    }
+
+    /// A configuration written before refusal codes existed must keep parsing,
+    /// and must land on the built-in codes — the whole point of the defaults is
+    /// that an unmodified deployment stops reading a provider's "stop querying
+    /// me" answer as a listing.
+    #[test]
+    fn rbl_provider_without_refusal_fields_gets_defaults() {
+        let yaml = "dns:\n  bind:\n    - udp: \"0.0.0.0:53\"\ngrpc:\n  tcp_bind: \"127.0.0.1:50051\"\n  unix_socket: \"\"\n  shared_secret: \"\"\nforwarders: []\ndatabase_path: \"x.db\"\nrbl:\n  enabled: true\n  providers:\n    - zone: \"zen.spamhaus.org\"\n      enabled: true\n";
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(config.rbl.providers[0].refusal_codes.is_empty());
+        assert!(config.rbl.providers[0].refusal_cooldown_secs.is_none());
+        assert_eq!(
+            config.rbl.refusal_cooldown_secs,
+            crate::rbl::DEFAULT_REFUSAL_COOLDOWN_SECS
+        );
+
+        let provider = config.rbl.providers[0].to_provider().unwrap();
+        assert_eq!(
+            provider.refusal_codes.len(),
+            crate::rbl::DEFAULT_REFUSAL_CODES.len()
+        );
+        assert!(
+            provider.cooldown.is_none(),
+            "no override means the list default"
+        );
+    }
+
+    #[test]
+    fn rbl_provider_refusal_fields_parse() {
+        let yaml = "dns:\n  bind:\n    - udp: \"0.0.0.0:53\"\ngrpc:\n  tcp_bind: \"127.0.0.1:50051\"\n  unix_socket: \"\"\n  shared_secret: \"\"\nforwarders: []\ndatabase_path: \"x.db\"\nrbl:\n  enabled: true\n  refusal_cooldown_secs: 900\n  providers:\n    - zone: \"private.rbl\"\n      enabled: true\n      refusal_codes: [\"none\"]\n    - zone: \"zen.spamhaus.org\"\n      enabled: true\n      refusal_codes: [\"127.255.255.0/24\"]\n      refusal_cooldown_secs: 1800\n";
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.rbl.refusal_cooldown_secs, 900);
+
+        let private = config.rbl.providers[0].to_provider().unwrap();
+        assert!(
+            private.refusal_codes.is_empty(),
+            "'none' disables detection"
+        );
+
+        let zen = config.rbl.providers[1].to_provider().unwrap();
+        assert_eq!(zen.refusal_codes.len(), 1);
+        assert_eq!(zen.cooldown, Some(std::time::Duration::from_secs(1800)));
+    }
+
+    /// A malformed code is an error, not a dropped entry: a code that silently
+    /// does not apply is a refusal that reads as a listing.
+    #[test]
+    fn rbl_provider_rejects_malformed_refusal_code() {
+        let provider = RblProviderConfig {
+            zone: "bad.rbl".to_string(),
+            enabled: true,
+            refusal_codes: vec!["127.0.0.1".to_string(), "not-an-ip".to_string()],
+            refusal_cooldown_secs: None,
+        };
+        let err = provider.to_provider().expect_err("must not be accepted");
+        assert!(
+            err.contains("bad.rbl"),
+            "error should name the provider: {err}"
+        );
+        assert!(to_providers(std::slice::from_ref(&provider)).is_err());
     }
 
     #[test]

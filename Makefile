@@ -110,6 +110,7 @@ rust-integration-test: build ## Run each Rust integration test file
 	cargo test --test acme_issuer_test
 	cargo test --test auto_resolution_test
 	cargo test --test metrics_test
+	cargo test --test rbl_refusal_test
 	cargo test --test dnssec_signing_test
 	cargo test --test dnssec_validation_test
 	cargo test --test zonemd_test

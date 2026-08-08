@@ -902,6 +902,151 @@ func TestGetRblConfig(t *testing.T) {
 	}
 }
 
+// Town OS programs the blocklists through this client, so the refusal codes
+// and the rotate-out duration have to reach the wire from here. A refusal code
+// is what a provider answers to mean "I refused your query" rather than "this
+// is listed"; reading one as a listing NXDOMAINs every name checked against
+// that provider.
+func TestSetRblConfigWithRefusalCooldown(t *testing.T) {
+	var captured *pb.SetRblConfigRequest
+	mock := &mockRolodexDnsService{
+		setRblConfigFn: func(_ context.Context, req *pb.SetRblConfigRequest) (*pb.SetRblConfigResponse, error) {
+			captured = req
+			return &pb.SetRblConfigResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock)
+
+	err := client.SetRblConfigWithRefusalCooldown(context.Background(), true, []*RblConfig{
+		{
+			Zone:                "zen.spamhaus.org",
+			Enabled:             true,
+			RefusalCodes:        []string{"127.255.255.0/24"},
+			RefusalCooldownSecs: 1800,
+		},
+		{Zone: "private.rbl", Enabled: true, RefusalCodes: []string{"none"}},
+	}, 900)
+	if err != nil {
+		t.Fatalf("SetRblConfigWithRefusalCooldown returned error: %v", err)
+	}
+	if captured.RefusalCooldownSecs != 900 {
+		t.Errorf("refusal_cooldown_secs = %d, want 900", captured.RefusalCooldownSecs)
+	}
+	if len(captured.Providers[0].RefusalCodes) != 1 ||
+		captured.Providers[0].RefusalCodes[0] != "127.255.255.0/24" {
+		t.Errorf("provider[0].refusal_codes = %v, want [127.255.255.0/24]", captured.Providers[0].RefusalCodes)
+	}
+	if captured.Providers[0].RefusalCooldownSecs != 1800 {
+		t.Errorf("provider[0].refusal_cooldown_secs = %d, want 1800", captured.Providers[0].RefusalCooldownSecs)
+	}
+	if captured.Providers[1].RefusalCodes[0] != "none" {
+		t.Errorf("provider[1].refusal_codes = %v, want [none]", captured.Providers[1].RefusalCodes)
+	}
+}
+
+// The plain SetRblConfig must send 0, which the server reads as "use the
+// built-in default" — not as "no cooldown", which would re-ask a provider that
+// has just told us to stop.
+func TestSetRblConfigSendsZeroCooldown(t *testing.T) {
+	var captured *pb.SetRblConfigRequest
+	mock := &mockRolodexDnsService{
+		setRblConfigFn: func(_ context.Context, req *pb.SetRblConfigRequest) (*pb.SetRblConfigResponse, error) {
+			captured = req
+			return &pb.SetRblConfigResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock)
+
+	if err := client.SetRblConfig(context.Background(), true, nil); err != nil {
+		t.Fatalf("SetRblConfig returned error: %v", err)
+	}
+	if captured.RefusalCooldownSecs != 0 {
+		t.Errorf("refusal_cooldown_secs = %d, want 0", captured.RefusalCooldownSecs)
+	}
+}
+
+// A provider that has gone quiet is otherwise indistinguishable from one that
+// finds nothing, so the rotated-out set has to survive the response mapping.
+func TestGetRblConfigReportsRotatedOut(t *testing.T) {
+	mock := &mockRolodexDnsService{
+		getRblConfigFn: func(_ context.Context, req *pb.GetRblConfigRequest) (*pb.GetRblConfigResponse, error) {
+			return &pb.GetRblConfigResponse{
+				Enabled: true,
+				Providers: []*pb.RblConfig{
+					{Zone: "zen.spamhaus.org", Enabled: true, RefusalCodes: []string{"127.255.255.0/24"}},
+				},
+				RefusalCooldownSecs: 900,
+				RotatedOut: []*pb.RotatedProvider{
+					{Zone: "zen.spamhaus.org", Code: "127.255.255.254", SecondsRemaining: 842},
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock)
+
+	rblStatus, err := client.GetRblConfig(context.Background())
+	if err != nil {
+		t.Fatalf("GetRblConfig returned error: %v", err)
+	}
+	if rblStatus.RefusalCooldownSecs != 900 {
+		t.Errorf("RefusalCooldownSecs = %d, want 900", rblStatus.RefusalCooldownSecs)
+	}
+	if len(rblStatus.Providers[0].RefusalCodes) != 1 {
+		t.Errorf("refusal codes = %v, want one entry", rblStatus.Providers[0].RefusalCodes)
+	}
+	if len(rblStatus.RotatedOut) != 1 {
+		t.Fatalf("got %d rotated-out providers, want 1", len(rblStatus.RotatedOut))
+	}
+	if rblStatus.RotatedOut[0].Code != "127.255.255.254" {
+		t.Errorf("rotated-out code = %q, want %q", rblStatus.RotatedOut[0].Code, "127.255.255.254")
+	}
+	if rblStatus.RotatedOut[0].SecondsRemaining != 842 {
+		t.Errorf("seconds remaining = %d, want 842", rblStatus.RotatedOut[0].SecondsRemaining)
+	}
+}
+
+// The DNSBL half, whose cooldown is configured independently of the RBL one.
+func TestSetAndGetDnsblConfigRefusalFields(t *testing.T) {
+	var captured *pb.SetDnsblConfigRequest
+	mock := &mockRolodexDnsService{
+		setDnsblConfigFn: func(_ context.Context, req *pb.SetDnsblConfigRequest) (*pb.SetDnsblConfigResponse, error) {
+			captured = req
+			return &pb.SetDnsblConfigResponse{Success: true}, nil
+		},
+		getDnsblConfigFn: func(_ context.Context, req *pb.GetDnsblConfigRequest) (*pb.GetDnsblConfigResponse, error) {
+			return &pb.GetDnsblConfigResponse{
+				Enabled:             true,
+				RefusalCooldownSecs: 600,
+				RotatedOut: []*pb.RotatedProvider{
+					{Zone: "dbl.spamhaus.org", Code: "127.0.1.255", SecondsRemaining: 12},
+				},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock)
+
+	err := client.SetDnsblConfigWithRefusalCooldown(context.Background(), true, []*DnsblConfig{
+		{Zone: "dbl.spamhaus.org", Enabled: true, RefusalCodes: []string{"127.0.1.255"}},
+	}, 600)
+	if err != nil {
+		t.Fatalf("SetDnsblConfigWithRefusalCooldown returned error: %v", err)
+	}
+	if captured.RefusalCooldownSecs != 600 {
+		t.Errorf("refusal_cooldown_secs = %d, want 600", captured.RefusalCooldownSecs)
+	}
+
+	status, err := client.GetDnsblConfig(context.Background())
+	if err != nil {
+		t.Fatalf("GetDnsblConfig returned error: %v", err)
+	}
+	if status.RefusalCooldownSecs != 600 {
+		t.Errorf("RefusalCooldownSecs = %d, want 600", status.RefusalCooldownSecs)
+	}
+	if len(status.RotatedOut) != 1 || status.RotatedOut[0].Code != "127.0.1.255" {
+		t.Errorf("RotatedOut = %v, want the DBL IP-query error code", status.RotatedOut)
+	}
+}
+
 func TestSetDnsblConfig(t *testing.T) {
 	var captured *pb.SetDnsblConfigRequest
 	mock := &mockRolodexDnsService{
@@ -2906,6 +3051,44 @@ func TestAddScopeRblProvider(t *testing.T) {
 	}
 	if !captured.Provider.Enabled {
 		t.Errorf("enabled = false, want true")
+	}
+}
+
+// A per-scope provider carries the same refusal configuration, and the plain
+// AddScopeRblProvider must send an empty list — which the server reads as "the
+// built-in codes", the safe reading for a caller that has not thought about it.
+func TestAddScopeRblProviderWithRefusal(t *testing.T) {
+	var captured *pb.AddScopeRblProviderRequest
+	mock := &mockRolodexDnsService{
+		addScopeRblProviderFn: func(_ context.Context, req *pb.AddScopeRblProviderRequest) (*pb.AddScopeRblProviderResponse, error) {
+			captured = req
+			return &pb.AddScopeRblProviderResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock)
+
+	err := client.AddScopeRblProviderWithRefusal(
+		context.Background(), "office", "scope.rbl", true,
+		[]string{"127.255.255.0/24", "127.0.1.255"}, 300,
+	)
+	if err != nil {
+		t.Fatalf("AddScopeRblProviderWithRefusal returned error: %v", err)
+	}
+	if len(captured.Provider.RefusalCodes) != 2 {
+		t.Fatalf("refusal codes = %v, want two entries", captured.Provider.RefusalCodes)
+	}
+	if captured.Provider.RefusalCooldownSecs != 300 {
+		t.Errorf("refusal_cooldown_secs = %d, want 300", captured.Provider.RefusalCooldownSecs)
+	}
+
+	if err := client.AddScopeRblProvider(context.Background(), "office", "scope.rbl", true); err != nil {
+		t.Fatalf("AddScopeRblProvider returned error: %v", err)
+	}
+	if len(captured.Provider.RefusalCodes) != 0 {
+		t.Errorf("refusal codes = %v, want empty (meaning the built-in set)", captured.Provider.RefusalCodes)
+	}
+	if captured.Provider.RefusalCooldownSecs != 0 {
+		t.Errorf("refusal_cooldown_secs = %d, want 0 (the server-wide default)", captured.Provider.RefusalCooldownSecs)
 	}
 }
 

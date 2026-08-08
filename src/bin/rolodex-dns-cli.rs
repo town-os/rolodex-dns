@@ -260,6 +260,27 @@ enum Commands {
         /// Example: --providers "zen.spamhaus.org:true" "bl.spamcop.net:false"
         #[arg(short, long, num_args = 0..)]
         providers: Vec<String>,
+
+        /// Per-provider refusal codes, as "zone=code,code". A refusal code is
+        /// what a provider answers to mean "I refused your query" rather than
+        /// "this is listed" (e.g. 127.255.255.254, "query via a public
+        /// resolver"); reading one as a listing NXDOMAINs every name checked
+        /// against that provider. Each code is an IPv4 address or
+        /// "address/prefix". Omitted uses the built-in set; "none" disables
+        /// refusal detection for that provider.
+        /// Example: --refusal-codes "zen.spamhaus.org=127.255.255.0/24"
+        #[arg(long, num_args = 0.., value_name = "ZONE=CODES")]
+        refusal_codes: Vec<String>,
+
+        /// Per-provider rotate-out duration in seconds, as "zone=secs".
+        /// Example: --provider-cooldown "zen.spamhaus.org=1800"
+        #[arg(long, num_args = 0.., value_name = "ZONE=SECS")]
+        provider_cooldown: Vec<String>,
+
+        /// Seconds a refusing provider stays out of the lookup rotation, for
+        /// providers with no value of their own. 0 uses the server default.
+        #[arg(long, default_value_t = 0)]
+        refusal_cooldown: u32,
     },
 
     /// Retrieve the current RBL configuration.
@@ -284,6 +305,20 @@ enum Commands {
         /// Example: --providers "dbl.spamhaus.org:true" "multi.surbl.org:false"
         #[arg(short, long, num_args = 0..)]
         providers: Vec<String>,
+
+        /// Per-provider refusal codes, as "zone=code,code"; see
+        /// set-rbl-config. Omitted uses the built-in set, "none" disables.
+        #[arg(long, num_args = 0.., value_name = "ZONE=CODES")]
+        refusal_codes: Vec<String>,
+
+        /// Per-provider rotate-out duration in seconds, as "zone=secs".
+        #[arg(long, num_args = 0.., value_name = "ZONE=SECS")]
+        provider_cooldown: Vec<String>,
+
+        /// Seconds a refusing provider stays out of the lookup rotation, for
+        /// providers with no value of their own. 0 uses the server default.
+        #[arg(long, default_value_t = 0)]
+        refusal_cooldown: u32,
     },
 
     /// Retrieve the current DNSBL configuration.
@@ -655,6 +690,17 @@ enum Commands {
         // under both.
         #[arg(short, long, default_value_t = true, action = clap::ArgAction::Set)]
         enabled: bool,
+
+        /// Codes this provider returns to mean "query refused" rather than
+        /// "listed"; see set-rbl-config. Repeatable. Omitted uses the built-in
+        /// set; "none" disables refusal detection for this provider.
+        #[arg(long, value_name = "CODE")]
+        refusal_code: Vec<String>,
+
+        /// Seconds this provider stays out of the lookup rotation after a
+        /// refusal. 0 uses the server-wide RBL default.
+        #[arg(long, default_value_t = 0)]
+        refusal_cooldown: u32,
     },
 
     /// Remove a per-scope RBL provider.
@@ -897,6 +943,108 @@ enum Commands {
     },
 }
 
+/// Parses a `zone:enabled` provider spec. Split from the right so a zone
+/// containing a colon is not mistaken for the flag.
+fn parse_provider_spec(spec: &str, example: &str) -> Result<(String, bool)> {
+    let parts: Vec<&str> = spec.rsplitn(2, ':').collect();
+    if parts.len() != 2 {
+        anyhow::bail!(
+            "Invalid provider format '{spec}'. Expected 'zone:enabled' (e.g. '{example}')"
+        );
+    }
+    let enabled: bool = parts[0].parse().with_context(|| {
+        format!(
+            "Invalid enabled value '{}' in provider '{spec}'. Expected 'true' or 'false'",
+            parts[0]
+        )
+    })?;
+    Ok((parts[1].to_string(), enabled))
+}
+
+/// Parses repeated `zone=value` flags into a map, keyed by zone.
+fn parse_zone_map(
+    specs: &[String],
+    flag: &str,
+) -> Result<std::collections::HashMap<String, String>> {
+    let mut map = std::collections::HashMap::new();
+    for spec in specs {
+        let (zone, value) = spec
+            .split_once('=')
+            .with_context(|| format!("Invalid {flag} entry '{spec}'. Expected 'zone=value'"))?;
+        if map
+            .insert(zone.trim().to_string(), value.trim().to_string())
+            .is_some()
+        {
+            anyhow::bail!("Duplicate {flag} entry for zone '{}'", zone.trim());
+        }
+    }
+    Ok(map)
+}
+
+/// The refusal codes configured for `zone`, split on commas. Absent yields an
+/// empty list, which the server reads as "the built-in codes".
+fn zone_codes(map: &std::collections::HashMap<String, String>, zone: &str) -> Vec<String> {
+    map.get(zone)
+        .map(|v| {
+            v.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The per-provider cooldown configured for `zone`; absent is `0`, meaning
+/// "use the list-wide default".
+fn zone_cooldown(map: &std::collections::HashMap<String, String>, zone: &str) -> Result<u32> {
+    match map.get(zone) {
+        Some(v) => v
+            .parse()
+            .with_context(|| format!("Invalid cooldown '{v}' for zone '{zone}'. Expected seconds")),
+        None => Ok(0),
+    }
+}
+
+/// Rejects a `zone=…` flag naming a zone that is not in `--providers`. Without
+/// this the flag is silently dropped, and the operator believes they configured
+/// refusal codes that were never sent.
+fn reject_unmatched<P>(
+    map: &std::collections::HashMap<String, String>,
+    providers: &[P],
+    zone_of: impl Fn(&P) -> &String,
+) -> Result<()> {
+    if let Some(zone) = map
+        .keys()
+        .find(|z| !providers.iter().any(|p| zone_of(p) == *z))
+    {
+        anyhow::bail!("zone '{zone}' is not in --providers");
+    }
+    Ok(())
+}
+
+/// Renders a per-provider cooldown, where `0` means "inherit the list default".
+fn cooldown_display(secs: u32) -> String {
+    if secs == 0 {
+        "default".to_string()
+    } else {
+        format!("{secs}s")
+    }
+}
+
+/// Prints the providers currently out of rotation, if any.
+fn print_rotated_out(rotated: &[RotatedProvider]) {
+    if rotated.is_empty() {
+        return;
+    }
+    println!("\nRotated out (refused our queries):");
+    println!("{:<32} {:<18} REMAINING", "ZONE", "REFUSAL CODE");
+    println!("{}", "-".repeat(62));
+    for r in rotated {
+        println!("{:<32} {:<18} {}s", r.zone, r.code, r.seconds_remaining);
+    }
+}
+
 async fn connect(cli: &Cli) -> Result<RolodexDnsServiceClient<Channel>> {
     if let Some(ref socket_path) = cli.unix_socket {
         let socket_path = socket_path.clone();
@@ -1035,30 +1183,33 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::SetRblConfig { enabled, providers } => {
+        Commands::SetRblConfig {
+            enabled,
+            providers,
+            refusal_codes,
+            provider_cooldown,
+            refusal_cooldown,
+        } => {
+            let codes_by_zone = parse_zone_map(&refusal_codes, "--refusal-codes")?;
+            let cooldown_by_zone = parse_zone_map(&provider_cooldown, "--provider-cooldown")?;
             let mut rbl_providers = Vec::new();
             for p in &providers {
-                let parts: Vec<&str> = p.rsplitn(2, ':').collect();
-                if parts.len() != 2 {
-                    anyhow::bail!(
-                        "Invalid provider format '{}'. Expected 'zone:enabled' (e.g. 'zen.spamhaus.org:true')",
-                        p
-                    );
-                }
-                let enabled_flag: bool = parts[0].parse().context(format!(
-                    "Invalid enabled value '{}' in provider '{}'. Expected 'true' or 'false'",
-                    parts[0], p
-                ))?;
+                let (zone, enabled_flag) = parse_provider_spec(p, "zen.spamhaus.org:true")?;
                 rbl_providers.push(RblConfig {
-                    zone: parts[1].to_string(),
+                    refusal_codes: zone_codes(&codes_by_zone, &zone),
+                    refusal_cooldown_secs: zone_cooldown(&cooldown_by_zone, &zone)?,
+                    zone,
                     enabled: enabled_flag,
                 });
             }
+            reject_unmatched(&codes_by_zone, &rbl_providers, |p| &p.zone)?;
+            reject_unmatched(&cooldown_by_zone, &rbl_providers, |p| &p.zone)?;
             let response = client
                 .set_rbl_config(SetRblConfigRequest {
                     enabled,
                     providers: rbl_providers,
                     auth_token: cli.auth_token.clone(),
+                    refusal_cooldown_secs: refusal_cooldown,
                 })
                 .await
                 .context("set-rbl-config RPC failed")?;
@@ -1079,42 +1230,59 @@ async fn main() -> Result<()> {
                 .context("get-rbl-config RPC failed")?;
             let config = response.into_inner();
             println!("RBL enabled: {}", config.enabled);
+            println!(
+                "Refusal rotate-out: {}s (default for providers with no value)",
+                config.refusal_cooldown_secs
+            );
             if config.providers.is_empty() {
                 println!("No RBL providers configured.");
             } else {
                 println!("\nProviders:");
-                println!("{:<40} ENABLED", "ZONE");
-                println!("{}", "-".repeat(50));
+                println!(
+                    "{:<32} {:<8} {:<10} REFUSAL CODES",
+                    "ZONE", "ENABLED", "COOLDOWN"
+                );
+                println!("{}", "-".repeat(90));
                 for p in &config.providers {
-                    println!("{:<40} {}", p.zone, p.enabled);
-                }
-            }
-        }
-
-        Commands::SetDnsblConfig { enabled, providers } => {
-            let mut dnsbl_providers = Vec::new();
-            for p in &providers {
-                let parts: Vec<&str> = p.rsplitn(2, ':').collect();
-                if parts.len() != 2 {
-                    anyhow::bail!(
-                        "Invalid provider format '{}'. Expected 'zone:enabled' (e.g. 'dbl.spamhaus.org:true')",
-                        p
+                    println!(
+                        "{:<32} {:<8} {:<10} {}",
+                        p.zone,
+                        p.enabled,
+                        cooldown_display(p.refusal_cooldown_secs),
+                        p.refusal_codes.join(", ")
                     );
                 }
-                let enabled_flag: bool = parts[0].parse().context(format!(
-                    "Invalid enabled value '{}' in provider '{}'. Expected 'true' or 'false'",
-                    parts[0], p
-                ))?;
+            }
+            print_rotated_out(&config.rotated_out);
+        }
+
+        Commands::SetDnsblConfig {
+            enabled,
+            providers,
+            refusal_codes,
+            provider_cooldown,
+            refusal_cooldown,
+        } => {
+            let codes_by_zone = parse_zone_map(&refusal_codes, "--refusal-codes")?;
+            let cooldown_by_zone = parse_zone_map(&provider_cooldown, "--provider-cooldown")?;
+            let mut dnsbl_providers = Vec::new();
+            for p in &providers {
+                let (zone, enabled_flag) = parse_provider_spec(p, "dbl.spamhaus.org:true")?;
                 dnsbl_providers.push(DnsblConfig {
-                    zone: parts[1].to_string(),
+                    refusal_codes: zone_codes(&codes_by_zone, &zone),
+                    refusal_cooldown_secs: zone_cooldown(&cooldown_by_zone, &zone)?,
+                    zone,
                     enabled: enabled_flag,
                 });
             }
+            reject_unmatched(&codes_by_zone, &dnsbl_providers, |p| &p.zone)?;
+            reject_unmatched(&cooldown_by_zone, &dnsbl_providers, |p| &p.zone)?;
             let response = client
                 .set_dnsbl_config(SetDnsblConfigRequest {
                     enabled,
                     providers: dnsbl_providers,
                     auth_token: cli.auth_token.clone(),
+                    refusal_cooldown_secs: refusal_cooldown,
                 })
                 .await
                 .context("set-dnsbl-config RPC failed")?;
@@ -1135,16 +1303,30 @@ async fn main() -> Result<()> {
                 .context("get-dnsbl-config RPC failed")?;
             let config = response.into_inner();
             println!("DNSBL enabled: {}", config.enabled);
+            println!(
+                "Refusal rotate-out: {}s (default for providers with no value)",
+                config.refusal_cooldown_secs
+            );
             if config.providers.is_empty() {
                 println!("No DNSBL providers configured.");
             } else {
                 println!("\nProviders:");
-                println!("{:<40} ENABLED", "ZONE");
-                println!("{}", "-".repeat(50));
+                println!(
+                    "{:<32} {:<8} {:<10} REFUSAL CODES",
+                    "ZONE", "ENABLED", "COOLDOWN"
+                );
+                println!("{}", "-".repeat(90));
                 for p in &config.providers {
-                    println!("{:<40} {}", p.zone, p.enabled);
+                    println!(
+                        "{:<32} {:<8} {:<10} {}",
+                        p.zone,
+                        p.enabled,
+                        cooldown_display(p.refusal_cooldown_secs),
+                        p.refusal_codes.join(", ")
+                    );
                 }
             }
+            print_rotated_out(&config.rotated_out);
         }
 
         Commands::FlushCache => {
@@ -1817,6 +1999,8 @@ async fn main() -> Result<()> {
             scope,
             zone,
             enabled,
+            refusal_code,
+            refusal_cooldown,
         } => {
             let response = client
                 .add_scope_rbl_provider(AddScopeRblProviderRequest {
@@ -1824,6 +2008,8 @@ async fn main() -> Result<()> {
                         scope_name: scope.clone(),
                         zone: zone.clone(),
                         enabled,
+                        refusal_codes: refusal_code,
+                        refusal_cooldown_secs: refusal_cooldown,
                     }),
                     auth_token: cli.auth_token.clone(),
                 })

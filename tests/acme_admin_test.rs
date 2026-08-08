@@ -41,7 +41,10 @@ struct NeverListedResolver;
 
 #[async_trait::async_trait]
 impl RblResolver for NeverListedResolver {
-    async fn lookup_rbl(&self, _query: &str) -> Result<Option<u32>, anyhow::Error> {
+    async fn lookup_rbl(
+        &self,
+        _query: &str,
+    ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
         Ok(None)
     }
 }

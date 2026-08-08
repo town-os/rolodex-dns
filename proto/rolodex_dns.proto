@@ -143,6 +143,34 @@ message RblConfig {
   string zone = 1;
   // Whether this RBL is enabled (default: true when added)
   bool enabled = 2;
+  // Codes this provider returns to mean "I refused your query" rather than
+  // "this is listed". A DNSxL answers both with an A record under 127.0.0.0/8,
+  // so only the address distinguishes a listing (127.0.0.2) from a complaint
+  // about the querier (127.255.255.254, "query via a public resolver"), and
+  // reading the latter as a listing NXDOMAINs every name checked against the
+  // provider. Each entry is an IPv4 address or "address/prefix".
+  //
+  // Empty uses the built-in set covering the documented codes of the common
+  // providers: 127.255.255.0/24 (Spamhaus errors), 127.0.1.255 and 127.0.2.255
+  // (Spamhaus DBL/ZRD "IP queries not supported"), 127.0.0.1 and 127.0.0.255
+  // (URIBL/SURBL "query blocked"). The single entry "none" disables refusal
+  // detection for this provider — for a blocklist whose real listings collide
+  // with one of those.
+  repeated string refusal_codes = 3;
+  // Seconds this provider is rotated out of the lookup rotation after a
+  // refusal. 0 uses the request's refusal_cooldown_secs.
+  uint32 refusal_cooldown_secs = 4;
+}
+
+// RotatedProvider reports a provider currently taken out of the lookup rotation
+// because it refused a query.
+message RotatedProvider {
+  // The provider's zone
+  string zone = 1;
+  // The refusal code it answered with
+  string code = 2;
+  // Seconds until it is queried again
+  uint32 seconds_remaining = 3;
 }
 
 // SetRblConfigRequest configures RBL providers.
@@ -153,6 +181,9 @@ message SetRblConfigRequest {
   bool enabled = 2;
   // Shared secret for authentication
   string auth_token = 3;
+  // Default seconds a refusing provider stays rotated out, for providers that
+  // set no value of their own. 0 uses the server's built-in default (3600).
+  uint32 refusal_cooldown_secs = 4;
 }
 
 // SetRblConfigResponse is returned after configuring RBL.
@@ -169,7 +200,14 @@ message GetRblConfigRequest {
 // GetRblConfigResponse contains the current RBL configuration.
 message GetRblConfigResponse {
   bool enabled = 1;
+  // Providers with their refusal codes resolved to what is actually in effect,
+  // so an empty configured list reads back as the built-in codes rather than
+  // as empty.
   repeated RblConfig providers = 2;
+  // The list-wide default rotate-out duration
+  uint32 refusal_cooldown_secs = 3;
+  // Providers currently out of rotation after refusing a query
+  repeated RotatedProvider rotated_out = 4;
 }
 
 // DnsblConfig configures a single DNSBL (domain blocklist) provider.
@@ -184,6 +222,12 @@ message DnsblConfig {
   string zone = 1;
   // Whether this DNSBL is enabled (default: true when added)
   bool enabled = 2;
+  // Codes meaning "query refused" rather than "listed"; see
+  // RblConfig.refusal_codes. Empty uses the built-in set, "none" disables.
+  repeated string refusal_codes = 3;
+  // Seconds this provider is rotated out after a refusal; 0 uses the request's
+  // refusal_cooldown_secs.
+  uint32 refusal_cooldown_secs = 4;
 }
 
 // SetDnsblConfigRequest configures DNSBL providers.
@@ -194,6 +238,9 @@ message SetDnsblConfigRequest {
   bool enabled = 2;
   // Shared secret for authentication
   string auth_token = 3;
+  // Default seconds a refusing provider stays rotated out, for providers that
+  // set no value of their own. 0 uses the server's built-in default (3600).
+  uint32 refusal_cooldown_secs = 4;
 }
 
 // SetDnsblConfigResponse is returned after configuring DNSBL.
@@ -210,7 +257,12 @@ message GetDnsblConfigRequest {
 // GetDnsblConfigResponse contains the current DNSBL configuration.
 message GetDnsblConfigResponse {
   bool enabled = 1;
+  // Providers with their refusal codes resolved to what is in effect
   repeated DnsblConfig providers = 2;
+  // The list-wide default rotate-out duration
+  uint32 refusal_cooldown_secs = 3;
+  // Providers currently out of rotation after refusing a query
+  repeated RotatedProvider rotated_out = 4;
 }
 
 // DnsblAllowlistEntry exempts a name from the domain-blocklist check.
@@ -1070,6 +1122,12 @@ message ScopeRblProvider {
   string scope_name = 1;
   string zone = 2;
   bool enabled = 3;
+  // Codes meaning "query refused" rather than "listed"; see
+  // RblConfig.refusal_codes. Empty uses the built-in set, "none" disables.
+  repeated string refusal_codes = 4;
+  // Seconds this provider is rotated out after a refusal; 0 uses the server's
+  // RBL-wide default.
+  uint32 refusal_cooldown_secs = 5;
 }
 
 message AddScopeRblProviderRequest {

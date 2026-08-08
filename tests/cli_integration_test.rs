@@ -15,7 +15,10 @@ struct NeverListedResolver;
 
 #[async_trait::async_trait]
 impl RblResolver for NeverListedResolver {
-    async fn lookup_rbl(&self, _query: &str) -> Result<Option<u32>, anyhow::Error> {
+    async fn lookup_rbl(
+        &self,
+        _query: &str,
+    ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
         Ok(None)
     }
 }
@@ -439,6 +442,132 @@ async fn test_cli_set_and_get_rbl_config_tcp() {
     .stdout(predicate::str::contains("RBL enabled: true"))
     .stdout(predicate::str::contains("zen.spamhaus.org"))
     .stdout(predicate::str::contains("bl.spamcop.net"));
+
+    server.shutdown();
+}
+
+/// Refusal codes and the rotate-out duration are reachable from the CLI, and
+/// `get-rbl-config` shows what is actually in effect. An operator who cannot
+/// see which codes a provider is using cannot tell a misconfigured blocklist
+/// from a working one until it starts NXDOMAINing everything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_cli_set_and_get_rbl_refusal_codes_tcp() {
+    let server = TestServer::start("test-secret").await;
+
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args([
+            "set-rbl-config",
+            "-e",
+            "-p",
+            "zen.spamhaus.org:true",
+            "private.rbl:true",
+            "--refusal-codes",
+            "zen.spamhaus.org=127.255.255.0/24,127.0.0.1",
+            "private.rbl=none",
+            "--provider-cooldown",
+            "zen.spamhaus.org=1800",
+            "--refusal-cooldown",
+            "900",
+        ]);
+        cmd
+    })
+    .await
+    .success();
+
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args(["get-rbl-config"]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains("Refusal rotate-out: 900s"))
+    .stdout(predicate::str::contains("127.255.255.0/24"))
+    .stdout(predicate::str::contains("1800s"))
+    // A provider with detection off reads back as `none`, not as blank —
+    // blank means "the defaults" on the way back in.
+    .stdout(predicate::str::contains("none"));
+
+    // A zone named in --refusal-codes but absent from --providers is an error
+    // rather than a silently dropped flag: the operator would otherwise believe
+    // they had configured codes that were never sent.
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args([
+            "set-rbl-config",
+            "-e",
+            "-p",
+            "zen.spamhaus.org:true",
+            "--refusal-codes",
+            "typo.spamhaus.org=127.0.0.1",
+        ]);
+        cmd
+    })
+    .await
+    .failure()
+    .stderr(predicate::str::contains("not in --providers"));
+
+    // A malformed code is refused by the server.
+    run_cmd({
+        let mut cmd = server.cli_tcp();
+        cmd.args([
+            "set-rbl-config",
+            "-e",
+            "-p",
+            "zen.spamhaus.org:true",
+            "--refusal-codes",
+            "zen.spamhaus.org=not-an-ip",
+        ]);
+        cmd
+    })
+    .await
+    .failure();
+
+    server.shutdown();
+}
+
+/// The per-scope provider carries the same knobs, over the Unix socket path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_cli_add_scope_rbl_with_refusal_codes_unix() {
+    let server = TestServer::start("test-secret").await;
+
+    run_cmd({
+        let mut cmd = server.cli_unix();
+        cmd.args(["create-scope", "--name", "refusal-scope"]);
+        cmd
+    })
+    .await
+    .success();
+
+    run_cmd({
+        let mut cmd = server.cli_unix();
+        cmd.args([
+            "add-scope-rbl",
+            "--scope",
+            "refusal-scope",
+            "--zone",
+            "scope.rbl",
+            "--refusal-code",
+            "127.255.255.0/24",
+            "--refusal-code",
+            "127.0.1.255",
+            "--refusal-cooldown",
+            "300",
+        ]);
+        cmd
+    })
+    .await
+    .success();
+
+    run_cmd({
+        let mut cmd = server.cli_unix();
+        cmd.args(["list-scope-rbl", "--scope", "refusal-scope"]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains("scope.rbl"));
 
     server.shutdown();
 }

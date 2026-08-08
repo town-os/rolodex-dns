@@ -949,10 +949,20 @@ pub struct Metrics {
     pub blocklist_allowlisted: Counter,
     /// Blocklist provider lookups, by list kind and outcome.
     pub blocklist_lookups: CounterVec2,
-    /// Provider lookups skipped because plaintext `:53` is unusable.
+    /// Provider lookups skipped because plaintext `:53` is unusable, or because
+    /// the provider is rotated out after refusing a query.
     pub blocklist_skipped: Counter,
     /// Entries in the shared RBL/DNSBL result cache (sampled at scrape).
     pub blocklist_cache_entries: Gauge,
+    /// Provider answers that were a refusal (an error code such as
+    /// `127.255.255.254`) rather than reputation, by list kind. Each one takes
+    /// the provider out of rotation, so a rising count with a flat
+    /// `blocklist_blocks_total` is the shape of a blocklist that has stopped
+    /// answering us — the failure that, read as listings, would NXDOMAIN
+    /// everything.
+    pub blocklist_refusals: CounterVec,
+    /// Providers currently rotated out after a refusal (sampled at scrape).
+    pub blocklist_rotated_out: Gauge,
 
     // --- upstream resolution ---
     /// The committed `auto` tier (0=roots … 3=public).
@@ -1198,15 +1208,25 @@ impl Metrics {
                 "Blocklist provider lookups, by list kind and outcome.",
                 ["kind", "result"],
                 BLOCK_KINDS,
-                &["listed", "not_listed", "error"],
+                &["listed", "not_listed", "error", "refused"],
             ),
             blocklist_skipped: Counter::new(
                 "rolodex_dns_blocklist_skipped_total",
-                "Provider lookups skipped because plaintext :53 is unusable.",
+                "Provider lookups skipped because :53 is unusable or the provider is rotated out.",
             ),
             blocklist_cache_entries: Gauge::new(
                 "rolodex_dns_blocklist_cache_entries",
                 "Entries in the shared RBL/DNSBL result cache.",
+            ),
+            blocklist_refusals: CounterVec::new(
+                "rolodex_dns_blocklist_refusals_total",
+                "Provider answers that were a refusal code rather than reputation.",
+                "kind",
+                BLOCK_KINDS,
+            ),
+            blocklist_rotated_out: Gauge::new(
+                "rolodex_dns_blocklist_rotated_out",
+                "Blocklist providers currently rotated out after refusing a query.",
             ),
 
             active_tier: Gauge::new(
@@ -1485,6 +1505,8 @@ impl Metrics {
         self.blocklist_lookups.encode(&mut out);
         self.blocklist_skipped.encode(&mut out);
         self.blocklist_cache_entries.encode(&mut out);
+        self.blocklist_refusals.encode(&mut out);
+        self.blocklist_rotated_out.encode(&mut out);
 
         self.active_tier.encode(&mut out);
         self.tier_attempts.encode(&mut out);
@@ -1652,6 +1674,8 @@ pub fn collect(state: &MetricsState) {
 
     m.blocklist_cache_entries
         .set(state.rbl.cache_entries() as u64);
+    m.blocklist_rotated_out
+        .set(state.rbl.rotated_out_count() as u64);
 
     m.active_tier.set(state.dns_server.active_tier() as u64);
     m.ingress_listeners

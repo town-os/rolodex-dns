@@ -204,8 +204,40 @@ RBL results are cached in memory using a concurrent hash map (keyed by `<ip>/<zo
 - **Positive results** (listed): Cached for the TTL returned by the RBL provider (default 300 seconds if no TTL provided).
 - **Negative results** (not listed): Cached for 5 minutes.
 - **Lookup errors**: Not cached; treated as not-listed to avoid false positives.
+- **Refusals**: Not cached either, and the provider is rotated out — see Refusal Codes and Provider Rotation.
 
-The cache can be flushed via gRPC.
+The cache can be flushed via gRPC. A flush also returns every rotated-out provider to rotation.
+
+### Refusal Codes and Provider Rotation
+
+A DNSxL answers a listing and a complaint about the *querier* the same way: an `A` record under `127.0.0.0/8`. `zen.spamhaus.org` says "listed" with `127.0.0.2` and "you are querying via a public resolver" with `127.255.255.254`, and **only the address distinguishes them**. Reading any `A` record as a listing therefore turns the moment a blocklist decides to stop answering us into NXDOMAIN for *every* name checked against that provider — and it starts when query volume crosses the provider's threshold, hours or weeks after a deployment that looked fine. Spamhaus states it directly: those codes "should NOT be interpreted as any sort of reputation".
+
+So each provider carries a set of **refusal codes**. A returned code matching one is `Refused`: not a listing, not a negative, nothing cached — we learned nothing about the queried name. A refusal anywhere in an answer wins over a listing in the same answer, because a provider that is complaining is not simultaneously reporting reputation, and erring this way fails *open* where the other order fails closed on every name.
+
+**The built-in set**, used when a provider configures none — so an existing deployment gets the safe reading without being edited:
+
+| Code | Meaning |
+| ---- | ------- |
+| `127.255.255.0/24` | Spamhaus error range: `.252` typo in the zone name, `.254` query via a public/open resolver, `.255` excessive queries. A whole range rather than the three codes, because Spamhaus reserves it and adds to it — enumerating today's three would silently start reading tomorrow's fourth as a listing |
+| `127.0.1.255` | Spamhaus DBL answering an IP query — "IP queries not supported" |
+| `127.0.2.255` | Spamhaus ZRD answering an IP query — same |
+| `127.0.0.1` | URIBL/SURBL "query blocked" (public resolver / over quota). RFC 5782 §5 also forbids a DNSxL from listing `127.0.0.1`, so it is never a legitimate listing |
+| `127.0.0.255` | URIBL "query blocked" (over quota) |
+
+Each entry is an IPv4 address or `address/prefix`. **Empty means the built-in set** — it cannot mean "no codes", because empty is what every configuration written before this feature existed has. The single entry `none` disables refusal detection for that provider, for a private blocklist whose real listings collide with one of the above. An explicit list is exactly that list; the defaults are **not** merged in, so an operator who spells it out can also narrow it.
+
+An unparseable code is **rejected** — at startup, or with `InvalidArgument` from the RPC — rather than skipped. A code that silently does not apply is a refusal that reads as a listing, and it would do so with the configuration having reported success.
+
+**Rotation.** A refusal takes the provider out of the lookup rotation for a configurable cooldown (`refusal_cooldown_secs`, default 3600s, per-provider override available), so a blocklist that has just told us to stop is backed off instead of queried on every request. Rotation:
+
+- Skips **new lookups** only. Already-cached verdicts still count: rotation says "this provider will not answer new questions", not "the answers it already gave were wrong", and dropping those would unblock genuinely-listed names for the whole cooldown.
+- **Lapses on its own**, so a transient over-quota period heals with no operator action.
+- Is **cleared** by `FlushCache` and by any `SetRblConfig`/`SetDnsblConfig` — a flush is "re-check everything", and a reconfiguration is often the fix for the refusal (a typo in the zone name is both a cause of `127.255.255.252` and the thing being corrected).
+- Is **reported** over the management API: `GetRblConfig`/`GetDnsblConfig` return the rotated-out providers with the code that removed them and the seconds remaining, and `rolodex_dns_blocklist_refusals_total{kind}` / `rolodex_dns_blocklist_rotated_out` expose the same to Prometheus. Without them, "the blocklist went quiet" and "the blocklist is clean" look identical from outside, and the second is what an operator assumes.
+
+Setting the cooldown to `0` means "use the default", not "no cooldown" — a zero cooldown re-asks the provider that just told us to stop, which is the behaviour rotation exists to prevent.
+
+The RBL and DNSBL lists carry independent cooldown defaults, matching their independent configuration sections. Per-scope RBL providers carry their own refusal codes and cooldown, stored alongside the provider row.
 
 ### Local RBL Entries
 
@@ -219,7 +251,7 @@ DNSBL gives blocklists **precedence over external DNS**: the check runs after lo
 
 **Blocking is per queried name, not per suffix.** Each name is looked up against the provider in its own right, so `doubleclick.net` being listed does not by itself block `stats.g.doubleclick.net` — the provider has to list the subdomain too, as real domain blocklists do. This is deliberate and is the operator's call to make: silently blocking every name beneath a listed one would take out an entire domain over a single listed host. Note the asymmetry with the DNSBL **allowlist**, which *is* suffix-matched, because an escape hatch that did not cover subdomains would not be one.
 
-DNSBL checking is globally togglable and **disabled by default, with an empty provider list**; providers are independently enable-able. With it disabled no provider lookup is issued at all, so queried names are not handed to the blocklist operator. The standard domain blocklists an operator typically adds are `dbl.spamhaus.org`, `multi.surbl.org`, and `multi.uribl.com`. An enabled-but-empty DNSBL is a no-op (nothing is queried and nothing is blocked). DNSBL configuration is independent of the IP-based RBL configuration and shares the same in-memory result cache (positive results cached for the provider TTL, negatives for 5 minutes). It is configured at startup via the `dnsbl` config section and at runtime via `SetDnsblConfig`/`GetDnsblConfig`.
+DNSBL checking is globally togglable and **disabled by default, with an empty provider list**; providers are independently enable-able. With it disabled no provider lookup is issued at all, so queried names are not handed to the blocklist operator. The standard domain blocklists an operator typically adds are `dbl.spamhaus.org`, `multi.surbl.org`, and `multi.uribl.com`. An enabled-but-empty DNSBL is a no-op (nothing is queried and nothing is blocked). DNSBL configuration is independent of the IP-based RBL configuration and shares the same in-memory result cache (positive results cached for the provider TTL, negatives for 5 minutes) and the same refusal-code handling — `dbl.spamhaus.org` answers an IP query with `127.0.1.255`, which is an error and not a listing (see Refusal Codes and Provider Rotation). It is configured at startup via the `dnsbl` config section and at runtime via `SetDnsblConfig`/`GetDnsblConfig`.
 
 ### DNSBL Allowlist
 
@@ -585,11 +617,11 @@ The management API is defined in `proto/rolodex_dns.proto` under the `RolodexDns
 | RPC                   | Description                                                                       |
 | --------------------- | --------------------------------------------------------------------------------- |
 | `SetForwarders`       | Replaces the upstream DNS forwarder list at runtime without restart.              |
-| `SetRblConfig`        | Replaces the RBL configuration (global enable flag and provider list) at runtime. |
-| `GetRblConfig`        | Returns the current RBL configuration.                                            |
-| `SetDnsblConfig`      | Replaces the DNSBL (domain blocklist) configuration (global enable flag and provider list) at runtime. |
-| `GetDnsblConfig`      | Returns the current DNSBL configuration.                                          |
-| `FlushCache`          | Clears the RBL result cache.                                                      |
+| `SetRblConfig`        | Replaces the RBL configuration (global enable flag, provider list, per-provider refusal codes/cooldown, and the list-wide refusal cooldown) at runtime. Rejects a malformed refusal code with `InvalidArgument`. |
+| `GetRblConfig`        | Returns the current RBL configuration, with refusal codes resolved to what is in effect, plus the providers currently rotated out. |
+| `SetDnsblConfig`      | Replaces the DNSBL (domain blocklist) configuration (global enable flag, provider list, and refusal handling) at runtime. |
+| `GetDnsblConfig`      | Returns the current DNSBL configuration, with resolved refusal codes and the rotated-out providers. |
+| `FlushCache`          | Clears the RBL result cache and returns every rotated-out provider to rotation.   |
 | `AddLocalRblEntry`    | Adds a local RBL blocklist entry (name/IP and reason).                            |
 | `RemoveLocalRblEntry` | Removes a local RBL entry by name.                                                |
 | `ListLocalRblEntries` | Retrieves all local RBL entries.                                                  |
@@ -757,10 +789,10 @@ The `rolodex-dns-cli` binary is a command-line client for the gRPC management in
 | Command            | Description                                                                                         |
 | ------------------ | --------------------------------------------------------------------------------------------------- |
 | `set-forwarders`   | Set upstream DNS forwarders. Takes `--forwarders` (one or more `host:port` addresses).              |
-| `set-rbl-config`   | Configure RBL settings. Takes `--enabled` flag and optional `--providers` in `zone:enabled` format. |
-| `get-rbl-config`   | Display current RBL configuration.                                                                  |
-| `set-dnsbl-config` | Configure DNSBL (domain blocklist) settings. Takes `--enabled` flag and optional `--providers` in `zone:enabled` format. |
-| `get-dnsbl-config` | Display current DNSBL configuration.                                                                |
+| `set-rbl-config`   | Configure RBL settings. Takes `--enabled` flag, optional `--providers` in `zone:enabled` format, and the refusal knobs: `--refusal-codes zone=code,code` (repeatable; `none` disables detection for that zone), `--provider-cooldown zone=secs` (repeatable), `--refusal-cooldown secs` (list-wide). A `zone=` entry naming a zone absent from `--providers` is an error, not a dropped flag. |
+| `get-rbl-config`   | Display current RBL configuration, including each provider's effective refusal codes and cooldown and any providers currently rotated out. |
+| `set-dnsbl-config` | Configure DNSBL (domain blocklist) settings. Same flags as `set-rbl-config`.                        |
+| `get-dnsbl-config` | Display current DNSBL configuration, including refusal codes and rotated-out providers.             |
 | `flush-cache`      | Clear the RBL result cache.                                                                         |
 | `add-local-rbl`    | Add a local RBL entry. Takes `--name` and optional `--reason`.                                      |
 | `remove-local-rbl` | Remove a local RBL entry. Takes `--name`.                                                           |
@@ -895,8 +927,10 @@ An additional `WithGRPCDialOption` option allows passing custom `grpc.DialOption
 | --------------------------------------- | ---------------------------------------------------------- |
 | `SetForwarders(ctx, forwarders)`        | Replaces the upstream forwarder list.                      |
 | `SetRblConfig(ctx, enabled, providers)` | Replaces the RBL configuration.                            |
-| `GetRblConfig(ctx)`                     | Returns an `RblStatus` with the current RBL configuration. |
+| `SetRblConfigWithRefusalCooldown(ctx, enabled, providers, secs)` | The same, with the list-wide rotate-out duration for refusing providers. |
+| `GetRblConfig(ctx)`                     | Returns an `RblStatus` with the current RBL configuration, effective refusal codes, and rotated-out providers. |
 | `SetDnsblConfig(ctx, enabled, providers)` | Replaces the DNSBL (domain blocklist) configuration.     |
+| `SetDnsblConfigWithRefusalCooldown(ctx, enabled, providers, secs)` | The same, with the DNSBL rotate-out duration. |
 | `GetDnsblConfig(ctx)`                   | Returns a `DnsblStatus` with the current DNSBL configuration. |
 | `FlushCache(ctx)`                       | Clears the RBL result cache.                               |
 | `AddLocalRblEntry(ctx, entry)`          | Adds a local RBL entry.                                    |
@@ -966,6 +1000,7 @@ An additional `WithGRPCDialOption` option allows passing custom `grpc.DialOption
 | `ListDhcpLeases(ctx, scopeName)`                     | Lists DHCP leases, optionally filtered by scope. |
 | `DeleteDhcpLease(ctx, mac)`                          | Deletes a DHCP lease by MAC address.             |
 | `AddScopeRblProvider(ctx, scopeName, zone, enabled)` | Adds a per-scope RBL provider.                   |
+| `AddScopeRblProviderWithRefusal(ctx, scopeName, zone, enabled, codes, secs)` | The same, with the provider's refusal codes and rotate-out duration. |
 | `RemoveScopeRblProvider(ctx, scopeName, zone)`       | Removes a per-scope RBL provider.                |
 | `ListScopeRblProviders(ctx, scopeName)`              | Lists per-scope RBL providers.                   |
 | `AddScopeTld(ctx, scopeName, tld)`                   | Registers a globally-unique owned TLD for a scope. |
@@ -989,10 +1024,11 @@ The client automatically includes the auth token in every RPC call. All methods 
 
 - `RecordType` — DNS record type enum (constants: `RecordTypeA`, `RecordTypeAAAA`, `RecordTypeCNAME`, `RecordTypeMX`, `RecordTypeTXT`, `RecordTypeNS`, `RecordTypeSOA`, `RecordTypeSRV`, `RecordTypePTR`, `RecordTypeURI`, `RecordTypeSSHFP`, `RecordTypeDNAME`, `RecordTypeANAME`, `RecordTypeZONEMD`, `RecordTypeTLSA`, `RecordTypeDNSKEY`, `RecordTypeDS`, `RecordTypeRRSIG`, `RecordTypeNSEC`, `RecordTypeNSEC3`, `RecordTypeNSEC3PARAM`, `RecordTypeCERT`).
 - `DnsRecord` — DNS record with name, record type, value, TTL, and priority.
-- `RblConfig` — RBL provider configuration (zone and enabled flag).
-- `RblStatus` — RBL state returned by `GetRblConfig` (global enabled flag and provider list).
-- `DnsblConfig` — DNSBL (domain blocklist) provider configuration (zone and enabled flag).
-- `DnsblStatus` — DNSBL state returned by `GetDnsblConfig` (global enabled flag and provider list).
+- `RblConfig` — RBL provider configuration (zone, enabled flag, refusal codes, per-provider refusal cooldown).
+- `RblStatus` — RBL state returned by `GetRblConfig` (global enabled flag, provider list, list-wide refusal cooldown, rotated-out providers).
+- `DnsblConfig` — DNSBL (domain blocklist) provider configuration (same fields as `RblConfig`).
+- `DnsblStatus` — DNSBL state returned by `GetDnsblConfig` (same shape as `RblStatus`).
+- `RotatedProvider` — A blocklist provider currently out of the lookup rotation (zone, refusal code, seconds remaining).
 - `RemoveRecordOptions` — Optional filters for `RemoveRecord` (record type, value).
 - `ListRecordsOptions` — Optional filters for `ListRecords` (name filter, record type).
 - `NetworkScope` — Network scope with name and home domain.
@@ -1015,7 +1051,7 @@ The client automatically includes the auth token in every RPC call. All methods 
 - `Dns64Config` — DNS64 configuration (enabled, prefix).
 - `DhcpPool` — DHCP address pool (scope, range, gateway, subnet mask, DNS servers).
 - `DhcpLease` — DHCP lease (MAC, IP, scope, hostname, lease start/duration, state).
-- `ScopeRblProvider` — Per-scope RBL provider (scope, zone, enabled).
+- `ScopeRblProvider` — Per-scope RBL provider (scope, zone, enabled, refusal codes, refusal cooldown).
 - `DhcpCertOption` — DHCP certificate option (scope, option code, cert data, description).
 - `TldListener` — Per-TLD ingress DNS listener (scope, TLD, listen IP).
 - `ZoneCa` — Root + intermediate PEM returned by `EnsureZoneCa`.
@@ -1086,14 +1122,14 @@ The registry is hand-rolled on the same lock-free primitives as the rest of the 
 
 ### What is exposed
 
-71 metric families, all prefixed `rolodex_dns_`:
+73 metric families, all prefixed `rolodex_dns_`:
 
 | Area | Metrics |
 | ---- | ------- |
 | Process | `build_info{version}`, `start_time_seconds`, `uptime_seconds`, `metrics_scrapes_total` |
 | Queries | `queries_total{proto,rcode}`, `queries_by_type_total{qtype}`, `answers_total{source}`, `query_duration_seconds{proto}` (histogram), `query_size_bytes`, `response_size_bytes`, `responses_truncated_total`, `malformed_queries_total`, `edns_unsupported_version_total`, `edns_do_queries_total`, `ingress_rewrites_total`, `answers_family_filtered_total{family}` |
 | Response cache | `cache_hits_total`, `cache_misses_total`, `cache_negative_hits_total`, `cache_expired_total`, `cache_flushes_total{reason}` (`mutation`/`explicit`/`tier_switch`), `cache_entries`, `cache_negative_entries` |
-| Blocklists | `blocklist_blocks_total{kind}`, `blocklist_allowlisted_total`, `blocklist_lookups_total{kind,result}`, `blocklist_skipped_total`, `blocklist_cache_entries` |
+| Blocklists | `blocklist_blocks_total{kind}`, `blocklist_allowlisted_total`, `blocklist_lookups_total{kind,result}` (`listed`/`not_listed`/`error`/`refused`), `blocklist_skipped_total`, `blocklist_cache_entries`, `blocklist_refusals_total{kind}`, `blocklist_rotated_out` |
 | Upstream | `upstream_active_tier`, `upstream_tier_attempts_total{tier}`, `_wins_total{tier}`, `_failures_total{tier}`, `upstream_tier_switches_total{direction}`, `upstream_recovery_probes_total`, `upstream_duration_seconds{tier}`, `upstream_queries_total{server}`, `upstream_exhausted_total` |
 | Resolver | `resolver_lookups_total`, `_referrals_total`, `_cname_hops_total`, `_budget_exhausted_total`, `_tcp_retries_total`, `resolver_priming_total{result}`, `resolver_nameserver_latency_milliseconds{server}`, `delegation_cache_entries`, `record_cache_entries` |
 | DNSSEC | `dnssec_verdicts_total{verdict}` (`secure`/`insecure`/`bogus`/`indeterminate`), `dnssec_servfail_total`, `dnssec_dnskey_lookups_total`, `dnssec_insecure_delegations_total`, `key_cache_entries` |
@@ -1158,9 +1194,13 @@ dns:
 | `dnssec.trust_anchors`              | `[]` (IANA root keys)          | Trust anchors as `"<flags> <protocol> <algorithm> <base64 key>"` (a DNSKEY's RDATA fields, as `dig` prints them); every field is validated at startup and a bad one is a hard failure. An override **replaces** the IANA keys rather than adding to them |
 | `database_path`                     | `rolodex-dns.db`               | SQLite database file path                              |
 | `rbl.enabled`                       | `false`                        | Global RBL enable flag                                 |
-| `rbl.providers`                     | `[]` (empty)                   | RBL provider list                                      |
+| `rbl.providers`                     | `[]` (empty)                   | RBL provider list; each entry takes `zone`, `enabled`, and optionally `refusal_codes` / `refusal_cooldown_secs` |
+| `rbl.refusal_cooldown_secs`         | `3600`                         | Seconds a refusing RBL provider stays rotated out, for providers that set none (see Refusal Codes and Provider Rotation) |
+| `rbl.providers[].refusal_codes`     | `[]` (built-in set)            | Codes meaning "query refused" rather than "listed"; `none` disables detection for that provider |
+| `rbl.providers[].refusal_cooldown_secs` | (list default)             | Per-provider rotate-out duration                       |
 | `dnsbl.enabled`                     | `false`                        | Global DNSBL (domain blocklist) enable flag            |
-| `dnsbl.providers`                   | `[]` (empty)                   | DNSBL provider list                                    |
+| `dnsbl.providers`                   | `[]` (empty)                   | DNSBL provider list; same per-provider refusal fields as `rbl.providers` |
+| `dnsbl.refusal_cooldown_secs`       | `3600`                         | DNSBL rotate-out default, independent of the RBL one   |
 | `dot.bind`                          | `0.0.0.0:853`                  | DoT listener; supports interface:port (section optional) |
 | `dot.tls.cert_path`                 | (none)                         | TLS certificate path                                   |
 | `dot.tls.key_path`                  | (none)                         | TLS private key path                                   |
@@ -1215,7 +1255,7 @@ The project uses a top-level Makefile with the following targets:
 | `test`                | Run all tests: lint, Go integration tests, Go unit tests, Rust tests (`cargo test`), and JavaScript tests.                                                 |
 | `test-log`            | Same as `test`, tee'd into a timestamped log file under `/tmp/rolodex-dns/log` (override with `LOG_DIR`). The log path is printed at the end even when the run fails. |
 | `rust-test`           | Run the Rust integration test files, then `cargo test`.                                                                                                     |
-| `rust-integration-test` | Build, then run each Rust integration test file explicitly (`integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `acme_admin_test`, `auto_resolution_test`, `metrics_test`, `dnssec_signing_test`, `dnssec_validation_test`, `zonemd_test`, `doq_test`, `proxy_test`, `tls_reload_test`). |
+| `rust-integration-test` | Build, then run each Rust integration test file explicitly (`integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`, `rbl_refusal_test`, `dnssec_signing_test`, `dnssec_validation_test`, `zonemd_test`, `doq_test`, `proxy_test`, `tls_reload_test`, `acme_admin_test`, plus the `security_*` suites). |
 | `lint`                | Run `cargo fmt -- --check` and `cargo clippy --all-targets -- -D warnings`.                                                                                |
 | `deps`                | Install build dependencies: the Rust cross-compilation toolchain (`cross-deps`) and the JavaScript dev dependencies (`npm install` in `js/`).              |
 | `cross-deps`          | Install the Rust cross toolchain: `rustup target add` for both triples, `cargo-zigbuild`, and zig. Rootless — see Cross-Compilation.                       |
@@ -1370,7 +1410,7 @@ Performance-related unit tests cover the optimized hot-path code:
 ### Metrics Tests
 
 - **Registry unit tests** (`src/metrics.rs`): counter/gauge/vec semantics including out-of-range label indices (which must never panic on the query path), cumulative histogram bucketing, nanosecond→seconds and byte rendering, dynamic series creation, label-value escaping, float formatting that avoids scientific notation, rcode/qtype folding of unknowns, and a guard that every emitted series is preceded by its own `# HELP`/`# TYPE`.
-- **Endpoint and attribution tests** (`tests/metrics_test.rs`): the router is served on an ephemeral port and scraped over a real TCP socket with a hand-written HTTP/1.1 request — status, content type, and that every non-comment line parses as `name[{labels}] value` with a numeric value, since one malformed line makes Prometheus reject the whole scrape. Query-path tests assert that a local hit, a cache hit, an authoritative NXDOMAIN, a malformed query and an unknown query type each land in the right series, that gauges are sampled at scrape time (a row added after the listener started shows up), and that the three cache-flush reasons stay distinct. Because the registry is a process-global, each test holds a shared lock and asserts exact deltas — serializing rather than loosening to `>=` is what catches an observation being recorded *twice*.
+- **Endpoint and attribution tests** (`tests/metrics_test.rs`): the router is served on an ephemeral port and scraped over a real TCP socket with a hand-written HTTP/1.1 request — status, content type, and that every non-comment line parses as `name[{labels}] value` with a numeric value, since one malformed line makes Prometheus reject the whole scrape. Query-path tests assert that a local hit, a cache hit, an authoritative NXDOMAIN, a malformed query and an unknown query type each land in the right series, that gauges are sampled at scrape time (a row added after the listener started shows up), that the three cache-flush reasons stay distinct, and that a blocklist refusal advances `blocklist_refusals_total` and the `refused` lookup outcome **without** also advancing `listed`. Because the registry is a process-global, each test holds a shared lock and asserts exact deltas — serializing rather than loosening to `>=` is what catches an observation being recorded *twice*.
 
 ### Resolver Tests
 
@@ -1409,6 +1449,16 @@ Its `Tamper` enum is the point. Each variant is one specific attack, applied whe
 Both matter equally and for the same reason: a validator that rejects everything passes every attack test, and one that accepts everything passes every happy-path test. Only the pair together says anything.
 
 Unit tests in `src/dnssec_validate.rs` cover the pieces independently of any network: verdict merging (the worst wins), base32hex against the RFC 4648 §10 vectors and its order-preservation (which is what lets the NSEC3 range checks compare encoded strings), RFC 1982 serial wrap, NSEC coverage including the wrapping last record and exclusivity at both ends, and each denial proof's refusal cases. `src/key_cache.rs` pins that lookups are exact-name rather than suffix — a suffix match would hand a parent's keys to a delegated subzone.
+
+### Blocklist Refusal Tests
+
+`tests/rbl_refusal_test.rs` drives refusal codes and provider rotation over **real UDP DNS** — a mock blocklist zone answering with real `A` records, through `RecursiveRblResolver`'s forwarder fallback, through classification, into `DnsServer::handle_query` — because every layer in between is somewhere the listing/refusal distinction could be lost, and asserting on `classify` alone would pass just as happily with a query path that never calls it. Root recursion points at a dead loopback address so the roots tier fails instantly and the test never touches the network.
+
+Every test is paired with a **control**: a genuine `127.0.0.2` listing travelling the identical path must still return NXDOMAIN. Without it, a checker that had simply stopped blocking anything would pass the whole file.
+
+It covers each documented refusal code failing to block while rotating its provider out, rotation suppressing further lookups for distinct names (the query *count* is the only way "out of rotation" is observable), the cooldown lapsing on its own, `none` restoring the old reading, an explicit list replacing rather than extending the defaults, the gRPC round trip of codes/cooldowns/rotated-out state, `InvalidArgument` for a malformed code and for `none` mixed with real codes, and the per-scope provider's database round trip.
+
+Unit tests in `src/rbl.rs` cover the pieces: prefix parsing and masking, that every entry of `DEFAULT_REFUSAL_CODES` parses (they are resolved with `filter_map`, so a typo in the constant would otherwise silently drop a code) and that no Spamhaus *listing* code falls inside them, `resolve_refusal_codes`' empty/`none`/explicit rules, a refusal winning over a listing in the same answer, refusals caching nothing, cached listings surviving rotation, and `flush_cache`/`set_config` returning providers to rotation. `src/config.rs` pins that a provider written before the fields existed still parses and lands on the built-in codes; `src/db.rs` pins the column migration onto a database created without them.
 
 ### Security Regression Suites
 
@@ -1458,7 +1508,7 @@ The Go client has two test layers:
 - **Unit tests** — Use an in-process mock gRPC server via `bufconn` to test all client methods, authentication token propagation, transport modes, error handling, and edge cases (idempotent close, lazy dial, custom dial options).
 - **Integration tests** — Gated behind the `integration` build tag. Each test starts a real Rolodex DNS server subprocess with a unique temporary directory, random ports, and isolated database. Tests cover record CRUD, wildcard filtering, forwarder configuration, RBL round-trip, cache flushing, Unix socket transport, authentication failure, default TTL behavior, concurrent clients (5 simultaneous), network scoping, DNS64, and TTL drift.
 
-The `make test` target runs the full test suite: lint, Go integration tests, Go unit tests, Rust integration tests (each test file explicitly: `integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`, `dnssec_signing_test`, `dnssec_validation_test`), all Rust tests via `cargo test` (which also covers the resolver suite above), and the JavaScript lint/integration/unit tests. Individual targets are available: `make go-integration-test`, `make go-test`, `make rust-integration-test`, `make rust-test`, `make js-integration-test`, `make js-test`. Use `make test-log` to capture the whole run to a timestamped log file.
+The `make test` target runs the full test suite: lint, Go integration tests, Go unit tests, Rust integration tests (each test file explicitly: `integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`, `rbl_refusal_test`, `dnssec_signing_test`, `dnssec_validation_test`, `zonemd_test`, `doq_test`, `proxy_test`, `tls_reload_test`, `acme_admin_test`, and the `security_*` suites), all Rust tests via `cargo test` (which also covers the resolver suite above), and the JavaScript lint/integration/unit tests. Individual targets are available: `make go-integration-test`, `make go-test`, `make rust-integration-test`, `make rust-test`, `make js-integration-test`, `make js-test`. Use `make test-log` to capture the whole run to a timestamped log file.
 
 ## Key Dependencies
 

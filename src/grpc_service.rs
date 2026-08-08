@@ -47,6 +47,48 @@ const UNKNOWN_PEER: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 /// TTL for the DNSKEY records `SignZone` publishes at the zone apex.
 const DNSKEY_TTL: u32 = 3600;
 
+/// Builds a runtime blocklist provider from the wire representation shared by
+/// `RblConfig` and `DnsblConfig`, resolving the refusal codes.
+///
+/// A bad code is rejected outright (`InvalidArgument`) rather than dropped:
+/// a code that silently does not apply turns the provider's "stop querying me"
+/// answer back into a listing, which NXDOMAINs every name checked against it —
+/// and it would do so with the RPC having reported success.
+fn build_rbl_provider(
+    zone: &str,
+    enabled: bool,
+    refusal_codes: &[String],
+    refusal_cooldown_secs: u32,
+) -> Result<RblProvider, String> {
+    let codes = crate::rbl::resolve_refusal_codes(refusal_codes)
+        .map_err(|e| format!("blocklist provider '{zone}': {e}"))?;
+    Ok(RblProvider {
+        zone: zone.to_string(),
+        enabled,
+        refusal_codes: codes.into(),
+        cooldown: (refusal_cooldown_secs > 0)
+            .then(|| std::time::Duration::from_secs(u64::from(refusal_cooldown_secs))),
+    })
+}
+
+/// Renders a per-provider cooldown override for the wire; absent is `0`,
+/// meaning "use the list-wide default".
+fn cooldown_secs(cooldown: Option<std::time::Duration>) -> u32 {
+    cooldown.map(|d| d.as_secs() as u32).unwrap_or(0)
+}
+
+/// The currently rotated-out providers, for a `Get*ConfigResponse`.
+fn rotated_out_proto(rbl: &RblChecker) -> Vec<proto::RotatedProvider> {
+    rbl.rotated_out()
+        .into_iter()
+        .map(|r| proto::RotatedProvider {
+            zone: r.zone,
+            code: r.code,
+            seconds_remaining: r.seconds_remaining as u32,
+        })
+        .collect()
+}
+
 /// Failed-authentication state for one source address.
 struct AuthFailures {
     /// Failures accumulated since the last reset or lockout.
@@ -489,15 +531,22 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("set_rbl_config");
 
-        let providers: Vec<RblProvider> = req
+        let providers = req
             .providers
             .iter()
-            .map(|p| RblProvider {
-                zone: p.zone.clone(),
-                enabled: p.enabled,
+            .map(|p| {
+                build_rbl_provider(
+                    &p.zone,
+                    p.enabled,
+                    &p.refusal_codes,
+                    p.refusal_cooldown_secs,
+                )
             })
-            .collect();
+            .collect::<Result<Vec<RblProvider>, String>>()
+            .map_err(Status::invalid_argument)?;
 
+        self.rbl
+            .set_refusal_cooldown(u64::from(req.refusal_cooldown_secs));
         self.rbl.set_config(req.enabled, providers).await;
         info!("Updated RBL config: enabled={}", req.enabled);
 
@@ -517,17 +566,22 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         self.count_rpc("get_rbl_config");
 
         let (enabled, providers) = self.rbl.get_config().await;
+        let default_cooldown = self.rbl.refusal_cooldown();
         let proto_providers = providers
             .iter()
             .map(|p| proto::RblConfig {
                 zone: p.zone.clone(),
                 enabled: p.enabled,
+                refusal_codes: p.refusal_code_strings(),
+                refusal_cooldown_secs: cooldown_secs(p.cooldown),
             })
             .collect();
 
         Ok(Response::new(GetRblConfigResponse {
             enabled,
             providers: proto_providers,
+            refusal_cooldown_secs: default_cooldown.as_secs() as u32,
+            rotated_out: rotated_out_proto(&self.rbl),
         }))
     }
 
@@ -540,15 +594,22 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("set_dnsbl_config");
 
-        let providers: Vec<RblProvider> = req
+        let providers = req
             .providers
             .iter()
-            .map(|p| RblProvider {
-                zone: p.zone.clone(),
-                enabled: p.enabled,
+            .map(|p| {
+                build_rbl_provider(
+                    &p.zone,
+                    p.enabled,
+                    &p.refusal_codes,
+                    p.refusal_cooldown_secs,
+                )
             })
-            .collect();
+            .collect::<Result<Vec<RblProvider>, String>>()
+            .map_err(Status::invalid_argument)?;
 
+        self.rbl
+            .set_dnsbl_refusal_cooldown(u64::from(req.refusal_cooldown_secs));
         self.rbl.set_dnsbl_config(req.enabled, providers).await;
         // Blocking a domain changes what should/shouldn't be served from the
         // DNS response cache, so flush it to avoid serving a stale answer.
@@ -571,17 +632,22 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         self.count_rpc("get_dnsbl_config");
 
         let (enabled, providers) = self.rbl.get_dnsbl_config().await;
+        let default_cooldown = self.rbl.dnsbl_refusal_cooldown();
         let proto_providers = providers
             .iter()
             .map(|p| proto::DnsblConfig {
                 zone: p.zone.clone(),
                 enabled: p.enabled,
+                refusal_codes: p.refusal_code_strings(),
+                refusal_cooldown_secs: cooldown_secs(p.cooldown),
             })
             .collect();
 
         Ok(Response::new(GetDnsblConfigResponse {
             enabled,
             providers: proto_providers,
+            refusal_cooldown_secs: default_cooldown.as_secs() as u32,
+            rotated_out: rotated_out_proto(&self.rbl),
         }))
     }
 
@@ -2412,10 +2478,18 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         let provider = req
             .provider
             .ok_or_else(|| Status::invalid_argument("provider is required"))?;
+        // Validate the codes here rather than at read time: a scope provider is
+        // stored and re-read much later, and a code that only fails to parse on
+        // the query path would fail silently, on a path where the consequence is
+        // reading a refusal as a listing.
+        crate::rbl::resolve_refusal_codes(&provider.refusal_codes)
+            .map_err(Status::invalid_argument)?;
         let db_provider = crate::db::ScopeRblProvider {
             scope_name: provider.scope_name,
             zone: provider.zone,
             enabled: provider.enabled,
+            refusal_codes: provider.refusal_codes,
+            refusal_cooldown_secs: u64::from(provider.refusal_cooldown_secs),
         };
         match self.db.add_scope_rbl_provider(&db_provider) {
             Ok(()) => {
@@ -2484,6 +2558,8 @@ impl RolodexDnsService for RolodexDnsGrpcService {
                         scope_name: p.scope_name,
                         zone: p.zone,
                         enabled: p.enabled,
+                        refusal_codes: p.refusal_codes,
+                        refusal_cooldown_secs: p.refusal_cooldown_secs as u32,
                     })
                     .collect();
                 Ok(Response::new(ListScopeRblProvidersResponse {
@@ -2969,13 +3045,13 @@ fn generate_eab() -> Result<(String, Vec<u8>), Status> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rbl::RblResolver;
+    use crate::rbl::{RblAnswer, RblResolver};
 
     struct NeverListedResolver;
 
     #[async_trait::async_trait]
     impl RblResolver for NeverListedResolver {
-        async fn lookup_rbl(&self, _query: &str) -> Result<Option<u32>, anyhow::Error> {
+        async fn lookup_rbl(&self, _query: &str) -> Result<Option<RblAnswer>, anyhow::Error> {
             Ok(None)
         }
     }
@@ -3265,8 +3341,10 @@ mod tests {
             providers: vec![proto::RblConfig {
                 zone: "test.rbl".to_string(),
                 enabled: true,
+                ..Default::default()
             }],
             auth_token: "secret123".to_string(),
+            ..Default::default()
         });
         let response = service.set_rbl_config(set_req).await.unwrap();
         assert!(response.into_inner().success);
@@ -3305,13 +3383,16 @@ mod tests {
                 proto::DnsblConfig {
                     zone: "dbl.spamhaus.org".to_string(),
                     enabled: true,
+                    ..Default::default()
                 },
                 proto::DnsblConfig {
                     zone: "multi.surbl.org".to_string(),
                     enabled: false,
+                    ..Default::default()
                 },
             ],
             auth_token: "secret123".to_string(),
+            ..Default::default()
         });
         assert!(
             service
@@ -3510,6 +3591,7 @@ mod tests {
             enabled: true,
             providers: vec![],
             auth_token: "wrong".to_string(),
+            ..Default::default()
         });
         assert!(service.set_dnsbl_config(set_req).await.is_err());
     }

@@ -65,15 +65,11 @@ async fn main() -> Result<()> {
         .filter_map(|h| h.parse().ok())
         .collect();
 
-    let rbl_providers: Vec<RblProvider> = config
-        .rbl
-        .providers
-        .iter()
-        .map(|p| RblProvider {
-            zone: p.zone.clone(),
-            enabled: p.enabled,
-        })
-        .collect();
+    // A malformed refusal code fails startup rather than being dropped: a code
+    // that silently does not apply means the provider's "stop querying me"
+    // answer reads as a listing and NXDOMAINs every name checked against it.
+    let rbl_providers: Vec<RblProvider> =
+        rolodex_dns::config::to_providers(&config.rbl.providers).map_err(anyhow::Error::msg)?;
     let rbl = Arc::new(RblChecker::with_resolver(
         config.rbl.enabled,
         rbl_providers,
@@ -82,16 +78,11 @@ async fn main() -> Result<()> {
             forwarders.clone(),
         )),
     ));
+    rbl.set_refusal_cooldown(config.rbl.refusal_cooldown_secs);
+    rbl.set_dnsbl_refusal_cooldown(config.dnsbl.refusal_cooldown_secs);
 
-    let dnsbl_providers: Vec<RblProvider> = config
-        .dnsbl
-        .providers
-        .iter()
-        .map(|p| RblProvider {
-            zone: p.zone.clone(),
-            enabled: p.enabled,
-        })
-        .collect();
+    let dnsbl_providers: Vec<RblProvider> =
+        rolodex_dns::config::to_providers(&config.dnsbl.providers).map_err(anyhow::Error::msg)?;
     rbl.set_dnsbl_config(config.dnsbl.enabled, dnsbl_providers)
         .await;
 
