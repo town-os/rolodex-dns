@@ -20,75 +20,77 @@ import (
 type mockRolodexDnsService struct {
 	pb.UnimplementedRolodexDnsServiceServer
 
-	addRecordFn              func(ctx context.Context, req *pb.AddRecordRequest) (*pb.AddRecordResponse, error)
-	removeRecordFn           func(ctx context.Context, req *pb.RemoveRecordRequest) (*pb.RemoveRecordResponse, error)
-	listRecordsFn            func(ctx context.Context, req *pb.ListRecordsRequest) (*pb.ListRecordsResponse, error)
-	setForwarderFn           func(ctx context.Context, req *pb.SetForwarderRequest) (*pb.SetForwarderResponse, error)
-	setRblConfigFn           func(ctx context.Context, req *pb.SetRblConfigRequest) (*pb.SetRblConfigResponse, error)
-	getRblConfigFn           func(ctx context.Context, req *pb.GetRblConfigRequest) (*pb.GetRblConfigResponse, error)
-	setDnsblConfigFn         func(ctx context.Context, req *pb.SetDnsblConfigRequest) (*pb.SetDnsblConfigResponse, error)
-	getDnsblConfigFn         func(ctx context.Context, req *pb.GetDnsblConfigRequest) (*pb.GetDnsblConfigResponse, error)
-	flushCacheFn             func(ctx context.Context, req *pb.FlushCacheRequest) (*pb.FlushCacheResponse, error)
-	createNetworkScopeFn     func(ctx context.Context, req *pb.CreateNetworkScopeRequest) (*pb.CreateNetworkScopeResponse, error)
-	deleteNetworkScopeFn     func(ctx context.Context, req *pb.DeleteNetworkScopeRequest) (*pb.DeleteNetworkScopeResponse, error)
-	listNetworkScopesFn      func(ctx context.Context, req *pb.ListNetworkScopesRequest) (*pb.ListNetworkScopesResponse, error)
-	joinNetworkFn            func(ctx context.Context, req *pb.JoinNetworkRequest) (*pb.JoinNetworkResponse, error)
-	leaveNetworkFn           func(ctx context.Context, req *pb.LeaveNetworkRequest) (*pb.LeaveNetworkResponse, error)
-	getNetworkAssociationsFn func(ctx context.Context, req *pb.GetNetworkAssociationsRequest) (*pb.GetNetworkAssociationsResponse, error)
-	addScopedRecordFn        func(ctx context.Context, req *pb.AddScopedRecordRequest) (*pb.AddScopedRecordResponse, error)
-	removeScopedRecordFn     func(ctx context.Context, req *pb.RemoveScopedRecordRequest) (*pb.RemoveScopedRecordResponse, error)
-	listScopedRecordsFn      func(ctx context.Context, req *pb.ListScopedRecordsRequest) (*pb.ListScopedRecordsResponse, error)
-	getSearchDomainsFn       func(ctx context.Context, req *pb.GetSearchDomainsRequest) (*pb.GetSearchDomainsResponse, error)
-	addAuthoritativeZoneFn   func(ctx context.Context, req *pb.AddAuthoritativeZoneRequest) (*pb.AddAuthoritativeZoneResponse, error)
-	removeAuthoritativeZoneFn func(ctx context.Context, req *pb.RemoveAuthoritativeZoneRequest) (*pb.RemoveAuthoritativeZoneResponse, error)
-	listAuthoritativeZonesFn func(ctx context.Context, req *pb.ListAuthoritativeZonesRequest) (*pb.ListAuthoritativeZonesResponse, error)
-	getCacheStatsFn          func(ctx context.Context, req *pb.GetCacheStatsRequest) (*pb.GetCacheStatsResponse, error)
-	flushDnsCacheFn          func(ctx context.Context, req *pb.FlushDnsCacheRequest) (*pb.FlushDnsCacheResponse, error)
-	setTtlDriftConfigFn      func(ctx context.Context, req *pb.SetTtlDriftConfigRequest) (*pb.SetTtlDriftConfigResponse, error)
-	getTtlDriftConfigFn      func(ctx context.Context, req *pb.GetTtlDriftConfigRequest) (*pb.GetTtlDriftConfigResponse, error)
-	getQueryLatencyStatsFn   func(ctx context.Context, req *pb.GetQueryLatencyStatsRequest) (*pb.GetQueryLatencyStatsResponse, error)
-	addLocalRblEntryFn       func(ctx context.Context, req *pb.AddLocalRblEntryRequest) (*pb.AddLocalRblEntryResponse, error)
-	removeLocalRblEntryFn    func(ctx context.Context, req *pb.RemoveLocalRblEntryRequest) (*pb.RemoveLocalRblEntryResponse, error)
-	listLocalRblEntriesFn    func(ctx context.Context, req *pb.ListLocalRblEntriesRequest) (*pb.ListLocalRblEntriesResponse, error)
-	addDnsblAllowlistEntryFn func(ctx context.Context, req *pb.AddDnsblAllowlistEntryRequest) (*pb.AddDnsblAllowlistEntryResponse, error)
+	addRecordFn                 func(ctx context.Context, req *pb.AddRecordRequest) (*pb.AddRecordResponse, error)
+	removeRecordFn              func(ctx context.Context, req *pb.RemoveRecordRequest) (*pb.RemoveRecordResponse, error)
+	listRecordsFn               func(ctx context.Context, req *pb.ListRecordsRequest) (*pb.ListRecordsResponse, error)
+	setForwarderFn              func(ctx context.Context, req *pb.SetForwarderRequest) (*pb.SetForwarderResponse, error)
+	setRblConfigFn              func(ctx context.Context, req *pb.SetRblConfigRequest) (*pb.SetRblConfigResponse, error)
+	getRblConfigFn              func(ctx context.Context, req *pb.GetRblConfigRequest) (*pb.GetRblConfigResponse, error)
+	setDnsblConfigFn            func(ctx context.Context, req *pb.SetDnsblConfigRequest) (*pb.SetDnsblConfigResponse, error)
+	getDnsblConfigFn            func(ctx context.Context, req *pb.GetDnsblConfigRequest) (*pb.GetDnsblConfigResponse, error)
+	flushCacheFn                func(ctx context.Context, req *pb.FlushCacheRequest) (*pb.FlushCacheResponse, error)
+	createNetworkScopeFn        func(ctx context.Context, req *pb.CreateNetworkScopeRequest) (*pb.CreateNetworkScopeResponse, error)
+	deleteNetworkScopeFn        func(ctx context.Context, req *pb.DeleteNetworkScopeRequest) (*pb.DeleteNetworkScopeResponse, error)
+	listNetworkScopesFn         func(ctx context.Context, req *pb.ListNetworkScopesRequest) (*pb.ListNetworkScopesResponse, error)
+	joinNetworkFn               func(ctx context.Context, req *pb.JoinNetworkRequest) (*pb.JoinNetworkResponse, error)
+	leaveNetworkFn              func(ctx context.Context, req *pb.LeaveNetworkRequest) (*pb.LeaveNetworkResponse, error)
+	getNetworkAssociationsFn    func(ctx context.Context, req *pb.GetNetworkAssociationsRequest) (*pb.GetNetworkAssociationsResponse, error)
+	addScopedRecordFn           func(ctx context.Context, req *pb.AddScopedRecordRequest) (*pb.AddScopedRecordResponse, error)
+	removeScopedRecordFn        func(ctx context.Context, req *pb.RemoveScopedRecordRequest) (*pb.RemoveScopedRecordResponse, error)
+	listScopedRecordsFn         func(ctx context.Context, req *pb.ListScopedRecordsRequest) (*pb.ListScopedRecordsResponse, error)
+	getSearchDomainsFn          func(ctx context.Context, req *pb.GetSearchDomainsRequest) (*pb.GetSearchDomainsResponse, error)
+	addAuthoritativeZoneFn      func(ctx context.Context, req *pb.AddAuthoritativeZoneRequest) (*pb.AddAuthoritativeZoneResponse, error)
+	removeAuthoritativeZoneFn   func(ctx context.Context, req *pb.RemoveAuthoritativeZoneRequest) (*pb.RemoveAuthoritativeZoneResponse, error)
+	listAuthoritativeZonesFn    func(ctx context.Context, req *pb.ListAuthoritativeZonesRequest) (*pb.ListAuthoritativeZonesResponse, error)
+	setTrackedTldsFn            func(ctx context.Context, req *pb.SetTrackedTldsRequest) (*pb.SetTrackedTldsResponse, error)
+	listTrackedTldsFn           func(ctx context.Context, req *pb.ListTrackedTldsRequest) (*pb.ListTrackedTldsResponse, error)
+	getCacheStatsFn             func(ctx context.Context, req *pb.GetCacheStatsRequest) (*pb.GetCacheStatsResponse, error)
+	flushDnsCacheFn             func(ctx context.Context, req *pb.FlushDnsCacheRequest) (*pb.FlushDnsCacheResponse, error)
+	setTtlDriftConfigFn         func(ctx context.Context, req *pb.SetTtlDriftConfigRequest) (*pb.SetTtlDriftConfigResponse, error)
+	getTtlDriftConfigFn         func(ctx context.Context, req *pb.GetTtlDriftConfigRequest) (*pb.GetTtlDriftConfigResponse, error)
+	getQueryLatencyStatsFn      func(ctx context.Context, req *pb.GetQueryLatencyStatsRequest) (*pb.GetQueryLatencyStatsResponse, error)
+	addLocalRblEntryFn          func(ctx context.Context, req *pb.AddLocalRblEntryRequest) (*pb.AddLocalRblEntryResponse, error)
+	removeLocalRblEntryFn       func(ctx context.Context, req *pb.RemoveLocalRblEntryRequest) (*pb.RemoveLocalRblEntryResponse, error)
+	listLocalRblEntriesFn       func(ctx context.Context, req *pb.ListLocalRblEntriesRequest) (*pb.ListLocalRblEntriesResponse, error)
+	addDnsblAllowlistEntryFn    func(ctx context.Context, req *pb.AddDnsblAllowlistEntryRequest) (*pb.AddDnsblAllowlistEntryResponse, error)
 	removeDnsblAllowlistEntryFn func(ctx context.Context, req *pb.RemoveDnsblAllowlistEntryRequest) (*pb.RemoveDnsblAllowlistEntryResponse, error)
 	listDnsblAllowlistEntriesFn func(ctx context.Context, req *pb.ListDnsblAllowlistEntriesRequest) (*pb.ListDnsblAllowlistEntriesResponse, error)
-	setDotConfigFn           func(ctx context.Context, req *pb.SetDotConfigRequest) (*pb.SetDotConfigResponse, error)
-	getDotConfigFn           func(ctx context.Context, req *pb.GetDotConfigRequest) (*pb.GetDotConfigResponse, error)
-	setDohConfigFn           func(ctx context.Context, req *pb.SetDohConfigRequest) (*pb.SetDohConfigResponse, error)
-	getDohConfigFn           func(ctx context.Context, req *pb.GetDohConfigRequest) (*pb.GetDohConfigResponse, error)
-	setDoqConfigFn           func(ctx context.Context, req *pb.SetDoqConfigRequest) (*pb.SetDoqConfigResponse, error)
-	getDoqConfigFn           func(ctx context.Context, req *pb.GetDoqConfigRequest) (*pb.GetDoqConfigResponse, error)
-	setProxyConfigFn         func(ctx context.Context, req *pb.SetProxyConfigRequest) (*pb.SetProxyConfigResponse, error)
-	getProxyConfigFn         func(ctx context.Context, req *pb.GetProxyConfigRequest) (*pb.GetProxyConfigResponse, error)
-	generateDnssecKeyFn      func(ctx context.Context, req *pb.GenerateDnssecKeyRequest) (*pb.GenerateDnssecKeyResponse, error)
-	listDnssecKeysFn         func(ctx context.Context, req *pb.ListDnssecKeysRequest) (*pb.ListDnssecKeysResponse, error)
-	deleteDnssecKeyFn        func(ctx context.Context, req *pb.DeleteDnssecKeyRequest) (*pb.DeleteDnssecKeyResponse, error)
-	getDsRecordsFn           func(ctx context.Context, req *pb.GetDsRecordsRequest) (*pb.GetDsRecordsResponse, error)
-	signZoneFn               func(ctx context.Context, req *pb.SignZoneRequest) (*pb.SignZoneResponse, error)
-	generateTlsaRecordFn     func(ctx context.Context, req *pb.GenerateTlsaRecordRequest) (*pb.GenerateTlsaRecordResponse, error)
-	listTlsaRecordsFn        func(ctx context.Context, req *pb.ListTlsaRecordsRequest) (*pb.ListTlsaRecordsResponse, error)
-	generateDaneRootCaFn     func(ctx context.Context, req *pb.GenerateDaneRootCaRequest) (*pb.GenerateDaneRootCaResponse, error)
-	requestAcmeCertFn        func(ctx context.Context, req *pb.RequestAcmeCertRequest) (*pb.RequestAcmeCertResponse, error)
-	getAcmeStatusFn          func(ctx context.Context, req *pb.GetAcmeStatusRequest) (*pb.GetAcmeStatusResponse, error)
-	setDns64ConfigFn         func(ctx context.Context, req *pb.SetDns64ConfigRequest) (*pb.SetDns64ConfigResponse, error)
-	getDns64ConfigFn         func(ctx context.Context, req *pb.GetDns64ConfigRequest) (*pb.GetDns64ConfigResponse, error)
-	addDhcpPoolFn            func(ctx context.Context, req *pb.AddDhcpPoolRequest) (*pb.AddDhcpPoolResponse, error)
-	removeDhcpPoolFn         func(ctx context.Context, req *pb.RemoveDhcpPoolRequest) (*pb.RemoveDhcpPoolResponse, error)
-	listDhcpPoolsFn          func(ctx context.Context, req *pb.ListDhcpPoolsRequest) (*pb.ListDhcpPoolsResponse, error)
-	listDhcpLeasesFn         func(ctx context.Context, req *pb.ListDhcpLeasesRequest) (*pb.ListDhcpLeasesResponse, error)
-	deleteDhcpLeaseFn        func(ctx context.Context, req *pb.DeleteDhcpLeaseRequest) (*pb.DeleteDhcpLeaseResponse, error)
-	addScopeRblProviderFn    func(ctx context.Context, req *pb.AddScopeRblProviderRequest) (*pb.AddScopeRblProviderResponse, error)
-	removeScopeRblProviderFn func(ctx context.Context, req *pb.RemoveScopeRblProviderRequest) (*pb.RemoveScopeRblProviderResponse, error)
-	listScopeRblProvidersFn  func(ctx context.Context, req *pb.ListScopeRblProvidersRequest) (*pb.ListScopeRblProvidersResponse, error)
-	addScopeTldFn            func(ctx context.Context, req *pb.AddScopeTldRequest) (*pb.AddScopeTldResponse, error)
-	removeScopeTldFn         func(ctx context.Context, req *pb.RemoveScopeTldRequest) (*pb.RemoveScopeTldResponse, error)
-	listScopeTldsFn          func(ctx context.Context, req *pb.ListScopeTldsRequest) (*pb.ListScopeTldsResponse, error)
-	setScopeTldForwardersFn  func(ctx context.Context, req *pb.SetScopeTldForwardersRequest) (*pb.SetScopeTldForwardersResponse, error)
-	listScopeTldForwardersFn func(ctx context.Context, req *pb.ListScopeTldForwardersRequest) (*pb.ListScopeTldForwardersResponse, error)
-	setDhcpCertOptionFn      func(ctx context.Context, req *pb.SetDhcpCertOptionRequest) (*pb.SetDhcpCertOptionResponse, error)
-	removeDhcpCertOptionFn   func(ctx context.Context, req *pb.RemoveDhcpCertOptionRequest) (*pb.RemoveDhcpCertOptionResponse, error)
-	listDhcpCertOptionsFn    func(ctx context.Context, req *pb.ListDhcpCertOptionsRequest) (*pb.ListDhcpCertOptionsResponse, error)
+	setDotConfigFn              func(ctx context.Context, req *pb.SetDotConfigRequest) (*pb.SetDotConfigResponse, error)
+	getDotConfigFn              func(ctx context.Context, req *pb.GetDotConfigRequest) (*pb.GetDotConfigResponse, error)
+	setDohConfigFn              func(ctx context.Context, req *pb.SetDohConfigRequest) (*pb.SetDohConfigResponse, error)
+	getDohConfigFn              func(ctx context.Context, req *pb.GetDohConfigRequest) (*pb.GetDohConfigResponse, error)
+	setDoqConfigFn              func(ctx context.Context, req *pb.SetDoqConfigRequest) (*pb.SetDoqConfigResponse, error)
+	getDoqConfigFn              func(ctx context.Context, req *pb.GetDoqConfigRequest) (*pb.GetDoqConfigResponse, error)
+	setProxyConfigFn            func(ctx context.Context, req *pb.SetProxyConfigRequest) (*pb.SetProxyConfigResponse, error)
+	getProxyConfigFn            func(ctx context.Context, req *pb.GetProxyConfigRequest) (*pb.GetProxyConfigResponse, error)
+	generateDnssecKeyFn         func(ctx context.Context, req *pb.GenerateDnssecKeyRequest) (*pb.GenerateDnssecKeyResponse, error)
+	listDnssecKeysFn            func(ctx context.Context, req *pb.ListDnssecKeysRequest) (*pb.ListDnssecKeysResponse, error)
+	deleteDnssecKeyFn           func(ctx context.Context, req *pb.DeleteDnssecKeyRequest) (*pb.DeleteDnssecKeyResponse, error)
+	getDsRecordsFn              func(ctx context.Context, req *pb.GetDsRecordsRequest) (*pb.GetDsRecordsResponse, error)
+	signZoneFn                  func(ctx context.Context, req *pb.SignZoneRequest) (*pb.SignZoneResponse, error)
+	generateTlsaRecordFn        func(ctx context.Context, req *pb.GenerateTlsaRecordRequest) (*pb.GenerateTlsaRecordResponse, error)
+	listTlsaRecordsFn           func(ctx context.Context, req *pb.ListTlsaRecordsRequest) (*pb.ListTlsaRecordsResponse, error)
+	generateDaneRootCaFn        func(ctx context.Context, req *pb.GenerateDaneRootCaRequest) (*pb.GenerateDaneRootCaResponse, error)
+	requestAcmeCertFn           func(ctx context.Context, req *pb.RequestAcmeCertRequest) (*pb.RequestAcmeCertResponse, error)
+	getAcmeStatusFn             func(ctx context.Context, req *pb.GetAcmeStatusRequest) (*pb.GetAcmeStatusResponse, error)
+	setDns64ConfigFn            func(ctx context.Context, req *pb.SetDns64ConfigRequest) (*pb.SetDns64ConfigResponse, error)
+	getDns64ConfigFn            func(ctx context.Context, req *pb.GetDns64ConfigRequest) (*pb.GetDns64ConfigResponse, error)
+	addDhcpPoolFn               func(ctx context.Context, req *pb.AddDhcpPoolRequest) (*pb.AddDhcpPoolResponse, error)
+	removeDhcpPoolFn            func(ctx context.Context, req *pb.RemoveDhcpPoolRequest) (*pb.RemoveDhcpPoolResponse, error)
+	listDhcpPoolsFn             func(ctx context.Context, req *pb.ListDhcpPoolsRequest) (*pb.ListDhcpPoolsResponse, error)
+	listDhcpLeasesFn            func(ctx context.Context, req *pb.ListDhcpLeasesRequest) (*pb.ListDhcpLeasesResponse, error)
+	deleteDhcpLeaseFn           func(ctx context.Context, req *pb.DeleteDhcpLeaseRequest) (*pb.DeleteDhcpLeaseResponse, error)
+	addScopeRblProviderFn       func(ctx context.Context, req *pb.AddScopeRblProviderRequest) (*pb.AddScopeRblProviderResponse, error)
+	removeScopeRblProviderFn    func(ctx context.Context, req *pb.RemoveScopeRblProviderRequest) (*pb.RemoveScopeRblProviderResponse, error)
+	listScopeRblProvidersFn     func(ctx context.Context, req *pb.ListScopeRblProvidersRequest) (*pb.ListScopeRblProvidersResponse, error)
+	addScopeTldFn               func(ctx context.Context, req *pb.AddScopeTldRequest) (*pb.AddScopeTldResponse, error)
+	removeScopeTldFn            func(ctx context.Context, req *pb.RemoveScopeTldRequest) (*pb.RemoveScopeTldResponse, error)
+	listScopeTldsFn             func(ctx context.Context, req *pb.ListScopeTldsRequest) (*pb.ListScopeTldsResponse, error)
+	setScopeTldForwardersFn     func(ctx context.Context, req *pb.SetScopeTldForwardersRequest) (*pb.SetScopeTldForwardersResponse, error)
+	listScopeTldForwardersFn    func(ctx context.Context, req *pb.ListScopeTldForwardersRequest) (*pb.ListScopeTldForwardersResponse, error)
+	setDhcpCertOptionFn         func(ctx context.Context, req *pb.SetDhcpCertOptionRequest) (*pb.SetDhcpCertOptionResponse, error)
+	removeDhcpCertOptionFn      func(ctx context.Context, req *pb.RemoveDhcpCertOptionRequest) (*pb.RemoveDhcpCertOptionResponse, error)
+	listDhcpCertOptionsFn       func(ctx context.Context, req *pb.ListDhcpCertOptionsRequest) (*pb.ListDhcpCertOptionsResponse, error)
 }
 
 func (m *mockRolodexDnsService) AddScopeTld(ctx context.Context, req *pb.AddScopeTldRequest) (*pb.AddScopeTldResponse, error) {
@@ -278,6 +280,20 @@ func (m *mockRolodexDnsService) ListAuthoritativeZones(ctx context.Context, req 
 		return m.listAuthoritativeZonesFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexDnsService) SetTrackedTlds(ctx context.Context, req *pb.SetTrackedTldsRequest) (*pb.SetTrackedTldsResponse, error) {
+	if m.setTrackedTldsFn != nil {
+		return m.setTrackedTldsFn(ctx, req)
+	}
+	return &pb.SetTrackedTldsResponse{Success: true}, nil
+}
+
+func (m *mockRolodexDnsService) ListTrackedTlds(ctx context.Context, req *pb.ListTrackedTldsRequest) (*pb.ListTrackedTldsResponse, error) {
+	if m.listTrackedTldsFn != nil {
+		return m.listTrackedTldsFn(ctx, req)
+	}
+	return &pb.ListTrackedTldsResponse{}, nil
 }
 
 func (m *mockRolodexDnsService) GetCacheStats(ctx context.Context, req *pb.GetCacheStatsRequest) (*pb.GetCacheStatsResponse, error) {
@@ -3414,5 +3430,77 @@ func TestListNetworkScopesCarriesTlds(t *testing.T) {
 	}
 	if len(scopes[0].Tlds) != 2 || scopes[0].Tlds[0] != "office." {
 		t.Errorf("tlds = %v, want [office. corp.]", scopes[0].Tlds)
+	}
+}
+
+func TestSetTrackedTlds(t *testing.T) {
+	var got *pb.SetTrackedTldsRequest
+	mock := &mockRolodexDnsService{
+		setTrackedTldsFn: func(_ context.Context, req *pb.SetTrackedTldsRequest) (*pb.SetTrackedTldsResponse, error) {
+			got = req
+			// The server expands "common" and folds in the owned TLDs, so the
+			// effective set is not the request echoed back.
+			return &pb.SetTrackedTldsResponse{
+				Success:       true,
+				EffectiveTlds: []string{"com.", "lab.internal.", "owned."},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	eff, err := client.SetTrackedTlds(context.Background(), []string{"common", "lab.internal"})
+	if err != nil {
+		t.Fatalf("SetTrackedTlds: %v", err)
+	}
+	if got == nil || len(got.Tlds) != 2 || got.Tlds[0] != "common" {
+		t.Fatalf("request did not carry the list verbatim: %+v", got)
+	}
+	if got.AuthToken != "tok" {
+		t.Errorf("auth token = %q, want %q", got.AuthToken, "tok")
+	}
+	if len(eff) != 3 || eff[0] != "com." {
+		t.Errorf("effective set = %v, want the server's expansion", eff)
+	}
+}
+
+func TestSetTrackedTldsSurfacesFailure(t *testing.T) {
+	// A false Success with a message is the shape the root-zone rejection takes
+	// when it is not an outright gRPC error; returning nil there would report a
+	// refused configuration as applied.
+	mock := &mockRolodexDnsService{
+		setTrackedTldsFn: func(_ context.Context, _ *pb.SetTrackedTldsRequest) (*pb.SetTrackedTldsResponse, error) {
+			return &pb.SetTrackedTldsResponse{Success: false, Message: "nope"}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	if _, err := client.SetTrackedTlds(context.Background(), []string{"x"}); err == nil {
+		t.Fatal("expected an error when the server reports failure")
+	}
+}
+
+func TestListTrackedTlds(t *testing.T) {
+	mock := &mockRolodexDnsService{
+		listTrackedTldsFn: func(_ context.Context, _ *pb.ListTrackedTldsRequest) (*pb.ListTrackedTldsResponse, error) {
+			return &pb.ListTrackedTldsResponse{
+				StoredTlds:    []string{"common"},
+				EffectiveTlds: []string{"com.", "net.", "owned."},
+				OwnedTlds:     []string{"owned."},
+			}, nil
+		},
+	}
+	client := startMockServer(t, mock, WithAuthToken("tok"))
+	tracked, err := client.ListTrackedTlds(context.Background())
+	if err != nil {
+		t.Fatalf("ListTrackedTlds: %v", err)
+	}
+	// Stored stays unexpanded; effective is what actually produces series. A
+	// client that conflated the two would report "common" as a metric label.
+	if len(tracked.Stored) != 1 || tracked.Stored[0] != "common" {
+		t.Errorf("stored = %v, want the unexpanded list", tracked.Stored)
+	}
+	if len(tracked.Effective) != 3 {
+		t.Errorf("effective = %v, want the expanded set", tracked.Effective)
+	}
+	if len(tracked.Owned) != 1 || tracked.Owned[0] != "owned." {
+		t.Errorf("owned = %v, want the ownership-derived subset", tracked.Owned)
 	}
 }

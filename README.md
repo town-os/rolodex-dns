@@ -45,7 +45,7 @@ New here? Start with the **[Configuration Guide](CONFIGURATION.md)** — a task-
 - **Integrated DHCPv4 server**: Per-scope address pools with sticky MAC bindings, automatic A/PTR registration, certificate delivery via site-specific options, and a background lease sweep
 - **Automatic reverse PTR records**: Optional (`dns.auto_ptr`) maintenance of matching `in-addr.arpa`/`ip6.arpa` PTRs for A/AAAA records added through gRPC
 - **Proxy support**: Forward DNS queries through HTTP CONNECT, SOCKS5, or DoH proxy
-- **Prometheus metrics**: an optional, off-by-default `/metrics` endpoint exposing 73 metric families with bounded label cardinality — including per-stage answer attribution, so the split-horizon pipeline is legible from outside. Query names are never labels
+- **Prometheus metrics**: an optional, off-by-default `/metrics` endpoint exposing 77 metric families with bounded label cardinality — including per-stage answer attribution and per-TLD isolation, so the split-horizon pipeline is legible from outside. Query names are never labels
 - **SQLite persistence**: DNS records persist across restarts
 - **TLS hot-reload (partial)**: `TlsManager` rebuilds its `rustls::ServerConfig` from the configured PEM files on demand and publishes it to watchers, keeping the previous certificate serving if the rebuild fails. **Not yet wired to the listeners** — each of DoT/DoH/DoQ/ACME takes a one-time config snapshot at startup, so a renewed certificate still requires a restart to be served
 - **Performance**: Multi-threaded tokio runtime, lock-free RBL and resolver state (`AtomicBool` + `ArcSwap` + atomics), in-memory boot caches for scopes/zones/TLDs/RBL entries, UDP socket pool for upstream forwarding, and DashMap/DashSet concurrent caching throughout
@@ -63,6 +63,8 @@ make test
 ```
 
 Runs lint (`cargo fmt --check` + `clippy --all-targets -D warnings`), the Go integration and unit tests, the Rust integration and unit tests, and the JavaScript lint/integration/unit tests. The Rust integration layer includes real-socket suites for DNSSEC signing and validation (against a signed mock hierarchy whose responses are tampered with at serialization time, so each test is "a valid deployment, attacked"), the blocklist NXDOMAIN contract, blocklist refusal codes, DoQ, proxying, TLS reload, ZONEMD, ACME administration, and a `security_*` suite per security finding. Use `make test-log` for the same run tee'd into a timestamped log file under `/tmp/rolodex-dns/log` (override with `LOG_DIR`), printed at the end even on failure. Individual layers: `make lint`, `make rust-test`, `make rust-integration-test`, `make go-test`, `make go-integration-test`, `make js-test`, `make js-integration-test`.
+
+`make prometheus-test` is separate and opt-in: it runs every PromQL query documented in this file through a real Prometheus container scraping a live server, catching a query that is malformed *as PromQL* rather than merely naming a series that does not exist. It needs podman and, on a cold image cache, the network, which is why it is not part of `make test` — the always-on half of that check (do the named series and label values exist?) runs there as `promql_docs_test`.
 
 ## Development
 
@@ -455,6 +457,10 @@ security:
 # Prometheus scrape endpoint (omit the section to start no listener)
 metrics:
   bind: "127.0.0.1:9153"
+  # TLDs given their own `tld` label on the per-TLD query metrics. Owned TLDs
+  # are tracked automatically; everything untracked folds into `other`.
+  tracked_tlds:
+    - common
 ```
 
 ### Configuration Options
@@ -535,6 +541,7 @@ metrics:
 | `address_family.probe_timeout_secs` | `2` | Per-target TCP-connect timeout for each probe |
 | `address_family.targets_v4` / `targets_v6` | Cloudflare/Google on `:443` | Probe targets per family (literal IPs) |
 | `metrics.bind` | `127.0.0.1:9153` | Prometheus `/metrics` HTTP listener; supports interface:port. The section is optional and omitted by default, in which case no listener is started (see [Prometheus Metrics](#prometheus-metrics)) |
+| `metrics.tracked_tlds` | `[]` | TLDs given their own `tld` label value on the per-TLD query metrics. Owned TLDs are tracked automatically; `common` expands to the built-in common-TLD set; everything untracked folds into `other` |
 
 ## Usage
 
@@ -1570,17 +1577,173 @@ An optional `metrics` section starts a plain-HTTP scrape endpoint at `/metrics`.
 ```yaml
 metrics:
   bind: "127.0.0.1:9153"
+  # TLDs that get their own `tld` label. Owned TLDs are tracked automatically.
+  tracked_tlds:
+    - common          # expands to the built-in common-TLD set
+    - lab.internal    # anything else you want isolated, by name
 ```
 
 The endpoint is unauthenticated and carries only aggregate counts — no query names, no record values, no certificate material. Bind it to a private address; the default is loopback. TLS is deliberately not offered here, since it would mean shipping a self-signed certificate to every scraper for an endpoint that should not be publicly reachable in the first place.
 
-73 metric families are exposed, all prefixed `rolodex_dns_`, covering queries, the response cache, blocklists (including refusals and rotated-out providers), upstream tiers, the iterative resolver, DNSSEC verdicts, split-horizon state, DHCP, ACME, and gRPC. Bounded cardinality is a design constraint: every label is a fixed enum or bounded by configuration, unrecognized query types fold into `OTHER`, and **query names are never labels**.
+77 metric families are exposed, all prefixed `rolodex_dns_`, covering queries, the response cache, blocklists (including refusals and rotated-out providers), upstream tiers, the iterative resolver, DNSSEC verdicts, split-horizon state, DHCP, ACME, and gRPC.
 
 The one worth knowing about is `rolodex_dns_answers_total{source}`, which reports which stage of the resolution order produced each answer — `cache`, `local`, `scoped`, `scope_fallback`, `tld_peer`, `blocklist`, `rbl`, `dns64`, `upstream`, `authoritative_nxdomain`, `refused`, `error`. Its total equals the query total, which is what makes the split-horizon pipeline legible from outside:
 
 ```
 curl -s http://127.0.0.1:9153/metrics | grep answers_total
 ```
+
+### Cardinality
+
+Bounded cardinality is a design constraint, because a metrics endpoint that a stranger can grow without limit is a memory-exhaustion bug wearing a monitoring costume. Every label is either a fixed enum or bounded by configuration. The two dimensions a *client* could otherwise inflate are both folded into a catch-all:
+
+| Dimension | Bound | Catch-all |
+|-----------|-------|-----------|
+| `qtype` | 23 known record types | `OTHER` — a flood of `TYPE4242` queries mints nothing |
+| `tld` | Owned TLDs, plus `metrics.tracked_tlds` | `other` — a scanner sweeping junk TLDs mints nothing |
+
+**Query names are never labels.** Only the TLD suffix, and only when the operator has already opted into that suffix.
+
+### Per-TLD isolation
+
+`rolodex_dns_queries_by_tld_total{tld}` breaks the query stream down by TLD, which is what makes a split-horizon deployment's networks separable from each other and from the public internet. Three things feed the tracked set:
+
+1. **Owned TLDs, automatically.** Every TLD a network scope owns — including each scope's implicit `.home` domain — is tracked without being asked for. A network's own namespace is the thing most worth isolating, and requiring it to be named twice (once to own it, once to track it) is a footgun that shows up as a silently missing series.
+2. **The config list.** `metrics.tracked_tlds` in the YAML. The entry `common` expands to the built-in common-TLD set (`com.`, `net.`, `org.`, `io.`, `dev.`, …) so the usual public TLDs are one line rather than twenty. Config entries are pinned: they survive restarts and cannot be removed over the API.
+3. **The stored list.** Managed at runtime, without a restart:
+
+```bash
+# Track the common set plus one exceptional TLD
+rolodex-dns-cli set-tracked-tlds --tld common --tld lab.internal
+
+# Show stored, owned and effective sets
+rolodex-dns-cli list-tracked-tlds
+
+# Clear the stored list (owned and config-pinned TLDs are unaffected)
+rolodex-dns-cli set-tracked-tlds
+```
+
+The **effective** set is the union of all three, and it is what actually produces series — which is why both commands print it. The stored list alone does not tell you which series will appear.
+
+### DNS and DHCP are separately selectable
+
+DNS and DHCP are separate services that happen to share a process, and their series are kept apart on purpose:
+
+- The DHCP families label their dimensions **`message_type`** and **`lease_state`**, not the generic `type` and `state`. A generic label name is what makes an aggregation spanning both subsystems — a `sum by (type) (...)` in a recording rule, say — silently blend a DHCP ACK count into a DNS one.
+- The DNS rollups (`queries_total`, `traffic_bytes_total`, `records_served_total`, `queries_by_tld_total`) count **DNS only**. DHCP packets on `:67` are never counted as DNS traffic, and a DHCP-registered name contributes to the DNS metrics only when somebody actually resolves it.
+
+> **Upgrade note:** `rolodex_dns_dhcp_messages_total{type}` became `{message_type}` and `rolodex_dns_dhcp_leases{state}` became `{lease_state}`. Dashboards and alerts selecting on the old label names need updating.
+
+### Common queries
+
+```promql
+# Query rate by transport
+sum by (proto) (rate(rolodex_dns_queries_total[5m]))
+
+# Which stage of the resolution order is answering
+sum by (source) (rate(rolodex_dns_answers_total[5m]))
+
+# NXDOMAIN share of all answers
+sum(rate(rolodex_dns_queries_total{rcode="NXDOMAIN"}[5m]))
+  / sum(rate(rolodex_dns_queries_total[5m]))
+
+# Response-cache hit ratio
+sum(rate(rolodex_dns_cache_hits_total[5m]))
+  / (sum(rate(rolodex_dns_cache_hits_total[5m])) + sum(rate(rolodex_dns_cache_misses_total[5m])))
+
+# p99 query latency per transport
+histogram_quantile(0.99, sum by (le, proto) (rate(rolodex_dns_query_duration_seconds_bucket[5m])))
+```
+
+Traffic volume, and how much of it is actual records rather than negative answers:
+
+```promql
+# Wire bytes in and out
+sum by (direction) (rate(rolodex_dns_traffic_bytes_total[5m]))
+
+# Amplification factor: bytes emitted per byte received. A climbing value on a
+# publicly-reachable listener is the shape of a reflection attack.
+sum(rate(rolodex_dns_traffic_bytes_total{direction="tx"}[5m]))
+  / sum(rate(rolodex_dns_traffic_bytes_total{direction="rx"}[5m]))
+
+# Records returned per query — a million NXDOMAINs and a million populated
+# answers are the same query count and very different amounts of work.
+sum(rate(rolodex_dns_records_served_total[5m]))
+  / sum(rate(rolodex_dns_queries_total[5m]))
+```
+
+Blocklists — the pair that matters is blocks against refusals, because a list that has stopped answering looks identical to a clean one if only the block counter is watched:
+
+```promql
+# Blocks by which list matched
+sum by (kind) (rate(rolodex_dns_blocklist_blocks_total[5m]))
+
+# Blocked share of all traffic
+sum(rate(rolodex_dns_blocklist_blocks_total[5m]))
+  / sum(rate(rolodex_dns_queries_total[5m]))
+
+# Allowlist activity by match path. Climbing here means an operator is
+# continuously papering over a list that is misfiring.
+sum by (kind) (rate(rolodex_dns_blocklist_allowlisted_total[5m]))
+
+# A provider has started refusing us rather than reporting reputation
+sum by (kind) (rate(rolodex_dns_blocklist_refusals_total[5m])) > 0
+
+# Providers currently out of rotation
+rolodex_dns_blocklist_rotated_out > 0
+```
+
+Per-TLD, upstream health and DNSSEC:
+
+```promql
+# Query rate per tracked TLD, ignoring the untracked catch-all
+sum by (tld) (rate(rolodex_dns_queries_by_tld_total{tld!="other"}[5m]))
+
+# What fraction of traffic is for names you do not track
+sum(rate(rolodex_dns_queries_by_tld_total{tld="other"}[5m]))
+  / sum(rate(rolodex_dns_queries_by_tld_total[5m]))
+
+# Degraded off the iterative tier (0=roots, 1=secure, 2=local, 3=public)
+rolodex_dns_upstream_active_tier > 0
+
+# Tier churn
+sum by (direction) (rate(rolodex_dns_upstream_tier_switches_total[5m]))
+
+# Signed data that failed to validate: an attack, or a zone that broke its own
+# signing. Distinct from `indeterminate`, which is a network fault.
+sum(rate(rolodex_dns_dnssec_verdicts_total{verdict="bogus"}[5m])) > 0
+
+# Referrals discarded for delegating outside the answering zone
+rate(rolodex_dns_resolver_out_of_bailiwick_total[5m]) > 0
+
+# Lookups killed by the per-lookup query budget
+rate(rolodex_dns_resolver_budget_exhausted_total[5m]) > 0
+```
+
+DHCP, using the isolated label names:
+
+```promql
+# Leases by state
+rolodex_dns_dhcp_leases{lease_state="active"}
+
+# DHCP message rate by type
+sum by (message_type) (rate(rolodex_dns_dhcp_messages_total[5m]))
+
+# Pool exhaustion
+rate(rolodex_dns_dhcp_allocation_failures_total[5m]) > 0
+```
+
+Control plane and host reachability:
+
+```promql
+# Someone is guessing the gRPC shared secret
+rate(rolodex_dns_grpc_auth_failures_total[5m]) > 0
+
+# An address family the host cannot route, so its records are being suppressed
+rolodex_dns_address_family_reachable{family="ipv6"} == 0
+```
+
+Every query above is covered by a test that resolves its metric names and label matchers against the live exposition output, so a documented query cannot reference a series that does not exist.
 
 ## RBL (Realtime Blackhole List)
 

@@ -851,6 +851,60 @@ func (c *Client) ListAuthoritativeZones(ctx context.Context) ([]string, error) {
 	return resp.Zones, nil
 }
 
+// TrackedTlds reports both the stored and the effective tracked-TLD sets for the
+// Prometheus per-TLD query metrics.
+//
+// Stored is exactly what SetTrackedTlds was given, with "common" unexpanded.
+// Effective is what actually produces series: the stored list, plus any TLDs
+// pinned in the server's config file, plus every TLD a network scope owns, with
+// "common" expanded. Owned lists the subset that comes from scope ownership;
+// those follow the scope and cannot be removed with SetTrackedTlds.
+type TrackedTlds struct {
+	Stored    []string
+	Effective []string
+	Owned     []string
+}
+
+// SetTrackedTlds replaces the tracked-TLD list — the TLDs that get their own
+// tld label value on the per-TLD query metrics, instead of folding into "other".
+//
+// Replaces rather than merges, so passing nil clears the stored list. TLDs owned
+// by a network scope are tracked regardless and are unaffected. The entry
+// "common" expands server-side to the built-in common-TLD set. Returns the full
+// effective set after the change.
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/SetTrackedTlds
+func (c *Client) SetTrackedTlds(ctx context.Context, tlds []string) ([]string, error) {
+	resp, err := c.rpc.SetTrackedTlds(ctx, &pb.SetTrackedTldsRequest{
+		Tlds:      tlds,
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex-dns: set tracked tlds: %w", err)
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("rolodex-dns: set tracked tlds: %s", resp.Message)
+	}
+	return resp.EffectiveTlds, nil
+}
+
+// ListTrackedTlds retrieves the stored, effective and owned tracked-TLD sets.
+//
+// Remote API path: /rolodex_dns.RolodexDnsService/ListTrackedTlds
+func (c *Client) ListTrackedTlds(ctx context.Context) (*TrackedTlds, error) {
+	resp, err := c.rpc.ListTrackedTlds(ctx, &pb.ListTrackedTldsRequest{
+		AuthToken: c.authToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rolodex-dns: list tracked tlds: %w", err)
+	}
+	return &TrackedTlds{
+		Stored:    resp.StoredTlds,
+		Effective: resp.EffectiveTlds,
+		Owned:     resp.OwnedTlds,
+	}, nil
+}
+
 // GetCacheStats retrieves DNS cache statistics from the Rolodex DNS server.
 //
 // Remote API path: /rolodex_dns.RolodexDnsService/GetCacheStats

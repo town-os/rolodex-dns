@@ -709,6 +709,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
                     }
                 }
                 self.dns_server.flush_cache();
+                // The scope's `.home` domain and any TLDs registered above are
+                // owned, and owned TLDs are tracked without being asked for.
+                crate::metrics::refresh_tracked_tlds(&self.db);
                 info!("Created network scope: {}", scope.name);
                 Ok(Response::new(CreateNetworkScopeResponse {
                     success: true,
@@ -737,6 +740,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
 
         match self.db.delete_network_scope(&req.name) {
             Ok(true) => {
+                // The scope's TLDs — its `.home` domain and any it owned — went
+                // with it, so they stop being tracked automatically.
+                crate::metrics::refresh_tracked_tlds(&self.db);
                 info!("Deleted network scope: {}", req.name);
                 Ok(Response::new(DeleteNetworkScopeResponse {
                     success: true,
@@ -1154,6 +1160,72 @@ impl RolodexDnsService for RolodexDnsGrpcService {
                 message: format!("failed to remove authoritative zone: {}", e),
             })),
         }
+    }
+
+    async fn set_tracked_tlds(
+        &self,
+        request: Request<SetTrackedTldsRequest>,
+    ) -> Result<Response<SetTrackedTldsResponse>, Status> {
+        let peer = request.remote_addr();
+        let req = request.into_inner();
+        self.check_auth(peer, &req.auth_token)?;
+        self.count_rpc("set_tracked_tlds");
+
+        // A root entry is refused rather than dropped. `.` is a suffix of every
+        // name, so tracking it would put the whole namespace into one series and
+        // make the `other` catch-all unreachable — a configuration that silently
+        // does the opposite of what it reads like.
+        if let Some(bad) = req.tlds.iter().find(|t| t.trim() == ".") {
+            return Err(Status::invalid_argument(format!(
+                "'{bad}' is the root zone: it matches every name, which would \
+                 collapse every TLD series into one"
+            )));
+        }
+
+        match self.db.set_tracked_tlds(&req.tlds) {
+            Ok(()) => {
+                crate::metrics::refresh_tracked_tlds(&self.db);
+                let effective_tlds = crate::metrics::metrics().tracked_tlds();
+                info!("Set tracked TLDs: {} entries stored", req.tlds.len());
+                Ok(Response::new(SetTrackedTldsResponse {
+                    success: true,
+                    message: String::new(),
+                    effective_tlds,
+                }))
+            }
+            Err(e) => Ok(Response::new(SetTrackedTldsResponse {
+                success: false,
+                message: format!("failed to set tracked TLDs: {}", e),
+                effective_tlds: Vec::new(),
+            })),
+        }
+    }
+
+    async fn list_tracked_tlds(
+        &self,
+        request: Request<ListTrackedTldsRequest>,
+    ) -> Result<Response<ListTrackedTldsResponse>, Status> {
+        let peer = request.remote_addr();
+        let req = request.into_inner();
+        self.check_auth(peer, &req.auth_token)?;
+        self.count_rpc("list_tracked_tlds");
+
+        let stored_tlds = self
+            .db
+            .list_tracked_tlds()
+            .map_err(|e| Status::internal(format!("failed to list tracked TLDs: {}", e)))?;
+
+        // Refresh before reading back, so the effective set reflects any scope
+        // TLD added since the last mutation rather than waiting for a scrape.
+        crate::metrics::refresh_tracked_tlds(&self.db);
+        let mut owned_tlds = self.db.owned_tlds();
+        owned_tlds.sort();
+
+        Ok(Response::new(ListTrackedTldsResponse {
+            stored_tlds,
+            effective_tlds: crate::metrics::metrics().tracked_tlds(),
+            owned_tlds,
+        }))
     }
 
     async fn list_authoritative_zones(
@@ -2615,6 +2687,9 @@ impl RolodexDnsService for RolodexDnsGrpcService {
                     self.dns_server.spawn_ingress_listener(ip);
                 }
                 self.dns_server.flush_cache();
+                // An owned TLD is tracked automatically, so the new series must
+                // exist from the next query rather than the next scrape.
+                crate::metrics::refresh_tracked_tlds(&self.db);
                 match listen_ip {
                     Some(ip) => info!(
                         "Added TLD {} to scope {} with ingress listener {}",
@@ -2656,6 +2731,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
                     self.dns_server.stop_ingress_listener(ip);
                 }
                 self.dns_server.flush_cache();
+                crate::metrics::refresh_tracked_tlds(&self.db);
                 info!("Removed TLD {} from scope {}", req.tld, req.scope_name);
                 Ok(Response::new(RemoveScopeTldResponse {
                     success: true,

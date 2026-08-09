@@ -585,6 +585,10 @@ impl Database {
                 zone TEXT PRIMARY KEY NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS tracked_tlds (
+                tld TEXT PRIMARY KEY NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS scope_tlds (
                 scope_name TEXT NOT NULL,
                 tld TEXT NOT NULL,
@@ -2248,6 +2252,71 @@ impl Database {
         self.authoritative_zones_cache
             .iter()
             .map(|r| r.key().clone())
+            .collect()
+    }
+
+    /// Replaces the operator's tracked-TLD list — the Prometheus `tld` label
+    /// dimension's opt-in set, over and above the owned TLDs that are tracked
+    /// automatically.
+    ///
+    /// The magic `common` entry is stored verbatim rather than expanded here, so
+    /// a read-back reports what the operator actually asked for and a later
+    /// change to [`crate::metrics::COMMON_TLDS`] takes effect without every
+    /// deployment having to re-issue the call. Expansion happens in
+    /// [`crate::metrics::Metrics::set_tracked_tlds`].
+    ///
+    /// Replace-not-merge, matching `SetForwarders` and `SetRblConfig`: a setter
+    /// that only ever accumulates gives an operator no way to remove an entry.
+    pub fn set_tracked_tlds(&self, tlds: &[String]) -> Result<()> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM tracked_tlds", [])?;
+        {
+            let mut stmt = tx.prepare("INSERT OR IGNORE INTO tracked_tlds (tld) VALUES (?1)")?;
+            for tld in tlds {
+                let trimmed = tld.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                // `common` is a keyword, not a name: keep it unqualified so the
+                // expander recognizes it. Everything else is normalized on the
+                // way in, so `Example.COM`, `example.com` and `example.com.` are
+                // one entry.
+                let stored = if trimmed.eq_ignore_ascii_case("common") {
+                    "common".to_string()
+                } else {
+                    normalize_name(trimmed)
+                };
+                stmt.execute(params![stored])?;
+            }
+        }
+        tx.commit().context("failed to set tracked TLDs")?;
+        Ok(())
+    }
+
+    /// The operator's stored tracked-TLD list, sorted for a stable read-back.
+    pub fn list_tracked_tlds(&self) -> Result<Vec<String>> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare_cached("SELECT tld FROM tracked_tlds ORDER BY tld")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut tlds = Vec::new();
+        for row in rows {
+            tlds.push(row?);
+        }
+        Ok(tlds)
+    }
+
+    /// Every TLD owned by a network scope, including each scope's implicit
+    /// `.home` domain.
+    ///
+    /// Read from the in-memory ownership cache rather than `scope_tlds`, because
+    /// this is called on the metrics refresh path and the cache is already the
+    /// authority the DNS hot path consults — going to SQLite here would take the
+    /// database lock to learn something already in memory.
+    pub fn owned_tlds(&self) -> Vec<String> {
+        self.tld_owner_cache
+            .iter()
+            .map(|e| e.key().clone())
             .collect()
     }
 

@@ -41,6 +41,8 @@ const (
 	RolodexDnsService_AddAuthoritativeZone_FullMethodName      = "/rolodex_dns.RolodexDnsService/AddAuthoritativeZone"
 	RolodexDnsService_RemoveAuthoritativeZone_FullMethodName   = "/rolodex_dns.RolodexDnsService/RemoveAuthoritativeZone"
 	RolodexDnsService_ListAuthoritativeZones_FullMethodName    = "/rolodex_dns.RolodexDnsService/ListAuthoritativeZones"
+	RolodexDnsService_SetTrackedTlds_FullMethodName            = "/rolodex_dns.RolodexDnsService/SetTrackedTlds"
+	RolodexDnsService_ListTrackedTlds_FullMethodName           = "/rolodex_dns.RolodexDnsService/ListTrackedTlds"
 	RolodexDnsService_GetCacheStats_FullMethodName             = "/rolodex_dns.RolodexDnsService/GetCacheStats"
 	RolodexDnsService_FlushDnsCache_FullMethodName             = "/rolodex_dns.RolodexDnsService/FlushDnsCache"
 	RolodexDnsService_SetTtlDriftConfig_FullMethodName         = "/rolodex_dns.RolodexDnsService/SetTtlDriftConfig"
@@ -172,6 +174,12 @@ type RolodexDnsServiceClient interface {
 	// ListAuthoritativeZones retrieves all authoritative zones.
 	// Path: /rolodex_dns.RolodexDnsService/ListAuthoritativeZones
 	ListAuthoritativeZones(ctx context.Context, in *ListAuthoritativeZonesRequest, opts ...grpc.CallOption) (*ListAuthoritativeZonesResponse, error)
+	// SetTrackedTlds replaces the tracked-TLD list for the per-TLD metrics.
+	// Path: /rolodex_dns.RolodexDnsService/SetTrackedTlds
+	SetTrackedTlds(ctx context.Context, in *SetTrackedTldsRequest, opts ...grpc.CallOption) (*SetTrackedTldsResponse, error)
+	// ListTrackedTlds retrieves the stored and effective tracked-TLD sets.
+	// Path: /rolodex_dns.RolodexDnsService/ListTrackedTlds
+	ListTrackedTlds(ctx context.Context, in *ListTrackedTldsRequest, opts ...grpc.CallOption) (*ListTrackedTldsResponse, error)
 	// GetCacheStats retrieves DNS cache statistics.
 	// Path: /rolodex_dns.RolodexDnsService/GetCacheStats
 	GetCacheStats(ctx context.Context, in *GetCacheStatsRequest, opts ...grpc.CallOption) (*GetCacheStatsResponse, error)
@@ -536,6 +544,26 @@ func (c *rolodexDnsServiceClient) ListAuthoritativeZones(ctx context.Context, in
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListAuthoritativeZonesResponse)
 	err := c.cc.Invoke(ctx, RolodexDnsService_ListAuthoritativeZones_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexDnsServiceClient) SetTrackedTlds(ctx context.Context, in *SetTrackedTldsRequest, opts ...grpc.CallOption) (*SetTrackedTldsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetTrackedTldsResponse)
+	err := c.cc.Invoke(ctx, RolodexDnsService_SetTrackedTlds_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rolodexDnsServiceClient) ListTrackedTlds(ctx context.Context, in *ListTrackedTldsRequest, opts ...grpc.CallOption) (*ListTrackedTldsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListTrackedTldsResponse)
+	err := c.cc.Invoke(ctx, RolodexDnsService_ListTrackedTlds_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1148,6 +1176,12 @@ type RolodexDnsServiceServer interface {
 	// ListAuthoritativeZones retrieves all authoritative zones.
 	// Path: /rolodex_dns.RolodexDnsService/ListAuthoritativeZones
 	ListAuthoritativeZones(context.Context, *ListAuthoritativeZonesRequest) (*ListAuthoritativeZonesResponse, error)
+	// SetTrackedTlds replaces the tracked-TLD list for the per-TLD metrics.
+	// Path: /rolodex_dns.RolodexDnsService/SetTrackedTlds
+	SetTrackedTlds(context.Context, *SetTrackedTldsRequest) (*SetTrackedTldsResponse, error)
+	// ListTrackedTlds retrieves the stored and effective tracked-TLD sets.
+	// Path: /rolodex_dns.RolodexDnsService/ListTrackedTlds
+	ListTrackedTlds(context.Context, *ListTrackedTldsRequest) (*ListTrackedTldsResponse, error)
 	// GetCacheStats retrieves DNS cache statistics.
 	// Path: /rolodex_dns.RolodexDnsService/GetCacheStats
 	GetCacheStats(context.Context, *GetCacheStatsRequest) (*GetCacheStatsResponse, error)
@@ -1363,6 +1397,12 @@ func (UnimplementedRolodexDnsServiceServer) RemoveAuthoritativeZone(context.Cont
 }
 func (UnimplementedRolodexDnsServiceServer) ListAuthoritativeZones(context.Context, *ListAuthoritativeZonesRequest) (*ListAuthoritativeZonesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListAuthoritativeZones not implemented")
+}
+func (UnimplementedRolodexDnsServiceServer) SetTrackedTlds(context.Context, *SetTrackedTldsRequest) (*SetTrackedTldsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetTrackedTlds not implemented")
+}
+func (UnimplementedRolodexDnsServiceServer) ListTrackedTlds(context.Context, *ListTrackedTldsRequest) (*ListTrackedTldsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListTrackedTlds not implemented")
 }
 func (UnimplementedRolodexDnsServiceServer) GetCacheStats(context.Context, *GetCacheStatsRequest) (*GetCacheStatsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetCacheStats not implemented")
@@ -1936,6 +1976,42 @@ func _RolodexDnsService_ListAuthoritativeZones_Handler(srv interface{}, ctx cont
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(RolodexDnsServiceServer).ListAuthoritativeZones(ctx, req.(*ListAuthoritativeZonesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexDnsService_SetTrackedTlds_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetTrackedTldsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexDnsServiceServer).SetTrackedTlds(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexDnsService_SetTrackedTlds_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexDnsServiceServer).SetTrackedTlds(ctx, req.(*SetTrackedTldsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RolodexDnsService_ListTrackedTlds_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListTrackedTldsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RolodexDnsServiceServer).ListTrackedTlds(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RolodexDnsService_ListTrackedTlds_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RolodexDnsServiceServer).ListTrackedTlds(ctx, req.(*ListTrackedTldsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2988,6 +3064,14 @@ var RolodexDnsService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListAuthoritativeZones",
 			Handler:    _RolodexDnsService_ListAuthoritativeZones_Handler,
+		},
+		{
+			MethodName: "SetTrackedTlds",
+			Handler:    _RolodexDnsService_SetTrackedTlds_Handler,
+		},
+		{
+			MethodName: "ListTrackedTlds",
+			Handler:    _RolodexDnsService_ListTrackedTlds_Handler,
 		},
 		{
 			MethodName: "GetCacheStats",

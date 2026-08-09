@@ -512,3 +512,376 @@ async fn a_refusal_is_counted_and_the_provider_shows_as_rotated_out() {
     m.blocklist_rotated_out.set(rbl.rotated_out_count() as u64);
     assert_eq!(m.blocklist_rotated_out.get(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// Per-TLD isolation
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_tracked_tld_gets_its_own_series_and_everything_else_folds_into_other() {
+    let _serial = SERIAL.lock().await;
+    let (db, dns_server, _rbl, _cache) = test_server();
+    for name in ["box.tracked.test.", "host.untracked.test."] {
+        db.add_record(&DnsRecord {
+            id: None,
+            name: name.to_string(),
+            record_type: RecordKind::A,
+            value: "192.0.2.20".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .expect("add record");
+    }
+
+    let m = metrics();
+    // Only the first of the two TLDs is opted into.
+    m.set_tracked_tlds(["tracked.test"]);
+    let tracked_before = m.queries_by_tld.get("tracked.test.");
+    let other_before = m.queries_by_tld.get(rolodex_dns::metrics::TLD_OTHER);
+
+    for name in ["box.tracked.test.", "host.untracked.test."] {
+        let query = build_query(name, RecordType::A);
+        dns_server
+            .handle_query_proto(&query, None, None, Proto::Udp)
+            .await
+            .expect("query");
+    }
+
+    assert_eq!(
+        m.queries_by_tld.get("tracked.test."),
+        tracked_before + 1,
+        "the tracked TLD's series did not advance"
+    );
+    assert_eq!(
+        m.queries_by_tld.get(rolodex_dns::metrics::TLD_OTHER),
+        other_before + 1,
+        "the untracked name was not folded into the catch-all"
+    );
+    // The control that makes the bound meaningful: the untracked TLD must not
+    // have minted a series of its own.
+    assert_eq!(
+        m.queries_by_tld.get("untracked.test."),
+        0,
+        "an untracked TLD minted its own series — the cardinality bound is broken"
+    );
+
+    m.set_tracked_tlds(Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn an_owned_tld_is_tracked_without_being_configured() {
+    let _serial = SERIAL.lock().await;
+    let (db, dns_server, _rbl, _cache) = test_server();
+    db.create_network_scope(&rolodex_dns::db::NetworkScope {
+        name: "metricsnet".to_string(),
+        home_domain: "metricsnet.home.".to_string(),
+    })
+    .expect("create scope");
+    db.add_scope_tld("metricsnet", "ownedtld").expect("add tld");
+
+    let m = metrics();
+    // Nothing configured this TLD: ownership alone must be enough, because
+    // requiring it to be named twice shows up as a silently missing series.
+    m.set_tracked_tlds(Vec::<String>::new());
+    rolodex_dns::metrics::refresh_tracked_tlds(&db);
+    assert!(
+        m.tracked_tlds().contains(&"ownedtld.".to_string()),
+        "an owned TLD was not tracked automatically: {:?}",
+        m.tracked_tlds()
+    );
+    assert!(
+        m.tracked_tlds().contains(&"metricsnet.home.".to_string()),
+        "a scope's implicit .home domain was not tracked automatically"
+    );
+
+    db.add_record(&DnsRecord {
+        id: None,
+        name: "svc.ownedtld.".to_string(),
+        record_type: RecordKind::A,
+        value: "192.0.2.21".to_string(),
+        ttl: 300,
+        priority: 0,
+    })
+    .expect("add record");
+
+    let before = m.queries_by_tld.get("ownedtld.");
+    let query = build_query("svc.ownedtld.", RecordType::A);
+    dns_server
+        .handle_query_proto(&query, None, None, Proto::Udp)
+        .await
+        .expect("query");
+    assert_eq!(m.queries_by_tld.get("ownedtld."), before + 1);
+
+    m.set_tracked_tlds(Vec::<String>::new());
+}
+
+// ---------------------------------------------------------------------------
+// Traffic volume
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn traffic_bytes_and_records_served_track_the_wire() {
+    let _serial = SERIAL.lock().await;
+    let (db, dns_server, _rbl, _cache) = test_server();
+    // Two A records at one name, so the answer count is provably not just "1
+    // per query" — which is what a header-field misread would produce.
+    for value in ["192.0.2.30", "192.0.2.31"] {
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "volume.example.com.".to_string(),
+            record_type: RecordKind::A,
+            value: value.to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .expect("add record");
+    }
+
+    let m = metrics();
+    let rx_before = m.traffic_bytes.get(rolodex_dns::metrics::TRAFFIC_RX);
+    let tx_before = m.traffic_bytes.get(rolodex_dns::metrics::TRAFFIC_TX);
+    let records_before = m.records_served.get();
+
+    let query = build_query("volume.example.com.", RecordType::A);
+    let response = dns_server
+        .handle_query_proto(&query, None, None, Proto::Udp)
+        .await
+        .expect("query");
+    let msg = Message::from_bytes(&response).expect("parse response");
+    assert_eq!(msg.answers().len(), 2);
+
+    assert_eq!(
+        m.traffic_bytes.get(rolodex_dns::metrics::TRAFFIC_RX) - rx_before,
+        query.len() as u64,
+        "received bytes must be the query as it arrived"
+    );
+    assert_eq!(
+        m.traffic_bytes.get(rolodex_dns::metrics::TRAFFIC_TX) - tx_before,
+        response.len() as u64,
+        "sent bytes must be the response as it leaves, after the family filter"
+    );
+    assert_eq!(
+        m.records_served.get() - records_before,
+        2,
+        "records served must be the answer count, not the query count"
+    );
+}
+
+#[tokio::test]
+async fn an_empty_answer_serves_no_records_but_still_moves_bytes() {
+    let _serial = SERIAL.lock().await;
+    let (_db, dns_server, _rbl, _cache) = test_server();
+    let m = metrics();
+    let records_before = m.records_served.get();
+    let rx_before = m.traffic_bytes.get(rolodex_dns::metrics::TRAFFIC_RX);
+
+    // Nothing local, no forwarders: an answer with no records.
+    let query = build_query("nothing-here.example.org.", RecordType::A);
+    dns_server
+        .handle_query_proto(&query, None, None, Proto::Udp)
+        .await
+        .expect("query");
+
+    assert_eq!(
+        m.records_served.get(),
+        records_before,
+        "an answerless response must not count records"
+    );
+    assert!(
+        m.traffic_bytes.get(rolodex_dns::metrics::TRAFFIC_RX) > rx_before,
+        "the query's bytes are traffic whether or not it was answered"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Blocklist attribution
+// ---------------------------------------------------------------------------
+
+/// Reads the allowlist counter for one [`rolodex_dns::metrics::ALLOWLIST_KINDS`]
+/// index.
+fn allowlisted(idx: usize) -> u64 {
+    metrics().blocklist_allowlisted.get(idx)
+}
+
+#[tokio::test]
+async fn an_allowlisted_forward_name_is_attributed_to_the_forward_gate() {
+    let _serial = SERIAL.lock().await;
+    let (db, dns_server, _rbl, _cache) = test_server();
+    db.add_dnsbl_allowlist_entry("allowed.example.com", "false positive")
+        .expect("allowlist");
+
+    let before = allowlisted(0); // forward_name
+    let reverse_before = allowlisted(1);
+    let query = build_query("allowed.example.com.", RecordType::A);
+    dns_server
+        .handle_query_proto(&query, None, None, Proto::Udp)
+        .await
+        .expect("query");
+
+    assert_eq!(allowlisted(0), before + 1, "forward gate did not advance");
+    assert_eq!(
+        allowlisted(1),
+        reverse_before,
+        "a forward-name exemption must not be attributed to the reverse gate"
+    );
+}
+
+#[tokio::test]
+async fn an_allowlisted_reverse_name_and_ip_literal_are_attributed_apart() {
+    let _serial = SERIAL.lock().await;
+    let (db, dns_server, _rbl, _cache) = test_server();
+    // One address exempted by its reverse name, another by its literal — the two
+    // spellings are matched by different rules (suffix vs. exact), so an
+    // operator needs to see which one is actually firing.
+    db.add_dnsbl_allowlist_entry("4.3.2.1.in-addr.arpa", "by reverse name")
+        .expect("allowlist");
+    db.add_dnsbl_allowlist_entry("192.0.2.55", "by literal")
+        .expect("allowlist");
+
+    let reverse_before = allowlisted(1);
+    let literal_before = allowlisted(2);
+
+    dns_server
+        .handle_query_proto(
+            &build_query("4.3.2.1.in-addr.arpa.", RecordType::PTR),
+            None,
+            None,
+            Proto::Udp,
+        )
+        .await
+        .expect("query");
+    assert_eq!(
+        allowlisted(1),
+        reverse_before + 1,
+        "the reverse-name gate did not advance"
+    );
+    assert_eq!(
+        allowlisted(2),
+        literal_before,
+        "a reverse-name match must not be attributed to the literal gate"
+    );
+
+    dns_server
+        .handle_query_proto(
+            &build_query("55.2.0.192.in-addr.arpa.", RecordType::PTR),
+            None,
+            None,
+            Proto::Udp,
+        )
+        .await
+        .expect("query");
+    assert_eq!(
+        allowlisted(2),
+        literal_before + 1,
+        "the ip-literal gate did not advance"
+    );
+}
+
+/// An RBL resolver that lists everything, so the blocklist paths fire.
+struct AlwaysListedResolver;
+
+#[async_trait::async_trait]
+impl RblResolver for AlwaysListedResolver {
+    async fn lookup_rbl(
+        &self,
+        _query: &str,
+    ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
+        // 127.0.0.2 is the canonical "listed" code, and deliberately not one of
+        // the refusal codes — a refusal would be a different verdict entirely.
+        Ok(Some(rolodex_dns::rbl::RblAnswer::single(
+            std::net::Ipv4Addr::new(127, 0, 0, 2),
+            300,
+        )))
+    }
+}
+
+#[tokio::test]
+async fn a_scope_opted_in_provider_is_attributed_apart_from_the_global_list() {
+    let _serial = SERIAL.lock().await;
+    let db = Database::open_memory().expect("in-memory database");
+    // The global list is enabled but carries NO providers of its own, so any
+    // block here can only have come from the scope's opted-in provider — which
+    // is what makes the separate kind observable.
+    let rbl = Arc::new(RblChecker::with_resolver(
+        true,
+        vec![],
+        Arc::new(AlwaysListedResolver),
+    ));
+    let cache = Arc::new(DnsCache::new(db.clone()));
+    let dns_server = Arc::new(DnsServer::new_with_options(
+        db.clone(),
+        rbl.clone(),
+        vec![],
+        Some(Arc::clone(&cache)),
+        None,
+        false,
+    ));
+
+    db.create_network_scope(&rolodex_dns::db::NetworkScope {
+        name: "blocknet".to_string(),
+        home_domain: "blocknet.home.".to_string(),
+    })
+    .expect("create scope");
+    db.join_network(&rolodex_dns::db::NetworkAssociation {
+        ip_address: "10.64.0.9".to_string(),
+        scope_name: "blocknet".to_string(),
+        ttl_seconds: 3600,
+    })
+    .expect("join");
+    db.add_scope_rbl_provider(&rolodex_dns::db::ScopeRblProvider {
+        scope_name: "blocknet".to_string(),
+        zone: "scope-only.example.invalid".to_string(),
+        enabled: true,
+        refusal_codes: vec![],
+        refusal_cooldown_secs: 0,
+    })
+    .expect("add scope provider");
+
+    let m = metrics();
+    const KIND_RBL_PROVIDER: usize = 0;
+    const KIND_RBL_SCOPE_PROVIDER: usize = 3;
+    let global_before = m.blocklist_blocks.get(KIND_RBL_PROVIDER);
+    let scope_before = m.blocklist_blocks.get(KIND_RBL_SCOPE_PROVIDER);
+
+    // Provider verdicts are filled fire-and-forget, so the first query answers
+    // from a cold cache and the block lands on a later one. Retry rather than
+    // sleeping a fixed interval.
+    let query = build_query("50.2.0.192.in-addr.arpa.", RecordType::PTR);
+    let mut rcode = ResponseCode::NoError;
+    for _ in 0..50 {
+        let response = dns_server
+            .handle_query_proto(
+                &query,
+                Some("10.64.0.9".parse().expect("ip")),
+                None,
+                Proto::Udp,
+            )
+            .await
+            .expect("query");
+        rcode = Message::from_bytes(&response)
+            .expect("parse response")
+            .response_code();
+        if rcode == ResponseCode::NXDomain {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        rcode,
+        ResponseCode::NXDomain,
+        "a scope-provider listing must still be an NXDOMAIN"
+    );
+
+    assert_eq!(
+        m.blocklist_blocks.get(KIND_RBL_SCOPE_PROVIDER),
+        scope_before + 1,
+        "the scope-provider block was not attributed to rbl_scope_provider"
+    );
+    // The control: folded together, "this network's own blocklist broke this
+    // network" and "the global list broke everyone" are indistinguishable.
+    assert_eq!(
+        m.blocklist_blocks.get(KIND_RBL_PROVIDER),
+        global_before,
+        "a scope-provider block must not be attributed to the global list"
+    );
+}

@@ -260,7 +260,7 @@ Specific hosts can be exempted from the blocklist check entirely. Allowlist entr
 - **Suffix-matched.** An entry covers the name itself *and* every name beneath it, so allowlisting `example.com` also exempts `www.example.com`. Matching is on label boundaries — `notexample.com` is not exempt. Lookups are O(labels) against an in-memory `DashSet` mirrored from the table (loaded at boot), the same technique used for zone matching.
 - **Normalized on storage.** Entries are lowercased with a trailing dot, so `Example.COM`, `example.com`, and `example.com.` are one entry and any spelling removes it. An empty or root (`.`) entry is rejected — it would exempt the whole namespace.
 - **The allowlist wins.** The check short-circuits step 7 in full: an exempt name is checked against neither the configured DNSBL providers nor the local RBL blocklist, so an allowlist entry is the operator's escape hatch from a false positive on either. It runs *before* the provider lookup, so an exempt name never issues a blocklist query at all.
-- **Every list, both gates.** The allowlist gates the forward-name check (step 7) *and* the reverse-DNS/IP check (step 2), so no blocklist positive survives it: a global RBL provider, a provider a scope opted into, a DNSBL provider, and the local table are all subject to the same exemption. A false positive on an address is as real as one on a name — a wrongly-listed IP breaks `dig -x` for a host that is running fine — and an escape hatch that covered only some of the lists would not be one.
+- **Every list, both gates.** The allowlist gates the forward-name check (step 7) *and* the reverse-DNS/IP check (step 2), so no blocklist positive survives it: a global RBL provider, a provider a scope opted into, a DNSBL provider, and the local table are all subject to the same exemption. Exemptions are counted by which gate fired — `rolodex_dns_blocklist_allowlisted_total{kind}` is `forward_name`, `reverse_name` or `ip_literal`, the three *match paths*, not the three lists: the check short-circuits before any provider lookup is issued, so at the moment of the exemption nothing has been asked and there is no list to name. A false positive on an address is as real as one on a name — a wrongly-listed IP breaks `dig -x` for a host that is running fine — and an escape hatch that covered only some of the lists would not be one.
 - **Two spellings for an address.** A reverse query is exempted by an entry naming either the `in-addr.arpa`/`ip6.arpa` name or the IP literal it encodes, so an operator need not hand-reverse octets. The reverse **name** is suffix-matched like any DNS name (allowlisting `1.168.192.in-addr.arpa` lifts the block on that whole /24); the IP **literal** is matched *exactly*, because an address runs most-significant-octet first, so `1.100` is not a parent of `192.168.1.100` and treating it as one would exempt addresses nobody named.
 - Adding or removing an entry takes effect on the next query with no cache flush needed, because the blocklist step runs ahead of the DNS response cache lookup.
 
@@ -548,6 +548,8 @@ The DHCP assignment is linked to the network scoping system via `JoinNetwork`, c
 
 Each network scope can opt into additional RBL providers not present in the global configuration. Per-scope providers are checked alongside global providers during DNS resolution for IPs associated with that scope; a positive from either is the same NXDOMAIN, and the DNSBL allowlist exempts from either. Managed via `AddScopeRblProvider`, `RemoveScopeRblProvider`, and `ListScopeRblProviders`.
 
+The two are checked in sequence — global first, then the scope's own — and **attributed separately**: a scope-provider block is `blocklist_blocks_total{kind="rbl_scope_provider"}`, not `rbl_provider`. They are different operator decisions with different blast radii (box-wide versus one network), and folded together, "this network's own blocklist broke this network" is indistinguishable from "the global list broke everyone" — which is the first thing worth knowing when a network reports that reverse DNS stopped working. Splitting the check costs nothing: the two calls cover disjoint provider sets and the result cache is keyed per `<ip>/<zone>`.
+
 A scope opts into its providers row by row, so they are not gated on the global `rbl.enabled` flag — a scope may run a blocklist the box as a whole does not. They *are* skipped when outbound plaintext `:53` is unreachable, because that flag is not a policy switch: it says a provider lookup can only time out, and a lookup with no verdict at the end of it is pure latency. The rows are read from SQLite per query rather than cached, which is affordable because only a reverse-DNS query arriving inside a scope reaches the lookup — the same query already pays a `get_scope_for_ip`.
 
 ### Certificate Delivery
@@ -614,6 +616,13 @@ The management API is defined in `proto/rolodex_dns.proto` under the `RolodexDns
 | `AddAuthoritativeZone`    | Declares a zone as authoritative (prevents upstream forwarding). |
 | `RemoveAuthoritativeZone` | Removes a zone from the authoritative list.                      |
 | `ListAuthoritativeZones`  | Retrieves all authoritative zone names.                          |
+
+#### Metrics
+
+| RPC                | Description                                                                                     |
+| ------------------ | ----------------------------------------------------------------------------------------------- |
+| `SetTrackedTlds`   | Replaces the operator's tracked-TLD list for the per-TLD query metrics. `common` expands to the built-in set; a root (`.`) entry is refused with `InvalidArgument`. Returns the full effective set. |
+| `ListTrackedTlds`  | Returns the stored list (`common` unexpanded), the effective set (stored ∪ config ∪ owned, expanded), and the owned subset. |
 
 #### Forwarding & RBL
 
@@ -787,6 +796,13 @@ The `rolodex-dns-cli` binary is a command-line client for the gRPC management in
 | `remove-auth-zone` | Remove an authoritative zone. Takes `--zone`.    |
 | `list-auth-zones`  | List all authoritative zones.                    |
 
+#### Metrics
+
+| Command             | Description                                                                                                                                     |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `set-tracked-tlds`  | Replace the tracked-TLD list for the per-TLD query metrics. Takes repeatable `--tld` (omit to clear); `--tld common` adds the built-in common-TLD set. Prints the resulting effective set, since the stored list alone does not say which series will appear. |
+| `list-tracked-tlds` | Show the stored list, the owned TLDs tracked automatically, and the effective set.                                                              |
+
 #### Forwarding & RBL
 
 | Command            | Description                                                                                         |
@@ -924,6 +940,13 @@ An additional `WithGRPCDialOption` option allows passing custom `grpc.DialOption
 | `RemoveAuthoritativeZone(ctx, zone)` | Removes an authoritative zone.          |
 | `ListAuthoritativeZones(ctx)`        | Retrieves all authoritative zone names. |
 
+#### Metrics
+
+| Method                          | Description                                                                          |
+| ------------------------------- | ------------------------------------------------------------------------------------ |
+| `SetTrackedTlds(ctx, tlds)`     | Replaces the tracked-TLD list; returns the resulting effective set. `nil` clears it. |
+| `ListTrackedTlds(ctx)`          | Returns a `TrackedTlds` with the stored, effective and owned sets.                   |
+
 #### Forwarding & RBL
 
 | Method                                  | Description                                                |
@@ -1057,6 +1080,7 @@ The client automatically includes the auth token in every RPC call. All methods 
 - `ScopeRblProvider` — Per-scope RBL provider (scope, zone, enabled, refusal codes, refusal cooldown).
 - `DhcpCertOption` — DHCP certificate option (scope, option code, cert data, description).
 - `TldListener` — Per-TLD ingress DNS listener (scope, TLD, listen IP).
+- `TrackedTlds` — The tracked-TLD sets returned by `ListTrackedTlds` (stored, effective, owned).
 - `ZoneCa` — Root + intermediate PEM returned by `EnsureZoneCa`.
 - `EabCredential` — EAB credential (kid, HMAC key, zone) returned by `CreateEabCredential`.
 - `AcmeAccount` / `AcmeCertificate` — Registered ACME accounts and issued certificates.
@@ -1113,7 +1137,8 @@ An optional `metrics` config section starts a plain-HTTP scrape endpoint at `/me
 The registry is hand-rolled on the same lock-free primitives as the rest of the server — `AtomicU64` counters/gauges, `DashMap` for label dimensions known only at runtime — and renders the text exposition format directly. **No metrics crate dependency.** A hot-path counter bump is one relaxed `fetch_add` into a pre-allocated series: no hashing, no allocation, no lock.
 
 - **Global registry.** Instrumentation calls `metrics()`, a `LazyLock<Metrics>`. Threading an `Arc<Metrics>` through the query path, both caches, the resolver, the blocklists, DHCP, the ACME issuer and the gRPC service would have meant changing every constructor and every test call site. Consequence for tests: counters accumulate across a test binary, so assertions are deltas taken under a serializing lock (`tests/metrics_test.rs`).
-- **Bounded cardinality.** Every label is a fixed enum (`Proto`, `RCODES`, `ANSWER_SOURCES`, `TIERS`, `FAMILIES`, …) or bounded by configuration (upstream server addresses, gRPC method names). Query *type* — the one dimension a client controls — folds unrecognized types into `OTHER`, so a flood of `TYPE4242` queries cannot mint series. Query **names are never labels**.
+- **Bounded cardinality.** Every label is a fixed enum (`Proto`, `RCODES`, `ANSWER_SOURCES`, `TIERS`, `FAMILIES`, …) or bounded by configuration (upstream server addresses, gRPC method names, tracked TLDs). The two dimensions a client controls both fold into a catch-all: query *type* folds unrecognized types into `OTHER`, and the *TLD* folds anything untracked into `other`, so neither a flood of `TYPE4242` queries nor a sweep of junk TLDs can mint series. Query **names are never labels** — only the TLD suffix, and only one the operator has already opted into.
+- **Subsystem separation.** DHCP labels its dimensions `message_type` and `lease_state` rather than the generic `type` and `state`, so an aggregation spanning both subsystems cannot blend a DHCP count into a DNS one, and the DNS rollups (`queries_total`, `traffic_bytes_total`, `records_served_total`, `queries_by_tld_total`) count DNS only — DHCP's `:67` traffic is never DNS traffic, and a DHCP-registered name reaches these metrics only when somebody resolves it.
 - **Push vs. pull.** Counters are pushed where the work happens. Gauges with no natural push point (row counts, cache sizes, active tier, per-nameserver latency) are pulled once per scrape by `metrics::collect`, which reads every database count in a single `Database::metrics_counts` call under one lock acquisition rather than a dozen `list_*` calls that would materialize whole zones to take a `.len()`.
 - **Histograms** store observations in an integer native unit (nanoseconds, bytes) so the running sum needs no float CAS, dividing by a scale at render time; bucket counts accumulate into the cumulative `le` form at render.
 
@@ -1123,25 +1148,49 @@ The registry is hand-rolled on the same lock-free primitives as the rest of the 
 
 `resolve_query` has roughly thirty exits. Rather than instrument each — where a new early return would silently escape the metrics — a `QueryTag` is threaded through and each non-upstream exit tags itself; the initial value is `upstream`, which is what the function's fall-through ending is. The observation is then recorded at **one** instrumented exit, `DnsServer::handle_query_proto`, which every transport funnels through, *after* the address-family filter, so the recorded rcode and response size are what the client actually receives. The `proto` label (`udp`/`tcp`/`dot`/`doh`/`doq`) only labels metrics and never affects resolution; the pre-existing `handle_query`/`handle_query_from`/`handle_query_on` wrappers keep their signatures and report `udp`.
 
+The `QueryTag` carries the `tld` label for the same reason: it is resolved once, in `resolve_query` where the decoded question name is already in hand, rather than at the exit — which holds only the wire bytes, where the name is length-prefixed labels that would have to be decoded a second time. An untracked name sets nothing and reads back as `other`, so the common case costs no allocation.
+
+`rolodex_dns_traffic_bytes_total{direction}` and `rolodex_dns_records_served_total` ride the same single observation, so a query cannot be counted without its bytes also being counted. Record counts come from the response header's ANCOUNT field rather than by re-parsing a message the server just serialized.
+
+### Per-TLD Isolation
+
+`rolodex_dns_queries_by_tld_total{tld}` separates the query stream by TLD — what makes a split-horizon deployment's networks distinguishable from each other and from the public internet. The tracked set has three sources, unioned:
+
+1. **Owned TLDs, automatically** — every TLD in `scope_tlds`, including each scope's implicit `.home` domain, read from `tld_owner_cache` rather than SQLite. A network's own namespace is the thing most worth isolating, and requiring it to be named twice (owned, then tracked) is a footgun that surfaces as a silently missing series.
+2. **`metrics.tracked_tlds`** in the config file, pinned: it survives restarts and cannot be removed over the API.
+3. **The stored list**, replaced by `SetTrackedTlds` and read back by `ListTrackedTlds`.
+
+The magic entry `common` expands to `metrics::COMMON_TLDS`. It is stored **unexpanded**, so a read-back reports what the operator asked for and a later change to the constant takes effect without every deployment re-issuing the call — the same shape as `none` in `rbl.providers[].refusal_codes`.
+
+`Metrics::tld_label` walks the queried name's suffixes most-specific-first against the set and returns a **slice of the name**, so a deployment tracking both `home.` and `lab.home.` attributes `box.lab.home.` to the more specific one, and an untracked name allocates nothing. The root entry `.` is refused with `InvalidArgument`, because it is a suffix of every name: tracking it would collapse every series into one and make `other` unreachable.
+
+`refresh_tracked_tlds` recomputes the union and is called at boot, from every scope/TLD mutation site in the gRPC service, and from `collect` as a backstop — so a missed mutation self-heals by the next scrape rather than staying wrong until a restart. A database failure there leaves the previous set in place rather than clearing it.
+
 ### What is exposed
 
-73 metric families, all prefixed `rolodex_dns_`:
+77 metric families, all prefixed `rolodex_dns_`:
 
 | Area | Metrics |
 | ---- | ------- |
 | Process | `build_info{version}`, `start_time_seconds`, `uptime_seconds`, `metrics_scrapes_total` |
-| Queries | `queries_total{proto,rcode}`, `queries_by_type_total{qtype}`, `answers_total{source}`, `query_duration_seconds{proto}` (histogram), `query_size_bytes`, `response_size_bytes`, `responses_truncated_total`, `malformed_queries_total`, `edns_unsupported_version_total`, `edns_do_queries_total`, `ingress_rewrites_total`, `answers_family_filtered_total{family}` |
+| Queries | `queries_total{proto,rcode}`, `queries_by_type_total{qtype}`, `queries_by_tld_total{tld}`, `answers_total{source}`, `traffic_bytes_total{direction}` (`rx`/`tx`), `records_served_total`, `query_duration_seconds{proto}` (histogram), `query_size_bytes`, `response_size_bytes`, `responses_truncated_total`, `malformed_queries_total`, `edns_unsupported_version_total`, `edns_do_queries_total`, `ingress_rewrites_total`, `answers_family_filtered_total{family}` |
 | Response cache | `cache_hits_total`, `cache_misses_total`, `cache_negative_hits_total`, `cache_expired_total`, `cache_flushes_total{reason}` (`mutation`/`explicit`/`tier_switch`), `cache_entries`, `cache_negative_entries` |
-| Blocklists | `blocklist_blocks_total{kind}`, `blocklist_allowlisted_total`, `blocklist_lookups_total{kind,result}` (`listed`/`not_listed`/`error`/`refused`), `blocklist_skipped_total`, `blocklist_cache_entries`, `blocklist_refusals_total{kind}`, `blocklist_rotated_out` |
+| Blocklists | `blocklist_blocks_total{kind}` (`rbl_provider`/`rbl_local`/`dnsbl_provider`/`rbl_scope_provider`), `blocklist_allowlisted_total{kind}` (`forward_name`/`reverse_name`/`ip_literal`), `blocklist_lookups_total{kind,result}` (`listed`/`not_listed`/`error`/`refused`), `blocklist_skipped_total`, `blocklist_cache_entries`, `blocklist_refusals_total{kind}`, `blocklist_rotated_out` |
 | Upstream | `upstream_active_tier`, `upstream_tier_attempts_total{tier}`, `_wins_total{tier}`, `_failures_total{tier}`, `upstream_tier_switches_total{direction}`, `upstream_recovery_probes_total`, `upstream_duration_seconds{tier}`, `upstream_queries_total{server}`, `upstream_exhausted_total` |
 | Resolver | `resolver_lookups_total`, `_referrals_total`, `_cname_hops_total`, `_budget_exhausted_total`, `_tcp_retries_total`, `resolver_priming_total{result}`, `resolver_nameserver_latency_milliseconds{server}`, `delegation_cache_entries`, `record_cache_entries` |
 | DNSSEC | `dnssec_verdicts_total{verdict}` (`secure`/`insecure`/`bogus`/`indeterminate`), `dnssec_servfail_total`, `dnssec_dnskey_lookups_total`, `dnssec_insecure_delegations_total`, `key_cache_entries` |
 | Split-horizon | `records`, `scoped_records`, `scopes`, `scope_associations`, `authoritative_zones`, `managed_zones`, `owned_tlds`, `ingress_listeners`, `address_family_reachable{family}` |
-| DHCP | `dhcp_messages_total{type}`, `dhcp_leases{state}`, `dhcp_pools`, `dhcp_allocation_failures_total`, `dhcp_sweeps_total` |
+| DHCP | `dhcp_messages_total{message_type}`, `dhcp_leases{lease_state}`, `dhcp_pools`, `dhcp_allocation_failures_total`, `dhcp_sweeps_total` |
 | ACME | `acme_accounts`, `acme_certificates`, `acme_issued_total`, `acme_validations_total{result}` |
 | gRPC | `grpc_requests_total{method}`, `grpc_auth_failures_total` |
 
-`dhcp_messages_total` deliberately has no `nak` label: the server never sends one, and a series pinned at zero forever reads like a signal when it is only an unimplemented branch.
+`dhcp_messages_total` deliberately has no `nak` label: the server never sends one, and a series pinned at zero forever reads like a signal when it is only an unimplemented branch. Its label is `message_type`, and `dhcp_leases` uses `lease_state`, rather than the generic `type`/`state` — see Subsystem separation above.
+
+### Common PromQL
+
+The README carries a query cookbook (query rate by transport, answer attribution, cache hit ratio, amplification factor, blocked share, per-TLD rates, tier degradation, bogus DNSSEC, DHCP lease states). Those queries are **tested**: `tests/metrics_test.rs` parses every ```promql block out of `README.md` and `CLAUDE.md`, extracts the metric names and label matchers, and resolves each against the live exposition output. A documented query that names a series or a label value which does not exist fails the suite — which is what keeps the docs honest through a rename like `{type}` → `{message_type}`. The same file also asserts the documented **family count** matches what `render` actually emits, so the number in these docs cannot drift again.
+
+An optional second layer runs the same queries through a real Prometheus: `make prometheus-test` starts the server, runs the `quay.io/prometheus/prometheus` container against it, and executes each documented query through the HTTP API, so a query that is malformed *as PromQL* — and not merely one naming a missing series — is caught too. It is gated on `ROLODEX_PROMETHEUS_TEST=1` and skips when podman is unavailable, so `make test` needs neither a container runtime nor the network.
 
 ## Configuration
 
@@ -1244,6 +1293,7 @@ dns:
 | `acme.require_eab`                  | `true`                         | Require External Account Binding for account registration |
 | `acme.issuance_scope`               | `managed_zones`                | `managed_zones` (zone must have a CA) or `any`          |
 | `metrics.bind`                      | `127.0.0.1:9153`               | Prometheus `/metrics` HTTP listener; supports interface:port (section optional) |
+| `metrics.tracked_tlds`              | `[]`                           | TLDs given their own `tld` label on the per-TLD query metrics. Owned TLDs are tracked automatically; the entry `common` expands to the built-in common-TLD set; anything untracked folds into `other` (see Per-TLD Isolation) |
 
 The `dot`, `doh`, `doq`, `proxy`, `acme`, and `metrics` sections are optional. When omitted, the corresponding transport/service is not started. When `acme` is present, the root CA is created at boot and both the ACME and portal listeners start.
 
@@ -1258,8 +1308,9 @@ The project uses a top-level Makefile with the following targets:
 | `test`                | Run all tests: lint, Go integration tests, Go unit tests, Rust tests (`cargo test`), and JavaScript tests.                                                 |
 | `test-log`            | Same as `test`, tee'd into a timestamped log file under `/tmp/rolodex-dns/log` (override with `LOG_DIR`). The log path is printed at the end even when the run fails. |
 | `rust-test`           | Run the Rust integration test files, then `cargo test`.                                                                                                     |
-| `rust-integration-test` | Build, then run each Rust integration test file explicitly (`integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`, `rbl_refusal_test`, `dnssec_signing_test`, `dnssec_validation_test`, `blocklist_nxdomain_test`, `zonemd_test`, `doq_test`, `proxy_test`, `tls_reload_test`, `acme_admin_test`, plus the `security_*` suites). |
+| `rust-integration-test` | Build, then run each Rust integration test file explicitly (`integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`, `promql_docs_test`, `prometheus_integration_test`, `rbl_refusal_test`, `dnssec_signing_test`, `dnssec_validation_test`, `blocklist_nxdomain_test`, `zonemd_test`, `doq_test`, `proxy_test`, `tls_reload_test`, `acme_admin_test`, plus the `security_*` suites). |
 | `lint`                | Run `cargo fmt -- --check` and `cargo clippy --all-targets -- -D warnings`.                                                                                |
+| `prometheus-test`     | Execute every documented PromQL query against a containerised Prometheus (`quay.io/prometheus/prometheus`, overridable via `ROLODEX_PROMETHEUS_IMAGE`). Kept out of `make test` because it needs podman and, on a cold image cache, the network; the test skips itself unless `ROLODEX_PROMETHEUS_TEST=1`. |
 | `deps`                | Install build dependencies: the Rust cross-compilation toolchain (`cross-deps`) and the JavaScript dev dependencies (`npm install` in `js/`).              |
 | `cross-deps`          | Install the Rust cross toolchain: `rustup target add` for both triples, `cargo-zigbuild`, and zig. Rootless — see Cross-Compilation.                       |
 | `js-lint`             | Run eslint on the JavaScript package (depends on `deps`).                                                                                                  |
@@ -1413,7 +1464,9 @@ Performance-related unit tests cover the optimized hot-path code:
 ### Metrics Tests
 
 - **Registry unit tests** (`src/metrics.rs`): counter/gauge/vec semantics including out-of-range label indices (which must never panic on the query path), cumulative histogram bucketing, nanosecond→seconds and byte rendering, dynamic series creation, label-value escaping, float formatting that avoids scientific notation, rcode/qtype folding of unknowns, and a guard that every emitted series is preceded by its own `# HELP`/`# TYPE`.
-- **Endpoint and attribution tests** (`tests/metrics_test.rs`): the router is served on an ephemeral port and scraped over a real TCP socket with a hand-written HTTP/1.1 request — status, content type, and that every non-comment line parses as `name[{labels}] value` with a numeric value, since one malformed line makes Prometheus reject the whole scrape. Query-path tests assert that a local hit, a cache hit, an authoritative NXDOMAIN, a malformed query and an unknown query type each land in the right series, that gauges are sampled at scrape time (a row added after the listener started shows up), that the three cache-flush reasons stay distinct, and that a blocklist refusal advances `blocklist_refusals_total` and the `refused` lookup outcome **without** also advancing `listed`. Because the registry is a process-global, each test holds a shared lock and asserts exact deltas — serializing rather than loosening to `>=` is what catches an observation being recorded *twice*.
+- **Documentation tests** (`tests/promql_docs_test.rs`): every ```promql block in `README.md` and `CLAUDE.md` is parsed, its metric names and label matchers extracted, and each resolved against the live exposition output. Documentation is the one part of a metrics change nothing else verifies — renaming `{type}` to `{message_type}` leaves the code compiling and every other test green while silently turning each documented dashboard query into one that returns no data, and an operator finds out when a panel goes blank mid-incident. The same file pins the documented **family count** against what `render` emits (it had already drifted, 73 documented against 74 emitted) and guards the fence itself, since a block relabelled ` ```bash ` would make the whole file stop checking anything. The parser is hand-rolled rather than pulling in `regex`, and is deliberately permissive about syntax it does not understand and strict about the identifiers it does.
+- **PromQL execution tests** (`tests/prometheus_integration_test.rs`): the same documented queries run through a real Prometheus scraping a live server, because a substring scanner cannot tell a well-formed query from `rate(sum(x)[5m])` — that one names only real series and is rejected at the moment an operator pastes it. Gated on `ROLODEX_PROMETHEUS_TEST=1` and skipped when podman is absent, so `make test` needs neither a container runtime nor the network; `make prometheus-test` runs it. The two layers are complementary: this one is authoritative about syntax, the other about whether the series exist.
+- **Endpoint and attribution tests** (`tests/metrics_test.rs`): the router is served on an ephemeral port and scraped over a real TCP socket with a hand-written HTTP/1.1 request — status, content type, and that every non-comment line parses as `name[{labels}] value` with a numeric value, since one malformed line makes Prometheus reject the whole scrape. Query-path tests assert that a local hit, a cache hit, an authoritative NXDOMAIN, a malformed query and an unknown query type each land in the right series, that gauges are sampled at scrape time (a row added after the listener started shows up), that the three cache-flush reasons stay distinct, and that a blocklist refusal advances `blocklist_refusals_total` and the `refused` lookup outcome **without** also advancing `listed`. Because the registry is a process-global, each test holds a shared lock and asserts exact deltas — serializing rather than loosening to `>=` is what catches an observation being recorded *twice*. The newer cases cover the dimensions added since: a tracked TLD getting its own series **and** the control that an untracked one mints none (the cardinality bound is the whole point, and a test that only checked the positive would pass with the bound removed), an owned TLD being tracked without ever being configured, traffic bytes matching the exact wire lengths in both directions with records-served reading ANCOUNT rather than counting one per query, each allowlist gate advancing without the other two, and a scope-opted-in provider's block landing on `rbl_scope_provider` while the global series stays flat.
 
 ### Resolver Tests
 
@@ -1519,7 +1572,7 @@ The Go client has two test layers:
 - **Unit tests** — Use an in-process mock gRPC server via `bufconn` to test all client methods, authentication token propagation, transport modes, error handling, and edge cases (idempotent close, lazy dial, custom dial options).
 - **Integration tests** — Gated behind the `integration` build tag. Each test starts a real Rolodex DNS server subprocess with a unique temporary directory, random ports, and isolated database. Tests cover record CRUD, wildcard filtering, forwarder configuration, RBL round-trip, cache flushing, Unix socket transport, authentication failure, default TTL behavior, concurrent clients (5 simultaneous), network scoping, DNS64, and TTL drift.
 
-The `make test` target runs the full test suite: lint, Go integration tests, Go unit tests, Rust integration tests (each test file explicitly: `integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`, `rbl_refusal_test`, `dnssec_signing_test`, `dnssec_validation_test`, `blocklist_nxdomain_test`, `zonemd_test`, `doq_test`, `proxy_test`, `tls_reload_test`, `acme_admin_test`, and the `security_*` suites), all Rust tests via `cargo test` (which also covers the resolver suite above), and the JavaScript lint/integration/unit tests. Individual targets are available: `make go-integration-test`, `make go-test`, `make rust-integration-test`, `make rust-test`, `make js-integration-test`, `make js-test`. Use `make test-log` to capture the whole run to a timestamped log file.
+The `make test` target runs the full test suite: lint, Go integration tests, Go unit tests, Rust integration tests (each test file explicitly: `integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`, `promql_docs_test`, `prometheus_integration_test`, `rbl_refusal_test`, `dnssec_signing_test`, `dnssec_validation_test`, `blocklist_nxdomain_test`, `zonemd_test`, `doq_test`, `proxy_test`, `tls_reload_test`, `acme_admin_test`, and the `security_*` suites), all Rust tests via `cargo test` (which also covers the resolver suite above), and the JavaScript lint/integration/unit tests. Individual targets are available: `make go-integration-test`, `make go-test`, `make rust-integration-test`, `make rust-test`, `make js-integration-test`, `make js-test`. Use `make test-log` to capture the whole run to a timestamped log file.
 
 ## Key Dependencies
 

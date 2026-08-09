@@ -73,7 +73,7 @@ LOG_DIR := /tmp/rolodex-dns/log
 export LOG_DIR
 
 .PHONY: help test test-log build clean go-test go-integration-test dev dev-release install lint bench
-.PHONY: rust-test rust-integration-test
+.PHONY: rust-test rust-integration-test prometheus-test
 .PHONY: deps js-lint js-test js-integration-test
 .PHONY: image push push-arch push-rc push-release manifest manifest-rc manifest-release quay-login clean-containers
 .PHONY: image-amd64 push-rc-amd64 push-release-amd64 push-rc-all push-release-all cross-deps
@@ -89,6 +89,14 @@ help: ## Show this help
 lint: ## Run cargo fmt --check and clippy -D warnings
 	cargo fmt -- --check
 	cargo clippy --all-targets -- -D warnings
+
+# Runs the documented PromQL through a real Prometheus, which is the only way to
+# catch a query that is malformed *as PromQL* rather than merely naming a series
+# that does not exist (promql_docs_test covers the latter, and runs unconditionally
+# as part of `make test`). Kept out of `make test` because it needs a container
+# runtime and, on a cold image cache, the network.
+prometheus-test: build ## Execute the documented PromQL against a containerised Prometheus
+	ROLODEX_PROMETHEUS_TEST=1 cargo test --test prometheus_integration_test -- --nocapture
 
 test: lint go-test rust-test js-test ## Run the full suite: lint, Go, Rust, and JavaScript tests
 
@@ -110,6 +118,8 @@ rust-integration-test: build ## Run each Rust integration test file
 	cargo test --test acme_issuer_test
 	cargo test --test auto_resolution_test
 	cargo test --test metrics_test
+	cargo test --test promql_docs_test
+	cargo test --test prometheus_integration_test
 	cargo test --test rbl_refusal_test
 	cargo test --test dnssec_signing_test
 	cargo test --test dnssec_validation_test

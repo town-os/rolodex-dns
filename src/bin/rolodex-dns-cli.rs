@@ -510,6 +510,24 @@ enum Commands {
     #[command(name = "list-auth-zones")]
     ListAuthZones,
 
+    /// Replace the tracked-TLD list for the Prometheus per-TLD query metrics.
+    ///
+    /// Owned TLDs (including each scope's `.home` domain) are tracked
+    /// automatically and need not be listed. Pass `--tld common` to include the
+    /// built-in common-TLD set. Omit `--tld` entirely to clear the list.
+    /// gRPC path: /rolodex_dns.RolodexDnsService/SetTrackedTlds
+    #[command(name = "set-tracked-tlds")]
+    SetTrackedTlds {
+        /// A TLD to track; repeat for several. `common` expands to the built-in set.
+        #[arg(long = "tld")]
+        tlds: Vec<String>,
+    },
+
+    /// List the stored and effective tracked-TLD sets.
+    /// gRPC path: /rolodex_dns.RolodexDnsService/ListTrackedTlds
+    #[command(name = "list-tracked-tlds")]
+    ListTrackedTlds,
+
     /// Flush the DNS response cache.
     /// gRPC path: /rolodex_dns.RolodexDnsService/FlushDnsCache
     #[command(name = "flush-dns-cache")]
@@ -1632,6 +1650,62 @@ async fn main() -> Result<()> {
                     println!("  {}", z);
                 }
                 println!("\n{} zone(s) found.", zones.len());
+            }
+        }
+
+        Commands::SetTrackedTlds { tlds } => {
+            let response = client
+                .set_tracked_tlds(SetTrackedTldsRequest {
+                    tlds: tlds.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("set-tracked-tlds RPC failed")?;
+            let resp = response.into_inner();
+            if !resp.success {
+                anyhow::bail!("Failed to set tracked TLDs: {}", resp.message);
+            }
+            println!("Tracked TLDs updated ({} stored).", tlds.len());
+            // The effective set is what actually produces series, and it is not
+            // the stored list: it also carries the config-pinned entries and
+            // every owned TLD, with `common` expanded.
+            println!("Effective set ({}):", resp.effective_tlds.len());
+            for t in &resp.effective_tlds {
+                println!("  {}", t);
+            }
+        }
+
+        Commands::ListTrackedTlds => {
+            let response = client
+                .list_tracked_tlds(ListTrackedTldsRequest {
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("list-tracked-tlds RPC failed")?;
+            let resp = response.into_inner();
+            if resp.stored_tlds.is_empty() {
+                println!("Stored: (none)");
+            } else {
+                println!("Stored:");
+                for t in &resp.stored_tlds {
+                    println!("  {}", t);
+                }
+            }
+            if resp.owned_tlds.is_empty() {
+                println!("Owned (tracked automatically): (none)");
+            } else {
+                println!("Owned (tracked automatically):");
+                for t in &resp.owned_tlds {
+                    println!("  {}", t);
+                }
+            }
+            if resp.effective_tlds.is_empty() {
+                println!("Effective: (none) — every name folds into the 'other' series.");
+            } else {
+                println!("Effective ({}):", resp.effective_tlds.len());
+                for t in &resp.effective_tlds {
+                    println!("  {}", t);
+                }
             }
         }
 

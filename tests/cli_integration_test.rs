@@ -2742,3 +2742,124 @@ async fn test_cli_every_subcommand_help_builds() {
         );
     }
 }
+
+// --------------------------------------------------------
+// Tracked TLDs (per-TLD metrics)
+// --------------------------------------------------------
+
+/// `set-tracked-tlds` / `list-tracked-tlds`, over the Unix socket.
+///
+/// The three sources of the effective set are exercised separately, because
+/// conflating them is the bug this feature is most likely to grow: an owned TLD
+/// that stops being tracked when the stored list is cleared, or a `common` entry
+/// that is stored expanded and so freezes against a later change to the
+/// built-in list.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_cli_tracked_tlds_unix() {
+    let server = TestServer::start("test-secret").await;
+
+    run_cmd({
+        let mut cmd = server.cli_unix();
+        cmd.args(["list-tracked-tlds"]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains("Stored: (none)"));
+
+    // `common` plus an exceptional TLD by name.
+    run_cmd({
+        let mut cmd = server.cli_unix();
+        cmd.args([
+            "set-tracked-tlds",
+            "--tld",
+            "common",
+            "--tld",
+            "lab.internal",
+        ]);
+        cmd
+    })
+    .await
+    .success()
+    // The effective set is printed because the stored list alone does not say
+    // which series will appear.
+    .stdout(predicate::str::contains("Effective set"))
+    .stdout(predicate::str::contains("com."))
+    .stdout(predicate::str::contains("lab.internal."));
+
+    run_cmd({
+        let mut cmd = server.cli_unix();
+        cmd.args(["list-tracked-tlds"]);
+        cmd
+    })
+    .await
+    .success()
+    // Stored unexpanded: a read-back reports what the operator asked for, and a
+    // later change to the built-in list takes effect without re-issuing this.
+    .stdout(predicate::str::contains("common"))
+    .stdout(predicate::str::contains("lab.internal."));
+
+    // An owned TLD is tracked without appearing in the stored list.
+    run_cmd({
+        let mut cmd = server.cli_unix();
+        cmd.args(["create-scope", "--name", "tldnet"]);
+        cmd
+    })
+    .await
+    .success();
+    run_cmd({
+        let mut cmd = server.cli_unix();
+        cmd.args(["add-scope-tld", "--scope", "tldnet", "--tld", "ownednet"]);
+        cmd
+    })
+    .await
+    .success();
+
+    run_cmd({
+        let mut cmd = server.cli_unix();
+        cmd.args(["list-tracked-tlds"]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains("Owned (tracked automatically)"))
+    .stdout(predicate::str::contains("ownednet."));
+
+    // Clearing the stored list must not untrack the owned TLD — ownership is a
+    // separate source, and losing it here would silently drop a network's series.
+    run_cmd({
+        let mut cmd = server.cli_unix();
+        cmd.args(["set-tracked-tlds"]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains("ownednet."));
+
+    run_cmd({
+        let mut cmd = server.cli_unix();
+        cmd.args(["list-tracked-tlds"]);
+        cmd
+    })
+    .await
+    .success()
+    .stdout(predicate::str::contains("Stored: (none)"))
+    .stdout(predicate::str::contains("ownednet."));
+}
+
+/// The root zone is refused rather than accepted-and-ignored.
+///
+/// `.` is a suffix of every name, so tracking it would collapse every TLD series
+/// into one and make the `other` catch-all unreachable — a configuration that
+/// silently does the opposite of what it reads like.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_cli_tracked_tlds_rejects_the_root_zone_unix() {
+    let server = TestServer::start("test-secret").await;
+    run_cmd({
+        let mut cmd = server.cli_unix();
+        cmd.args(["set-tracked-tlds", "--tld", "."]);
+        cmd
+    })
+    .await
+    .failure();
+}

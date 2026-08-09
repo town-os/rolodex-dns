@@ -25,10 +25,33 @@
 //!
 //! Every label dimension is either a fixed enum ([`Proto`], [`RCODES`],
 //! [`AnswerSource`], …) or bounded by configuration (upstream server addresses).
-//! The one dimension a client could otherwise blow up — the query type — is
-//! folded through [`qtype_index`] into a known set with an `OTHER` catch-all, so
-//! a flood of queries for random `TYPE1234` values cannot mint unbounded series.
-//! Query *names* are never used as labels.
+//! The two dimensions a client could otherwise blow up are both folded into a
+//! catch-all:
+//!
+//! - the **query type**, through [`qtype_index`] into a known set ending in
+//!   `OTHER`, so a flood of queries for random `TYPE1234` values mints nothing;
+//! - the **TLD**, through [`Metrics::tld_label`] against the tracked set, with
+//!   everything else landing in [`TLD_OTHER`]. The tracked set is operator-owned
+//!   (owned TLDs automatically, plus `metrics.tracked_tlds`), never
+//!   client-derived, so a scanner sweeping junk TLDs cannot grow it.
+//!
+//! Query *names* are never used as labels — only the TLD suffix, and only when
+//! the operator has already opted into that suffix.
+//!
+//! # Subsystem separation
+//!
+//! DNS and DHCP are separate services that happen to share a process, and their
+//! series are kept separately selectable:
+//!
+//! - The DHCP families label their dimensions `message_type` and `lease_state`
+//!   rather than the generic `type` and `state`. A generic name is what makes an
+//!   aggregation spanning both subsystems — `sum by (type) (...)` over a
+//!   recording rule, say — silently blend a DHCP ACK count into a DNS one.
+//! - The DNS rollups (`queries_total`, `traffic_bytes_total`,
+//!   `records_served_total`, `queries_by_tld_total`) count **DNS only**. DHCP
+//!   packets on `:67` are never counted as DNS traffic, and a DHCP-registered
+//!   name contributes to the DNS metrics only when somebody actually resolves
+//!   it.
 
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -331,6 +354,18 @@ impl DynCounterVec {
             .entry(value.to_string())
             .or_insert_with(|| AtomicU64::new(0))
             .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Value of the series for `value`; zero if it has never been incremented.
+    ///
+    /// A series that does not exist reads as zero rather than absent, so a
+    /// caller taking a before/after delta does not have to special-case the
+    /// first observation.
+    pub fn get(&self, value: &str) -> u64 {
+        self.series
+            .get(value)
+            .map(|c| c.load(Ordering::Relaxed))
+            .unwrap_or(0)
     }
 
     fn encode(&self, out: &mut String) {
@@ -828,7 +863,43 @@ pub const UPSTREAM_RESULTS: &[&str] = &["definitive", "indefinite", "error"];
 pub const FAMILIES: &[&str] = &["ipv4", "ipv6"];
 
 /// Which blocklist produced a block.
-pub const BLOCK_KINDS: &[&str] = &["rbl_provider", "rbl_local", "dnsbl_provider"];
+///
+/// `rbl_scope_provider` is separate from `rbl_provider` because the two are
+/// different operator decisions with different blast radii: a global provider is
+/// consulted for every reverse lookup on the box, while a scope-opted-in one
+/// affects only the network that asked for it. Folded together — as they were
+/// before — a scope's private blocklist taking out its own network is
+/// indistinguishable from the box-wide list doing it, which is the first thing
+/// you need to know when a network reports that reverse DNS broke.
+///
+/// New kinds are **appended**, never inserted: the `BLOCK_*` index constants in
+/// `dns_server.rs` and `rbl.rs` are positions in this array, so inserting in the
+/// middle silently relabels every existing counter.
+pub const BLOCK_KINDS: &[&str] = &[
+    "rbl_provider",
+    "rbl_local",
+    "dnsbl_provider",
+    "rbl_scope_provider",
+];
+
+/// How a name or address matched the DNSBL allowlist.
+///
+/// These are the three *match paths*, not the three blocklists, and that is
+/// forced by where the check sits: the allowlist short-circuits before any
+/// provider lookup is issued, so at the moment of the exemption nothing has been
+/// asked and there is no "which list would have matched" to record. Naming the
+/// gate instead is both knowable and the more useful axis — it separates an
+/// exemption on a forward name (resolution step 7) from one on a reverse lookup
+/// (step 2), and within the latter, the `in-addr.arpa`/`ip6.arpa` spelling from
+/// the IP literal, which are matched by different rules (suffix vs. exact).
+pub const ALLOWLIST_KINDS: &[&str] = &["forward_name", "reverse_name", "ip_literal"];
+
+/// Direction of DNS wire traffic, for `rolodex_dns_traffic_bytes_total`.
+///
+/// `rx` is bytes received in queries, `tx` bytes emitted in responses. DNS
+/// only — DHCP's `:67` traffic is deliberately not counted here; see the
+/// module docs on subsystem separation.
+pub const TRAFFIC_DIRECTIONS: &[&str] = &["rx", "tx"];
 
 /// Reasons the response cache is cleared.
 pub const FLUSH_REASONS: &[&str] = &["mutation", "explicit", "tier_switch"];
@@ -842,6 +913,28 @@ pub const DHCP_MESSAGES: &[&str] = &[
 
 /// Lease states reported by the lease gauge.
 pub const LEASE_STATES: &[&str] = &["active", "expired", "released", "reclaimable"];
+
+/// The catch-all `tld` label value: every name not under a tracked TLD.
+///
+/// This is what bounds the dimension. The queried name is chosen by the client,
+/// so if any TLD it asked for could become a label value, a scanner sweeping
+/// `a.zzz1`, `a.zzz2`, … would mint series without limit until the registry ate
+/// the process. Only TLDs the operator has opted into — owned ones,
+/// automatically, plus anything in `metrics.tracked_tlds` — get their own
+/// series; everything else lands here.
+pub const TLD_OTHER: &str = "other";
+
+/// The TLDs the magic `common` entry in `metrics.tracked_tlds` expands to.
+///
+/// A preset exists because the alternative is pasting the same twenty lines into
+/// every deployment's config. These are the public TLDs a household or office
+/// resolver actually sees volume on; anything else an operator cares about is
+/// added by name alongside `common`.
+pub const COMMON_TLDS: &[&str] = &[
+    "com.", "net.", "org.", "edu.", "gov.", "mil.", "int.", "io.", "dev.", "app.", "co.", "me.",
+    "info.", "biz.", "xyz.", "online.", "site.", "cloud.", "ai.", "sh.", "tv.", "us.", "uk.",
+    "ca.", "de.", "fr.", "nl.", "eu.", "jp.", "au.", "arpa.",
+];
 
 // ---------------------------------------------------------------------------
 // Bucket bounds
@@ -905,8 +998,17 @@ pub struct Metrics {
     pub queries: CounterVec2,
     /// Queries by (folded) query type.
     pub queries_by_type: CounterVec,
+    /// Queries by tracked TLD; everything untracked folds into [`TLD_OTHER`].
+    pub queries_by_tld: DynCounterVec,
     /// Which resolution stage produced the answer.
     pub answer_source: CounterVec,
+    /// DNS wire bytes received and sent.
+    pub traffic_bytes: CounterVec,
+    /// Resource records emitted in answer sections — the "positive record
+    /// fetches" half of total traffic, which the query count alone cannot show:
+    /// a million NXDOMAINs and a million populated answers are the same number
+    /// of queries and very different amounts of work.
+    pub records_served: Counter,
     /// End-to-end handling time, by transport.
     pub query_duration: HistogramVec,
     /// Received query sizes.
@@ -945,8 +1047,15 @@ pub struct Metrics {
     // --- blocklists ---
     /// Queries answered NXDOMAIN by a blocklist, by which list matched.
     pub blocklist_blocks: CounterVec,
-    /// Names that skipped the blocklist check via the DNSBL allowlist.
-    pub blocklist_allowlisted: Counter,
+    /// Names that skipped the blocklist check via the DNSBL allowlist, by which
+    /// gate the exemption applied at.
+    ///
+    /// Read against `blocklist_blocks_total`: the allowlist is the operator's
+    /// escape hatch from a false positive, so a series climbing here is an
+    /// operator continuously papering over a list that is misfiring, which looks
+    /// identical to "the blocklist is clean" if only the block counter is
+    /// watched.
+    pub blocklist_allowlisted: CounterVec,
     /// Blocklist provider lookups, by list kind and outcome.
     pub blocklist_lookups: CounterVec2,
     /// Provider lookups skipped because plaintext `:53` is unusable, or because
@@ -1070,6 +1179,17 @@ pub struct Metrics {
     pub grpc_requests: DynCounterVec,
     /// gRPC calls rejected for a bad or missing shared secret.
     pub grpc_auth_failures: Counter,
+
+    // --- registry state, not itself exported ---
+    /// The TLDs that get their own `tld` label value. Everything else folds into
+    /// [`TLD_OTHER`], which is what keeps the dimension bounded.
+    ///
+    /// Keys are normalized: lowercase, with a trailing dot. Populated from three
+    /// places, all operator-controlled — the owned TLDs in `scope_tlds`
+    /// (including each scope's implicit `.home` domain), the `metrics.tracked_tlds`
+    /// config list, and whatever `SetTrackedTlds` has stored. Never from a
+    /// queried name.
+    tracked_tlds: dashmap::DashSet<String>,
 }
 
 impl Default for Metrics {
@@ -1109,11 +1229,26 @@ impl Metrics {
                 "qtype",
                 QTYPES,
             ),
+            queries_by_tld: DynCounterVec::new(
+                "rolodex_dns_queries_by_tld_total",
+                "DNS queries answered, by tracked TLD. Untracked names fold into 'other'.",
+                "tld",
+            ),
             answer_source: CounterVec::new(
                 "rolodex_dns_answers_total",
                 "Answers by the resolution stage that produced them.",
                 "source",
                 ANSWER_SOURCES,
+            ),
+            traffic_bytes: CounterVec::new(
+                "rolodex_dns_traffic_bytes_total",
+                "DNS wire bytes received in queries and sent in responses. DNS only; DHCP is not counted.",
+                "direction",
+                TRAFFIC_DIRECTIONS,
+            ),
+            records_served: Counter::new(
+                "rolodex_dns_records_served_total",
+                "Resource records returned in answer sections across every transport.",
             ),
             query_duration: HistogramVec::new(
                 "rolodex_dns_query_duration_seconds",
@@ -1199,9 +1334,11 @@ impl Metrics {
                 "kind",
                 BLOCK_KINDS,
             ),
-            blocklist_allowlisted: Counter::new(
+            blocklist_allowlisted: CounterVec::new(
                 "rolodex_dns_blocklist_allowlisted_total",
-                "Queries that skipped the blocklist check via the DNSBL allowlist.",
+                "Queries that skipped the blocklist check via the DNSBL allowlist, by match path.",
+                "kind",
+                ALLOWLIST_KINDS,
             ),
             blocklist_lookups: CounterVec2::new(
                 "rolodex_dns_blocklist_lookups_total",
@@ -1383,14 +1520,14 @@ impl Metrics {
 
             dhcp_messages: CounterVec::new(
                 "rolodex_dns_dhcp_messages_total",
-                "DHCP messages handled, by type.",
-                "type",
+                "DHCP messages handled, by message type.",
+                "message_type",
                 DHCP_MESSAGES,
             ),
             dhcp_leases: GaugeVec::new(
                 "rolodex_dns_dhcp_leases",
-                "DHCP leases by state.",
-                "state",
+                "DHCP leases by lease state.",
+                "lease_state",
                 LEASE_STATES,
             ),
             dhcp_pools: Gauge::new("rolodex_dns_dhcp_pools", "Configured DHCP address pools."),
@@ -1428,7 +1565,119 @@ impl Metrics {
                 "rolodex_dns_grpc_auth_failures_total",
                 "gRPC calls rejected for a missing or incorrect shared secret.",
             ),
+
+            tracked_tlds: dashmap::DashSet::new(),
         }
+    }
+
+    /// Replaces the tracked-TLD set, expanding the magic `common` entry.
+    ///
+    /// Replacement rather than accumulation: this is called with the full
+    /// effective set (config ∪ database ∪ owned TLDs), so a TLD that has been
+    /// removed from every source stops minting new samples instead of being
+    /// tracked forever by whichever call first mentioned it.
+    ///
+    /// Entries are normalized to lowercase with a trailing dot, matching how
+    /// `db::normalize_name` stores zone names — the hot-path lookup in
+    /// [`Self::tld_label`] compares against a slice of the queried name, so the
+    /// two spellings have to agree exactly. An empty or root entry is dropped:
+    /// `.` is a suffix of every name, so tracking it would put the entire
+    /// namespace in one series and make [`TLD_OTHER`] unreachable.
+    pub fn set_tracked_tlds<I, S>(&self, tlds: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let next: dashmap::DashSet<String> = dashmap::DashSet::new();
+        let add = |raw: &str| {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() || trimmed == "." {
+                return;
+            }
+            let mut norm = trimmed.to_ascii_lowercase();
+            if !norm.ends_with('.') {
+                norm.push('.');
+            }
+            next.insert(norm);
+        };
+        for tld in tlds {
+            let raw = tld.as_ref();
+            if raw.trim().eq_ignore_ascii_case("common") {
+                for c in COMMON_TLDS {
+                    add(c);
+                }
+            } else {
+                add(raw);
+            }
+        }
+        self.tracked_tlds.retain(|existing| next.contains(existing));
+        for entry in next.iter() {
+            self.tracked_tlds.insert(entry.key().clone());
+        }
+    }
+
+    /// The tracked TLDs currently in effect, sorted. For the management API's
+    /// read-back and for tests.
+    pub fn tracked_tlds(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.tracked_tlds.iter().map(|e| e.key().clone()).collect();
+        out.sort();
+        out
+    }
+
+    /// Resolves the `tld` label for a queried name: the longest tracked suffix,
+    /// or [`TLD_OTHER`].
+    ///
+    /// Returns a **slice of `qname`** rather than an owned string, so the common
+    /// path costs no allocation. Suffixes are walked from the most specific, so
+    /// a deployment tracking both `home.` and `lab.home.` attributes
+    /// `box.lab.home.` to the more specific of the two.
+    ///
+    /// Case is handled without allocating in the overwhelmingly common case: DNS
+    /// names arrive lowercase from nearly every client, so the borrowed slice is
+    /// tried against the set first and a lowercased copy is only built for a
+    /// suffix that actually contains uppercase bytes.
+    pub fn tld_label<'a>(&self, qname: &'a str) -> &'a str {
+        if self.tracked_tlds.is_empty() {
+            return TLD_OTHER;
+        }
+        // Walk suffixes most-specific first, starting at the full name: a name
+        // that *is* a tracked TLD (`home.`) belongs to its own series.
+        let with_dot = qname.ends_with('.');
+        let mut start = 0;
+        loop {
+            let candidate = &qname[start..];
+            if candidate.is_empty() || candidate == "." {
+                break;
+            }
+            if self.is_tracked(candidate, with_dot) {
+                return candidate;
+            }
+            match candidate.find('.') {
+                // Advance past this label. The trailing `.` of a fully qualified
+                // name leaves an empty candidate, caught at the top of the loop.
+                Some(pos) => start += pos + 1,
+                None => break,
+            }
+        }
+        TLD_OTHER
+    }
+
+    /// Set membership for one candidate suffix, tolerating a missing trailing dot
+    /// and uppercase input without allocating unless it has to.
+    fn is_tracked(&self, candidate: &str, has_trailing_dot: bool) -> bool {
+        if has_trailing_dot {
+            if self.tracked_tlds.contains(candidate) {
+                return true;
+            }
+            if candidate.bytes().any(|b| b.is_ascii_uppercase()) {
+                return self.tracked_tlds.contains(&candidate.to_ascii_lowercase());
+            }
+            return false;
+        }
+        // A relative name: the set always stores the qualified form.
+        let mut owned = candidate.to_ascii_lowercase();
+        owned.push('.');
+        self.tracked_tlds.contains(&owned)
     }
 
     /// Renders the whole registry in the Prometheus text exposition format.
@@ -1481,7 +1730,10 @@ impl Metrics {
 
         self.queries.encode(&mut out);
         self.queries_by_type.encode(&mut out);
+        self.queries_by_tld.encode(&mut out);
         self.answer_source.encode(&mut out);
+        self.traffic_bytes.encode(&mut out);
+        self.records_served.encode(&mut out);
         self.query_duration.encode(&mut out);
         self.query_size.encode(&mut out);
         self.response_size.encode(&mut out);
@@ -1571,6 +1823,7 @@ impl Metrics {
     pub fn observe_query(&self, obs: QueryObservation) {
         self.queries.inc(obs.proto.index(), obs.rcode_index);
         self.queries_by_type.inc(obs.qtype_index);
+        self.queries_by_tld.inc(obs.tld);
         self.answer_source.inc(obs.source.index());
         self.query_duration.observe(
             obs.proto.index(),
@@ -1578,31 +1831,90 @@ impl Metrics {
         );
         self.query_size.observe(obs.query_bytes as u64);
         self.response_size.observe(obs.response_bytes as u64);
+        self.traffic_bytes.add(TRAFFIC_RX, obs.query_bytes as u64);
+        self.traffic_bytes
+            .add(TRAFFIC_TX, obs.response_bytes as u64);
+        self.records_served.add(obs.answer_records as u64);
         if obs.truncated {
             self.responses_truncated.inc();
         }
     }
 }
 
+/// Index into [`TRAFFIC_DIRECTIONS`] for bytes received.
+pub const TRAFFIC_RX: usize = 0;
+/// Index into [`TRAFFIC_DIRECTIONS`] for bytes sent.
+pub const TRAFFIC_TX: usize = 1;
+
 /// One completed query, as handed to [`Metrics::observe_query`].
 #[derive(Debug, Clone, Copy)]
-pub struct QueryObservation {
+pub struct QueryObservation<'a> {
     /// Transport the query arrived on.
     pub proto: Proto,
     /// Index into [`RCODES`] for the response code sent.
     pub rcode_index: usize,
     /// Index into [`QTYPES`] for the question's type.
     pub qtype_index: usize,
+    /// The `tld` label: a tracked TLD or [`TLD_OTHER`], already resolved by
+    /// [`Metrics::tld_label`]. Taken pre-resolved rather than as a raw name so
+    /// this type cannot be handed an unbounded label value by a future caller.
+    pub tld: &'a str,
     /// Which resolution stage produced the answer.
     pub source: AnswerSource,
     /// Bytes received.
     pub query_bytes: usize,
     /// Bytes sent.
     pub response_bytes: usize,
+    /// Resource records in the response's answer section.
+    pub answer_records: u16,
     /// Whether the response set TC.
     pub truncated: bool,
     /// End-to-end handling time.
     pub elapsed: Duration,
+}
+
+// ---------------------------------------------------------------------------
+// Tracked TLDs
+// ---------------------------------------------------------------------------
+
+/// The `metrics.tracked_tlds` config list, held apart from the effective set.
+///
+/// The effective set is recomputed from three sources whenever any of them
+/// changes, and only one of the three — this one — is not readable from the
+/// database. Keeping it here lets [`refresh_tracked_tlds`] be callable from the
+/// gRPC service, which holds a `Database` and no config, without threading the
+/// configuration through every mutation handler.
+static CONFIG_TLDS: LazyLock<arc_swap::ArcSwap<Vec<String>>> =
+    LazyLock::new(|| arc_swap::ArcSwap::from_pointee(Vec::new()));
+
+/// Installs the `metrics.tracked_tlds` config list. Called once at startup,
+/// before the first [`refresh_tracked_tlds`].
+pub fn set_config_tracked_tlds(tlds: Vec<String>) {
+    CONFIG_TLDS.store(std::sync::Arc::new(tlds));
+}
+
+/// Recomputes the effective tracked-TLD set from all three sources: the config
+/// list, the operator's stored list, and every TLD a network scope owns.
+///
+/// Owned TLDs are included automatically and unconditionally — a network's own
+/// namespace is the thing a split-horizon deployment most wants isolated, and
+/// requiring it to be named twice (once to own it, once to track it) is a
+/// footgun that shows up as a silently missing series.
+///
+/// A database failure leaves the previous set in place rather than clearing it:
+/// losing per-TLD attribution during a transient SQLite lock is worse than
+/// carrying a set that is briefly stale.
+pub fn refresh_tracked_tlds(db: &crate::db::Database) {
+    let mut all: Vec<String> = CONFIG_TLDS.load().as_ref().clone();
+    match db.list_tracked_tlds() {
+        Ok(stored) => all.extend(stored),
+        Err(e) => {
+            tracing::warn!("metrics: tracked TLD list unavailable, keeping current set: {e}");
+            return;
+        }
+    }
+    all.extend(db.owned_tlds());
+    metrics().set_tracked_tlds(all);
 }
 
 // ---------------------------------------------------------------------------
@@ -1636,6 +1948,11 @@ pub struct MetricsState {
 /// wrong thing.
 pub fn collect(state: &MetricsState) {
     let m = metrics();
+
+    // Backstop for the incremental refreshes done at the mutation sites: if one
+    // is ever missed, per-TLD attribution self-heals by the next scrape rather
+    // than staying wrong until a restart.
+    refresh_tracked_tlds(&state.db);
 
     match state.db.metrics_counts() {
         Ok(counts) => {
@@ -1980,18 +2297,26 @@ mod tests {
             proto: Proto::Tcp,
             rcode_index: rcode_index(ResponseCode::NXDomain),
             qtype_index: qtype_index(RecordType::AAAA),
+            tld: "lab.internal.",
             source: AnswerSource::AuthoritativeNxdomain,
             query_bytes: 40,
             response_bytes: 90,
+            answer_records: 3,
             truncated: true,
             elapsed: Duration::from_micros(600),
         });
         let out = m.render();
         assert!(out.contains("rolodex_dns_queries_total{proto=\"tcp\",rcode=\"NXDOMAIN\"} 1"));
         assert!(out.contains("rolodex_dns_queries_by_type_total{qtype=\"AAAA\"} 1"));
+        assert!(out.contains("rolodex_dns_queries_by_tld_total{tld=\"lab.internal.\"} 1"));
         assert!(out.contains("rolodex_dns_answers_total{source=\"authoritative_nxdomain\"} 1"));
         assert!(out.contains("rolodex_dns_responses_truncated_total 1"));
         assert!(out.contains("rolodex_dns_query_duration_seconds_count{proto=\"tcp\"} 1"));
+        // Both directions come off the one observation, so a caller cannot
+        // record a query without also recording its bytes.
+        assert!(out.contains("rolodex_dns_traffic_bytes_total{direction=\"rx\"} 40"));
+        assert!(out.contains("rolodex_dns_traffic_bytes_total{direction=\"tx\"} 90"));
+        assert!(out.contains("rolodex_dns_records_served_total 3"));
         assert_eq!(m.query_size.count(), 1);
     }
 
@@ -2067,5 +2392,180 @@ mod tests {
         )));
         assert!(out.contains("rolodex_dns_uptime_seconds "));
         assert!(out.contains("rolodex_dns_start_time_seconds "));
+    }
+
+    // -----------------------------------------------------------------------
+    // Tracked TLDs
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn untracked_names_fold_into_other() {
+        let m = Metrics::new();
+        m.set_tracked_tlds(["home."]);
+        // The bound that makes this dimension safe: a name under a TLD nobody
+        // opted into gets the catch-all, however many of them arrive.
+        assert_eq!(m.tld_label("scanner.zzz-random-4242."), TLD_OTHER);
+        assert_eq!(m.tld_label("www.google.com."), TLD_OTHER);
+        assert_eq!(m.tld_label("box.home."), "home.");
+    }
+
+    #[test]
+    fn an_empty_tracked_set_tracks_nothing() {
+        // Not "tracks everything": the default configuration must not put a
+        // client-chosen value into a label.
+        let m = Metrics::new();
+        assert_eq!(m.tld_label("box.home."), TLD_OTHER);
+        assert_eq!(m.tld_label("home."), TLD_OTHER);
+    }
+
+    #[test]
+    fn a_tracked_tld_matches_itself_and_its_children() {
+        let m = Metrics::new();
+        m.set_tracked_tlds(["home."]);
+        assert_eq!(m.tld_label("home."), "home.");
+        assert_eq!(m.tld_label("deep.sub.box.home."), "home.");
+        // Label boundaries: `nothome.` is not under `home.`
+        assert_eq!(m.tld_label("nothome."), TLD_OTHER);
+        assert_eq!(m.tld_label("x.nothome."), TLD_OTHER);
+    }
+
+    #[test]
+    fn the_most_specific_tracked_suffix_wins() {
+        // A deployment tracking both a TLD and a zone beneath it should see the
+        // zone's own traffic separately rather than swallowed by the parent.
+        let m = Metrics::new();
+        m.set_tracked_tlds(["home.", "lab.home."]);
+        assert_eq!(m.tld_label("box.lab.home."), "lab.home.");
+        assert_eq!(m.tld_label("box.other.home."), "home.");
+    }
+
+    #[test]
+    fn tld_matching_is_case_insensitive_and_dot_tolerant() {
+        // 0x20 randomization is applied outbound, but an inbound client may use
+        // any case it likes, and attributing `BOX.HOME.` to `other` would split
+        // one network's traffic across two series.
+        let m = Metrics::new();
+        m.set_tracked_tlds(["HOME"]);
+        assert_eq!(m.tracked_tlds(), vec!["home.".to_string()]);
+        assert_eq!(m.tld_label("box.home."), "home.");
+        assert_eq!(m.tld_label("BOX.HOME."), "HOME.");
+        assert_eq!(m.tld_label("Box.Home"), "Home");
+    }
+
+    #[test]
+    fn common_expands_and_composes_with_named_entries() {
+        let m = Metrics::new();
+        m.set_tracked_tlds(["common", "lab.internal"]);
+        let tracked = m.tracked_tlds();
+        assert!(tracked.contains(&"com.".to_string()));
+        assert!(tracked.contains(&"org.".to_string()));
+        assert!(tracked.contains(&"lab.internal.".to_string()));
+        assert_eq!(tracked.len(), COMMON_TLDS.len() + 1);
+        assert_eq!(m.tld_label("www.example.com."), "com.");
+        assert_eq!(m.tld_label("host.lab.internal."), "lab.internal.");
+    }
+
+    #[test]
+    fn every_common_tld_is_normalized_as_stored() {
+        // The constant is inserted through the same normalizer as user input, so
+        // an entry written without a trailing dot would still match. Pin the
+        // spelling anyway: `tld_label` compares against a slice of the queried
+        // name, and a set entry that cannot equal such a slice matches nothing.
+        for tld in COMMON_TLDS {
+            assert!(tld.ends_with('.'), "{tld} must be fully qualified");
+            assert_eq!(*tld, tld.to_ascii_lowercase(), "{tld} must be lowercase");
+        }
+    }
+
+    #[test]
+    fn set_tracked_tlds_replaces_rather_than_accumulating() {
+        // Merge semantics would leave an operator no way to stop tracking a TLD,
+        // and the series would keep being minted forever.
+        let m = Metrics::new();
+        m.set_tracked_tlds(["a.test", "b.test"]);
+        m.set_tracked_tlds(["b.test"]);
+        assert_eq!(m.tracked_tlds(), vec!["b.test.".to_string()]);
+        assert_eq!(m.tld_label("x.a.test."), TLD_OTHER);
+        assert_eq!(m.tld_label("x.b.test."), "b.test.");
+    }
+
+    #[test]
+    fn the_root_entry_is_dropped_not_tracked() {
+        // `.` is a suffix of every name: tracking it would collapse every series
+        // into one and make the catch-all unreachable.
+        let m = Metrics::new();
+        m.set_tracked_tlds([".", "", "   ", "home"]);
+        assert_eq!(m.tracked_tlds(), vec!["home.".to_string()]);
+        assert_eq!(m.tld_label("www.google.com."), TLD_OTHER);
+    }
+
+    #[test]
+    fn tld_label_never_returns_a_client_controlled_value() {
+        // The property the whole bound rests on: whatever a client asks for, the
+        // label is either something the operator opted into or the catch-all.
+        let m = Metrics::new();
+        m.set_tracked_tlds(["home."]);
+        for hostile in [
+            "a.zzz1.",
+            "a.zzz2.",
+            "\"quoted\".",
+            "a.b.c.d.e.f.g.",
+            ".",
+            "",
+        ] {
+            let label = m.tld_label(hostile);
+            assert!(
+                label == TLD_OTHER
+                    || m.tracked_tlds()
+                        .iter()
+                        .any(|t| t.eq_ignore_ascii_case(label)),
+                "{hostile:?} produced unbounded label {label:?}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // New label dimensions
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn block_kinds_are_append_only() {
+        // The BLOCK_* index constants in dns_server.rs and rbl.rs are positions
+        // in this array. Inserting in the middle silently relabels every
+        // existing counter, so the prefix is pinned here.
+        assert_eq!(
+            BLOCK_KINDS,
+            &[
+                "rbl_provider",
+                "rbl_local",
+                "dnsbl_provider",
+                "rbl_scope_provider"
+            ]
+        );
+    }
+
+    #[test]
+    fn allowlist_kinds_name_the_gate_not_the_list() {
+        assert_eq!(
+            ALLOWLIST_KINDS,
+            &["forward_name", "reverse_name", "ip_literal"]
+        );
+    }
+
+    #[test]
+    fn traffic_directions_match_their_index_constants() {
+        assert_eq!(TRAFFIC_DIRECTIONS[TRAFFIC_RX], "rx");
+        assert_eq!(TRAFFIC_DIRECTIONS[TRAFFIC_TX], "tx");
+    }
+
+    #[test]
+    fn dhcp_labels_are_subsystem_qualified() {
+        // A generic `type`/`state` is what lets a `sum by (type)` spanning both
+        // subsystems blend a DHCP count into a DNS one.
+        let out = Metrics::new().render();
+        assert!(out.contains("rolodex_dns_dhcp_messages_total{message_type=\"ack\"}"));
+        assert!(out.contains("rolodex_dns_dhcp_leases{lease_state=\"active\"}"));
+        assert!(!out.contains("rolodex_dns_dhcp_messages_total{type="));
+        assert!(!out.contains("rolodex_dns_dhcp_leases{state="));
     }
 }

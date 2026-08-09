@@ -11,6 +11,7 @@ use tracing::{debug, info, warn};
 /// provider lookup belongs to.
 const BLOCK_RBL_PROVIDER: usize = 0;
 const BLOCK_DNSBL_PROVIDER: usize = 2;
+const BLOCK_RBL_SCOPE_PROVIDER: usize = 3;
 
 /// Outcome indices for the second dimension of
 /// [`crate::metrics::Metrics::blocklist_lookups`].
@@ -953,7 +954,25 @@ impl RblChecker {
         if self.is_listed(ip).await {
             return true;
         }
+        self.is_listed_by_extra_providers(ip, extra).await
+    }
 
+    /// Checks **only** the scope's opted-in providers, leaving the global list
+    /// alone.
+    ///
+    /// Split out from [`Self::is_listed_with_extra_providers`] so the caller can
+    /// tell the two apart: a block from a provider one network opted into and a
+    /// block from the box-wide list are different operator decisions with
+    /// different blast radii, and reporting both as `rbl_provider` makes "this
+    /// network's own blocklist broke this network" indistinguishable from "the
+    /// global list broke everyone". The lookups are the same ones
+    /// `is_listed_with_extra_providers` would have issued in its second half, so
+    /// calling `is_listed` and then this costs nothing extra — the two cover
+    /// disjoint provider sets and the result cache is keyed per `<ip>/<zone>`.
+    ///
+    /// Not gated on the global `enabled` flag: a scope opts into its providers
+    /// row by row, so it may run a blocklist the box as a whole does not.
+    pub async fn is_listed_by_extra_providers(&self, ip: &IpAddr, extra: &[RblProvider]) -> bool {
         if extra.is_empty() {
             return false;
         }
@@ -968,7 +987,7 @@ impl RblChecker {
             .iter()
             .filter(|p| p.enabled)
             .map(|p| ip_lookup(ip, p, default_cooldown));
-        self.check_cached_or_fill(lookups, BLOCK_RBL_PROVIDER)
+        self.check_cached_or_fill(lookups, BLOCK_RBL_SCOPE_PROVIDER)
     }
 }
 

@@ -523,6 +523,13 @@ async fn main() -> Result<()> {
 
     // Spawn the Prometheus metrics endpoint if configured
     if let Some(ref metrics_config) = config.metrics {
+        // Install the tracked-TLD set before the first query is served, so the
+        // per-TLD attribution is right from the first sample rather than from
+        // the first scrape. The config list is pinned here; the effective set
+        // unions it with the stored list and every owned TLD.
+        rolodex_dns::metrics::set_config_tracked_tlds(metrics_config.tracked_tlds.clone());
+        rolodex_dns::metrics::refresh_tracked_tlds(&db);
+
         let metrics_binds = rolodex_dns::config::resolve_bind_addrs(&metrics_config.bind)
             .context("resolving metrics bind address")?;
         for metrics_bind in metrics_binds {

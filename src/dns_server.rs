@@ -11,8 +11,8 @@ use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordType};
 use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use rand::Rng;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::task::AbortHandle;
@@ -30,6 +30,12 @@ pub const DEFAULT_DNS64_PREFIX: Ipv6Addr = Ipv6Addr::new(0x64, 0xff9b, 0, 0, 0, 
 const BLOCK_RBL_PROVIDER: usize = 0;
 const BLOCK_RBL_LOCAL: usize = 1;
 const BLOCK_DNSBL_PROVIDER: usize = 2;
+const BLOCK_RBL_SCOPE_PROVIDER: usize = 3;
+
+/// Indices into [`crate::metrics::ALLOWLIST_KINDS`].
+const ALLOW_FORWARD_NAME: usize = 0;
+const ALLOW_REVERSE_NAME: usize = 1;
+const ALLOW_IP_LITERAL: usize = 2;
 
 /// Indices into [`crate::metrics::FAMILIES`].
 const FAMILY_V4: usize = 0;
@@ -63,6 +69,14 @@ struct QueryTag {
     /// An index into [`crate::metrics::RCODES`], or [`RCODE_FROM_WIRE`] to read
     /// it off the response header instead.
     rcode: AtomicUsize,
+    /// The tracked TLD the queried name falls under, when it falls under one.
+    ///
+    /// Carried on the tag rather than re-derived at the instrumented exit
+    /// because the exit has only the wire bytes, where the name is
+    /// length-prefixed labels and would have to be decoded a second time.
+    /// Unset means [`crate::metrics::TLD_OTHER`], so an untracked name — the
+    /// overwhelmingly common case — costs no allocation at all.
+    tld: OnceLock<String>,
 }
 
 /// Sentinel for [`QueryTag::rcode`]: derive the response code from the response
@@ -76,7 +90,24 @@ impl QueryTag {
         Self {
             source: AtomicUsize::new(AnswerSource::Upstream.index()),
             rcode: AtomicUsize::new(RCODE_FROM_WIRE),
+            tld: OnceLock::new(),
         }
+    }
+
+    /// Records the tracked TLD for this query. Called once, from the point in
+    /// resolution where the decoded question name is already in hand.
+    fn set_tld(&self, tld: &str) {
+        if tld != crate::metrics::TLD_OTHER {
+            self.tld.set(tld.to_string()).ok();
+        }
+    }
+
+    /// The `tld` label for this query.
+    fn tld(&self) -> &str {
+        self.tld
+            .get()
+            .map(String::as_str)
+            .unwrap_or(crate::metrics::TLD_OTHER)
     }
 
     /// Declares which stage produced the answer.
@@ -1084,9 +1115,11 @@ impl DnsServer {
             qtype_index: crate::metrics::qtype_index(
                 wire_qtype(query_data).unwrap_or(RecordType::Unknown(0)),
             ),
+            tld: tag.tld(),
             source: tag.source(),
             query_bytes: query_data.len(),
             response_bytes: response.len(),
+            answer_records: wire_ancount(&response),
             truncated: wire_truncated(&response),
             elapsed: started.elapsed(),
         });
@@ -1164,6 +1197,12 @@ impl DnsServer {
         let question = &questions[0];
         let qname = question.name().to_string();
         let qtype = question.query_type();
+
+        // Attribute the query to a tracked TLD, once, here — before any of the
+        // ~thirty exits below. Doing it at the single instrumented exit instead
+        // would mean decoding the wire name a second time; doing it per-exit
+        // would mean a new early return silently loses its TLD.
+        tag.set_tld(metrics().tld_label(&qname));
 
         // Per-TLD ingress listener: a PROGRAMMED A/AAAA name under the TLD, asked
         // on that TLD's own ingress IP, is rewritten to the ingress IP (the
@@ -1749,8 +1788,8 @@ impl DnsServer {
         // `is_name_listed` so an exempted name never even issues a provider
         // lookup.
         if extract_ip_from_name(&qname).is_none() {
-            if self.blocklist_exempt(&qname, None) {
-                metrics().blocklist_allowlisted.inc();
+            if let Some(kind) = self.blocklist_exempt(&qname, None) {
+                metrics().blocklist_allowlisted.inc(kind);
             } else {
                 let by_local = self.local_rbl_lists_name(&qname);
                 let by_provider = !by_local && self.rbl.is_name_listed(&qname).await;
@@ -2362,9 +2401,30 @@ impl DnsServer {
     ///
     /// Every blocklist decision runs through here, so there is one exemption
     /// rather than one per call site.
-    fn blocklist_exempt(&self, qname: &str, ip: Option<IpAddr>) -> bool {
-        self.db.is_dnsbl_allowlisted(qname)
-            || ip.is_some_and(|ip| self.db.is_dnsbl_allowlisted_exact(&ip.to_string()))
+    /// Returns the [`crate::metrics::ALLOWLIST_KINDS`] index of the match path
+    /// that exempted this query, or `None` if nothing did.
+    ///
+    /// The index is the *gate*, not the list that would have matched: the whole
+    /// point of the allowlist running first is that no provider is consulted for
+    /// an exempt name, so at this moment nothing has been asked and there is no
+    /// list to name. What is knowable — and what an operator needs when a
+    /// false-positive exemption is doing more work than expected — is whether
+    /// the escape hatch fired on a forward name, on a reverse name, or on the
+    /// address literal underneath one.
+    fn blocklist_exempt(&self, qname: &str, ip: Option<IpAddr>) -> Option<usize> {
+        if self.db.is_dnsbl_allowlisted(qname) {
+            // The same call answers both gates; which one it was is decided by
+            // whether the caller is on the reverse path (it passed an address).
+            return Some(if ip.is_some() {
+                ALLOW_REVERSE_NAME
+            } else {
+                ALLOW_FORWARD_NAME
+            });
+        }
+        if ip.is_some_and(|ip| self.db.is_dnsbl_allowlisted_exact(&ip.to_string())) {
+            return Some(ALLOW_IP_LITERAL);
+        }
+        None
     }
 
     /// The IP-address blocklist gate (resolution step 2), shared by the scoped and
@@ -2388,12 +2448,18 @@ impl DnsServer {
         ip: IpAddr,
         scope: Option<&str>,
     ) -> Option<usize> {
-        if self.blocklist_exempt(qname, Some(ip)) {
-            metrics().blocklist_allowlisted.inc();
+        if let Some(kind) = self.blocklist_exempt(qname, Some(ip)) {
+            metrics().blocklist_allowlisted.inc(kind);
             return None;
         }
 
-        let by_provider = match scope {
+        // Global providers first, then the scope's own, kept apart so a block
+        // can be attributed to whichever the operator actually configured.
+        if self.rbl.is_listed(&ip).await {
+            return Some(BLOCK_RBL_PROVIDER);
+        }
+
+        let by_scope_provider = match scope {
             Some(scope) => {
                 let extra: Vec<crate::rbl::RblProvider> = self
                     .db
@@ -2427,12 +2493,12 @@ impl DnsServer {
                         }
                     })
                     .collect();
-                self.rbl.is_listed_with_extra_providers(&ip, &extra).await
+                self.rbl.is_listed_by_extra_providers(&ip, &extra).await
             }
-            None => self.rbl.is_listed(&ip).await,
+            None => false,
         };
-        if by_provider {
-            return Some(BLOCK_RBL_PROVIDER);
+        if by_scope_provider {
+            return Some(BLOCK_RBL_SCOPE_PROVIDER);
         }
 
         // The address as a literal is how a local entry blocks an IP; the reverse
@@ -3262,6 +3328,20 @@ fn wire_rcode(response: &[u8]) -> u8 {
 /// Whether a response has the TC (truncated) bit set.
 fn wire_truncated(response: &[u8]) -> bool {
     response.get(2).is_some_and(|b| b & 0x02 != 0)
+}
+
+/// Reads ANCOUNT — the number of records in the answer section — from a response
+/// header.
+///
+/// Taken off the header rather than by parsing the message: this runs on every
+/// answered query, and re-parsing a response we just serialized to count its
+/// records would be real work for a metric. A response too short to have a
+/// header carries no answers by definition.
+fn wire_ancount(response: &[u8]) -> u16 {
+    match (response.get(6), response.get(7)) {
+        (Some(hi), Some(lo)) => u16::from(*hi) << 8 | u16::from(*lo),
+        _ => 0,
+    }
 }
 
 /// Extracts a DNS QNAME from wire-format label encoding into a dotted string.

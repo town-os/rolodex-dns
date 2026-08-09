@@ -632,12 +632,33 @@ pub struct MetricsConfig {
     /// Port 9153 matches CoreDNS's convention for DNS exporters.
     #[serde(default = "default_metrics_bind")]
     pub bind: String,
+    /// TLDs that get their own `tld` label value on the per-TLD query metrics,
+    /// over and above the ones tracked automatically.
+    ///
+    /// Every TLD a network scope owns — including each scope's implicit `.home`
+    /// domain — is tracked without being listed here; this is the opt-in list
+    /// for everything else. Names not under a tracked TLD fold into the `other`
+    /// series, which is what bounds the dimension: the queried name is chosen by
+    /// the client, so an unbounded `tld` label would let a scanner sweeping junk
+    /// TLDs mint series until the registry ate the process.
+    ///
+    /// The entry `common` expands to [`crate::metrics::COMMON_TLDS`], so the
+    /// usual public TLDs are one line rather than twenty. Entries are
+    /// case-insensitive and the trailing dot is optional.
+    ///
+    /// This list is additive with the one stored by `SetTrackedTlds`: the
+    /// effective set is the union of both plus the owned TLDs, so an operator
+    /// cannot remove a config-pinned entry over the API — restart-surviving
+    /// intent stays in the file.
+    #[serde(default)]
+    pub tracked_tlds: Vec<String>,
 }
 
 impl Default for MetricsConfig {
     fn default() -> Self {
         Self {
             bind: default_metrics_bind(),
+            tracked_tlds: Vec::new(),
         }
     }
 }
@@ -1680,5 +1701,49 @@ rbl:
             "192.168.1.5:50051".to_string(),
         ];
         assert!(check_grpc_exposure("eth0:50051", &resolved, "").is_err());
+    }
+
+    #[test]
+    fn metrics_tracked_tlds_parse_and_default_to_empty() {
+        // Absent list must mean "track nothing but the owned TLDs", not "track
+        // everything": a default that put a client-chosen value into a label
+        // would be a cardinality bug in every deployment that never touched it.
+        let bare: MetricsConfig = serde_yaml_ng::from_str("bind: \"127.0.0.1:9153\"").unwrap();
+        assert!(bare.tracked_tlds.is_empty());
+
+        let listed: MetricsConfig = serde_yaml_ng::from_str(
+            "bind: \"127.0.0.1:9153\"\ntracked_tlds:\n  - common\n  - lab.internal\n",
+        )
+        .unwrap();
+        assert_eq!(listed.tracked_tlds, vec!["common", "lab.internal"]);
+    }
+
+    #[test]
+    fn a_metrics_section_written_before_tracked_tlds_existed_still_parses() {
+        // The field was added after the section shipped; an existing config
+        // must not become unloadable on upgrade.
+        // Build the YAML an older deployment would have on disk by serializing a
+        // current config and deleting the field, rather than hand-writing a
+        // minimal document that would drift from the real schema.
+        let base = Config {
+            metrics: Some(MetricsConfig::default()),
+            ..Default::default()
+        };
+        let yaml = serde_yaml_ng::to_string(&base).expect("serialize");
+        let without: String = yaml
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("tracked_tlds"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !without.contains("tracked_tlds"),
+            "the field under test is still present"
+        );
+
+        let cfg: Config =
+            serde_yaml_ng::from_str(&without).expect("parse config without the field");
+        let metrics = cfg.metrics.expect("metrics section");
+        assert_eq!(metrics.bind, "127.0.0.1:9153");
+        assert!(metrics.tracked_tlds.is_empty());
     }
 }

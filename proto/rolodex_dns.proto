@@ -543,6 +543,51 @@ message ListAuthoritativeZonesResponse {
   repeated string zones = 1;
 }
 
+// SetTrackedTldsRequest replaces the operator's tracked-TLD list — the TLDs that
+// get their own `tld` label value on the Prometheus per-TLD query metrics.
+//
+// Replace, not merge, matching SetForwarders and SetRblConfig: a setter that only
+// ever accumulates leaves an operator no way to drop an entry.
+//
+// TLDs owned by a network scope (including each scope's implicit `.home` domain)
+// are tracked automatically and need not be listed. Anything not tracked folds
+// into the `other` series, which is what bounds the label: the queried name is
+// client-chosen, so an unbounded `tld` would let a scanner mint series freely.
+message SetTrackedTldsRequest {
+  // TLDs to track. The entry "common" expands to the built-in common-TLD set.
+  // Entries are case-insensitive; the trailing dot is optional.
+  repeated string tlds = 1;
+  // Shared secret for authentication
+  string auth_token = 2;
+}
+
+// SetTrackedTldsResponse is returned after replacing the tracked-TLD list.
+message SetTrackedTldsResponse {
+  bool success = 1;
+  string message = 2;
+  // The full effective set after the change: this list, plus any TLDs pinned in
+  // the config file, plus every owned TLD, with "common" expanded. Returned
+  // because the stored list alone does not tell an operator which series will
+  // actually appear.
+  repeated string effective_tlds = 3;
+}
+
+// ListTrackedTldsRequest retrieves the tracked-TLD configuration.
+message ListTrackedTldsRequest {
+  string auth_token = 1;
+}
+
+// ListTrackedTldsResponse reports both what was stored and what is in effect.
+message ListTrackedTldsResponse {
+  // Exactly what SetTrackedTlds stored, "common" unexpanded.
+  repeated string stored_tlds = 1;
+  // The full effective set: stored ∪ config-pinned ∪ owned, "common" expanded.
+  repeated string effective_tlds = 2;
+  // The subset of the effective set that comes from scope TLD ownership. These
+  // cannot be removed with SetTrackedTlds — they follow the scope.
+  repeated string owned_tlds = 3;
+}
+
 // GetCacheStatsRequest retrieves DNS cache statistics.
 message GetCacheStatsRequest {
   string auth_token = 1;
@@ -1391,6 +1436,14 @@ service RolodexDnsService {
   // ListAuthoritativeZones retrieves all authoritative zones.
   // Path: /rolodex_dns.RolodexDnsService/ListAuthoritativeZones
   rpc ListAuthoritativeZones(ListAuthoritativeZonesRequest) returns (ListAuthoritativeZonesResponse);
+
+  // SetTrackedTlds replaces the tracked-TLD list for the per-TLD metrics.
+  // Path: /rolodex_dns.RolodexDnsService/SetTrackedTlds
+  rpc SetTrackedTlds(SetTrackedTldsRequest) returns (SetTrackedTldsResponse);
+
+  // ListTrackedTlds retrieves the stored and effective tracked-TLD sets.
+  // Path: /rolodex_dns.RolodexDnsService/ListTrackedTlds
+  rpc ListTrackedTlds(ListTrackedTldsRequest) returns (ListTrackedTldsResponse);
 
   // GetCacheStats retrieves DNS cache statistics.
   // Path: /rolodex_dns.RolodexDnsService/GetCacheStats
