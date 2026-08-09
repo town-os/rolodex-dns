@@ -452,11 +452,20 @@ mod tests {
         assert_eq!(runtime.mode, ProxyMode::Socks5);
     }
 
+    // `DOH_POOL` is a process-global, and these tests run concurrently in one
+    // binary. Each therefore cleans up **only its own key** and never calls
+    // `DOH_POOL.clear()`: a global clear wipes whatever the other tests have
+    // just pooled, and the victim then fails on an entry that was present a line
+    // earlier. That is a race, so it surfaces as an occasional unexplained
+    // `None` rather than a reproducible failure.
+    //
+    // Per-key cleanup is enough on its own — no serializing lock is needed —
+    // because every test binds its own ephemeral port, so two tests running at
+    // the same time cannot hold the same address, and a port recycled between
+    // tests was already removed by the test that used it.
+
     #[test]
     fn test_return_doh_connection_caps_pool_size() {
-        // Clear any existing pool state
-        DOH_POOL.clear();
-
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -465,46 +474,49 @@ mod tests {
         rt.block_on(async {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
+            let key = addr.to_string();
 
             // Create and return 10 connections (exceeds pool cap of 8)
             for _ in 0..10 {
                 let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
                 // Accept on the server side to complete the connection
                 let _ = listener.accept().await.unwrap();
-                return_doh_connection(&addr.to_string(), stream);
+                return_doh_connection(&key, stream);
             }
 
-            // Pool should be capped at 8
-            let entry = DOH_POOL.get(&addr.to_string()).unwrap();
-            assert!(entry.len() <= 8, "pool size {} exceeds cap", entry.len());
-        });
+            // Pool should be capped at 8. The guard is released before the
+            // removal below: holding a `Ref` across `DashMap::remove` on the
+            // same key deadlocks.
+            let len = DOH_POOL
+                .get(&key)
+                .map(|e| e.len())
+                .expect("returning a connection must create the pool entry");
+            assert!(len <= 8, "pool size {len} exceeds cap");
 
-        DOH_POOL.clear();
+            DOH_POOL.remove(&key);
+        });
     }
 
     #[tokio::test]
     async fn test_get_doh_connection_creates_new() {
-        DOH_POOL.clear();
-
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        let key = addr.to_string();
 
         // Spawn accept task
         let accept_handle = tokio::spawn(async move {
             let _ = listener.accept().await.unwrap();
         });
 
-        let conn = get_doh_connection(&addr.to_string()).await;
+        let conn = get_doh_connection(&key).await;
         assert!(conn.is_ok(), "should create new connection");
 
         accept_handle.await.unwrap();
-        DOH_POOL.clear();
+        DOH_POOL.remove(&key);
     }
 
     #[tokio::test]
     async fn test_get_doh_connection_reuses_pooled() {
-        DOH_POOL.clear();
-
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let addr_str = addr.to_string();
@@ -514,8 +526,13 @@ mod tests {
         let _ = listener.accept().await.unwrap();
         return_doh_connection(&addr_str, stream);
 
-        // Pool should have 1 connection
-        assert_eq!(DOH_POOL.get(&addr_str).unwrap().len(), 1);
+        // Pool should have 1 connection. Compared as an Option so a missing
+        // entry reports what it is rather than panicking inside an unwrap.
+        assert_eq!(
+            DOH_POOL.get(&addr_str).map(|e| e.len()),
+            Some(1),
+            "the returned connection should be pooled under its own address"
+        );
 
         // get_doh_connection should take from pool (not create new)
         let conn = get_doh_connection(&addr_str).await;
@@ -525,6 +542,6 @@ mod tests {
         let pool_size = DOH_POOL.get(&addr_str).map_or(0, |e| e.len());
         assert_eq!(pool_size, 0, "pool should be empty after taking connection");
 
-        DOH_POOL.clear();
+        DOH_POOL.remove(&addr_str);
     }
 }

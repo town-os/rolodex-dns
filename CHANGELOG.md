@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.6 (2026-08-09)
+
+### Bug fixes
+
+- **The DoH connection-pool tests no longer race each other.** `DOH_POOL` is a process-global `DashMap` and the four pool tests run concurrently in one binary, yet each called the **global** `DOH_POOL.clear()` at both ends. Any one of them wiped whatever the others had just pooled, so `test_get_doh_connection_reuses_pooled` could find `None` one line after inserting an entry — an occasional unexplained panic rather than a reproducible failure, which is why it survived several green runs.
+
+  Each test now removes only its own key. No serializing lock is needed: every test binds its own ephemeral port, so two running at once cannot hold the same address, and a port recycled between tests was already removed by whoever used it. The two bare `unwrap()`s on pool lookups were replaced with forms that report what was actually found, so the next failure here names the problem instead of panicking anonymously.
+
 ## v0.4.5 (2026-08-09)
 
 ### Features
