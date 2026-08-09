@@ -1,6 +1,42 @@
 # Changelog
 
-## Unreleased
+## v0.4.5 (2026-08-09)
+
+### Features
+
+- **Blocklist attribution split by which list actually matched.** `blocklist_allowlisted_total` gained a `kind` label — `forward_name`, `reverse_name`, `ip_literal` — and `rbl_scope_provider` joined the block kinds.
+
+  The allowlist label names the *match path*, not the list, and that is forced by where the check sits: the exemption short-circuits before any provider lookup is issued, so at the moment it fires nothing has been asked and there is no "which list would have matched" to record. Naming the gate instead is both knowable and the more useful axis, separating an exemption on a forward name (step 7) from one on a reverse lookup (step 2), and within the latter the `in-addr.arpa` spelling from the IP literal — matched by different rules, suffix versus exact.
+
+  `rbl_scope_provider` exists because a provider one network opted into and the box-wide list are different operator decisions with different blast radii. Folded together, "this network's own blocklist broke this network" was indistinguishable from "the global list broke everyone", which is the first thing worth knowing when a network reports that reverse DNS stopped working. The split costs nothing: the two checks cover disjoint provider sets and the result cache is keyed per `<ip>/<zone>`. New kinds are appended, never inserted — the `BLOCK_*` constants are positions in the array, so an insertion silently relabels every existing counter.
+
+- **Traffic volume.** `traffic_bytes_total{direction=rx|tx}` and `records_served_total`, both recorded at the single instrumented exit every transport funnels through, so a query cannot be counted without its bytes also being counted. Record counts are read off the response header's ANCOUNT field rather than by re-parsing a message the server just serialized. The query count alone cannot show this: a million NXDOMAINs and a million populated answers are the same number of queries and very different amounts of work, and the tx/rx ratio is the amplification factor worth watching on any listener reachable from outside.
+
+- **Per-TLD isolation.** `queries_by_tld_total{tld}` separates the query stream by TLD, which is what makes a split-horizon deployment's networks distinguishable from each other and from the public internet.
+
+  The dimension is bounded by an operator-owned set, because the queried name is chosen by the client: an unbounded `tld` label would let a scanner sweeping `a.zzz1`, `a.zzz2`, … mint series until the registry ate the process. Three sources feed it, unioned — every TLD a network scope owns (including each scope's implicit `.home` domain) tracked **automatically**, since requiring a network's own namespace to be named twice is a footgun that surfaces as a silently missing series; the new `metrics.tracked_tlds` config list, pinned so it survives restarts and cannot be removed over the API; and a stored list managed by the new `SetTrackedTlds`/`ListTrackedTlds` RPCs, with `set-tracked-tlds`/`list-tracked-tlds` CLI subcommands and matching Go client methods. Everything untracked folds into `other`.
+
+  The entry `common` expands to a built-in common-TLD set, so the usual public TLDs are one config line rather than twenty, and it is stored **unexpanded** — a read-back reports what the operator asked for, and a later change to the built-in list takes effect without every deployment re-issuing the call, the same shape as `none` in `refusal_codes`. Matching walks the name's suffixes most-specific-first and returns a slice of the name, so a deployment tracking both `home.` and `lab.home.` attributes `box.lab.home.` to the more specific one and an untracked name allocates nothing. The root zone is refused with `InvalidArgument`: `.` is a suffix of every name, so tracking it would collapse every series into one and make the catch-all unreachable.
+
+### Breaking changes
+
+- **DHCP metric labels are now subsystem-qualified.** `rolodex_dns_dhcp_messages_total{type}` is `{message_type}` and `rolodex_dns_dhcp_leases{state}` is `{lease_state}`. A generic label name is what lets an aggregation spanning both subsystems — a `sum by (type)` in a recording rule — silently blend a DHCP ACK count into a DNS one. Dashboards and alerts selecting on the old names need updating. The DNS rollups (`queries_total`, `traffic_bytes_total`, `records_served_total`, `queries_by_tld_total`) likewise count DNS only: DHCP's `:67` traffic is never DNS traffic, and a DHCP-registered name reaches these metrics only when somebody actually resolves it.
+
+### Testing
+
+- **The documented PromQL is tested, in two layers.** `tests/promql_docs_test.rs` parses every ```promql block out of `README.md` and `CLAUDE.md`, extracts the metric names and label matchers, and resolves each against live exposition output. Documentation is the one part of a metrics change that nothing else verifies: the DHCP rename above leaves the code compiling and every other test green while silently turning each documented dashboard query into one that returns no data, and an operator finds out when a panel goes blank mid-incident. It also pins the documented family count against what the registry emits — that had already drifted, 73 documented against 74 emitted — and guards the fence itself, since a block relabelled ` ```bash ` would make the whole file quietly stop checking anything.
+
+  `tests/prometheus_integration_test.rs` runs the same queries through a real Prometheus scraping a live server, catching what a substring scanner cannot: a query malformed *as PromQL* rather than merely naming a missing series. `rate(sum(x)[5m])` names only real series and is rejected the moment it is pasted. It runs from `make prometheus-test`, which `make test` now depends on; a missing podman skips loudly rather than failing, so a machine without a container runtime still gets a green run while never pretending the queries were checked, and `ROLODEX_PROMETHEUS_REQUIRED=1` promotes that skip to a failure for CI.
+
+- Unit and integration coverage for each new dimension, each paired with its control — notably that an untracked TLD mints **no** series, since a test asserting only the positive would pass with the cardinality bound removed entirely.
+
+### Packaging
+
+- **The crate is publishable, and ships its documentation.** `readme` and `homepage` are declared, and an explicit `include` list replaces packaging-by-omission: a published package now carries `README.md`, `CONFIGURATION.md`, `CHANGELOG.md`, `CLAUDE.md` and `LICENSE` alongside the sources, protos, benches and tests.
+
+  An `include` rather than an `exclude` because the working tree also holds a Go client, a JavaScript client, a browser extension and container tooling that a crate consumer has no use for — and an exclude list would silently start shipping each new one of those. `proto/` and `build.rs` are load-bearing (the gRPC bindings are generated at build time, so a package without them does not compile), and `benches/` ships because `[[bench]]` names a target — cargo fails on a declared target whose file is missing, so omitting it would break the package rather than merely shrink it.
+
+  `tests/` ships so the published crate can be verified by whoever receives it, which for an AGPL network service is the point. That is also why `CLAUDE.md` is included rather than treated as repo-only tooling: `tests/promql_docs_test.rs` reads it alongside `README.md`, and a package carrying a test but not its input is a test that cannot run. With every documentation file guaranteed present in both a checkout and a published package, that test insists on finding each one rather than skipping what it cannot load — skipping is how a check quietly starts verifying nothing.
 
 ### Documentation
 

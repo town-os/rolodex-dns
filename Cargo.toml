@@ -1,13 +1,51 @@
 [package]
 name = "rolodex-dns"
-version = "0.4.4"
+version = "0.4.5"
 edition = "2024"
 authors = ["Erik Hollensbe <git@hollensbe.org>"]
 description = "A split-horizon DNS server and forwarding resolver with gRPC management"
 license = "AGPL-3.0-only"
 repository = "https://gitea.com/town-os/rolodex-dns"
+homepage = "https://gitea.com/town-os/rolodex-dns"
+readme = "README.md"
 keywords = ["dns", "dns-server", "split-horizon", "grpc", "forwarding-resolver"]
 categories = ["network-programming"]
+
+# Explicit rather than umask-of-the-repo: the working tree carries a Go client,
+# a JavaScript client, a browser extension, container tooling and a 196K spec
+# that a crate consumer has no use for, and an `exclude` list would silently
+# start shipping each new one of those.
+#
+# `proto/` and `build.rs` are load-bearing — the gRPC bindings are generated at
+# build time, so a package without them does not compile. `benches/` is here
+# because `[[bench]]` below names a target: cargo fails on a declared target
+# whose file is missing, so omitting it breaks the package rather than merely
+# shrinking it. `tests/` ships so the published crate can be verified by whoever
+# receives it, which for an AGPL network service is the point.
+#
+# The documents are the ones a consumer actually reads: README.md is the
+# reference, CONFIGURATION.md the task-oriented guide, CHANGELOG.md the history,
+# and CLAUDE.md the functional specification the other three describe in parts.
+# CLAUDE.md also has to ship for the package to be self-testing —
+# `tests/promql_docs_test.rs` reads both it and README.md, and a package
+# carrying the test but not its input is a test that cannot run.
+# Every pattern is anchored with a leading `/`. Cargo matches these
+# gitignore-style, so an unanchored `README.md` matches at *any* depth — which
+# silently swept in every `js/node_modules/**/README.md` and the vendored zig
+# toolchain's licence files, turning a 2 MB package into a junk drawer.
+include = [
+    "/src/**/*",
+    "/proto/**/*",
+    "/benches/**/*",
+    "/tests/**/*",
+    "/build.rs",
+    "/Cargo.toml",
+    "/README.md",
+    "/CONFIGURATION.md",
+    "/CHANGELOG.md",
+    "/CLAUDE.md",
+    "/LICENSE",
+]
 
 [dependencies]
 # DNS

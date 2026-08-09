@@ -292,9 +292,27 @@ fn parse_matcher(m: &str) -> Option<(String, Option<String>)> {
     })
 }
 
+/// Reads a documentation file. A missing one is a hard failure.
+///
+/// Every file in [`DOC_FILES`] is in the crate's `include` list, so all of them
+/// are present in a repo checkout *and* in the published package — which is why
+/// this can insist rather than tolerate. Skipping a doc that failed to load is
+/// how a check quietly starts verifying nothing, and a package that carried the
+/// test but not its input would do exactly that.
 fn read_doc(name: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(name);
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "reading {}: {e}\nEvery file in DOC_FILES must ship — check the \
+             `include` list in Cargo.toml",
+            path.display()
+        )
+    })
+}
+
+/// Every documentation file, as `(name, contents)`.
+fn docs() -> Vec<(&'static str, String)> {
+    DOC_FILES.iter().map(|f| (*f, read_doc(f))).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -307,8 +325,7 @@ fn documented_promql_references_only_real_series() {
     let mut checked = 0usize;
     let mut failures = Vec::new();
 
-    for file in DOC_FILES {
-        let md = read_doc(file);
+    for (file, md) in docs() {
         for (n, block) in promql_blocks(&md).iter().enumerate() {
             for r in metric_refs(block) {
                 checked += 1;
@@ -406,8 +423,7 @@ fn documented_family_count_matches_the_registry() {
         .filter_map(|l| l.split_whitespace().next())
         .collect();
 
-    for file in DOC_FILES {
-        let md = read_doc(file);
+    for (file, md) in docs() {
         let documented = md
             .split_whitespace()
             .collect::<Vec<_>>()
@@ -455,14 +471,13 @@ fn promql_extractor_finds_names_and_matchers() {
 fn promql_blocks_are_actually_present_in_the_docs() {
     // Guards the fence itself: a block relabelled ```bash or ```text would make
     // the whole file silently stop checking anything.
-    for file in DOC_FILES {
-        let blocks = promql_blocks(&read_doc(file));
-        if *file == "README.md" {
-            assert!(
-                blocks.len() >= 5,
-                "README.md has {} promql blocks; the cookbook should have several",
-                blocks.len()
-            );
-        }
-    }
+    //
+    // README.md carries the cookbook, so it is the floor the whole file rests
+    // on and is asserted unconditionally.
+    let blocks = promql_blocks(&read_doc("README.md"));
+    assert!(
+        blocks.len() >= 5,
+        "README.md has {} promql blocks; the cookbook should have several",
+        blocks.len()
+    );
 }
