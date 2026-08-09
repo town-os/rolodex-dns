@@ -92,13 +92,18 @@ lint: ## Run cargo fmt --check and clippy -D warnings
 
 # Runs the documented PromQL through a real Prometheus, which is the only way to
 # catch a query that is malformed *as PromQL* rather than merely naming a series
-# that does not exist (promql_docs_test covers the latter, and runs unconditionally
-# as part of `make test`). Kept out of `make test` because it needs a container
-# runtime and, on a cold image cache, the network.
+# that does not exist (promql_docs_test covers the latter).
+#
+# Part of `make test`. It needs podman and, on a cold image cache, the network —
+# neither of which every machine has, so the test SKIPS rather than fails when
+# podman is absent, and says so loudly on stderr. `make test` therefore stays
+# green on a machine without a container runtime while never pretending the
+# queries were checked. Set ROLODEX_PROMETHEUS_REQUIRED=1 (CI) to turn that skip
+# into a failure, and ROLODEX_PROMETHEUS_IMAGE to point at a mirror.
 prometheus-test: build ## Execute the documented PromQL against a containerised Prometheus
 	ROLODEX_PROMETHEUS_TEST=1 cargo test --test prometheus_integration_test -- --nocapture
 
-test: lint go-test rust-test js-test ## Run the full suite: lint, Go, Rust, and JavaScript tests
+test: lint go-test rust-test js-test prometheus-test ## Run the full suite: lint, Go, Rust, JavaScript, and PromQL tests
 
 test-log: ## Same as test, tee'd into a timestamped log file printed at the end even on failure
 	@bash -c 'set -o pipefail; mkdir -p "$(LOG_DIR)"; logfile="$(LOG_DIR)/test-$$(date +%s).log"; echo "Logging to: $$logfile"; rc=0; $(MAKE) test 2>&1 | tee "$$logfile" || rc=$$?; echo "Log file: $$logfile"; exit $$rc'
@@ -119,6 +124,9 @@ rust-integration-test: build ## Run each Rust integration test file
 	cargo test --test auto_resolution_test
 	cargo test --test metrics_test
 	cargo test --test promql_docs_test
+	# Compiles the file and runs its ungated half. The containerised half needs
+	# ROLODEX_PROMETHEUS_TEST=1 and runs from the `prometheus-test` target, which
+	# `test` also depends on.
 	cargo test --test prometheus_integration_test
 	cargo test --test rbl_refusal_test
 	cargo test --test dnssec_signing_test

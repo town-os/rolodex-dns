@@ -11,14 +11,26 @@
 //! documented query through its HTTP API. The two layers are complementary: this
 //! one is authoritative about syntax, the other about whether the series exist.
 //!
-//! # Why this is gated
+//! # The gate
 //!
-//! It needs a container runtime and, on a cold cache, the network. `make test`
-//! must need neither, so this is **skipped unless `ROLODEX_PROMETHEUS_TEST=1`**
-//! and skipped again if podman is not on PATH. `make prometheus-test` sets the
-//! variable. Nothing here writes outside a temp dir the test owns, and the
-//! container runs with `--rm` under a test-specific name so a killed run leaves
-//! nothing behind.
+//! `make prometheus-test` runs this, and `make test` depends on that target, so
+//! the queries are checked on every full run. But it needs podman and, on a cold
+//! image cache, the network, and not every machine has either — so the gate is
+//! built to keep `make test` honest in both directions:
+//!
+//! - **`ROLODEX_PROMETHEUS_TEST=1`** must be set, which the make target does. A
+//!   bare `cargo test` therefore does not start containers behind your back.
+//! - **podman must be on PATH.** If it is not, the test *skips* rather than
+//!   fails, so a developer without a container runtime still gets a green
+//!   `make test` — but the skip is announced loudly on stderr (the target passes
+//!   `--nocapture`), because a silent skip and a passing check look identical
+//!   from the outside, and the second is what a reader assumes.
+//! - **`ROLODEX_PROMETHEUS_REQUIRED=1`** turns that skip into a failure. CI has
+//!   podman, and "the PromQL was never actually executed" is precisely the thing
+//!   a pipeline must not shrug off.
+//!
+//! Nothing here writes outside a temp dir the test owns, and the container runs
+//! with `--rm` under a test-specific name so a killed run leaves nothing behind.
 
 use std::net::SocketAddr;
 use std::process::Command;
@@ -64,13 +76,40 @@ fn gate() -> (bool, String) {
     if std::env::var("ROLODEX_PROMETHEUS_TEST").as_deref() != Ok("1") {
         return (
             false,
-            "ROLODEX_PROMETHEUS_TEST=1 not set (run `make prometheus-test`)".to_string(),
+            "ROLODEX_PROMETHEUS_TEST=1 not set (run `make prometheus-test`, or `make test`)"
+                .to_string(),
         );
     }
     match Command::new("podman").arg("--version").output() {
         Ok(o) if o.status.success() => (true, String::new()),
-        _ => (false, "podman is not available".to_string()),
+        _ => (false, "podman is not on PATH".to_string()),
     }
+}
+
+/// Announces a skip, or fails if the caller declared the check mandatory.
+///
+/// Loud on purpose. A skipped check and a passing one are indistinguishable in a
+/// test summary, and since this target is part of `make test`, a quiet skip
+/// would let "the documented queries are verified" quietly become false on any
+/// machine that happens to lack podman.
+fn skip(reason: &str) {
+    if std::env::var("ROLODEX_PROMETHEUS_REQUIRED").as_deref() == Ok("1") {
+        panic!(
+            "ROLODEX_PROMETHEUS_REQUIRED=1 but the PromQL execution check could \
+             not run: {reason}"
+        );
+    }
+    eprintln!(
+        "\n\
+         ============================================================\n\
+         SKIPPED: the documented PromQL was NOT executed.\n\
+           reason: {reason}\n\
+           consequence: a query malformed as PromQL would not be caught\n\
+                        here (promql_docs_test still checks that every\n\
+                        documented series and label value exists).\n\
+           to enforce: set ROLODEX_PROMETHEUS_REQUIRED=1\n\
+         ============================================================\n"
+    );
 }
 
 fn image() -> String {
@@ -222,7 +261,7 @@ fn stop_container() {
 async fn documented_promql_executes_against_a_real_prometheus() {
     let (run, why) = gate();
     if !run {
-        eprintln!("skipping prometheus integration test: {why}");
+        skip(&why);
         return;
     }
 
@@ -276,7 +315,7 @@ async fn documented_promql_executes_against_a_real_prometheus() {
     let mut child = match spawned {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("skipping prometheus integration test: podman run failed: {e}");
+            skip(&format!("podman run failed: {e}"));
             return;
         }
     };
