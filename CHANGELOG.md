@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.5.0 (2026-08-10)
+
+### Bug fixes
+
+- **A client query is never spent probing a degraded tier again.** In `auto` mode the query path elected one lookup per `resolution.recovery_probe_secs` (default 60) to restart the tier chain at the roots, so a recovered, more-preferred tier could be spotted. That is a fine thing to want and a terrible thing to charge a caller for: on a network that filters outbound `:53` the roots tier cannot answer, so the elected query paid the entire iterative walk — up to `MAX_QUERIES_PER_RESOLUTION` upstream queries at the per-nameserver timeout each — before falling through to the tier that was going to answer all along. Once a minute one unlucky lookup stalled for tens of seconds and the client usually gave up first, which reads to a user as "DNS hangs", not as a probe.
+
+  `auto_start_tier` is now always the committed tier, full stop, and the compare-exchange that elected the probing query is gone with it — there is only ever one prober now, so no election is needed.
+
+### Features
+
+- **Asynchronous tier recovery.** Recovery moved to `recovery_probe_loop`, a background task that retests the tiers above the committed one every `resolution.recovery_probe_secs` on its own throwaway canary. Its results are discarded — the probe exists to move the committed tier and never to answer anything — so an overrun costs no client an answer, which is precisely what let the timing bound below be chosen for correctness rather than for the patience of whoever was waiting. The interval is measured from the last probe rather than from the end of the last pass, so a slow probe does not turn into a busy one, and it is re-read every pass so a runtime change takes effect without a restart.
+
+- **Reclaiming the roots tier requires a DNSSEC-validated answer.** Tier 0 is promoted only on a `Verdict::Secure` resolution of the root zone's own `DNSKEY`, not on mere reachability. An intercepting middlebox or captive portal on `:53` is reachable and answers promptly — it simply answers with whatever it likes — so without the gate any network that hijacks port 53 could install itself as the most-trusted tier, silently and automatically displacing the encrypted upstream the box had correctly fallen back to. A validated answer is the one thing such a middlebox cannot forge, and the root's own DNSKEY is the narrowest form of the question actually being asked: can this box reach a root server and build a chain of trust from it.
+
+  With `dnssec.validate: false` there is no verdict to gate on — the resolver reports `Insecure` for everything by design — so a definitive answer is required instead. Demanding `Secure` there would strand a deliberately non-validating box on a fallback tier forever, unable to ever use the recursive resolution that is the default and preferred mode.
+
+- **The roots tier is bounded by wall clock, not only by query count.** The iterative resolver budgets itself by *query count*, which answers "how much work is this name worth?" and cannot answer "how long may a caller be kept waiting?" — and only the second question matters to whoever is waiting. A black-holed `:53` times out every one of those queries, so the count budget alone permits a single lookup to run for over a minute. The tier now carries an 8s ceiling on the query path and 2s for the recovery probe.
+
+  8s rather than the 1.5s the other tiers use, deliberately: a cold iterative resolution is several sequential round trips (root, TLD, zone, plus the DNSKEY fetches validation needs) where the secure and forwarding tiers are one round trip to one server. Measured cold lookups run 0.6–1.9s for a public name and about 2.7s for an RFC 1918 PTR, so a ceiling near those figures would not bound a pathology — it would break healthy recursion, failing every slow-but-fine lookup and degrading a working resolver onto DoH. The probe's 2s is much tighter because it is a much smaller question: one query to one server, no delegation to walk.
+
+### Testing
+
+- **`tests/recovery_probe_test.rs`**, against the DNSSEC-signed mock hierarchy, covers both directions on purpose: validated roots *are* reclaimed, while roots that are reachable but unsigned, foreign-signed, or serving expired signatures are *not*. A gate that never opens passes every negative test and a gate that always opens passes every positive one — only the pair says anything. It also pins the guard that no client query is ever spent probing, and unit tests cover the wall-clock bounds and the probe's no-op cases (already at the top tier, or not in `auto` mode).
+
 ## v0.4.6 (2026-08-09)
 
 ### Bug fixes
