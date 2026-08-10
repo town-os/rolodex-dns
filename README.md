@@ -1,5 +1,7 @@
 # Rolodex DNS
 
+> Languages: **English** | [繁體中文](README.zh-Hant.md) | [简体中文](README.zh-Hans.md)
+
 A privacy-first, split-horizon DNS server and recursive/forwarding resolver with encrypted transports, DNSSEC, and gRPC management, written in Rust.
 
 Rolodex DNS provides DNS over UDP, TCP, TLS (DoT), HTTPS (DoH), and QUIC (DoQ) with a local record database that takes priority over external resolution. Records are managed remotely via gRPC (shared secret authentication over TCP, or unauthenticated over Unix socket). It supports TLD-level resolution with domain overlay, so internal DNS representations are always preferred. A built-in DNS response cache prevents query leakage to upstream resolvers once a record has been seen.
@@ -1029,7 +1031,7 @@ rolodex-dns-cli get-search-domains -i <IP>
 
 The management API is defined in `proto/rolodex_dns.proto`. All methods accept an `auth_token` field for shared-secret authentication when connecting over TCP. Unix socket connections bypass authentication.
 
-See the proto file for the full API reference. The service defines 47 RPC methods covering record management, network scoping, encrypted transports, DNSSEC, DANE/ACME, caching, DNS64, and observability.
+See the proto file for the full API reference. The service defines 77 RPC methods covering record management, network scoping, owned TLDs and ingress, blocklists, DHCP, encrypted transports, DNSSEC, DANE/ACME, caching, DNS64, metrics, and observability.
 
 ### Service: `rolodex_dns.RolodexDnsService`
 
@@ -1405,7 +1407,7 @@ Tiers are tried most-preferred (most-trusted) first:
 
 DoH is preferred over DoT because `:443` looks like ordinary HTTPS and survives deep-packet inspection that lets a DoT connection open but drops its TLS session. Secure upstreams are dialed **by IP**, with the certificate validated against the configured `hostname`, so the tier needs no prior DNS to bootstrap.
 
-A tier only "wins" when the transport succeeded and the rcode is NoError or NXDOMAIN; SERVFAIL, REFUSED, and unparseable responses fall through. The winning tier is **sticky**, so queries do not pay a timeout on a dead path every time. Recovering to a more-preferred tier happens immediately; degrading to a lesser one commits only after `resolution.switch_grace_failures` consecutive deviating queries, so one flaky query cannot thrash the resolver. While degraded, one query per `resolution.recovery_probe_secs` restarts at tier 0 to reclaim a recovered path. Every committed tier switch flushes the DNS cache, so answers from one tier cannot linger after a switch to another.
+A tier only "wins" when the transport succeeded and the rcode is NoError or NXDOMAIN; SERVFAIL, REFUSED, and unparseable responses fall through. The winning tier is **sticky**, so queries do not pay a timeout on a dead path every time. Recovering to a more-preferred tier happens immediately; degrading to a lesser one commits only after `resolution.switch_grace_failures` consecutive deviating queries, so one flaky query cannot thrash the resolver. **Client queries never probe**: the start tier is always the committed tier. A background task retests the tiers above it every `resolution.recovery_probe_secs` on its own throwaway canary, and reclaiming tier 0 requires a DNSSEC-validated answer for the root zone's own `DNSKEY` — mere reachability would let any middlebox that hijacks `:53` install itself as the most-trusted tier. Every committed tier switch flushes the DNS cache, so answers from one tier cannot linger after a switch to another.
 
 ### Iterative Resolver
 

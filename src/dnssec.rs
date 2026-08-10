@@ -15,8 +15,9 @@
 //! material is a zone that can never validate, and it fails at the resolver
 //! rather than here, long after the operator has stopped looking.
 //!
-//! This module signs; it does not validate. Rolodex performs no DNSSEC
-//! validation of upstream answers — see the resolver notes in CLAUDE.md.
+//! This module signs; it does not validate. Validation of upstream answers is
+//! `crate::dnssec_validate`, which shares no code with this module on purpose —
+//! see the DNSSEC sections of DESIGN.md.
 use crate::db::{DnsRecord, RecordKind};
 use anyhow::{Result, bail};
 use ring::rand::SystemRandom;

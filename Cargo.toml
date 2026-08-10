@@ -25,10 +25,16 @@ categories = ["network-programming"]
 #
 # The documents are the ones a consumer actually reads: README.md is the
 # reference, CONFIGURATION.md the task-oriented guide, CHANGELOG.md the history,
-# and CLAUDE.md the functional specification the other three describe in parts.
-# CLAUDE.md also has to ship for the package to be self-testing —
+# and DESIGN.md the functional specification the other three describe in parts.
+# DESIGN.md also has to ship for the package to be self-testing —
 # `tests/promql_docs_test.rs` reads both it and README.md, and a package
-# carrying the test but not its input is a test that cannot run.
+# carrying the test but not its input is a test that cannot run. CLAUDE.md is
+# the development rules; it ships because a consumer verifying the crate is
+# entitled to the same instructions the tests were written under. The
+# `.zh-Hant`/`.zh-Hans` translations of all five ship alongside them — they are
+# the same documents, and a package that carried only the English would make the
+# translations repo-only for no reason. They are NOT scanned by
+# `promql_docs_test`, which reads the English README.md and DESIGN.md only.
 # Every pattern is anchored with a leading `/`. Cargo matches these
 # gitignore-style, so an unanchored `README.md` matches at *any* depth — which
 # silently swept in every `js/node_modules/**/README.md` and the vendored zig
@@ -43,7 +49,10 @@ include = [
     "/README.md",
     "/CONFIGURATION.md",
     "/CHANGELOG.md",
+    "/DESIGN.md",
     "/CLAUDE.md",
+    "/*.zh-Hant.md",
+    "/*.zh-Hans.md",
     "/LICENSE",
 ]
 

@@ -1,6 +1,6 @@
 //! The documented PromQL is checked against the real exposition output.
 //!
-//! Every ```promql block in `README.md` and `CLAUDE.md` is parsed, its metric
+//! Every ```promql block in `README.md` and `DESIGN.md` is parsed, its metric
 //! names and label matchers extracted, and each one resolved against what
 //! `Metrics::render` actually emits. A documented query that names a series or a
 //! label value which does not exist fails here.
@@ -26,7 +26,7 @@ use std::time::Duration;
 use rolodex_dns::metrics::{AnswerSource, Metrics, Proto, QueryObservation, TLD_OTHER};
 
 /// Documentation files scanned for PromQL.
-const DOC_FILES: &[&str] = &["README.md", "CLAUDE.md"];
+const DOC_FILES: &[&str] = &["README.md", "DESIGN.md"];
 
 /// The metric-name prefix every series here shares. Identifiers not starting
 /// with it are PromQL functions, grouping labels or literals, and are skipped.

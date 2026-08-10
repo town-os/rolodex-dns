@@ -1,5 +1,7 @@
 # Changelog
 
+> Languages: **English** | [繁體中文](CHANGELOG.zh-Hant.md) | [简体中文](CHANGELOG.zh-Hans.md)
+
 ## v0.5.0 (2026-08-10)
 
 ### Bug fixes

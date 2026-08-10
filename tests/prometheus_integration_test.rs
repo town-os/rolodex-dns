@@ -57,7 +57,7 @@ const CONTAINER: &str = "rolodex-dns-promql-test";
 /// starts, and 9099 avoids the 9090 a developer's own Prometheus would hold.
 const PROM_ADDR: &str = "127.0.0.1:9099";
 
-const DOC_FILES: &[&str] = &["README.md", "CLAUDE.md"];
+const DOC_FILES: &[&str] = &["README.md", "DESIGN.md"];
 
 struct NeverListedResolver;
 
