@@ -217,7 +217,7 @@ async fn main() -> Result<()> {
         .collect();
     if resolution_mode == ResolutionMode::Auto {
         info!(
-            "Auto resolution: {} secure (DoH/DoT) upstream(s), {} public fallback(s), grace={} failures, recovery probe every {}s",
+            "Auto resolution: {} secure (DoH/DoT) upstream(s), {} public fallback(s), grace={} failures, async recovery probe every {}s (roots require a DNSSEC-validated answer)",
             secure_upstreams.len(),
             public_fallback.len(),
             config.resolution.switch_grace_failures,
@@ -320,6 +320,16 @@ async fn main() -> Result<()> {
         let warm_server = Arc::clone(&dns_server);
         tokio::spawn(async move {
             warm_server.prewarm_auto().await;
+        });
+
+        // Recovery runs here, on its own canary, rather than on the query path:
+        // a client's lookup must never be spent probing a tier the box has
+        // already stopped trusting. Reclaiming the roots additionally requires a
+        // DNSSEC-validated answer, so a network that merely intercepts :53
+        // cannot promote itself back to the most-trusted tier.
+        let probe_server = Arc::clone(&dns_server);
+        tokio::spawn(async move {
+            probe_server.recovery_probe_loop().await;
         });
     }
 

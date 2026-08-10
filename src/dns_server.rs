@@ -162,6 +162,36 @@ const TIER_COUNT: usize = 4;
 /// even on poor WiFi.
 const SECURE_TIER_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
 
+/// Wall-clock ceiling for the roots (iterative) tier on the **query path**.
+///
+/// The iterative resolver bounds itself by *query count*
+/// (`MAX_QUERIES_PER_RESOLUTION`), not by time, and each of those queries may
+/// burn `DEFAULT_QUERY_TIMEOUT_MS`. On a network that black-holes :53 every one
+/// of them times out, so the count budget alone permits a single lookup to run
+/// for over a minute. A count budget answers "how much work is this worth?"; it
+/// cannot answer "how long may a caller be kept waiting?", and only the second
+/// question matters to whoever is waiting.
+///
+/// Deliberately *not* as tight as the other tiers' 1500ms. A cold iterative
+/// resolution is several sequential round trips — root, TLD, zone, plus the
+/// DNSKEY fetches validation needs — where the secure and forwarding tiers are
+/// one round trip to one server. Measured cold lookups run 0.6–1.9s for a public
+/// name and about 2.7s for an RFC1918 PTR, so a ceiling near those figures would
+/// not bound a pathology, it would break healthy recursion: every slow-but-fine
+/// lookup would fail the tier and degrade a working resolver onto DoH. This is
+/// sized to cut the minute-long tail while leaving a legitimately slow walk
+/// alone.
+const ROOTS_TIER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// Wall-clock ceiling for the roots probe in [`DnsServer::roots_validate`].
+///
+/// Much tighter than `ROOTS_TIER_TIMEOUT` because it is a much smaller question:
+/// one query to one root server for the root zone's own DNSKEY, validated
+/// against a trust anchor already in memory. There is no delegation to walk. If
+/// that does not come back promptly the roots are not in a state worth promoting
+/// to the most-trusted tier, and nobody is waiting on the answer regardless.
+const ROOTS_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Maximum UDP DNS message size.
 const MAX_UDP_SIZE: usize = 4096;
 /// Maximum TCP DNS message size (with 2-byte length prefix).
@@ -243,6 +273,11 @@ pub struct DnsServer {
     /// active tier (drives the sticky switch — see `note_auto_winner`).
     deviation_streak: AtomicUsize,
     /// Auto mode: unix-seconds timestamp of the last top-of-chain recovery probe.
+    ///
+    /// Read and written only by the background recovery loop
+    /// (`recovery_probe_loop`), never by the query path: a client's query must
+    /// never be conscripted into probing a tier the box has already stopped
+    /// trusting. See `auto_start_tier`.
     last_probe: AtomicU64,
     /// Auto mode: consecutive-failure grace before committing a downward switch.
     switch_grace_failures: AtomicU32,
@@ -601,6 +636,17 @@ impl DnsServer {
     /// The current iterative resolver (delegation cache, root hints, latency stats).
     pub fn resolver(&self) -> Arc<crate::resolver::IterativeResolver> {
         self.resolver.load_full()
+    }
+
+    /// Installs a fully-built iterative resolver, replacing the current one.
+    ///
+    /// The counterpart to [`Self::resolver`], and the one-shot form of the
+    /// staged builders ([`Self::set_root_hints`], [`Self::set_delegation_cache`],
+    /// [`Self::set_dnssec_anchors`]) for a caller that has already assembled the
+    /// resolver it wants — one anchored to a private root, or aimed at a
+    /// non-standard port, neither of which the staged setters can express.
+    pub fn set_resolver(&self, resolver: crate::resolver::IterativeResolver) {
+        self.resolver.store(Arc::new(resolver));
     }
 
     /// Installs a resolver backed by a persistent delegation cache.
@@ -2130,29 +2176,145 @@ impl DnsServer {
         );
     }
 
-    /// Picks the tier a query starts at: normally the sticky `active_tier`, but
-    /// once every `recovery_probe_secs` (when degraded below roots) it starts at
-    /// the top so a recovered, more-preferred tier can be detected. The
-    /// compare-exchange ensures only one concurrent query probes per interval.
-    fn auto_start_tier(&self) -> usize {
+    /// Periodically retests the tiers more trusted than the committed one, so a
+    /// box that degraded on a filtered network reclaims its preferred resolution
+    /// path once the network stops filtering.
+    ///
+    /// This is the recovery half of auto mode, moved off the query path. It runs
+    /// on a throwaway canary, and its results are discarded — the probe exists
+    /// to move the committed tier, never to answer anything, so nothing it
+    /// learns is cached or served to a client.
+    ///
+    /// Never returns; spawn it.
+    pub async fn recovery_probe_loop(self: Arc<Self>) {
+        loop {
+            // Re-read every pass so a runtime config change takes effect without
+            // a restart. Floored at 1s: a zero would spin.
+            let probe_secs = self.recovery_probe_secs.load(Ordering::Relaxed).max(1);
+            // Sleep out the remainder of the interval measured from the last
+            // probe, not from the end of the last pass. A pass that spent its
+            // whole roots budget would otherwise be followed immediately by the
+            // next one, turning a slow probe into a busy one.
+            let since = unix_now_secs().saturating_sub(self.last_probe.load(Ordering::Relaxed));
+            let wait = probe_secs.saturating_sub(since).max(1);
+            tokio::time::sleep(Duration::from_secs(wait)).await;
+            self.recovery_probe_once().await;
+        }
+    }
+
+    /// One pass of the recovery probe. Split out from the loop so tests can drive
+    /// it directly instead of waiting on a timer.
+    pub async fn recovery_probe_once(&self) {
+        if !matches!(**self.resolution_mode.load(), ResolutionMode::Auto) {
+            return;
+        }
         let active = self.active_tier.load(Ordering::Relaxed);
         if active == TIER_ROOTS {
-            return TIER_ROOTS;
+            return; // already at the most-preferred tier; nothing to reclaim
         }
-        let now = unix_now_secs();
-        let probe_secs = self.recovery_probe_secs.load(Ordering::Relaxed);
-        let last = self.last_probe.load(Ordering::Relaxed);
-        if now.saturating_sub(last) >= probe_secs
-            && self
-                .last_probe
-                .compare_exchange(last, now, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-        {
-            metrics().recovery_probes.inc();
-            TIER_ROOTS
-        } else {
-            active
+        self.last_probe.store(unix_now_secs(), Ordering::Relaxed);
+        metrics().recovery_probes.inc();
+
+        // Tier 0 is gated on a validated chain of trust, not mere reachability.
+        if self.roots_validate().await {
+            self.note_auto_winner(TIER_ROOTS);
+            return;
         }
+
+        // A lesser recovery (say public back up to secure) has no equivalent
+        // proof available — there is no chain of trust to check on a DoH
+        // upstream's answer — so a definitive answer is the bar, as it is on the
+        // query path.
+        let Some(canary) = build_canary_query() else {
+            return;
+        };
+        let Ok(message) = hickory_proto::op::Message::from_bytes(&canary) else {
+            return;
+        };
+        for tier in (TIER_ROOTS + 1)..active {
+            if self.try_tier(tier, &canary, &message, None).await.is_some() {
+                self.note_auto_winner(tier);
+                return;
+            }
+        }
+    }
+
+    /// Whether the roots may be trusted to serve tier 0 again: reachable, *and*
+    /// answering with a chain of trust that validates to our anchor.
+    ///
+    /// Reachability alone is deliberately not enough. An intercepting middlebox
+    /// or captive portal on :53 is reachable and answers promptly — it simply
+    /// answers with whatever it likes. Promoting the roots on that basis would
+    /// let any network that hijacks port 53 install itself as the most-trusted
+    /// tier, displacing the encrypted upstream the box had correctly fallen back
+    /// to, and it would do so *automatically and silently*. A validated answer
+    /// is the one thing such a middlebox cannot forge.
+    ///
+    /// The canary is the root zone's own `DNSKEY`. It is signed by definition,
+    /// it validates directly against the built-in trust anchor without depending
+    /// on some third party's zone staying signed, and it is the narrowest form
+    /// of the question actually being asked: can this box reach a root server
+    /// and build a chain of trust from it.
+    async fn roots_validate(&self) -> bool {
+        let resolver = self.resolver.load_full();
+        let resolved = tokio::time::timeout(
+            ROOTS_PROBE_TIMEOUT,
+            resolver.resolve(&Name::root(), RecordType::DNSKEY, DNSClass::IN),
+        )
+        .await;
+        let res = match resolved {
+            Ok(Ok(res)) => res,
+            Ok(Err(e)) => {
+                debug!("auto: roots recovery probe did not resolve: {e}");
+                return false;
+            }
+            Err(_) => {
+                debug!(
+                    "auto: roots recovery probe timed out after {:?}",
+                    ROOTS_PROBE_TIMEOUT
+                );
+                return false;
+            }
+        };
+
+        // With validation switched off there is no verdict to gate on: the
+        // resolver reports `Insecure` for everything by design, so demanding
+        // `Secure` would strand a deliberately non-validating box on a fallback
+        // tier forever — it could never use the recursive resolution that is the
+        // default and preferred mode. Require a definitive answer instead, which
+        // is the strongest claim such a resolver is capable of making.
+        if !resolver.validating() {
+            return matches!(res.rcode, ResponseCode::NoError | ResponseCode::NXDomain);
+        }
+
+        if res.verdict != crate::dnssec_validate::Verdict::Secure {
+            debug!(
+                "auto: roots reachable but not validated ({:?}); staying on tier {}",
+                res.verdict,
+                self.active_tier()
+            );
+            return false;
+        }
+        true
+    }
+
+    /// The tier a query starts at: always the sticky `active_tier`, full stop.
+    ///
+    /// A client's query is never conscripted into probing. This used to elect one
+    /// query every `recovery_probe_secs` to restart the chain at [`TIER_ROOTS`]
+    /// so a recovered tier could be spotted, which is a fine thing to want and a
+    /// terrible thing to charge a caller for: on a network that filters :53 the
+    /// root tier cannot answer, so the elected query paid the entire iterative
+    /// walk — up to `MAX_QUERIES_PER_RESOLUTION` upstream queries at
+    /// `DEFAULT_QUERY_TIMEOUT_MS` each — before falling through to the tier that
+    /// was going to answer all along. Once a minute, one unlucky lookup stalled
+    /// for tens of seconds and the client gave up first, which reads to a user as
+    /// "DNS hangs" rather than as a probe.
+    ///
+    /// Recovery still happens; it happens in [`Self::recovery_probe_loop`], on
+    /// its own canary, where overrunning costs nobody an answer.
+    fn auto_start_tier(&self) -> usize {
+        self.active_tier.load(Ordering::Relaxed)
     }
 
     /// Records which tier answered and, if it deviates from the active tier,
@@ -2225,14 +2387,27 @@ impl DnsServer {
     ) -> Option<Vec<u8>> {
         let question = message.queries().first()?;
         let resolver = self.resolver.load_full();
-        match resolver
-            .resolve(
+        let resolved = tokio::time::timeout(
+            ROOTS_TIER_TIMEOUT,
+            resolver.resolve(
                 question.name(),
                 question.query_type(),
                 question.query_class(),
-            )
-            .await
-        {
+            ),
+        )
+        .await;
+        // Timing out is a tier failure like any other: `None` sends the query on
+        // to the next tier, which is exactly what should happen when the roots
+        // are unreachable.
+        let Ok(resolved) = resolved else {
+            debug!(
+                "auto: root recursion for {} timed out after {:?}",
+                question.name(),
+                ROOTS_TIER_TIMEOUT
+            );
+            return None;
+        };
+        match resolved {
             // A failed DNSSEC validation is a *definitive* answer, not a tier
             // failure. Falling through to the secure or forwarding tier here
             // would mean any zone whose signatures do not check out is quietly
@@ -5115,26 +5290,122 @@ mod tests {
         assert_eq!(cache.stats().total_entries, 0);
     }
 
-    // Auto mode: once degraded, the start tier is the sticky active tier, except
-    // for a periodic probe from the top to reclaim a recovered tier.
+    // Auto mode: the start tier is ALWAYS the sticky active tier. This is the
+    // regression guard for the hang — the query path used to hijack one lookup
+    // every `recovery_probe_secs` and restart it at the roots, which on a
+    // :53-filtered network stalled that client for tens of seconds.
     #[tokio::test]
-    async fn test_auto_start_tier_probes_periodically() {
+    async fn test_auto_start_tier_is_always_the_committed_tier() {
         let db = Database::open_memory().unwrap();
         let server = make_test_server(db);
 
-        // At the top there is nothing to probe for.
+        // At the top, the top.
         assert_eq!(server.auto_start_tier(), TIER_ROOTS);
 
-        // Degraded, with a recent probe: start at the sticky active tier (fast).
+        // Degraded, with a recent probe: the sticky tier.
         server.active_tier.store(TIER_LOCAL, Ordering::Relaxed);
         server.set_auto_params(3, 3600);
         server.last_probe.store(unix_now_secs(), Ordering::Relaxed);
         assert_eq!(server.auto_start_tier(), TIER_LOCAL);
 
-        // Probe interval elapsed: start from the top once, then revert to sticky.
+        // Probe interval long elapsed: STILL the sticky tier. The old behavior
+        // returned TIER_ROOTS here exactly once, and that was the bug.
         server.last_probe.store(0, Ordering::Relaxed);
-        assert_eq!(server.auto_start_tier(), TIER_ROOTS);
-        assert_eq!(server.auto_start_tier(), TIER_LOCAL);
+        server.set_auto_params(3, 1);
+        for _ in 0..10 {
+            assert_eq!(
+                server.auto_start_tier(),
+                TIER_LOCAL,
+                "a client query must never be conscripted into probing"
+            );
+        }
+    }
+
+    // The recovery probe is a no-op when already at the most-preferred tier:
+    // there is nothing above roots to reclaim, so it must not probe at all.
+    #[tokio::test]
+    async fn test_recovery_probe_noop_at_top_tier() {
+        let db = Database::open_memory().unwrap();
+        let server = make_test_server(db);
+        // Explicit: the default is Forward, under which this would pass for the
+        // wrong reason (the mode guard, not the tier guard).
+        server.set_resolution_mode(ResolutionMode::Auto);
+        server.active_tier.store(TIER_ROOTS, Ordering::Relaxed);
+        server.last_probe.store(0, Ordering::Relaxed);
+
+        server.recovery_probe_once().await;
+
+        // Untouched `last_probe` proves the pass returned before doing anything.
+        assert_eq!(server.last_probe.load(Ordering::Relaxed), 0);
+        assert_eq!(server.active_tier(), TIER_ROOTS);
+    }
+
+    // The recovery probe only runs in auto mode; the tier chain is meaningless
+    // in recursive/forward mode and must not be disturbed.
+    #[tokio::test]
+    async fn test_recovery_probe_noop_outside_auto_mode() {
+        let db = Database::open_memory().unwrap();
+        let server = make_test_server(db);
+        server.set_resolution_mode(ResolutionMode::Forward);
+        server.active_tier.store(TIER_LOCAL, Ordering::Relaxed);
+        server.last_probe.store(0, Ordering::Relaxed);
+
+        server.recovery_probe_once().await;
+
+        assert_eq!(server.last_probe.load(Ordering::Relaxed), 0);
+        assert_eq!(server.active_tier(), TIER_LOCAL);
+    }
+
+    // Roots that cannot be reached do not reclaim tier 0, and — the point of the
+    // whole exercise — the probe returns promptly rather than running the
+    // iterative resolver to its 64-query budget.
+    #[tokio::test]
+    async fn test_recovery_probe_bounded_when_roots_dead() {
+        let db = Database::open_memory().unwrap();
+        let server = make_test_server(db);
+        server.set_resolution_mode(ResolutionMode::Auto);
+        // Loopback "roots" with nothing listening: every query times out.
+        server.set_root_hints(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]);
+        server.set_secure_upstreams(vec![]);
+        server.set_public_fallback(vec![]);
+        server.active_tier.store(TIER_LOCAL, Ordering::Relaxed);
+
+        let started = std::time::Instant::now();
+        server.recovery_probe_once().await;
+        let elapsed = started.elapsed();
+
+        assert_eq!(
+            server.active_tier(),
+            TIER_LOCAL,
+            "unreachable roots must not reclaim the most-trusted tier"
+        );
+        assert!(
+            elapsed < ROOTS_PROBE_TIMEOUT * 4,
+            "probe ran {elapsed:?}, expected the roots probe to be time-bounded"
+        );
+    }
+
+    // tier_roots is bounded by wall clock, not just by query count: a black-holed
+    // root set must fail the tier in ~ROOTS_TIER_TIMEOUT, not in the minute-plus
+    // that 64 queries x 1500ms permits.
+    #[tokio::test]
+    async fn test_tier_roots_is_time_bounded() {
+        let db = Database::open_memory().unwrap();
+        let server = make_test_server(db);
+        server.set_root_hints(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]);
+
+        let query = build_query("bounded.example.", RecordType::A);
+        let message = hickory_proto::op::Message::from_bytes(&query).unwrap();
+
+        let started = std::time::Instant::now();
+        let out = server.tier_roots(&message, None).await;
+        let elapsed = started.elapsed();
+
+        assert!(out.is_none(), "dead roots must fail the tier");
+        assert!(
+            elapsed < ROOTS_TIER_TIMEOUT * 4,
+            "tier_roots ran {elapsed:?}, expected a wall-clock bound"
+        );
     }
 
     #[tokio::test]
