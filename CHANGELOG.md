@@ -2,6 +2,46 @@
 
 > Languages: **English** | [繁體中文](CHANGELOG.zh-TW.md) | [简体中文](CHANGELOG.zh-CN.md) | [Español (España)](CHANGELOG.es-ES.md) | [Español (México)](CHANGELOG.es-MX.md) | [日本語](CHANGELOG.ja.md)
 
+## v0.5.1 (2026-08-12)
+
+### Breaking changes
+
+- **`arpa.` is never resolved off this box.** Every name under it is answered from local data — a stored PTR, a scoped record, a managed or authoritative reverse zone — or **REFUSED**, in every resolution mode. Nothing in the subtree reaches a root server, a forwarder or an encrypted upstream. REFUSED rather than NXDOMAIN because the server is declining to answer for a namespace, not claiming the name does not exist.
+
+  The gate sits at both layers: the query path refuses at the boundary between data this box holds and data it must go and get — before the upstream response cache, so nothing cached under the old policy is served — and the iterative resolver refuses without sending a packet, which also covers a CNAME target or a glue-less NS hostname pointing into the subtree. Membership is the last *label*, never a string suffix, so `notarpa.` and `arpa.example.com` are ordinary names and resolve normally.
+
+  This removes the SERVFAILs for `ipv4only.arpa` (the RFC 7050 NAT64 probe) that prompted the work: the co-served root/`arpa.` zone cut, where one query crosses two cuts and the referral's NSEC is signed by `arpa.` while the walk is still checking against the root's keys, can no longer be reached at all. The underlying validator defect — checking a referral's proof against the assumed parent rather than the RRSIG signer's zone — is untouched and still open.
+
+  Two consequences worth stating rather than discovering later: a reverse lookup for an address this box holds no data for is refused rather than answered from the internet (`dig -x 8.8.8.8`), and `ipv4only.arpa` is refused, which a NAT64-discovering client reads as "no NAT64 here". Serving the reverse tree properly from local data is separate, deferred work.
+
+- **A root zone that will not validate is now an outage rather than a silent degrade.** `fetch_dnskeys` distinguishes `Unreachable` (transport) from `Invalid` (cryptographic). At the root, `Invalid` withholds and the chain stops; `Unreachable` still falls through, deliberately, because unreachable is not invalid. Flattening the two let anyone who could reliably break root DNSKEY retrieval take validation out of the path without ever producing a bogus verdict — the fallback chain read the error as "the roots are unreachable" and answered from an upstream that does not validate.
+
+  The trade-off is real: a trust anchor this build does not know about (a KSK rollover) becomes a DNS outage rather than a quiet degrade to DoH. `dnssec.validate: false` is the escape hatch while the anchor is fixed.
+
+### Features
+
+- **A root server that serves invalid DNSSEC is dropped from the root set** for 15 minutes, doubling per offence to a 24-hour cap, on the one claim checkable without asking anyone else: its root DNSKEY against the local anchor. Blame survives the server answering promptly (`note_success` clears only the transport fields), is cleared only by an answer that *validates* — never by waiting — and is never applied to the last remaining root, because every root failing at once is the zone or the anchor, not thirteen rogue servers. Root servers only: below the root a validation failure is usually the zone's own signing error, and those already fail closed. Blame is in memory, so a restart re-trusts every root.
+
+- **One new metric, `rolodex_dns_dnssec_blamed_roots`**, bringing the exposed families to 78. A long-lived silent exclusion of part of the root set is the one part of this that no existing counter reports. The family count and the PromQL cookbook are updated in `README.md` and `DESIGN.md`.
+
+### Bug fixes
+
+- **A DNSSEC walk that ends Bogus no longer leaves anything behind.** The delegation and its glue are now cached only after `extend_trust` returns a usable trust state. They were written first, so a referral whose DS/NSEC proof failed had already had its NS set committed — and persisted to disk, where it survived a restart.
+
+### Documentation
+
+- **The functional specification moved out of `CLAUDE.md` into `DESIGN.md`.** `CLAUDE.md` is now development rules only; what the software does lives in the specification, which is the document behaviour changes are required to land in.
+
+- **Translations are keyed by region locale code.** The Chinese translations moved from the BCP 47 script subtags `zh-Hant`/`zh-Hans` to `zh-TW`/`zh-CN`, so every locale suffix in the document set answers the same question now that Spanish is split by region. `CLAUDE.md` and `CONFIGURATION.md` gained European Spanish (`.es-ES.md`), Mexican Spanish (`.es-MX.md`) and Japanese (`.ja.md`) translations, and `Cargo.toml`'s `include` list ships them.
+
+  `README.md`, `DESIGN.md` and `CHANGELOG.md` are **not yet translated** into the three new locales, so their language nav lines currently link to files that do not exist. English remains the source of truth, and nothing verifies that the translations agree — `tests/promql_docs_test.rs` reads only the English `README.md` and `DESIGN.md`.
+
+### Testing
+
+- **`tests/arpa_refusal_test.rs`** (new, and named in the Makefile's `rust-integration-test` recipe) asserts on *packets* rather than rcodes, with the label boundary and the local-data path as its controls, swept across all three resolution modes. An `arpa.` gate that refuses everything satisfies "the subtree is refused"; one that refuses nothing satisfies "`notarpa.` still resolves" — only the pair says anything.
+
+- **`tests/security_dnssec_test.rs`** gains the rejection rules, driven through a real `DnsServer` with a working counting forwarder, because "the client got SERVFAIL" and "the forwarder was never consulted" are different properties and only the second one is the finding.
+
 ## v0.5.0 (2026-08-10)
 
 ### Bug fixes
