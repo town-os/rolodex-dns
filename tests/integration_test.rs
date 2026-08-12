@@ -292,7 +292,9 @@ async fn test_rbl_integration() {
     });
     service.set_rbl_config(rbl_req).await.unwrap();
 
-    // Now query should not be blocked (will SERVFAIL because no forwarders)
+    // Now query should not be blocked. It is REFUSED rather than resolved,
+    // because `arpa.` is never resolved off this box; what matters here is only
+    // that it is no longer NXDOMAIN.
     let resp_bytes = dns_server.handle_query(&query).await.unwrap();
     let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
     assert_ne!(

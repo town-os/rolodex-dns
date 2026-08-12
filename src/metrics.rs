@@ -785,7 +785,8 @@ pub enum AnswerSource {
     Upstream,
     /// Authoritative NXDOMAIN from a managed, authoritative, or owned zone.
     AuthoritativeNxdomain,
-    /// REFUSED — an overlay peer that has joined no network.
+    /// REFUSED — an overlay peer that has joined no network, or a name in a
+    /// namespace this server declines to resolve externally (`arpa.`).
     Refused,
     /// SERVFAIL, FORMERR, NOTIMP, BADVERS: the query never reached a lookup.
     Error,
@@ -1129,6 +1130,15 @@ pub struct Metrics {
     pub dnssec_dnskey_lookups: Counter,
     /// Delegations proven to carry no DS, i.e. legitimately unsigned zones.
     pub dnssec_insecure_delegations: Counter,
+    /// Root servers currently omitted for serving DNSSEC that does not validate
+    /// against the configured trust anchor (sampled at scrape).
+    ///
+    /// Bounded by construction — there are thirteen root addresses — and carries
+    /// no labels, because the count is the alertable fact. Every other part of
+    /// the blame machinery shows up in counters that already exist; a long-lived
+    /// silent exclusion of part of the root set does not, and it is the state an
+    /// operator most needs to see.
+    pub dnssec_blamed_roots: Gauge,
     /// Zones held in the validated-key cache (sampled at scrape).
     pub key_cache_entries: Gauge,
 
@@ -1480,6 +1490,10 @@ impl Metrics {
                 "rolodex_dns_dnssec_insecure_delegations_total",
                 "Delegations proven to carry no DS record.",
             ),
+            dnssec_blamed_roots: Gauge::new(
+                "rolodex_dns_dnssec_blamed_roots",
+                "Root servers omitted for serving DNSSEC that does not validate.",
+            ),
             key_cache_entries: Gauge::new(
                 "rolodex_dns_key_cache_entries",
                 "Zones held in the resolver's validated-key cache.",
@@ -1785,6 +1799,7 @@ impl Metrics {
         self.dnssec_servfail.encode(&mut out);
         self.dnssec_dnskey_lookups.encode(&mut out);
         self.dnssec_insecure_delegations.encode(&mut out);
+        self.dnssec_blamed_roots.encode(&mut out);
         self.key_cache_entries.encode(&mut out);
 
         self.records.encode(&mut out);
@@ -2007,6 +2022,8 @@ pub fn collect(state: &MetricsState) {
         .set(resolver.delegations().len() as u64);
     m.record_cache_entries.set(resolver.records().len() as u64);
     m.key_cache_entries.set(resolver.keys().len() as u64);
+    m.dnssec_blamed_roots
+        .set(resolver.blamed_root_count() as u64);
 
     // Replace rather than update: a nameserver that has aged out of the
     // resolver's stats should stop being reported, not freeze.

@@ -101,6 +101,25 @@ Names not satisfied locally are resolved by the strategy in the `resolution` con
 | `recursive` | Iterative from the root servers only; no upstream resolver is ever contacted. |
 | `forward` | Forward to the configured `forwarders` only (the legacy behavior). |
 
+### The `arpa.` subtree is never resolved off-box
+
+**`arpa.` and everything under it is answered from local data or not at all.** No name in that subtree is ever sent to a root server, a forwarder or an encrypted upstream, in any resolution mode. A name with no local data gets **REFUSED** — we are declining to answer for a namespace, not asserting the name does not exist, which is what NXDOMAIN would claim.
+
+Local data still answers first, because the rule is a fall-through and not a block: a stored PTR, a scoped record, a managed or authoritative reverse zone all resolve exactly as before. What changes is what happens when they miss.
+
+The rule is enforced at two independent layers, deliberately redundant:
+
+- **The query path** (`resolve_query` in `src/dns_server.rs`) refuses at the boundary between "data this box holds" and "data it must go and get" — immediately after the open-resolver guard and *before* the response-cache lookup, so an answer cached while a different policy was in force cannot be served now.
+- **The iterative resolver** (`resolve_inner` in `src/resolver.rs`) refuses without sending a packet, so no caller can use it to reach the subtree, and a CNAME target or glue-less NS hostname pointing into `arpa.` is covered by the same check.
+
+`upstream_resolve` — the one function that sends a query off the box — carries the same gate a third time, read straight off the wire by `wire_question_is_arpa` rather than by re-parsing a message the caller already parsed.
+
+Membership is matched on the **label boundary**, never as a string suffix: a name is in the subtree if and only if its final label is exactly `arpa`, so `notarpa.` and `arpa.example.com.` are ordinary names and resolve normally. `resolver::is_arpa_subtree` is the single predicate; the wire-level twin answers the same question on unparsed bytes.
+
+Consequences to state plainly: reverse lookups for addresses this box holds no data for stop resolving — `dig -x 8.8.8.8` is REFUSED rather than answered from the internet — and `ipv4only.arpa` (RFC 7050) is refused rather than answered, which a NAT64-discovering client reads as "no NAT64 here". Serving the reverse tree properly from local data is separate, deferred work.
+
+Nothing about this is a DNSSEC decision. Because the subtree never reaches the validator, the co-served root/arpa zone cut that made `ipv4only.arpa` come back Bogus (the root servers are authoritative for `arpa.` as well as `.`, so one query crosses two cuts and the referral's NSEC is signed by `arpa.` while the walk is still checking against the root's keys) can no longer be reached at all — see Upstream DNSSEC Validation for what the validator does with the referrals it *does* see.
+
 ### The `auto` Tier Chain
 
 Four tiers, ordered most-preferred/most-trusted first. The numeric order is also the trust order, so moving to a *smaller* index is a recovery and a *larger* index is a degrade:
@@ -374,6 +393,32 @@ Every check in `verify_rrset` is one an attacker gets to skip if it is missing: 
 Records validated only against algorithms this build cannot verify are **Insecure, not Bogus** (RFC 6840 §5.11) — our own missing algorithm is not the zone's outage. `ring` cannot *generate* RSA keys, which is why signing refuses algorithm 8, but verification is a different question and RSA/SHA-1/256/512 plus both ECDSA curves and Ed25519 all verify.
 
 NSEC3 iteration counts above 100 are treated as insecure rather than computed (RFC 9276): the hashing is attacker-chosen work on our side of the wire.
+
+### Rejecting on the roots tier
+
+When resolving from the roots, invalid DNSSEC is rejected outright: never served, and never quietly retried somewhere that does not validate.
+
+- `tier_roots` turns any withholding verdict (`Bogus` or `Indeterminate`) into SERVFAIL and returns it as a **definitive** answer, so the tier loop short-circuits and the query does not fall through to the secure or forwarding tier. `cache_from_wire` caches only `NoError` with a non-empty answer, so the SERVFAIL never enters the response cache, and inside the resolver the verdict is checked before the record cache is touched.
+- **A rejected walk leaves no state.** The delegation learned from a referral is cached only *after* `extend_trust` returns a usable trust state, and the glue with it. Writing them first meant a referral whose DS/NSEC proof failed had already had its NS set committed — and the delegation cache is persisted to disk, so the resolver kept and reused an NS set it had just refused to verify, across restarts.
+- **A root zone that does not validate is a verdict, not a tier failure.** `fetch_dnskeys` distinguishes `Unreachable` (transport) from `Invalid` (cryptographic). At the root, `Invalid` becomes a withholding `Bogus` — SERVFAIL, chain stops — while `Unreachable` stays an error and falls through. Flattening the two is what let an attacker who could reliably break root DNSKEY retrieval take validation out of the path without ever producing a bogus verdict: the error read as "the roots are unreachable" and the query went to the encrypted upstream. Below the root both variants remain Bogus, as before: a zone with a DS in its parent that will not yield keys is a broken chain either way.
+
+Two boundaries this deliberately does not cross. **Unreachable is not invalid** — a roots-tier timeout or transport failure still falls through, or an unplugged network would hard-fail every lookup. **Insecure is not invalid** — a proven-unsigned delegation yields `Insecure`, which is served without AD; only a *verdict* that withholds stops the chain.
+
+The consequence to accept, stated plainly: a trust anchor this build does not know about (a KSK rollover) becomes a total DNS outage rather than a silent degrade to DoH, and auto mode can no longer degrade away from a validation-broken root, because a withheld answer counts as a roots-tier win. That is the intent — the escape hatch is `dnssec.validate: false`, i.e. configuration, rather than automatic fallback.
+
+### Blaming a root server that serves invalid DNSSEC
+
+The rule above handles the root *zone* failing to validate. A single root *server* serving bad signatures — one hijacked or broken instance among healthy peers — is handled by omitting it.
+
+- **The signal is narrow.** Blame attaches only to the root DNSKEY RRset checked against our local trust anchor. That is the only thing a root server tells us that we can verify without asking anybody else, which makes "this root server is lying" a statement we can stand behind rather than an inference from somebody else's mistake. `query_servers` returns the responding address alongside the message so the claim can be attributed at all.
+- **Blame omits, on an exponential backoff.** A blamed root is *removed from the candidate set* — filtered before `order_servers` ranks anything, so no ordering rule can bring it back as a last resort — for 15 minutes on the first offence, doubling to a 24-hour cap. The curve is `note_failure`'s; the constants are its own, because a timeout says "this server was busy" and a bad signature says "this server told me something untrue", and the second has no business recovering on a 2s curve. `with_blame_backoff` overrides both ends for tests.
+- **Blame survives transport success.** `note_success` clears only the transport fields and drops the health entry just when nothing is left in it — a hijacked root answers promptly by construction, so removing the entry there would let the very server we distrust clear its own record.
+- **Time alone never forgives.** The escalation counter is cleared by a *validating* answer and by nothing else, so a root that has lied three times and served nothing since returns at the fourth step of the curve rather than the first. Expiry is probationary: the root is consulted again on its own, with no operator action and no separate probe, and nothing it says has any standing until it produces an answer that validates.
+- **Never omit the last root.** If the filter would leave nothing it is not applied. Every root failing to validate is not thirteen rogue servers, it is the zone or our own trust anchor — and an empty candidate set yields `NameserversUnreachable`, which reads as *unreachable* and falls through, reopening exactly the hole the withholding verdict closes. In that state blame stops being the deciding input and auto mode governs: the root zone fails to validate, `tier_roots` SERVFAILs, and `roots_validate()` keeps tier 0 unreclaimable until a `Verdict::Secure` root DNSKEY comes back. The transition is logged loudly, because it is the shape of both a trust-anchor problem and a total hijack and is otherwise invisible.
+- **Root servers only.** Blame is not wired into nameserver selection generally. Below the root a validation failure is almost always the zone's own signing error: every server for that zone returns the same bytes, and omitting them would turn someone else's mistake into our outage. Those lookups already fail closed on the verdict.
+- Blame is **in memory and does not survive a restart**: a restarted box re-trusts every root until one misbehaves again. The current count is exposed as `dnssec_blamed_roots` — a bounded gauge (thirteen at most, no labels), because a long-lived silent exclusion of part of the root set is the one part of this machinery no existing counter reports.
+
+The query that provoked the blame still fails closed. Blame changes which root servers *later* queries use; it does not turn the current one into a retry loop that keeps asking roots until one produces an answer that validates, which would hand an attacker an oracle to grind against.
 
 ### Validated-key cache (`src/key_cache.rs`)
 
@@ -1180,7 +1225,7 @@ The magic entry `common` expands to `metrics::COMMON_TLDS`. It is stored **unexp
 
 ### What is exposed
 
-77 metric families, all prefixed `rolodex_dns_`:
+78 metric families, all prefixed `rolodex_dns_`:
 
 | Area | Metrics |
 | ---- | ------- |
@@ -1190,7 +1235,7 @@ The magic entry `common` expands to `metrics::COMMON_TLDS`. It is stored **unexp
 | Blocklists | `blocklist_blocks_total{kind}` (`rbl_provider`/`rbl_local`/`dnsbl_provider`/`rbl_scope_provider`), `blocklist_allowlisted_total{kind}` (`forward_name`/`reverse_name`/`ip_literal`), `blocklist_lookups_total{kind,result}` (`listed`/`not_listed`/`error`/`refused`), `blocklist_skipped_total`, `blocklist_cache_entries`, `blocklist_refusals_total{kind}`, `blocklist_rotated_out` |
 | Upstream | `upstream_active_tier`, `upstream_tier_attempts_total{tier}`, `_wins_total{tier}`, `_failures_total{tier}`, `upstream_tier_switches_total{direction}`, `upstream_recovery_probes_total`, `upstream_duration_seconds{tier}`, `upstream_queries_total{server}`, `upstream_exhausted_total` |
 | Resolver | `resolver_lookups_total`, `_referrals_total`, `_cname_hops_total`, `_budget_exhausted_total`, `_tcp_retries_total`, `resolver_priming_total{result}`, `resolver_nameserver_latency_milliseconds{server}`, `delegation_cache_entries`, `record_cache_entries` |
-| DNSSEC | `dnssec_verdicts_total{verdict}` (`secure`/`insecure`/`bogus`/`indeterminate`), `dnssec_servfail_total`, `dnssec_dnskey_lookups_total`, `dnssec_insecure_delegations_total`, `key_cache_entries` |
+| DNSSEC | `dnssec_verdicts_total{verdict}` (`secure`/`insecure`/`bogus`/`indeterminate`), `dnssec_servfail_total`, `dnssec_dnskey_lookups_total`, `dnssec_insecure_delegations_total`, `dnssec_blamed_roots`, `key_cache_entries` |
 | Split-horizon | `records`, `scoped_records`, `scopes`, `scope_associations`, `authoritative_zones`, `managed_zones`, `owned_tlds`, `ingress_listeners`, `address_family_reachable{family}` |
 | DHCP | `dhcp_messages_total{message_type}`, `dhcp_leases{lease_state}`, `dhcp_pools`, `dhcp_allocation_failures_total`, `dhcp_sweeps_total` |
 | ACME | `acme_accounts`, `acme_certificates`, `acme_issued_total`, `acme_validations_total{result}` |
@@ -1320,7 +1365,7 @@ The project uses a top-level Makefile with the following targets:
 | `test`                | Run all tests: lint, Go integration tests, Go unit tests, Rust tests (`cargo test`), and JavaScript tests.                                                 |
 | `test-log`            | Same as `test`, tee'd into a timestamped log file under `/tmp/rolodex-dns/log` (override with `LOG_DIR`). The log path is printed at the end even when the run fails. |
 | `rust-test`           | Run the Rust integration test files, then `cargo test`.                                                                                                     |
-| `rust-integration-test` | Build, then run each Rust integration test file explicitly (`integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`, `promql_docs_test`, `prometheus_integration_test`, `rbl_refusal_test`, `dnssec_signing_test`, `dnssec_validation_test`, `blocklist_nxdomain_test`, `zonemd_test`, `doq_test`, `proxy_test`, `tls_reload_test`, `acme_admin_test`, plus the `security_*` suites). |
+| `rust-integration-test` | Build, then run each Rust integration test file explicitly (`integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`, `promql_docs_test`, `prometheus_integration_test`, `rbl_refusal_test`, `dnssec_signing_test`, `dnssec_validation_test`, `arpa_refusal_test`, `blocklist_nxdomain_test`, `zonemd_test`, `doq_test`, `proxy_test`, `tls_reload_test`, `acme_admin_test`, plus the `security_*` suites). |
 | `lint`                | Run `cargo fmt -- --check` and `cargo clippy --all-targets -- -D warnings`.                                                                                |
 | `prometheus-test`     | Execute every documented PromQL query against a containerised Prometheus (`quay.io/prometheus/prometheus`, overridable via `ROLODEX_PROMETHEUS_IMAGE`). A prerequisite of `test`. Needs podman; without it the test **skips loudly** rather than failing, so a machine with no container runtime still gets a green `make test`. `ROLODEX_PROMETHEUS_REQUIRED=1` turns that skip into a failure, which is what CI should set. |
 | `deps`                | Install build dependencies: the Rust cross-compilation toolchain (`cross-deps`) and the JavaScript dev dependencies (`npm install` in `js/`).              |
@@ -1513,11 +1558,19 @@ Unit tests in `src/dnssec.rs` cover the canonical form itself: name lowercasing 
 Its `Tamper` enum is the point. Each variant is one specific attack, applied when the response is **serialized** — after the zone has been correctly constructed — so every test is "a valid deployment, attacked" rather than "an invalid deployment, rejected", which would prove much less.
 
 - `tests/dnssec_validation_test.rs` — the paths that must keep working: a fully signed chain validating Secure with the right address, RRSIGs surviving to the client, an NSEC-proven unsigned delegation resolving Insecure, proven NXDOMAIN and NODATA, the key cache sparing the root a second query for a warm zone, and a non-validating resolver reporting Insecure rather than Secure.
-- `tests/security_dnssec_test.rs` — the attacks, each with the finding stated in the module docs: stripped signatures (the downgrade DNSSEC exists to stop), a delegation with neither a DS nor a proof of its absence (the delegation-level downgrade), expired and premature signatures, a signature from a key the DNSKEY RRset does not publish, a foreign signer name, data mutated after signing, an unproven negative, a trust anchor matching no root key, and malformed anchors being refused at parse rather than silently falling back to IANA.
+- `tests/security_dnssec_test.rs` — the attacks, each with the finding stated in the module docs: stripped signatures (the downgrade DNSSEC exists to stop), a delegation with neither a DS nor a proof of its absence (the delegation-level downgrade), expired and premature signatures, a signature from a key the DNSKEY RRset does not publish, a foreign signer name, data mutated after signing, an unproven negative, a trust anchor matching no root key, and malformed anchors being refused at parse rather than silently falling back to IANA. It also pins the rejection rules above, driven through a real `DnsServer` in `auto` mode with a **working** counting forwarder behind the roots tier, because "the client got SERVFAIL" and "the forwarder was never consulted" are different properties and only the second is the requirement: a rejected roots answer does not fall through; a rejected walk leaves no delegation behind (with its control, that an accepted one is cached); an unvalidatable root zone SERVFAILs while an *unreachable* one still falls through; a root serving bad signatures is omitted while its peers keep being queried; the omission expires, escalates on relapse and stops at the cap, and is cleared only by a validating answer; blame outlives a successful exchange while an ordinary timeout still recovers on one; blaming every root does not become a fallthrough; auto mode still governs in that state; and blame never reaches a zone's own nameservers.
 
 Both matter equally and for the same reason: a validator that rejects everything passes every attack test, and one that accepts everything passes every happy-path test. Only the pair together says anything.
 
+The multi-root half of that file needs a mock root to change its behaviour *while running* — blame is about a server's history, and restarting a server to make it stop lying would give it a new address and therefore a different server as far as blame is concerned. `signed_hierarchy::serve_switchable` returns a `TamperSwitch` for that, and a root can also be left bound but silent and started later, which is how a transport failure followed by a recovery is staged.
+
 Unit tests in `src/dnssec_validate.rs` cover the pieces independently of any network: verdict merging (the worst wins), base32hex against the RFC 4648 §10 vectors and its order-preservation (which is what lets the NSEC3 range checks compare encoded strings), RFC 1982 serial wrap, NSEC coverage including the wrapping last record and exclusivity at both ends, and each denial proof's refusal cases. `src/key_cache.rs` pins that lookups are exact-name rather than suffix — a suffix match would hand a parent's keys to a delegated subzone.
+
+### `arpa.` Refusal Tests
+
+`tests/arpa_refusal_test.rs` pins that the subtree never leaves the box, at both layers and in every resolution mode. The assertion is about **packets**, not about rcodes: a resolver that answered REFUSED *after* asking a root would satisfy an rcode check while having already done the thing the rule forbids, so the mock root's query count is what is asserted, against a hierarchy that is demonstrably reachable for everything else.
+
+Its controls are what make it mean anything. A resolver that refused everything would pass the refusal tests, so `notarpa.`, `arpa.example.test.` and `arpanet.example.` must resolve *and* validate Secure — the label boundary, checked through both layers. And a rule that had simply deleted the namespace would pass too, so a stored PTR must still be answered from local data, paired with the same name refused when nothing is stored for it. Modes are swept exhaustively (`recursive`, `forward`, `auto`) because each dispatches differently — `forward` never touches the iterative resolver at all, so a rule enforced only there would leak in exactly the deployment shape that forwards.
 
 ### Blocklist Refusal Tests
 
@@ -1585,7 +1638,7 @@ The Go client has two test layers:
 - **Unit tests** — Use an in-process mock gRPC server via `bufconn` to test all client methods, authentication token propagation, transport modes, error handling, and edge cases (idempotent close, lazy dial, custom dial options).
 - **Integration tests** — Gated behind the `integration` build tag. Each test starts a real Rolodex DNS server subprocess with a unique temporary directory, random ports, and isolated database. Tests cover record CRUD, wildcard filtering, forwarder configuration, RBL round-trip, cache flushing, Unix socket transport, authentication failure, default TTL behavior, concurrent clients (5 simultaneous), network scoping, DNS64, and TTL drift.
 
-The `make test` target runs the full test suite: lint, Go integration tests, Go unit tests, Rust integration tests (each test file explicitly: `integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`, `promql_docs_test`, `prometheus_integration_test`, `rbl_refusal_test`, `dnssec_signing_test`, `dnssec_validation_test`, `blocklist_nxdomain_test`, `zonemd_test`, `doq_test`, `proxy_test`, `tls_reload_test`, `acme_admin_test`, and the `security_*` suites), all Rust tests via `cargo test` (which also covers the resolver suite above), and the JavaScript lint/integration/unit tests. Individual targets are available: `make go-integration-test`, `make go-test`, `make rust-integration-test`, `make rust-test`, `make js-integration-test`, `make js-test`. Use `make test-log` to capture the whole run to a timestamped log file.
+The `make test` target runs the full test suite: lint, Go integration tests, Go unit tests, Rust integration tests (each test file explicitly: `integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`, `promql_docs_test`, `prometheus_integration_test`, `rbl_refusal_test`, `dnssec_signing_test`, `dnssec_validation_test`, `arpa_refusal_test`, `blocklist_nxdomain_test`, `zonemd_test`, `doq_test`, `proxy_test`, `tls_reload_test`, `acme_admin_test`, and the `security_*` suites), all Rust tests via `cargo test` (which also covers the resolver suite above), and the JavaScript lint/integration/unit tests. Individual targets are available: `make go-integration-test`, `make go-test`, `make rust-integration-test`, `make rust-test`, `make js-integration-test`, `make js-test`. Use `make test-log` to capture the whole run to a timestamped log file.
 
 ## Key Dependencies
 

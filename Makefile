@@ -131,6 +131,7 @@ rust-integration-test: build ## Run each Rust integration test file
 	cargo test --test rbl_refusal_test
 	cargo test --test dnssec_signing_test
 	cargo test --test dnssec_validation_test
+	cargo test --test arpa_refusal_test
 	cargo test --test blocklist_nxdomain_test
 	cargo test --test zonemd_test
 	cargo test --test doq_test

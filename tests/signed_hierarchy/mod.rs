@@ -301,6 +301,42 @@ impl Zone {
     }
 }
 
+/// Changes what a running nameserver does to its responses, without restarting
+/// it.
+///
+/// Needed by anything that tests a server's *history* — blame, backoff,
+/// recovery. Restarting the server to make it stop lying would give it a new
+/// socket, and a new socket is a new address, which is a different server as far
+/// as any per-server state is concerned. `None` means "whatever the zone was
+/// built with".
+#[derive(Clone, Default)]
+pub struct TamperSwitch(Arc<std::sync::Mutex<Option<Tamper>>>);
+
+impl TamperSwitch {
+    /// Makes the server behave as `tamper` from the next query onwards.
+    pub fn set(&self, tamper: Tamper) {
+        match self.0.lock() {
+            Ok(mut slot) => *slot = Some(tamper),
+            Err(poisoned) => *poisoned.into_inner() = Some(tamper),
+        }
+    }
+
+    /// Restores the zone's own tamper setting.
+    pub fn clear(&self) {
+        match self.0.lock() {
+            Ok(mut slot) => *slot = None,
+            Err(poisoned) => *poisoned.into_inner() = None,
+        }
+    }
+
+    fn get(&self) -> Option<Tamper> {
+        match self.0.lock() {
+            Ok(slot) => slot.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+}
+
 /// A running signed nameserver.
 pub struct SignedNs {
     ip: Ipv4Addr,
@@ -348,12 +384,20 @@ pub async fn bind_levels(ips: &[Ipv4Addr]) -> (u16, Vec<UdpSocket>) {
 
 /// Starts serving `zone` on `socket`.
 pub fn serve(socket: UdpSocket, zone: Zone) -> SignedNs {
+    serve_switchable(socket, zone).0
+}
+
+/// Starts serving `zone` on `socket`, with a handle that changes its tampering
+/// while it runs. See [`TamperSwitch`].
+pub fn serve_switchable(socket: UdpSocket, zone: Zone) -> (SignedNs, TamperSwitch) {
     let ip = match socket.local_addr().expect("local addr").ip() {
         std::net::IpAddr::V4(ip) => ip,
         std::net::IpAddr::V6(_) => unreachable!("signed hierarchy is IPv4"),
     };
     let queries = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&queries);
+    let switch = TamperSwitch::default();
+    let serving = switch.clone();
 
     tokio::spawn(async move {
         let mut buf = vec![0u8; 4096];
@@ -365,14 +409,21 @@ pub fn serve(socket: UdpSocket, zone: Zone) -> SignedNs {
             let Ok(query) = Message::from_bytes(&buf[..len]) else {
                 continue;
             };
-            let response = build_response(&query, &zone);
+            let response = match serving.get() {
+                Some(tamper) => {
+                    let mut overridden = zone.clone();
+                    overridden.tamper = tamper;
+                    build_response(&query, &overridden)
+                }
+                None => build_response(&query, &zone),
+            };
             if let Ok(bytes) = response.to_bytes() {
                 let _ = socket.send_to(&bytes, peer).await;
             }
         }
     });
 
-    SignedNs { ip, queries }
+    (SignedNs { ip, queries }, switch)
 }
 
 /// The signing key actually used for a response, which is the zone's own key

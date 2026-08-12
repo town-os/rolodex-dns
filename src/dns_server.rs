@@ -1819,6 +1819,34 @@ impl DnsServer {
             ));
         }
 
+        // `arpa.` is answered from local data or not at all.
+        //
+        // Everything above this point is data this server holds — a stored PTR,
+        // a scoped record, a managed or authoritative zone — and everything
+        // below reaches off-box. The `arpa.` subtree never crosses that line, so
+        // a lookup that got this far has already missed the only data allowed to
+        // answer it. REFUSED rather than NXDOMAIN: we are declining to answer
+        // for the namespace, not asserting the name does not exist.
+        //
+        // Placed before the *upstream* response-cache lookup below, for the same
+        // reason the recursion guard above is: an answer cached while a
+        // different policy was in force must not be served now. The local-only
+        // cache above it is this box's own data and answers as it always did.
+        if crate::resolver::is_arpa_subtree(question.name()) {
+            debug!(
+                "Refusing {}: the arpa. subtree is never resolved externally",
+                qname
+            );
+            tag.set(AnswerSource::Refused);
+            return Ok(build_response_edns(
+                &message,
+                ResponseCode::Refused,
+                vec![],
+                false,
+                edns_ctx.as_ref(),
+            ));
+        }
+
         // RBL precedence over external DNS: at this point the name was not
         // satisfied by any local/scoped record or managed zone, so it would be
         // answered from the upstream cache or by forwarding/iterating. If the
@@ -2093,6 +2121,16 @@ impl DnsServer {
         query_data: &[u8],
         edns_ctx: Option<&crate::edns::EdnsContext>,
     ) -> Result<Vec<u8>> {
+        // The same rule as the gate in `resolve_query`, and deliberately
+        // redundant with it: this is the one function that sends a query off the
+        // box, so the invariant belongs here rather than only at whichever call
+        // sites happen to exist today. Read straight off the wire — the caller
+        // has already parsed the message and a second parse per upstream query
+        // would buy nothing.
+        if wire_question_is_arpa(query_data) {
+            debug!("Refusing to resolve an arpa. name upstream");
+            return Ok(make_error_response(query_data, ResponseCode::Refused));
+        }
         match **self.resolution_mode.load() {
             ResolutionMode::Forward => self.forward_query(query_data).await,
             ResolutionMode::Recursive => self.iterative_query(query_data, edns_ctx).await,
@@ -3495,6 +3533,46 @@ fn wire_qtype(query: &[u8]) -> Option<RecordType> {
     Some(RecordType::from((hi << 8) | lo))
 }
 
+/// Whether the question's name is in the `arpa.` subtree, read straight off the
+/// wire.
+///
+/// The byte-level twin of [`crate::resolver::is_arpa_subtree`], for the same
+/// reason [`wire_qtype`] exists: the caller has already parsed this message, and
+/// re-parsing it to apply one policy gate would put a second allocation-heavy
+/// parse on every upstream query. It answers the same question — is the **last**
+/// label exactly `arpa` — so `notarpa.` and `arpa.example.com.` are not in the
+/// subtree.
+///
+/// A malformed or truncated question yields `false`: it is not a name we can
+/// claim is ours, and the resolution modes below reject it as FORMERR anyway.
+fn wire_question_is_arpa(query: &[u8]) -> bool {
+    // 12-byte header, then the QNAME labels. Question names are never
+    // compressed, so walking them is enough.
+    let mut pos = 12;
+    let mut last: Option<&[u8]> = None;
+    loop {
+        let Some(&label_len) = query.get(pos) else {
+            return false;
+        };
+        let label_len = label_len as usize;
+        // A compression pointer has no business in a question; treat it as
+        // unparseable rather than chasing it.
+        if label_len & 0xc0 != 0 {
+            return false;
+        }
+        pos += 1;
+        if label_len == 0 {
+            break;
+        }
+        let Some(label) = query.get(pos..pos + label_len) else {
+            return false;
+        };
+        last = Some(label);
+        pos += label_len;
+    }
+    last.is_some_and(|label| label.eq_ignore_ascii_case(b"arpa"))
+}
+
 /// Reads the RCODE nibble from a response header.
 fn wire_rcode(response: &[u8]) -> u8 {
     response.get(3).map(|b| b & 0x0f).unwrap_or(0)
@@ -4756,13 +4834,15 @@ mod tests {
         assert_eq!(resp.response_code(), ResponseCode::NXDomain);
         assert!(resp.answers().is_empty());
 
-        // Control: an address with no entry falls through (ServFail, no
-        // forwarders), so the NXDOMAIN above is the entry and not a blanket
-        // refusal of reverse queries.
+        // Control: an address with no entry is not blocked, so the NXDOMAIN
+        // above is the entry and not a blanket refusal of reverse queries. It
+        // comes back REFUSED rather than resolved because `arpa.` is never
+        // resolved off this box — what this control turns on is that it is
+        // specifically *not* NXDOMAIN.
         let allowed = build_query("101.1.168.192.in-addr.arpa.", RecordType::PTR);
         let allowed_resp =
             Message::from_bytes(&server.handle_query(&allowed).await.unwrap()).unwrap();
-        assert_eq!(allowed_resp.response_code(), ResponseCode::ServFail);
+        assert_eq!(allowed_resp.response_code(), ResponseCode::Refused);
     }
 
     /// The local table is a blocklist like any other, so the allowlist overrides
@@ -4778,9 +4858,11 @@ mod tests {
 
             let query = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
             let resp = Message::from_bytes(&server.handle_query(&query).await.unwrap()).unwrap();
+            // REFUSED, not resolved: the allowlist lifts the block, and `arpa.`
+            // is then never resolved off this box. Not NXDOMAIN is the property.
             assert_eq!(
                 resp.response_code(),
-                ResponseCode::ServFail,
+                ResponseCode::Refused,
                 "the allowlist must override a local entry written as {entry}"
             );
         }
@@ -5007,11 +5089,13 @@ mod tests {
         assert_eq!(resp.response_code(), ResponseCode::NoError);
         assert_eq!(resp.answers().len(), 1);
 
-        // A reverse lookup with no local record is likewise not blocked; it
-        // falls through to SERVFAIL (no forwarders) rather than NXDOMAIN.
+        // A reverse lookup with no local record is likewise not blocked. It is
+        // REFUSED — `arpa.` is answered from local data or not at all — and the
+        // point of the pair is that it is REFUSED rather than NXDOMAIN, which is
+        // what a blocklist firing would have produced.
         let q2 = build_query("200.1.168.192.in-addr.arpa.", RecordType::PTR);
         let resp2 = Message::from_bytes(&server.handle_query(&q2).await.unwrap()).unwrap();
-        assert_eq!(resp2.response_code(), ResponseCode::ServFail);
+        assert_eq!(resp2.response_code(), ResponseCode::Refused);
     }
 
     #[tokio::test]

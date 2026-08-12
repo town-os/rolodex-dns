@@ -13,6 +13,11 @@
 //! UDP query socket is connected to the nameserver so the kernel drops
 //! datagrams from any other source. UDP is used first, with automatic TCP
 //! fallback when a response is truncated.
+//!
+//! One namespace is never resolved here at all: `arpa.` and everything under
+//! it is this server's to answer from local data, so a lookup that reaches this
+//! module for such a name is REFUSED without a packet being sent. See
+//! [`is_arpa_subtree`].
 
 use anyhow::{Context, Result, bail};
 use dashmap::DashMap;
@@ -29,7 +34,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::delegation_cache::DelegationCache;
 use crate::dnssec_validate::{self as validate, Anchors, Denial, Denied, KeySource, Verdict};
@@ -96,6 +101,19 @@ const DEFAULT_FAILURE_BACKOFF: Duration = Duration::from_secs(2);
 /// Ceiling on the backoff, so a server that has been down a long time is still
 /// retried regularly rather than written off forever.
 const MAX_FAILURE_BACKOFF: Duration = Duration::from_secs(300);
+
+/// How long a root server that served DNSSEC we could not validate is *omitted*
+/// from the root set. Doubles per consecutive offence up to
+/// [`MAX_BLAME_BACKOFF`], and is cleared only by an answer that validates.
+///
+/// Deliberately not [`DEFAULT_FAILURE_BACKOFF`], because the two claims differ.
+/// A timeout says "this server was busy, try again shortly"; a signature that
+/// does not check out against our own trust anchor says "this server told me
+/// something untrue", and the second has no business recovering on a 2s curve.
+const DEFAULT_BLAME_BACKOFF: Duration = Duration::from_secs(15 * 60);
+/// Ceiling on the blame backoff: a persistent liar earns its way to a day and
+/// stays there, rather than being written off forever.
+const MAX_BLAME_BACKOFF: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// The IANA root server IPv4 addresses (the "root hints").
 ///
@@ -192,10 +210,40 @@ impl Resolution {
 /// a dead server a 1-in-33,000 share, so it is never retried and never recovers.
 /// An explicit backoff recovers in bounded time no matter what the peers' absolute
 /// speeds are.
+///
+/// Blame lives here too, alongside the transport fields rather than in a parallel
+/// map, because it is another fact about the same server — but it is cleared by
+/// completely different events. See [`IterativeResolver::note_success`].
 #[derive(Debug, Clone)]
 struct ServerHealth {
     consecutive_failures: u32,
     retry_after: Instant,
+    /// Consecutive answers from this root server whose DNSSEC did not validate
+    /// against our trust anchor. Cleared **only** by an answer that validates —
+    /// not by expiry, and not by a prompt reply — so a root that has lied three
+    /// times and served nothing since returns at the fourth step of the curve
+    /// rather than the first.
+    blame_count: u32,
+    /// When this server's omission from the root set ends, if it is omitted.
+    blamed_until: Option<Instant>,
+}
+
+impl ServerHealth {
+    /// A fresh entry, with nothing held against the server.
+    fn clean() -> Self {
+        Self {
+            consecutive_failures: 0,
+            retry_after: Instant::now(),
+            blame_count: 0,
+            blamed_until: None,
+        }
+    }
+
+    /// Whether anything is still recorded about this server. An entry that says
+    /// nothing is dropped rather than kept forever.
+    fn is_empty(&self) -> bool {
+        self.consecutive_failures == 0 && self.blame_count == 0 && self.blamed_until.is_none()
+    }
 }
 
 /// Marker error: every nameserver we were handed for a zone failed to answer.
@@ -263,6 +311,67 @@ enum TrustOutcome {
     Failed(Verdict),
 }
 
+/// What establishing the *root* zone's keys produced.
+///
+/// The two failures at the top of the chain are not the same failure, and
+/// flattening them into one `Err` is what let an attacker take validation out of
+/// the path: an `Err` reads to the tier chain as "the roots are unreachable" and
+/// sends the query to an upstream that does not validate. So a *cryptographic*
+/// failure is a verdict — the answer is withheld and the chain stops — while a
+/// *transport* failure stays an error and falls through, or an unplugged network
+/// would hard-fail every lookup on the box.
+#[derive(Debug)]
+enum RootTrust {
+    /// The root's DNSKEY RRset is anchored.
+    Trust(TrustState),
+    /// The RRset arrived and could not be anchored. Withhold.
+    Failed(Verdict),
+}
+
+/// Why a zone's DNSKEY RRset could not be established.
+///
+/// The split is the whole point of the type: `Unreachable` is a fact about the
+/// network, `Invalid` is a fact about what a server said. They are the same
+/// `anyhow::Error` at every call site below the root, and they must not be at
+/// the root.
+#[derive(Debug)]
+enum DnskeyError {
+    /// The RRset could not be obtained at all.
+    Unreachable(anyhow::Error),
+    /// The RRset arrived and did not validate against the key source, together
+    /// with the address that served it — which is who blame attaches to.
+    Invalid { from: IpAddr, reason: String },
+}
+
+impl std::fmt::Display for DnskeyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unreachable(e) => write!(f, "{e:#}"),
+            Self::Invalid { reason, .. } => write!(f, "{reason}"),
+        }
+    }
+}
+
+/// A validated DNSKEY RRset, and where it came from.
+#[derive(Debug)]
+struct ValidatedKeys {
+    keys: Vec<hickory_proto::dnssec::rdata::DNSKEY>,
+    ttl: u32,
+    /// The server that produced it. At the root this is the address whose blame
+    /// a validating answer clears.
+    from: IpAddr,
+}
+
+/// A nameserver's response, together with the address that produced it.
+///
+/// Without the address a bogus verdict cannot be blamed on anyone: "some server
+/// for this zone lied" is not a statement any policy can act on.
+#[derive(Debug)]
+struct Answered {
+    message: Message,
+    from: IpAddr,
+}
+
 /// Classification of a single nameserver response relative to the query.
 #[derive(Debug)]
 enum Step {
@@ -316,6 +425,11 @@ pub struct IterativeResolver {
     health: Arc<DashMap<SocketAddr, ServerHealth>>,
     /// First-failure backoff (doubles per consecutive failure).
     backoff_base: Duration,
+    /// First-offence omission for a root server that serves invalid DNSSEC
+    /// (doubles per consecutive offence).
+    blame_base: Duration,
+    /// Ceiling on that omission.
+    blame_cap: Duration,
     /// TTL applied where a record or negative carries none of its own.
     default_ttl: u32,
     /// Whether root priming has been *attempted*.
@@ -363,6 +477,8 @@ impl IterativeResolver {
             latency: Arc::new(LatencyTracker::new(LATENCY_EMA_ALPHA)),
             health: Arc::new(DashMap::new()),
             backoff_base: DEFAULT_FAILURE_BACKOFF,
+            blame_base: DEFAULT_BLAME_BACKOFF,
+            blame_cap: MAX_BLAME_BACKOFF,
             default_ttl: DEFAULT_TTL,
             primed: Arc::new(AtomicBool::new(false)),
             anchors: None,
@@ -402,8 +518,12 @@ impl IterativeResolver {
             delegations: Arc::clone(&self.delegations),
             records: Arc::clone(&self.records),
             latency: Arc::clone(&self.latency),
+            // Health travels too, and with it blame: a root server that lied is
+            // the same lying server after the hints are swapped.
             health: Arc::clone(&self.health),
             backoff_base: self.backoff_base,
+            blame_base: self.blame_base,
+            blame_cap: self.blame_cap,
             default_ttl: self.default_ttl,
             primed: Arc::clone(&self.primed),
             anchors: self.anchors.clone(),
@@ -498,6 +618,45 @@ impl IterativeResolver {
         self
     }
 
+    /// Overrides the omission applied to a root server that serves invalid
+    /// DNSSEC: the first offence's duration and the ceiling it doubles up to.
+    ///
+    /// Public for the same reason as [`Self::with_failure_backoff`], and more
+    /// urgently: with a 15-minute base and a 24-hour cap, a test that had to sit
+    /// out the production curve is not a slow test, it is a test that cannot be
+    /// written. Both ends are overridable because the escalation stopping at the
+    /// cap is itself a property worth pinning.
+    pub fn with_blame_backoff(mut self, base: Duration, cap: Duration) -> Self {
+        self.blame_base = base;
+        self.blame_cap = cap;
+        self
+    }
+
+    /// Whether `server` is currently omitted from the root set for serving
+    /// DNSSEC that did not validate against our trust anchor.
+    ///
+    /// Public so a test can tell "omitted" apart from "merely slow" — the two
+    /// look identical from the outside on any single query, and conflating them
+    /// is how a blame bug hides.
+    pub fn blamed_root(&self, server: IpAddr) -> bool {
+        let addr = SocketAddr::new(server, self.port);
+        self.health
+            .get(&addr)
+            .and_then(|h| h.blamed_until)
+            .is_some_and(|until| until > Instant::now())
+    }
+
+    /// How many root servers are currently omitted. Sampled by the metrics
+    /// collector: a long-lived silent exclusion of part of the root set is
+    /// exactly the state an operator needs to see, and nothing else reports it.
+    pub fn blamed_root_count(&self) -> usize {
+        let now = Instant::now();
+        self.health
+            .iter()
+            .filter(|entry| entry.blamed_until.is_some_and(|until| until > now))
+            .count()
+    }
+
     /// Resolves `name`/`qtype` iteratively from the root servers.
     pub async fn resolve(
         &self,
@@ -562,17 +721,12 @@ impl IterativeResolver {
         // answer section, the addresses in the additional section), so its glue would
         // be thrown away before we ever saw it. Priming needs the raw response.
         let budget = QueryBudget::new(MAX_QUERIES_PER_RESOLUTION);
+        let hints = self.usable_roots(self.root_hints.clone());
         let response = match self
-            .query_servers(
-                &self.root_hints,
-                &Name::root(),
-                RecordType::NS,
-                qclass,
-                &budget,
-            )
+            .query_servers(&hints, &Name::root(), RecordType::NS, qclass, &budget)
             .await
         {
-            Ok(response) => response,
+            Ok(answered) => answered.message,
             Err(e) => {
                 debug!("root priming failed ({e}); continuing with the static root hints");
                 return;
@@ -646,6 +800,20 @@ impl IterativeResolver {
             bail!("maximum resolution depth exceeded resolving {}", name);
         }
 
+        // `arpa.` is never resolved off-box (see [`is_arpa_subtree`]). This
+        // resolver's whole job is to send queries to somebody else, so for that
+        // subtree it declines outright — no packet, no root, no forwarder. It is
+        // checked here rather than in `resolve` so that it also covers a CNAME
+        // target and a glue-less NS hostname that point into the subtree.
+        //
+        // REFUSED, not NXDOMAIN: we are declining to answer for a namespace, not
+        // asserting the name does not exist. Whoever holds local data for it —
+        // the query path above — has already had its turn.
+        if is_arpa_subtree(name) {
+            debug!("refusing {name} {qtype}: the arpa. subtree is never resolved externally");
+            return Ok(Resolution::answer(ResponseCode::Refused, Vec::new()));
+        }
+
         // Anything we already learned for this exact (name, type) — a CNAME target
         // chased earlier, an NS hostname resolved for a glueless delegation, a
         // previous answer — is still good for as long as its TTL says.
@@ -660,6 +828,14 @@ impl IterativeResolver {
         }
 
         if let Some((zone, servers, trust)) = self.warm_start(name) {
+            let start_zone = Name::from_ascii(&zone).unwrap_or_else(|_| Name::root());
+            // A cached `.` delegation is the primed root NS set, and blamed roots
+            // are omitted from it exactly as they are from the hints.
+            let servers = if start_zone.is_root() {
+                self.usable_roots(servers)
+            } else {
+                servers
+            };
             // Work on a copy of the CNAME trail: a failed attempt must not leave
             // partial state that makes the retry look like a CNAME loop.
             let mut attempt_seen = cname_seen.clone();
@@ -671,7 +847,7 @@ impl IterativeResolver {
                 &mut attempt_seen,
                 budget,
                 servers,
-                Name::from_ascii(&zone).unwrap_or_else(|_| Name::root()),
+                start_zone,
                 trust,
             ))
             .await
@@ -708,12 +884,23 @@ impl IterativeResolver {
         // failure there is fatal to the lookup rather than a downgrade, because
         // "we could not establish the root's keys" and "the root is unsigned" are
         // not the same statement and only one of them is ever true.
+        //
+        // *Which* kind of failure it was decides everything downstream: a root
+        // zone that will not validate is a withholding verdict (SERVFAIL, chain
+        // stops), while a root we could not reach stays an error and falls
+        // through to the next tier.
         let trust = match self.anchors.as_ref() {
-            Some(anchors) => Some(
-                self.root_trust(anchors, qclass, budget)
-                    .await
-                    .context("could not establish the root zone's DNSSEC keys")?,
-            ),
+            Some(anchors) => match self
+                .root_trust(anchors, qclass, budget)
+                .await
+                .context("could not establish the root zone's DNSSEC keys")?
+            {
+                RootTrust::Trust(state) => Some(state),
+                RootTrust::Failed(verdict) => {
+                    return Ok(Resolution::answer(ResponseCode::ServFail, Vec::new())
+                        .with_verdict(verdict));
+                }
+            },
             None => None,
         };
 
@@ -724,7 +911,7 @@ impl IterativeResolver {
             depth,
             cname_seen,
             budget,
-            self.root_hints.clone(),
+            self.usable_roots(self.root_hints.clone()),
             Name::root(),
             trust,
         ))
@@ -782,7 +969,8 @@ impl IterativeResolver {
         for _hop in 0..MAX_REFERRALS {
             let response = self
                 .query_servers(&servers, name, qtype, qclass, budget)
-                .await?;
+                .await?
+                .message;
 
             match classify(&response, qtype) {
                 Step::Answer(records) => {
@@ -927,7 +1115,6 @@ impl IterativeResolver {
                         );
                     }
                     let glue = glue_addresses(&in_bailiwick);
-                    self.cache_glue(&in_bailiwick);
 
                     servers = if !glue.is_empty() {
                         glue
@@ -938,9 +1125,6 @@ impl IterativeResolver {
                     if servers.is_empty() {
                         bail!("no reachable nameservers for delegation of {}", zone);
                     }
-                    // Remember the delegation so the next name in this zone starts
-                    // here instead of back at the root.
-                    self.delegations.insert(&zone, servers.clone(), ttl);
 
                     // Extend the chain of trust across the delegation *before*
                     // descending, so that whatever the child's servers say next is
@@ -960,10 +1144,28 @@ impl IterativeResolver {
                     trust = match outcome {
                         TrustOutcome::Trust(state) => state,
                         TrustOutcome::Failed(verdict) => {
+                            // Nothing learned from a referral we just refused to
+                            // verify may survive the rejection. No bogus data
+                            // reaches a client either way, but a delegation
+                            // cached here is an NS set we would keep using — and
+                            // it is written through to disk, so it would outlive
+                            // the restart as well.
                             return Ok(Resolution::answer(ResponseCode::ServFail, Vec::new())
                                 .with_verdict(verdict));
                         }
                     };
+
+                    // Past the gate: remember the delegation, so the next name in
+                    // this zone starts here instead of back at the root, and keep
+                    // the glue that got us here.
+                    //
+                    // The glue was already safe on its own — `RecordCache::insert`
+                    // flags it unproven, so it could never be mistaken for
+                    // validated data — and it is cached here rather than earlier
+                    // so that one rule covers both: a walk that ends Bogus leaves
+                    // nothing behind.
+                    self.delegations.insert(&zone, servers.clone(), ttl);
+                    self.cache_glue(&in_bailiwick);
                     current_zone = zone;
                 }
             }
@@ -983,22 +1185,24 @@ impl IterativeResolver {
         anchors: &Anchors,
         qclass: DNSClass,
         budget: &QueryBudget,
-    ) -> Result<TrustState> {
+    ) -> Result<RootTrust> {
         let root = Name::root();
         if let Some(state) = self.keys.get(&root) {
-            return Ok(state);
+            return Ok(RootTrust::Trust(state));
         }
 
         // Prefer the primed root NS set over the compiled-in hints, for the same
-        // reason `resolve_inner` does: the hints are a bootstrap.
+        // reason `resolve_inner` does: the hints are a bootstrap. Either way a
+        // root currently omitted for serving invalid DNSSEC is not in the set.
         let servers = self
             .delegations
             .best_match(&root)
             .map(|(_, servers)| servers)
             .filter(|servers| !servers.is_empty())
             .unwrap_or_else(|| self.root_hints.clone());
+        let servers = self.usable_roots(servers);
 
-        let (keys, ttl) = self
+        match self
             .fetch_dnskeys(
                 &root,
                 &servers,
@@ -1006,10 +1210,31 @@ impl IterativeResolver {
                 qclass,
                 budget,
             )
-            .await?;
-        let state = TrustState::Secure(Arc::new(keys));
-        self.keys.insert(&root, state.clone(), ttl);
-        Ok(state)
+            .await
+        {
+            Ok(validated) => {
+                // The only claim a root server makes that we can check without
+                // asking anybody else, and it checked out: this server is
+                // restored outright, escalation counter and all.
+                self.clear_blame(validated.from);
+                let state = TrustState::Secure(Arc::new(validated.keys));
+                self.keys.insert(&root, state.clone(), validated.ttl);
+                Ok(RootTrust::Trust(state))
+            }
+            // A root server told us something untrue. That is a verdict about the
+            // root zone *and* a fact about that server, so it withholds the
+            // answer and costs the responder its place in the root set.
+            Err(DnskeyError::Invalid { from, reason }) => {
+                self.blame_root(from, &reason);
+                Ok(RootTrust::Failed(Verdict::Bogus(format!(
+                    "the root zone's DNSKEY RRset did not validate against the configured \
+                     trust anchors: {reason}"
+                ))))
+            }
+            // Unreachable is not invalid: this stays an error, so the query falls
+            // through to the next tier rather than hard-failing.
+            Err(DnskeyError::Unreachable(e)) => Err(e),
+        }
     }
 
     /// Queries a zone's DNSKEY RRset and validates it against `source` — the
@@ -1021,20 +1246,32 @@ impl IterativeResolver {
         source: &KeySource<'_>,
         qclass: DNSClass,
         budget: &QueryBudget,
-    ) -> Result<(Vec<hickory_proto::dnssec::rdata::DNSKEY>, u32)> {
+    ) -> std::result::Result<ValidatedKeys, DnskeyError> {
         crate::metrics::metrics().dnssec_dnskey_lookups.inc();
-        let response = self
+        let answered = self
             .query_servers(servers, zone, RecordType::DNSKEY, qclass, budget)
             .await
-            .with_context(|| format!("could not fetch the DNSKEY RRset for {zone}"))?;
-        let answers = response.answers();
-        let now = crate::dnssec::now_secs()?;
+            .with_context(|| format!("could not fetch the DNSKEY RRset for {zone}"))
+            .map_err(DnskeyError::Unreachable)?;
+        let answers = answered.message.answers();
+        // No clock is a failure to *decide*, not a claim that the server lied —
+        // blaming somebody for our own broken clock would be absurd.
+        let now = crate::dnssec::now_secs().map_err(DnskeyError::Unreachable)?;
         // The answer section is passed as both the records and the signatures:
         // `validate_dnskey_rrset` filters each out by type, and a DNSKEY response
         // legitimately carries both in the one section.
-        let keys = validate::validate_dnskey_rrset(zone, answers, answers, source, now)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        Ok((keys, validate::min_ttl(answers, self.default_ttl)))
+        let keys =
+            validate::validate_dnskey_rrset(zone, answers, answers, source, now).map_err(|e| {
+                DnskeyError::Invalid {
+                    from: answered.from,
+                    reason: e.to_string(),
+                }
+            })?;
+        Ok(ValidatedKeys {
+            ttl: validate::min_ttl(answers, self.default_ttl),
+            keys,
+            from: answered.from,
+        })
     }
 
     /// Extends the chain of trust across a delegation from `parent` to `child`.
@@ -1122,9 +1359,9 @@ impl IterativeResolver {
                 .fetch_dnskeys(child, child_servers, &KeySource::Ds(&ds), qclass, budget)
                 .await
             {
-                Ok((keys, ttl)) => {
-                    let state = TrustState::Secure(Arc::new(keys));
-                    self.keys.insert(child, state.clone(), ttl);
+                Ok(validated) => {
+                    let state = TrustState::Secure(Arc::new(validated.keys));
+                    self.keys.insert(child, state.clone(), validated.ttl);
                     TrustOutcome::Trust(Some(state))
                 }
                 // A DS exists, so the zone claims to be signed; failing to get a
@@ -1372,7 +1609,7 @@ impl IterativeResolver {
         qtype: RecordType,
         qclass: DNSClass,
         budget: &QueryBudget,
-    ) -> Result<Message> {
+    ) -> Result<Answered> {
         let (query, id) = build_query(name, qtype, qclass, self.validating())?;
         for server in self.order_servers(servers) {
             // Every packet counts against the lookup's total allowance, so a
@@ -1392,7 +1629,10 @@ impl IterativeResolver {
             {
                 Ok(msg) => {
                     self.note_success(server, started.elapsed().as_secs_f64() * 1000.0);
-                    return Ok(msg);
+                    return Ok(Answered {
+                        message: msg,
+                        from: server,
+                    });
                 }
                 Err(e) => {
                     self.note_failure(server);
@@ -1407,11 +1647,105 @@ impl IterativeResolver {
             .context(format!("all nameservers failed for {name}")))
     }
 
-    /// A server answered: record its real latency and clear any failure state.
+    /// A server answered: record its real latency and clear any *transport*
+    /// failure state.
+    ///
+    /// Deliberately narrower than dropping the whole entry. Blame is a statement
+    /// about what a server said, not about how fast it said it, and a hijacked
+    /// root answers promptly by construction — so removing the entry here would
+    /// let the very server we distrust clear its own record by returning a
+    /// packet. The entry is dropped only once nothing at all is left in it.
     fn note_success(&self, server: IpAddr, latency_ms: f64) {
         let addr = SocketAddr::new(server, self.port);
         self.latency.record(addr, latency_ms);
-        self.health.remove(&addr);
+        if let Some(mut entry) = self.health.get_mut(&addr) {
+            entry.consecutive_failures = 0;
+            entry.retry_after = Instant::now();
+        }
+        self.health.remove_if(&addr, |_, h| h.is_empty());
+    }
+
+    /// A root server answered with DNSSEC that does not validate against our
+    /// trust anchor: omit it from the root set, for longer each time.
+    ///
+    /// Only ever called for the root zone's own DNSKEY RRset checked against the
+    /// anchor. That is the one thing a root server tells us that we can verify
+    /// without asking anybody else, which is what makes "this root server is
+    /// lying" a statement we can stand behind rather than an inference from
+    /// somebody else's mistake.
+    ///
+    /// In memory only: a restarted box re-trusts every root until one misbehaves
+    /// again.
+    fn blame_root(&self, server: IpAddr, reason: &str) {
+        let addr = SocketAddr::new(server, self.port);
+        let mut entry = self.health.entry(addr).or_insert_with(ServerHealth::clean);
+        entry.blame_count = entry.blame_count.saturating_add(1);
+
+        let shift = entry.blame_count.saturating_sub(1).min(16);
+        let penalty = self
+            .blame_base
+            .saturating_mul(1u32 << shift)
+            .min(self.blame_cap);
+        entry.blamed_until = Some(Instant::now() + penalty);
+        warn!(
+            "root server {} served DNSSEC that does not validate ({} in a row); \
+             omitting it for {:?}: {}",
+            addr, entry.blame_count, penalty, reason
+        );
+    }
+
+    /// A root server produced an answer that validates: it is fully restored.
+    ///
+    /// The escalation counter is cleared here and **nowhere else** — not by
+    /// expiry, not by a prompt reply. A root that has lied three times and served
+    /// nothing since therefore returns at the fourth step of the curve rather
+    /// than the first, which is what stops a persistent liar from resetting
+    /// itself simply by waiting.
+    fn clear_blame(&self, server: IpAddr) {
+        let addr = SocketAddr::new(server, self.port);
+        let mut cleared = false;
+        if let Some(mut entry) = self.health.get_mut(&addr) {
+            cleared = entry.blame_count > 0 || entry.blamed_until.is_some();
+            entry.blame_count = 0;
+            entry.blamed_until = None;
+        }
+        self.health.remove_if(&addr, |_, h| h.is_empty());
+        if cleared {
+            debug!("root server {addr} produced a validating answer; blame cleared");
+        }
+    }
+
+    /// The root candidate set with blamed servers removed.
+    ///
+    /// Omission is real removal — a blamed root is filtered out *before*
+    /// [`Self::order_servers`] ranks anything, so no ordering rule can bring it
+    /// back as a last resort.
+    ///
+    /// **It never empties.** If every root is blamed the filter is not applied at
+    /// all: thirteen rogue servers is not what that state means — it is the zone
+    /// or our own trust anchor, a different fault with a different owner — and an
+    /// empty candidate set yields "no nameservers", which reads as *unreachable*
+    /// and falls through to an upstream that does not validate. That is exactly
+    /// the hole the withholding root verdict closes, and blame must not reopen
+    /// it. In that state blame stops being the deciding input: the root zone
+    /// fails to validate, the answer is withheld, and the tier machinery governs.
+    fn usable_roots(&self, servers: Vec<IpAddr>) -> Vec<IpAddr> {
+        if servers.is_empty() {
+            return servers;
+        }
+        let usable: Vec<IpAddr> = servers
+            .iter()
+            .copied()
+            .filter(|s| !self.blamed_root(*s))
+            .collect();
+        if usable.is_empty() {
+            warn!(
+                "every root server is blamed for serving invalid DNSSEC; \
+                 deferring to auto mode"
+            );
+            return servers;
+        }
+        usable
     }
 
     /// A server failed: back it off, doubling per consecutive failure.
@@ -1423,10 +1757,7 @@ impl IterativeResolver {
     /// recovers in bounded time regardless of the peers' absolute speed.
     fn note_failure(&self, server: IpAddr) {
         let addr = SocketAddr::new(server, self.port);
-        let mut entry = self.health.entry(addr).or_insert(ServerHealth {
-            consecutive_failures: 0,
-            retry_after: Instant::now(),
-        });
+        let mut entry = self.health.entry(addr).or_insert_with(ServerHealth::clean);
         entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
 
         let shift = entry.consecutive_failures.saturating_sub(1).min(16);
@@ -1699,6 +2030,26 @@ fn validate_question(
 /// Case-insensitive DNS name comparison.
 fn names_equal(a: &Name, b: &Name) -> bool {
     a.to_ascii().eq_ignore_ascii_case(&b.to_ascii())
+}
+
+/// Whether `name` is `arpa.` or lives beneath it — the subtree this server
+/// never resolves off-box.
+///
+/// `arpa.` is answered from local data or not at all: a stored PTR, a managed
+/// reverse zone, and otherwise REFUSED. Nothing under it is ever sent to an
+/// upstream, a forwarder or a root server, so this predicate is the policy and
+/// both gates ([`IterativeResolver::resolve_inner`] and the query path in
+/// `dns_server`) ask it the same question.
+///
+/// Matched on the **label boundary**, never as a string suffix: a rooted name is
+/// in the subtree if and only if its final label is exactly `arpa`, so
+/// `notarpa.` and `arpa.example.com.` fall outside for free, which a
+/// `ends_with("arpa.")` test would get wrong in the first case and a `contains`
+/// in both. Comparing the last label costs no allocation and needs no table.
+pub fn is_arpa_subtree(name: &Name) -> bool {
+    name.iter()
+        .next_back()
+        .is_some_and(|label| label.eq_ignore_ascii_case(b"arpa"))
 }
 
 /// Classifies a nameserver response relative to the requested type.
@@ -2302,6 +2653,168 @@ mod tests {
                 DNSClass::CH
             )
             .is_err()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The `arpa.` subtree
+    // -----------------------------------------------------------------------
+
+    /// The rule is a *label* test, and both halves matter: a suffix match would
+    /// silently swallow `notarpa.` and anything else ending in those four
+    /// letters, refusing to resolve somebody's perfectly ordinary domain, and a
+    /// `contains` would do it for `arpa.example.com.` as well.
+    #[test]
+    fn the_arpa_rule_matches_on_the_label_boundary() {
+        for inside in [
+            "arpa.",
+            "ipv4only.arpa.",
+            "in-addr.arpa.",
+            "1.0.0.127.in-addr.arpa.",
+            "home.arpa.",
+            // Case is not significant in DNS names, and an attacker picks the
+            // spelling. This must not be a way in or out of the subtree.
+            "IPV4ONLY.ARPA.",
+            "ArPa.",
+        ] {
+            assert!(
+                is_arpa_subtree(&name(inside)),
+                "{inside} is in the arpa. subtree"
+            );
+        }
+
+        for outside in [
+            ".",
+            "notarpa.",
+            "sharpa.",
+            "arpa.example.com.",
+            "arpa.test.",
+            "arpanet.",
+            "com.",
+        ] {
+            assert!(
+                !is_arpa_subtree(&name(outside)),
+                "{outside} is NOT in the arpa. subtree"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Blame
+    // -----------------------------------------------------------------------
+
+    fn blaming_resolver() -> IterativeResolver {
+        IterativeResolver::with_defaults()
+            .with_blame_backoff(Duration::from_millis(50), Duration::from_millis(120))
+    }
+
+    /// One lie omits a root; each further lie omits it for longer, and the
+    /// growth stops at the cap rather than running away.
+    #[test]
+    fn blame_omits_a_root_and_escalates_to_the_cap() {
+        let r = blaming_resolver();
+        let root = ROOT_HINTS[0];
+        assert!(!r.blamed_root(root), "nothing is held against it yet");
+
+        r.blame_root(root, "test");
+        assert!(r.blamed_root(root));
+        assert_eq!(r.blamed_root_count(), 1);
+
+        // 50ms, then 100ms, then 200ms — except the cap is 120ms.
+        let penalty = |r: &IterativeResolver| {
+            let addr = SocketAddr::new(root, r.port());
+            r.health
+                .get(&addr)
+                .and_then(|h| h.blamed_until)
+                .map(|until| until.saturating_duration_since(Instant::now()))
+                .unwrap_or_default()
+        };
+        let first = penalty(&r);
+        r.blame_root(root, "test");
+        let second = penalty(&r);
+        assert!(
+            second > first,
+            "the second offence must cost more than the first ({second:?} vs {first:?})"
+        );
+        r.blame_root(root, "test");
+        let third = penalty(&r);
+        assert!(
+            third <= Duration::from_millis(120),
+            "the escalation must stop at the cap, got {third:?}"
+        );
+    }
+
+    /// A prompt reply is not an apology. `note_success` clearing the whole
+    /// health entry would let the very server we distrust wipe its own record by
+    /// answering a packet — which a hijacked root does by definition.
+    #[test]
+    fn blame_survives_a_transport_success() {
+        let r = blaming_resolver();
+        let root = ROOT_HINTS[0];
+        r.blame_root(root, "test");
+        r.note_success(root, 0.2);
+        assert!(
+            r.blamed_root(root),
+            "a successful exchange must not clear blame"
+        );
+
+        // The transport half *is* cleared, or an ordinary backoff would become
+        // permanent.
+        r.note_failure(root);
+        assert!(r.backed_off(root));
+        r.note_success(root, 0.2);
+        assert!(!r.backed_off(root), "transport health recovers on success");
+        assert!(r.blamed_root(root), "and blame is still there");
+    }
+
+    /// Only a validating answer clears the escalation counter. A root that lied
+    /// twice and then waited out its penalty must come back at the third step of
+    /// the curve, not the first.
+    #[test]
+    fn time_alone_does_not_forgive() {
+        let r = IterativeResolver::with_defaults()
+            .with_blame_backoff(Duration::from_millis(1), Duration::from_secs(60));
+        let root = ROOT_HINTS[0];
+        r.blame_root(root, "test");
+        r.blame_root(root, "test");
+        std::thread::sleep(Duration::from_millis(10));
+        assert!(!r.blamed_root(root), "the penalty has expired");
+
+        // Expiry did not reset the counter, so the next offence is the *third*
+        // step (4ms), not the first (1ms).
+        let r = r.with_blame_backoff(Duration::from_secs(1), Duration::from_secs(60));
+        r.blame_root(root, "test");
+        let addr = SocketAddr::new(root, r.port());
+        let count = r.health.get(&addr).map(|h| h.blame_count).unwrap_or(0);
+        assert_eq!(count, 3, "the escalation counter survived the expiry");
+
+        r.clear_blame(root);
+        assert!(!r.blamed_root(root), "a validating answer restores it");
+        r.blame_root(root, "test");
+        let count = r.health.get(&addr).map(|h| h.blame_count).unwrap_or(0);
+        assert_eq!(count, 1, "and it starts again from the first step");
+    }
+
+    /// Omission must never empty the root set: an empty candidate list is
+    /// "unreachable", which falls through to an upstream that does not validate,
+    /// and that is the hole the withholding root verdict exists to close.
+    #[test]
+    fn the_root_filter_never_empties() {
+        let r = blaming_resolver();
+        let roots = vec![ROOT_HINTS[0], ROOT_HINTS[1], ROOT_HINTS[2]];
+
+        r.blame_root(ROOT_HINTS[0], "test");
+        let usable = r.usable_roots(roots.clone());
+        assert_eq!(usable.len(), 2, "the blamed root is really removed");
+        assert!(!usable.contains(&ROOT_HINTS[0]));
+
+        for root in &roots {
+            r.blame_root(*root, "test");
+        }
+        assert_eq!(
+            r.usable_roots(roots.clone()),
+            roots,
+            "with every root blamed the filter is not applied at all"
         );
     }
 }

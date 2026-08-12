@@ -294,7 +294,13 @@ async fn test_local_rbl_ip_entry_is_nxdomain_over_udp() {
         &build_query("101.1.168.192.in-addr.arpa.", RecordType::PTR),
     )
     .await;
-    assert_eq!(allowed.response_code(), ResponseCode::ServFail);
+    assert_eq!(
+        allowed.response_code(),
+        ResponseCode::Refused,
+        "an unlisted reverse name is not blocked — it is REFUSED because `arpa.` \
+         is never resolved off this box, and specifically not NXDOMAIN, which is \
+         what a blocklist that blocked everything would return"
+    );
 }
 
 /// The same entry written the other way — as the reverse name `dig -x` prints —
@@ -322,7 +328,13 @@ async fn test_local_rbl_reverse_name_entry_is_nxdomain_over_udp() {
         &build_query("101.1.168.192.in-addr.arpa.", RecordType::PTR),
     )
     .await;
-    assert_eq!(allowed.response_code(), ResponseCode::ServFail);
+    assert_eq!(
+        allowed.response_code(),
+        ResponseCode::Refused,
+        "an unlisted reverse name is not blocked — it is REFUSED because `arpa.` \
+         is never resolved off this box, and specifically not NXDOMAIN, which is \
+         what a blocklist that blocked everything would return"
+    );
 }
 
 /// A local entry naming a forward name blocks it (step 7), and the same gate
@@ -530,8 +542,10 @@ async fn test_allowlist_overrides_local_entries_over_udp() {
             .unwrap();
         assert_eq!(
             udp_query(addr, &query).await.response_code(),
-            ResponseCode::ServFail,
-            "the allowlist must lift local entry {entry}"
+            ResponseCode::Refused,
+            "the allowlist must lift local entry {entry} — the name is then no \
+             longer blocked, and is REFUSED because `arpa.` is never resolved \
+             off this box"
         );
     }
 }

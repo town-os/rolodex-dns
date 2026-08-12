@@ -47,7 +47,7 @@ New here? Start with the **[Configuration Guide](CONFIGURATION.md)** — a task-
 - **Integrated DHCPv4 server**: Per-scope address pools with sticky MAC bindings, automatic A/PTR registration, certificate delivery via site-specific options, and a background lease sweep
 - **Automatic reverse PTR records**: Optional (`dns.auto_ptr`) maintenance of matching `in-addr.arpa`/`ip6.arpa` PTRs for A/AAAA records added through gRPC
 - **Proxy support**: Forward DNS queries through HTTP CONNECT, SOCKS5, or DoH proxy
-- **Prometheus metrics**: an optional, off-by-default `/metrics` endpoint exposing 77 metric families with bounded label cardinality — including per-stage answer attribution and per-TLD isolation, so the split-horizon pipeline is legible from outside. Query names are never labels
+- **Prometheus metrics**: an optional, off-by-default `/metrics` endpoint exposing 78 metric families with bounded label cardinality — including per-stage answer attribution and per-TLD isolation, so the split-horizon pipeline is legible from outside. Query names are never labels
 - **SQLite persistence**: DNS records persist across restarts
 - **TLS hot-reload (partial)**: `TlsManager` rebuilds its `rustls::ServerConfig` from the configured PEM files on demand and publishes it to watchers, keeping the previous certificate serving if the rebuild fails. **Not yet wired to the listeners** — each of DoT/DoH/DoQ/ACME takes a one-time config snapshot at startup, so a renewed certificate still requires a restart to be served
 - **Performance**: Multi-threaded tokio runtime, lock-free RBL and resolver state (`AtomicBool` + `ArcSwap` + atomics), in-memory boot caches for scopes/zones/TLDs/RBL entries, UDP socket pool for upstream forwarding, and DashMap/DashSet concurrent caching throughout
@@ -1394,6 +1394,10 @@ Names that are not satisfied locally are resolved according to `resolution.mode`
 | `recursive` | Iterative from the root servers only; no upstream resolver is ever contacted |
 | `forward` | Forward to the configured `forwarders` only |
 
+**`arpa.` is never resolved off this box.** In every mode, `arpa.` and everything under it is answered from local data — a stored PTR, a scoped record, a managed or authoritative reverse zone — or **REFUSED**. Nothing in the subtree is sent to a root server, a forwarder or an encrypted upstream. REFUSED rather than NXDOMAIN because the server is declining to answer for a namespace, not claiming the name does not exist.
+
+The rule matches on the label boundary, so `notarpa.` and `arpa.example.com` are ordinary names and resolve normally. Two consequences worth knowing before you enable this on a box people use: a reverse lookup for an address you hold no data for is refused rather than answered from the internet (`dig -x 8.8.8.8`), and `ipv4only.arpa` is refused, which a NAT64-discovering client reads as "no NAT64 here".
+
 ### The `auto` Fallback Chain
 
 Tiers are tried most-preferred (most-trusted) first:
@@ -1516,12 +1520,15 @@ How it behaves in practice:
 - **RRSIG/NSEC/NSEC3 are stripped for a client that did not set DO** (RFC 4035 §3.2.1), unless it asked for that type by name — a signed A record roughly triples in size, and a large answer to a small question is the amplification shape `security.recursion_cidrs` exists to close.
 - **Unsupported algorithms are Insecure, not Bogus** (RFC 6840 §5.11): our missing algorithm is not the zone's outage. RSA/SHA-1/256/512, both ECDSA curves and Ed25519 all verify. NSEC3 iteration counts above 100 are treated as insecure rather than computed (RFC 9276).
 - **Validation costs roughly one extra query per zone on the path**, so the per-lookup query budget gains 32 on top of the base 64 when validation is on.
+- **A rejected answer is rejected, not re-asked.** On the roots tier a withholding verdict is a *definitive* SERVFAIL: the query does not fall through to the encrypted upstream or a forwarder, nothing is cached, and a referral that failed to verify leaves no delegation or glue behind.
+- **A root zone that will not validate is refused too.** Failing to anchor the root's own DNSKEY used to surface as an error, which the fallback chain read as "the roots are unreachable" and answered from an upstream that does not validate — so breaking root DNSKEY retrieval took validation out of the path without producing a single bogus verdict. It is now a verdict. A root we cannot *reach* still falls through, deliberately: unreachable is not invalid. The trade-off is real and worth stating — a trust anchor this build does not know about becomes a DNS outage rather than a silent degrade, and `dnssec.validate: false` is the escape hatch.
+- **A root server that serves invalid DNSSEC is dropped from the root set** for 15 minutes, doubling per offence to a 24-hour cap, on the one claim we can check without asking anyone else: its root DNSKEY against the local anchor. The penalty survives the server answering promptly, is cleared only by an answer that *validates* (never by waiting), and is never applied to the last remaining root — every root failing at once means the zone or the anchor, not thirteen rogue servers. It applies to root servers only; below the root, a validation failure is usually the zone's own signing error, and those already fail closed. Blame is in memory and does not survive a restart. Watch `rolodex_dns_dnssec_blamed_roots`.
 
 Setting `dnssec.validate: false` resolves exactly as before: no DO bit outbound, no chain of trust, no SERVFAIL for bogus data.
 
 **Trust anchors.** `dnssec.trust_anchors` takes DNSKEY presentation form — `"<flags> <protocol> <algorithm> <base64 key>"`, the four RDATA fields as `dig DNSKEY .` prints them. An override **replaces** the IANA keys rather than adding to them, so a private root is anchored to its own key and nothing else. Every field is validated at startup and a malformed anchor is a hard failure, not a silent fallback — an anchor that cannot match a real DNSKEY makes every signed zone fail with nothing pointing at the anchor as the cause.
 
-Verdicts are visible over Prometheus as `rolodex_dns_dnssec_verdicts_total{verdict}`, alongside `dnssec_servfail_total` and `key_cache_entries`.
+Verdicts are visible over Prometheus as `rolodex_dns_dnssec_verdicts_total{verdict}`, alongside `dnssec_servfail_total`, `dnssec_blamed_roots` and `key_cache_entries`.
 
 ## Distributing and Trusting the CA
 
@@ -1587,7 +1594,7 @@ metrics:
 
 The endpoint is unauthenticated and carries only aggregate counts — no query names, no record values, no certificate material. Bind it to a private address; the default is loopback. TLS is deliberately not offered here, since it would mean shipping a self-signed certificate to every scraper for an endpoint that should not be publicly reachable in the first place.
 
-77 metric families are exposed, all prefixed `rolodex_dns_`, covering queries, the response cache, blocklists (including refusals and rotated-out providers), upstream tiers, the iterative resolver, DNSSEC verdicts, split-horizon state, DHCP, ACME, and gRPC.
+78 metric families are exposed, all prefixed `rolodex_dns_`, covering queries, the response cache, blocklists (including refusals and rotated-out providers), upstream tiers, the iterative resolver, DNSSEC verdicts, split-horizon state, DHCP, ACME, and gRPC.
 
 The one worth knowing about is `rolodex_dns_answers_total{source}`, which reports which stage of the resolution order produced each answer — `cache`, `local`, `scoped`, `scope_fallback`, `tld_peer`, `blocklist`, `rbl`, `dns64`, `upstream`, `authoritative_nxdomain`, `refused`, `error`. Its total equals the query total, which is what makes the split-horizon pipeline legible from outside:
 
@@ -1714,6 +1721,11 @@ sum by (direction) (rate(rolodex_dns_upstream_tier_switches_total[5m]))
 # Signed data that failed to validate: an attack, or a zone that broke its own
 # signing. Distinct from `indeterminate`, which is a network fault.
 sum(rate(rolodex_dns_dnssec_verdicts_total{verdict="bogus"}[5m])) > 0
+
+# Root servers currently dropped for serving DNSSEC that does not validate.
+# A steady non-zero value is a hijacked or broken root instance; all of them at
+# once is the trust anchor or the root zone, not the servers.
+rolodex_dns_dnssec_blamed_roots > 0
 
 # Referrals discarded for delegating outside the answering zone
 rate(rolodex_dns_resolver_out_of_bailiwick_total[5m]) > 0
