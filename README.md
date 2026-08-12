@@ -1,6 +1,6 @@
 # Rolodex DNS
 
-> Languages: **English** | [繁體中文](README.zh-Hant.md) | [简体中文](README.zh-Hans.md)
+> Languages: **English** | [繁體中文](README.zh-TW.md) | [简体中文](README.zh-CN.md) | [Español (España)](README.es-ES.md) | [Español (México)](README.es-MX.md) | [日本語](README.ja.md)
 
 A privacy-first, split-horizon DNS server and recursive/forwarding resolver with encrypted transports, DNSSEC, and gRPC management, written in Rust.
 

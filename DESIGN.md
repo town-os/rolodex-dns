@@ -1,6 +1,6 @@
 # Rolodex DNS Design & API Reference
 
-> Languages: **English** | [繁體中文](DESIGN.zh-Hant.md) | [简体中文](DESIGN.zh-Hans.md)
+> Languages: **English** | [繁體中文](DESIGN.zh-TW.md) | [简体中文](DESIGN.zh-CN.md) | [Español (España)](DESIGN.es-ES.md) | [Español (México)](DESIGN.es-MX.md) | [日本語](DESIGN.ja.md)
 
 Rolodex DNS is a split-horizon DNS server and recursive/forwarding resolver with remote management via gRPC. It resolves iteratively from the root servers by default, falling back through encrypted and plaintext upstreams. It is written in Rust and licensed under AGPL-3.0-only.
 

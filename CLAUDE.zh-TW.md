@@ -4,7 +4,7 @@ Rolodex DNS 是一套分割視域（split-horizon）DNS 伺服器與遞迴／轉
 
 本檔案是開發工作的規則。它刻意保持精簡：**軟體做什麼**寫在 `DESIGN.md`，任何關於行為、架構或 API 介面的內容都不屬於這裡。
 
-> 語言：[English](CLAUDE.md) ｜ **繁體中文** ｜ [简体中文](CLAUDE.zh-Hans.md)
+> 語言：[English](CLAUDE.md) ｜ **繁體中文** ｜ [简体中文](CLAUDE.zh-CN.md) ｜ [Español (España)](CLAUDE.es-ES.md) ｜ [Español (México)](CLAUDE.es-MX.md) ｜ [日本語](CLAUDE.ja.md)
 
 ## 文件分工
 
@@ -16,7 +16,7 @@ Rolodex DNS 是一套分割視域（split-horizon）DNS 伺服器與遞迴／轉
 | `CHANGELOG.md` | 版本歷史。 |
 | `CLAUDE.md` | 本檔案。只放開發規則。 |
 
-這五份文件每一份都各有一個繁體（`.zh-Hant.md`）與簡體（`.zh-Hans.md`）中文譯本並列。**英文版是唯一的真實來源**：請先改英文版，並把譯本視為需要後續補上的工作，而不是第二個可以編輯的地方。沒有任何東西會驗證它們彼此一致——`tests/promql_docs_test.rs` 只讀英文的 `README.md` 與 `DESIGN.md`，因此譯本中的 PromQL 區塊或系列數量是文件，而不是一項受檢查的斷言。
+這五份文件每一份都各有繁體中文（`.zh-TW.md`）、簡體中文（`.zh-CN.md`）、歐洲西班牙文（`.es-ES.md`）、墨西哥西班牙文（`.es-MX.md`）與日文（`.ja.md`）譯本並列。**英文版是唯一的真實來源**：請先改英文版，並把譯本視為需要後續補上的工作，而不是第二個可以編輯的地方。沒有任何東西會驗證它們彼此一致——`tests/promql_docs_test.rs` 只讀英文的 `README.md` 與 `DESIGN.md`，因此譯本中的 PromQL 區塊或系列數量是文件，而不是一項受檢查的斷言。
 
 ## 規則
 

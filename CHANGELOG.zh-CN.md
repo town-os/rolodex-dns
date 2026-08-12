@@ -1,6 +1,6 @@
 # 变更日志
 
-> 语言：[English](CHANGELOG.md) ｜ [繁體中文](CHANGELOG.zh-Hant.md) ｜ **简体中文**
+> 语言：[English](CHANGELOG.md) ｜ [繁體中文](CHANGELOG.zh-TW.md) ｜ **简体中文** ｜ [Español (España)](CHANGELOG.es-ES.md) ｜ [Español (México)](CHANGELOG.es-MX.md) ｜ [日本語](CHANGELOG.ja.md)
 
 ## v0.5.0（2026-08-10）
 

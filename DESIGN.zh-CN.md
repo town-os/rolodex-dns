@@ -2,9 +2,9 @@
 
 Rolodex DNS 是一套分割视域（split-horizon）DNS 服务器与递归／转发解析器，通过 gRPC 进行远程管理。它默认从根服务器开始迭代解析，并依次退回加密与明文上游。它用 Rust 编写，许可证为 AGPL-3.0-only。
 
-> 语言：[English](DESIGN.md) ｜ [繁體中文](DESIGN.zh-Hant.md) ｜ **简体中文**
+> 语言：[English](DESIGN.md) ｜ [繁體中文](DESIGN.zh-TW.md) ｜ **简体中文** ｜ [Español (España)](DESIGN.es-ES.md) ｜ [Español (México)](DESIGN.es-MX.md) ｜ [日本語](DESIGN.ja.md)
 
-本文件是功能规格：架构、解析语义，以及所有管理界面（gRPC、CLI、Go 客户端、JavaScript 客户端、指标、配置）。开发规则——如何修改这份代码、如何验证一次改动——写在 `CLAUDE.zh-Hans.md`。`README.zh-Hans.md` 是面向用户的参考文档，`CONFIGURATION.zh-Hans.md` 是任务导向的配置指南，而 `CHANGELOG.zh-Hans.md` 是版本历史。
+本文件是功能规格：架构、解析语义，以及所有管理界面（gRPC、CLI、Go 客户端、JavaScript 客户端、指标、配置）。开发规则——如何修改这份代码、如何验证一次改动——写在 `CLAUDE.zh-CN.md`。`README.zh-CN.md` 是面向用户的参考文档，`CONFIGURATION.zh-CN.md` 是任务导向的配置指南，而 `CHANGELOG.zh-CN.md` 是版本历史。
 
 ## 源码布局
 

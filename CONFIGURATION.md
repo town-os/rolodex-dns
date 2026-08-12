@@ -1,6 +1,6 @@
 # Rolodex DNS Configuration Guide
 
-> Languages: **English** | [繁體中文](CONFIGURATION.zh-Hant.md) | [简体中文](CONFIGURATION.zh-Hans.md)
+> Languages: **English** | [繁體中文](CONFIGURATION.zh-TW.md) | [简体中文](CONFIGURATION.zh-CN.md) | [Español (España)](CONFIGURATION.es-ES.md) | [Español (México)](CONFIGURATION.es-MX.md) | [日本語](CONFIGURATION.ja.md)
 
 This is a task-oriented walkthrough: how to get a working server, then how to turn on each subsystem and why you would. For the exhaustive field list, see [Configuration Options](README.md#configuration-options) in the README.
 

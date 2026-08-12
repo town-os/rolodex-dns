@@ -2,7 +2,7 @@
 
 一套隐私优先的分割视域（split-horizon）DNS 服务器与递归／转发解析器，具备加密传输、DNSSEC 与 gRPC 管理，用 Rust 编写。
 
-> 语言：[English](README.md) ｜ [繁體中文](README.zh-Hant.md) ｜ **简体中文**
+> 语言：[English](README.md) ｜ [繁體中文](README.zh-TW.md) ｜ **简体中文** ｜ [Español (España)](README.es-ES.md) ｜ [Español (México)](README.es-MX.md) ｜ [日本語](README.ja.md)
 
 Rolodex DNS 提供 UDP、TCP、TLS（DoT）、HTTPS（DoH）与 QUIC（DoQ）上的 DNS 服务，并具备一个优先于外部解析的本地记录数据库。记录通过 gRPC 远程管理（TCP 上使用共享密钥认证，或通过 Unix 套接字免认证）。它支持带域名叠加的 TLD 级解析，因此内部的 DNS 表述一律优先。内置的 DNS 响应缓存可在某条记录被见过之后，防止查询泄漏到上游解析器。
 
@@ -12,7 +12,7 @@ Rolodex DNS 提供 UDP、TCP、TLS（DoT）、HTTPS（DoH）与 QUIC（DoQ）上
 
 Rolodex DNS 另外支持用于垃圾邮件／恶意软件过滤的实时黑洞列表（RBL）与域名封锁列表（DNSBL）、DNSSEC 区域签名、DANE TLSA 证书关联、内置的 ACME 证书颁发机构、DNS64 AAAA 合成、逐网络的 DNS 分隔，以及集成的 DHCPv4 服务器。
 
-第一次接触？请从 **[配置指南](CONFIGURATION.zh-Hans.md)** 开始——那是一份任务导向的逐步说明，从最小可用配置一路走到每个子系统，并为每种部署形态附上实例。
+第一次接触？请从 **[配置指南](CONFIGURATION.zh-CN.md)** 开始——那是一份任务导向的逐步说明，从最小可用配置一路走到每个子系统，并为每种部署形态附上实例。
 
 ## 功能特性
 
@@ -255,7 +255,7 @@ make clean-containers
 
 Rolodex DNS 从一个 YAML 文件读取配置（默认 `rolodex-dns.yml`，可用 `-c`／`--config` 覆盖）。每个段都是可选的——文件不存在时，服务器会以默认值启动。
 
-若想要一份逐个子系统把配置建立起来、并为每种部署形态附上实例的逐步说明，请见 **[配置指南](CONFIGURATION.zh-Hans.md)**。下面的参考是完整的字段列表。
+若想要一份逐个子系统把配置建立起来、并为每种部署形态附上实例的逐步说明，请见 **[配置指南](CONFIGURATION.zh-CN.md)**。下面的参考是完整的字段列表。
 
 ### 绑定地址语法
 
