@@ -299,24 +299,20 @@ Deja `recursion_cidrs` en paz salvo que la estés *reduciendo*. Ensancharla haci
 
 `qname_case_randomization` debería quedarse prendido. Apágalo solo para un *upstream* que normaliza el uso de mayúsculas de la pregunta que devuelve: de otro modo ese resolvedor fallará todas las consultas, porque la comparación de mayúsculas y minúsculas es lo que hace que 0x20 defienda algo de verdad.
 
-### Listas de bloqueo (RBL y DNSBL)
+### Listas de bloqueo (DNSBL)
 
-Dos listas, la misma maquinaria, llaves distintas: **RBL bloquea por IP** (se revisa en las búsquedas de DNS inverso) y **DNSBL bloquea por nombre** (se revisa antes de cualquier resolución externa). Ambas vienen apagadas por omisión con listas de proveedores vacías, así que no se consulta nada y ningún nombre llega a manos del operador de una lista de bloqueo hasta que agregas proveedores.
+**DNSBL bloquea por nombre**, y se revisa antes de cualquier resolución externa. Viene apagada por omisión con la lista de proveedores vacía, así que no se consulta nada y ningún nombre llega a manos del operador de una lista de bloqueo hasta que agregas proveedores.
 
 ```yaml
-rbl:
-  enabled: true
-  refusal_cooldown_secs: 3600
-  providers:
-    - zone: zen.spamhaus.org
-      enabled: true
-
 dnsbl:
   enabled: true
+  refusal_cooldown_secs: 3600
   providers:
     - zone: dbl.spamhaus.org
       enabled: true
 ```
+
+Las direcciones las bloquea la **lista local**, no un proveedor: a un proveedor se le pregunta por el nombre que se está resolviendo, y en una búsqueda inversa ese es un nombre del que nadie publica reputación. Mira las entradas locales más abajo.
 
 Tres cosas que conviene saber antes de prenderlas:
 
@@ -328,7 +324,7 @@ Las entradas locales y la lista de permitidos son estado en caliente, no configu
 
 ```bash
 CLI="rolodex-dns-cli -u /var/run/rolodex-dns.sock"
-$CLI add-local-rbl --name 10.0.0.5 --reason "known spam source"
+$CLI add-local-blocklist --name 10.0.0.5 --reason "known spam source"
 $CLI add-dnsbl-allow --name vendor.example.com --reason "false positive"
 $CLI add-dnsbl-allow --name 192.168.1.100 --reason "our own relay"   # una IP también sirve
 ```
@@ -462,7 +458,7 @@ Buena parte de lo que parece configuración es estado en caliente en SQLite, cam
 | ---- | ---- |
 | Registros, registros con ámbito, ámbitos, asociaciones | `dns.bind` y todas las demás direcciones de escucha |
 | Zonas autoritativas, TLD propios, *listeners* de ingreso | `resolution.*` y `forwarders` (valores iniciales; `set-forwarders` los cambia en vivo) |
-| Configuración de RBL/DNSBL, entradas locales, lista de permitidos | `dnssec.*` |
+| Configuración de DNSBL, entradas locales, lista de permitidos | `dnssec.*` |
 | DNS64, deriva de TTL, *proxy*, configuración de DoT/DoH/DoQ | `security.*` |
 | *Pools* DHCP, concesiones, opciones de certificado | `database_path`, `dhcp.*`, `acme.*`, `metrics.*` |
 | Llaves DNSSEC y firma de zonas; CA de ACME y credenciales EAB | Archivos de certificado TLS (todavía no se intercambian en caliente en los *listeners*) |
@@ -493,9 +489,9 @@ Una **ligadura que se resuelve pero falla en el sistema operativo** —el puerto
 | **Todos** los nombres dan SERVFAIL, y la cadena nunca degrada al *upstream* cifrado | La propia zona raíz no valida: un anclaje de confianza que esta compilación no conoce (un relevo de KSK), un `dnssec.trust_anchors` equivocado, o algo en el `:53` respondiendo las consultas DNSKEY con material propio. Esto es deliberado: una raíz que no valida es un veredicto, no una falla de nivel, así que la consulta se rechaza en lugar de volverse a preguntar calladamente a un *upstream* que no valida. `dnssec.validate: false` es la vía de escape mientras arreglas el anclaje |
 | Un nombre bajo `arpa.` recibe REFUSED (`ipv4only.arpa`, un `dig -x` para una dirección que no posees) | Funciona según lo previsto: `arpa.` y todo lo que hay debajo se responde desde datos locales o no se responde, en todos los modos de resolución. Nada de ese subárbol se manda hacia arriba. Agrega el registro localmente, o espera al trabajo de zonas inversas |
 | `rolodex_dns_dnssec_blamed_roots` no es cero | Un servidor raíz respondió con DNSSEC que no valida contra tu anclaje y se ha sacado del conjunto de raíces por 15 minutos, duplicándose por cada reincidencia. Si están sacadas **todas**, sospecha del anclaje o de la zona raíz, no de los servidores: el registro lo dice explícitamente. La culpa vive solo en memoria y se reinicia al arrancar |
-| Todos los nombres revisados contra una lista de bloqueo empezaron a dar NXDOMAIN | Comportamiento previo al manejo de rechazos. Revisa `get-rbl-config` por proveedores rotados fuera, y la cuota de ese proveedor |
+| Todos los nombres revisados contra una lista de bloqueo empezaron a dar NXDOMAIN | Comportamiento previo al manejo de rechazos. Revisa `get-dnsbl-config` por proveedores rotados fuera, y la cuota de ese proveedor |
 | El nombre de host de un cliente DHCP nunca aparece en el DNS | No es una etiqueta DNS única válida: los nombres de host se rechazan, no se sanean. La advertencia lo nombra |
-| `dig -x` falla para un host que está perfectamente bien | Un falso positivo de RBL. `add-dnsbl-allow --name <ip>` lo levanta |
+| `dig -x` falla para un host que está perfectamente bien | Una entrada de la lista local coincidió con la dirección. `add-dnsbl-allow --name <ip>` lo levanta |
 | Un certificado renovado no se está sirviendo | La recarga de certificados todavía no está conectada a los *listeners*; reinicia |
 | Un *listener* de ingreso nunca se levantó | Su IP no existía en el arranque. Vuelve a agregar el TLD una vez levantada la interfaz |
 

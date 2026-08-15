@@ -145,6 +145,16 @@ pub enum Tamper {
     /// material. Arithmetically valid, and meaningless: the signer is not the
     /// zone the data lives in.
     ForeignSignerName(Name),
+    /// Rewrite the signer name on the *answer* section only, leaving everything
+    /// this zone says about its own delegations honestly signed.
+    ///
+    /// This is what an on-path adversary actually gets to do. Forging one answer
+    /// packet does not let them forge the DS lookup or the delegation proof that
+    /// a resolver makes afterwards — those still come from the real server —
+    /// so a tamper that rewrites every signature the zone emits would be tested
+    /// against an attacker far more powerful than the real one, and would hide
+    /// whether the answer was refused on its own merits.
+    AnswerSignerName(Name),
     /// Alter the record data after signing it. Signature intact, data changed.
     MutateAfterSigning,
     /// Delegate without a DS *and* without the NSEC that proves there is none.
@@ -382,6 +392,121 @@ pub async fn bind_levels(ips: &[Ipv4Addr]) -> (u16, Vec<UdpSocket>) {
     panic!("could not find a port free on all signed hierarchy IPs");
 }
 
+/// Starts serving several zones from one socket — one nameserver authoritative
+/// for a parent *and* a child of it.
+///
+/// This is the shape that hides a zone cut. A server that holds both sides of a
+/// delegation never refers a query across it: asked for a name in the child it
+/// answers from the child zone, authoritatively and signed by the child's key,
+/// and the referral that would have told a resolver the cut exists is never
+/// sent. `cdnjs.cloudflare.com.` on `cloudflare.com.`'s nameservers is the
+/// commonplace real example. The DS stays where a DS belongs — in the parent —
+/// so a resolver that goes looking for it can still find one.
+pub fn serve_zones(socket: UdpSocket, zones: Vec<Zone>) -> SignedNs {
+    let ip = match socket.local_addr().expect("local addr").ip() {
+        std::net::IpAddr::V4(ip) => ip,
+        std::net::IpAddr::V6(_) => unreachable!("signed hierarchy is IPv4"),
+    };
+    let queries = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&queries);
+
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 4096];
+        loop {
+            let Ok((len, peer)) = socket.recv_from(&mut buf).await else {
+                return;
+            };
+            counter.fetch_add(1, Ordering::SeqCst);
+            let Ok(query) = Message::from_bytes(&buf[..len]) else {
+                continue;
+            };
+            let response = build_multi_response(&query, &zones);
+            if let Ok(bytes) = response.to_bytes() {
+                let _ = socket.send_to(&bytes, peer).await;
+            }
+        }
+    });
+
+    SignedNs { ip, queries }
+}
+
+/// Picks the zone that answers `qname` — the deepest apex that encloses it,
+/// which is what makes a server holding both sides of a cut answer from the
+/// child instead of referring to it.
+fn zone_for<'a>(zones: &'a [Zone], qname: &Name) -> Option<&'a Zone> {
+    zones
+        .iter()
+        .filter(|z| z.apex.zone_of(qname))
+        .max_by_key(|z| z.apex.num_labels())
+}
+
+/// Picks the zone on the *parent* side of a cut at `qname`: the deepest apex
+/// that strictly encloses it. A DS lives in the parent, never in the child.
+fn parent_zone_for<'a>(zones: &'a [Zone], qname: &Name) -> Option<&'a Zone> {
+    zones
+        .iter()
+        .filter(|z| z.apex.zone_of(qname) && &z.apex != qname)
+        .max_by_key(|z| z.apex.num_labels())
+}
+
+fn build_multi_response(query: &Message, zones: &[Zone]) -> Message {
+    let Some(question) = query.queries().first() else {
+        return build_response(query, &zones[0]);
+    };
+    let qname = question.name().clone();
+    let qtype = question.query_type();
+
+    // A DS query is answered by the parent, from the parent's own copy of the
+    // delegation, with the DS in the *answer* section — not as the referral a
+    // query for a name below the cut would get.
+    if qtype == RecordType::DS
+        && let Some(parent) = parent_zone_for(zones, &qname)
+    {
+        let mut resp = Message::new();
+        resp.set_id(query.id());
+        resp.set_message_type(MessageType::Response);
+        resp.set_op_code(OpCode::Query);
+        resp.add_query(question.clone());
+        resp.set_authoritative(true);
+
+        let delegation = parent.delegations.iter().find(|d| d.child == qname);
+        match delegation.and_then(|d| d.ds.clone()) {
+            Some(ds) => {
+                let record =
+                    Record::from_rdata(qname.clone(), TTL, RData::DNSSEC(DNSSECRData::DS(ds)));
+                let mut answers = Vec::new();
+                push_signed(parent, vec![record], RecordType::DS, &mut answers);
+                for record in answers {
+                    resp.add_answer(record);
+                }
+            }
+            // No DS: NODATA, proven by the parent's signed NSEC at the
+            // delegation point, exactly as a referral would have proven it.
+            None => {
+                let mut authority = Vec::new();
+                push_signed(parent, vec![parent.soa()], RecordType::SOA, &mut authority);
+                if let Some(nsec) = delegation.and_then(|d| d.no_ds_nsec.clone()) {
+                    push_signed(
+                        parent,
+                        vec![nsec.record()],
+                        RecordType::NSEC,
+                        &mut authority,
+                    );
+                }
+                for record in authority {
+                    resp.add_name_server(record);
+                }
+            }
+        }
+        return resp;
+    }
+
+    match zone_for(zones, &qname) {
+        Some(zone) => build_response(query, zone),
+        None => build_response(query, &zones[0]),
+    }
+}
+
 /// Starts serving `zone` on `socket`.
 pub fn serve(socket: UdpSocket, zone: Zone) -> SignedNs {
     serve_switchable(socket, zone).0
@@ -483,6 +608,29 @@ fn sign(zone: &Zone, owner: &Name, rtype: RecordType, records: &[Record]) -> Opt
             signature,
         ))),
     ))
+}
+
+/// Rewrites the signer name of an RRSIG record, leaving the signature bytes and
+/// every other field alone. Non-RRSIG records pass through untouched.
+fn restamp_signer(record: Record, signer: &Name) -> Record {
+    let RData::DNSSEC(DNSSECRData::RRSIG(sig)) = record.data() else {
+        return record;
+    };
+    Record::from_rdata(
+        record.name().clone(),
+        record.ttl(),
+        RData::DNSSEC(DNSSECRData::RRSIG(RRSIG::new(
+            sig.type_covered(),
+            sig.algorithm(),
+            sig.num_labels(),
+            sig.original_ttl(),
+            sig.sig_expiration().get(),
+            sig.sig_inception().get(),
+            sig.key_tag(),
+            signer.clone(),
+            sig.sig().to_vec(),
+        ))),
+    )
 }
 
 /// Appends an RRset and its signature to a section.
@@ -600,6 +748,12 @@ fn build_response(query: &Message, zone: &Zone) -> Message {
         let mut answers = Vec::new();
         push_signed(zone, records.clone(), *rtype, &mut answers);
         let _ = owner;
+        if let Tamper::AnswerSignerName(signer) = &zone.tamper {
+            answers = answers
+                .into_iter()
+                .map(|record| restamp_signer(record, signer))
+                .collect();
+        }
         for record in answers {
             resp.add_answer(record);
         }

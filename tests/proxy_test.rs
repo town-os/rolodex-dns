@@ -30,8 +30,8 @@ use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordType, rdata};
 use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use rolodex_dns::db::Database;
 use rolodex_dns::dns_server::{DnsServer, ResolutionMode};
+use rolodex_dns::dnsbl::DnsblChecker;
 use rolodex_dns::doh_proxy::{ProxyConfig, ProxyMode};
-use rolodex_dns::rbl::RblChecker;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -466,7 +466,7 @@ async fn spawn_doh_proxy(status: &'static str, log: SharedLog) -> SocketAddr {
 /// proxy, which is what the connection-reuse and per-query assertions depend on.
 fn make_server(upstream: SocketAddr, proxy: Option<ProxyConfig>) -> Arc<DnsServer> {
     let db = Database::open_memory().expect("in-memory database");
-    let rbl = Arc::new(RblChecker::new(false, vec![]));
+    let rbl = Arc::new(DnsblChecker::new());
     let server = Arc::new(DnsServer::new(db, rbl, vec![upstream]));
     server.set_resolution_mode(ResolutionMode::Forward);
     server.set_proxy_config(proxy);

@@ -775,10 +775,11 @@ pub enum AnswerSource {
     ScopeFallback,
     /// Forwarded to an owned TLD's peer forwarders.
     TldPeer,
-    /// NXDOMAIN from the name-based blocklist (local RBL or DNSBL).
+    /// NXDOMAIN from the name-based blocklist (a local entry or a DNSBL
+    /// provider).
     Blocklist,
-    /// NXDOMAIN from an IP-based RBL on a reverse lookup.
-    Rbl,
+    /// NXDOMAIN from a local blocklist entry matched on a reverse lookup.
+    ReverseBlocklist,
     /// A synthesized DNS64 AAAA.
     Dns64,
     /// Resolved upstream (any tier).
@@ -797,6 +798,17 @@ pub enum AnswerSource {
 /// from this list relabels every DNSSEC series silently.
 pub const DNSSEC_VERDICTS: &[&str] = &["secure", "insecure", "bogus", "indeterminate"];
 
+/// Label values for `dnssec_unsigned_responses_total`, in the order
+/// `UNSIGNED_EVIDENCE_*` below index them.
+pub const UNSIGNED_EVIDENCE: &[&str] = &["child_apex_soa", "none"];
+
+/// The response carried an SOA for a zone below the one being validated: an
+/// unsigned child served by its parent's own nameservers.
+pub const UNSIGNED_EVIDENCE_CHILD_APEX_SOA: usize = 0;
+/// No such evidence. Either an unsigned child whose answer named no zone, or
+/// signatures stripped in flight — which look the same from here.
+pub const UNSIGNED_EVIDENCE_NONE: usize = 1;
+
 /// Label values for [`AnswerSource`].
 pub const ANSWER_SOURCES: &[&str] = &[
     "cache",
@@ -805,7 +817,7 @@ pub const ANSWER_SOURCES: &[&str] = &[
     "scope_fallback",
     "tld_peer",
     "blocklist",
-    "rbl",
+    "reverse_blocklist",
     "dns64",
     "upstream",
     "authoritative_nxdomain",
@@ -823,7 +835,7 @@ impl AnswerSource {
             AnswerSource::ScopeFallback => 3,
             AnswerSource::TldPeer => 4,
             AnswerSource::Blocklist => 5,
-            AnswerSource::Rbl => 6,
+            AnswerSource::ReverseBlocklist => 6,
             AnswerSource::Dns64 => 7,
             AnswerSource::Upstream => 8,
             AnswerSource::AuthoritativeNxdomain => 9,
@@ -843,7 +855,7 @@ impl AnswerSource {
             3 => AnswerSource::ScopeFallback,
             4 => AnswerSource::TldPeer,
             5 => AnswerSource::Blocklist,
-            6 => AnswerSource::Rbl,
+            6 => AnswerSource::ReverseBlocklist,
             7 => AnswerSource::Dns64,
             8 => AnswerSource::Upstream,
             9 => AnswerSource::AuthoritativeNxdomain,
@@ -863,25 +875,13 @@ pub const UPSTREAM_RESULTS: &[&str] = &["definitive", "indefinite", "error"];
 /// Address families, for the routability probe and the answer filter.
 pub const FAMILIES: &[&str] = &["ipv4", "ipv6"];
 
-/// Which blocklist produced a block.
-///
-/// `rbl_scope_provider` is separate from `rbl_provider` because the two are
-/// different operator decisions with different blast radii: a global provider is
-/// consulted for every reverse lookup on the box, while a scope-opted-in one
-/// affects only the network that asked for it. Folded together — as they were
-/// before — a scope's private blocklist taking out its own network is
-/// indistinguishable from the box-wide list doing it, which is the first thing
-/// you need to know when a network reports that reverse DNS broke.
+/// Which blocklist produced a block: the operator's own table, or a configured
+/// DNSBL provider zone.
 ///
 /// New kinds are **appended**, never inserted: the `BLOCK_*` index constants in
-/// `dns_server.rs` and `rbl.rs` are positions in this array, so inserting in the
-/// middle silently relabels every existing counter.
-pub const BLOCK_KINDS: &[&str] = &[
-    "rbl_provider",
-    "rbl_local",
-    "dnsbl_provider",
-    "rbl_scope_provider",
-];
+/// `dns_server.rs` and `dnsbl.rs` are positions in this array, so inserting in
+/// the middle silently relabels every existing counter.
+pub const BLOCK_KINDS: &[&str] = &["local", "dnsbl_provider"];
 
 /// How a name or address matched the DNSBL allowlist.
 ///
@@ -1130,6 +1130,20 @@ pub struct Metrics {
     pub dnssec_dnskey_lookups: Counter,
     /// Delegations proven to carry no DS, i.e. legitimately unsigned zones.
     pub dnssec_insecure_delegations: Counter,
+    /// Responses signed by a zone below the one being talked to, i.e. a zone cut
+    /// no referral announced because one nameserver serves both sides of it.
+    /// Each one costs a DS lookup the referral would otherwise have paid for.
+    pub dnssec_hidden_zone_cuts: Counter,
+    /// Responses that arrived inside a signed zone carrying no signatures at
+    /// all, labelled by whatever evidence there was about where they came from.
+    ///
+    /// These are refused, and must be: "no RRSIG present" is exactly what a
+    /// downgrade looks like. The counter exists because one innocent cause
+    /// produces the same packet — an *unsigned* child zone served by its signed
+    /// parent's own nameservers, the unsigned twin of a hidden zone cut, which
+    /// has no signer name to chase and so cannot be resolved. Without this the
+    /// only trace of that case is a SERVFAIL indistinguishable from every other.
+    pub dnssec_unsigned_responses: CounterVec,
     /// Root servers currently omitted for serving DNSSEC that does not validate
     /// against the configured trust anchor (sampled at scrape).
     ///
@@ -1490,6 +1504,16 @@ impl Metrics {
                 "rolodex_dns_dnssec_insecure_delegations_total",
                 "Delegations proven to carry no DS record.",
             ),
+            dnssec_hidden_zone_cuts: Counter::new(
+                "rolodex_dns_dnssec_hidden_zone_cuts_total",
+                "Responses signed by a zone below the one queried, crossing a cut no referral announced.",
+            ),
+            dnssec_unsigned_responses: CounterVec::new(
+                "rolodex_dns_dnssec_unsigned_responses_total",
+                "Unsigned responses refused inside a signed zone, by the evidence of where they came from.",
+                "evidence",
+                UNSIGNED_EVIDENCE,
+            ),
             dnssec_blamed_roots: Gauge::new(
                 "rolodex_dns_dnssec_blamed_roots",
                 "Root servers omitted for serving DNSSEC that does not validate.",
@@ -1799,6 +1823,8 @@ impl Metrics {
         self.dnssec_servfail.encode(&mut out);
         self.dnssec_dnskey_lookups.encode(&mut out);
         self.dnssec_insecure_delegations.encode(&mut out);
+        self.dnssec_hidden_zone_cuts.encode(&mut out);
+        self.dnssec_unsigned_responses.encode(&mut out);
         self.dnssec_blamed_roots.encode(&mut out);
         self.key_cache_entries.encode(&mut out);
 
@@ -1952,7 +1978,7 @@ pub struct MetricsState {
     /// The response cache, when one is configured.
     pub dns_cache: Option<std::sync::Arc<crate::dns_cache::DnsCache>>,
     /// The blocklist checker, for its result-cache size.
-    pub rbl: std::sync::Arc<crate::rbl::RblChecker>,
+    pub dnsbl: std::sync::Arc<crate::dnsbl::DnsblChecker>,
 }
 
 /// Samples every pull-based gauge into the global registry.
@@ -2005,9 +2031,9 @@ pub fn collect(state: &MetricsState) {
     }
 
     m.blocklist_cache_entries
-        .set(state.rbl.cache_entries() as u64);
+        .set(state.dnsbl.cache_entries() as u64);
     m.blocklist_rotated_out
-        .set(state.rbl.rotated_out_count() as u64);
+        .set(state.dnsbl.rotated_out_count() as u64);
 
     m.active_tier.set(state.dns_server.active_tier() as u64);
     m.ingress_listeners
@@ -2547,18 +2573,10 @@ mod tests {
 
     #[test]
     fn block_kinds_are_append_only() {
-        // The BLOCK_* index constants in dns_server.rs and rbl.rs are positions
+        // The BLOCK_* index constants in dns_server.rs and dnsbl.rs are positions
         // in this array. Inserting in the middle silently relabels every
         // existing counter, so the prefix is pinned here.
-        assert_eq!(
-            BLOCK_KINDS,
-            &[
-                "rbl_provider",
-                "rbl_local",
-                "dnsbl_provider",
-                "rbl_scope_provider"
-            ]
-        );
+        assert_eq!(BLOCK_KINDS, &["local", "dnsbl_provider"]);
     }
 
     #[test]

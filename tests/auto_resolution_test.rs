@@ -12,7 +12,7 @@ use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use rolodex_dns::db::Database;
 use rolodex_dns::dns_cache::DnsCache;
 use rolodex_dns::dns_server::{DnsServer, ResolutionMode};
-use rolodex_dns::rbl::RblChecker;
+use rolodex_dns::dnsbl::DnsblChecker;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
@@ -83,7 +83,7 @@ async fn spawn_mock_upstream(rcode: ResponseCode, answer: Option<Ipv4Addr>) -> S
 fn make_auto_server(forwarders: Vec<SocketAddr>, public: Vec<SocketAddr>) -> Arc<DnsServer> {
     let db = Database::open_memory().unwrap();
     let cache = Arc::new(DnsCache::new(db.clone()));
-    let rbl = Arc::new(RblChecker::new(false, vec![]));
+    let rbl = Arc::new(DnsblChecker::new());
     let server = Arc::new(DnsServer::new_with_options(
         db,
         rbl,

@@ -40,8 +40,8 @@ use std::time::{Duration, Instant};
 use rolodex_dns::db::{Database, DnsRecord, RecordKind};
 use rolodex_dns::dns_cache::DnsCache;
 use rolodex_dns::dns_server::DnsServer;
+use rolodex_dns::dnsbl::{DnsblChecker, DnsblResolver};
 use rolodex_dns::metrics::{MetricsState, Proto, build_router};
-use rolodex_dns::rbl::{RblChecker, RblResolver};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -62,11 +62,11 @@ const DOC_FILES: &[&str] = &["README.md", "DESIGN.md"];
 struct NeverListedResolver;
 
 #[async_trait::async_trait]
-impl RblResolver for NeverListedResolver {
-    async fn lookup_rbl(
+impl DnsblResolver for NeverListedResolver {
+    async fn lookup(
         &self,
         _query: &str,
-    ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
+    ) -> Result<Option<rolodex_dns::dnsbl::DnsblAnswer>, anyhow::Error> {
         Ok(None)
     }
 }
@@ -119,11 +119,7 @@ fn image() -> String {
 /// Serves a metrics endpoint with every family populated, and returns its port.
 async fn spawn_populated_metrics() -> u16 {
     let db = Database::open_memory().expect("in-memory database");
-    let rbl = Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(NeverListedResolver),
-    ));
+    let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
     let cache = Arc::new(DnsCache::new(db.clone()));
     let dns_server = Arc::new(DnsServer::new_with_options(
         db.clone(),
@@ -170,7 +166,7 @@ async fn spawn_populated_metrics() -> u16 {
         db,
         dns_server,
         dns_cache: Some(cache),
-        rbl,
+        dnsbl: rbl,
     };
     tokio::spawn(async move {
         let _ = axum::serve(listener, build_router(state)).await;

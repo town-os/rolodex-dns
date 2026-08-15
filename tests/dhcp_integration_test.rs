@@ -9,18 +9,18 @@ use rolodex_dns::config::DhcpConfig;
 use rolodex_dns::db::{Database, DhcpCertOption, DhcpPool, NetworkScope};
 use rolodex_dns::dhcp::DhcpServer;
 use rolodex_dns::dns_server::DnsServer;
-use rolodex_dns::rbl::{RblChecker, RblResolver};
+use rolodex_dns::dnsbl::{DnsblChecker, DnsblResolver};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 struct NeverListedResolver;
 
 #[async_trait::async_trait]
-impl RblResolver for NeverListedResolver {
-    async fn lookup_rbl(
+impl DnsblResolver for NeverListedResolver {
+    async fn lookup(
         &self,
         _query: &str,
-    ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
+    ) -> Result<Option<rolodex_dns::dnsbl::DnsblAnswer>, anyhow::Error> {
         Ok(None)
     }
 }
@@ -37,11 +37,7 @@ fn make_dhcp_config() -> DhcpConfig {
 
 fn make_test_dhcp_server() -> (Database, Arc<DnsServer>, DhcpServer) {
     let db = Database::open_memory().unwrap();
-    let rbl = Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(NeverListedResolver),
-    ));
+    let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
     let config = make_dhcp_config();
     let dhcp = DhcpServer::new(db.clone(), dns_server.clone(), &config);
@@ -425,11 +421,7 @@ fn test_dhcp_lease_sweep_removes_dns() {
 async fn test_dhcp_udp_full_flow() {
     let (db, dns_server, _) = {
         let db = Database::open_memory().unwrap();
-        let rbl = Arc::new(RblChecker::with_resolver(
-            false,
-            vec![],
-            Arc::new(NeverListedResolver),
-        ));
+        let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
         let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
         let config = make_dhcp_config();
         let dhcp = DhcpServer::new(db.clone(), dns_server.clone(), &config);

@@ -15,7 +15,7 @@ use hickory_proto::rr::{Name, RData, Record, RecordType};
 use rolodex_dns::db::{Database, DnsRecord, RecordKind};
 use rolodex_dns::dns_cache::{DnsCache, NegativeKind};
 use rolodex_dns::dns_server::DnsServer;
-use rolodex_dns::rbl::RblChecker;
+use rolodex_dns::dnsbl::DnsblChecker;
 use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -30,7 +30,7 @@ fn ip(last: u8) -> IpAddr {
 
 fn make_server(db: Database) -> (Arc<DnsServer>, Arc<DnsCache>) {
     let cache = Arc::new(DnsCache::new(db.clone()));
-    let rbl = Arc::new(RblChecker::new(false, vec![]));
+    let rbl = Arc::new(DnsblChecker::new());
     let server = Arc::new(DnsServer::new_with_options(
         db,
         rbl,

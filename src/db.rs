@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use dashmap::{DashMap, DashSet};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::net::{IpAddr, SocketAddr};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -382,22 +382,6 @@ pub struct DhcpLease {
     pub state: String,
 }
 
-/// Per-scope RBL provider configuration.
-#[derive(Debug, Clone, Default)]
-pub struct ScopeRblProvider {
-    pub scope_name: String,
-    pub zone: String,
-    pub enabled: bool,
-    /// Codes this provider returns to mean "I refused your query" rather than
-    /// "this is listed", as configuration spellings (an IPv4 address or
-    /// `address/prefix`). Empty uses the built-in set; the single entry `none`
-    /// disables refusal detection. Stored as a comma-separated column.
-    pub refusal_codes: Vec<String>,
-    /// Seconds this provider is rotated out after a refusal; 0 uses the
-    /// server-wide RBL default.
-    pub refusal_cooldown_secs: u64,
-}
-
 /// DHCP certificate option delivered to clients.
 #[derive(Debug, Clone)]
 pub struct DhcpCertOption {
@@ -432,8 +416,8 @@ pub struct Database {
     scoped_record_cache: Arc<DashMap<String, ScopedRecordCacheEntry>>,
     /// Count of network scopes — avoids SQL query on every DNS query.
     scope_count: Arc<AtomicUsize>,
-    /// In-memory cache of local RBL entries for fast lookup.
-    local_rbl_cache: Arc<DashSet<String>>,
+    /// In-memory cache of local blocklist entries for fast lookup.
+    local_blocklist_cache: Arc<DashSet<String>>,
     /// In-memory cache of DNSBL allowlist entries — names exempted from the
     /// name-based blocklist check. Held normalized (lowercase, trailing dot) so
     /// the hot path can suffix-match in O(labels), which is what makes an entry
@@ -492,7 +476,7 @@ impl Database {
             association_cache: Arc::new(DashMap::new()),
             scoped_record_cache: Arc::new(DashMap::new()),
             scope_count: Arc::new(AtomicUsize::new(0)),
-            local_rbl_cache: Arc::new(DashSet::new()),
+            local_blocklist_cache: Arc::new(DashSet::new()),
             dnsbl_allowlist_cache: Arc::new(DashSet::new()),
             authoritative_zones_cache: Arc::new(DashSet::new()),
             managed_zones_cache: Arc::new(DashSet::new()),
@@ -515,7 +499,7 @@ impl Database {
             association_cache: Arc::new(DashMap::new()),
             scoped_record_cache: Arc::new(DashMap::new()),
             scope_count: Arc::new(AtomicUsize::new(0)),
-            local_rbl_cache: Arc::new(DashSet::new()),
+            local_blocklist_cache: Arc::new(DashSet::new()),
             dnsbl_allowlist_cache: Arc::new(DashSet::new()),
             authoritative_zones_cache: Arc::new(DashSet::new()),
             managed_zones_cache: Arc::new(DashSet::new()),
@@ -655,13 +639,13 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_delegation_expiry
                 ON delegation_cache(cached_at, ttl);
 
-            CREATE TABLE IF NOT EXISTS local_rbl_entries (
+            CREATE TABLE IF NOT EXISTS local_blocklist_entries (
                 name TEXT PRIMARY KEY NOT NULL,
                 reason TEXT NOT NULL DEFAULT ''
             );
 
             -- Names exempted from the name-based blocklist check (DNSBL
-            -- providers and local RBL name entries). Stored normalized, and
+            -- providers and local blocklist entries). Stored normalized, and
             -- matched as a suffix so an entry covers its subdomains too.
             CREATE TABLE IF NOT EXISTS dnsbl_allowlist (
                 name TEXT PRIMARY KEY NOT NULL,
@@ -811,18 +795,6 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_dhcp_leases_scope ON dhcp_leases(scope_name);
             CREATE INDEX IF NOT EXISTS idx_dhcp_leases_ip ON dhcp_leases(ip);
 
-            CREATE TABLE IF NOT EXISTS scope_rbl_providers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                scope_name TEXT NOT NULL,
-                zone TEXT NOT NULL,
-                enabled BOOLEAN NOT NULL DEFAULT 1,
-                refusal_codes TEXT NOT NULL DEFAULT '',
-                refusal_cooldown_secs INTEGER NOT NULL DEFAULT 0,
-                FOREIGN KEY (scope_name) REFERENCES network_scopes(name) ON DELETE CASCADE,
-                UNIQUE(scope_name, zone)
-            );
-            CREATE INDEX IF NOT EXISTS idx_scope_rbl_scope ON scope_rbl_providers(scope_name);
-
             CREATE TABLE IF NOT EXISTS dhcp_cert_options (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 scope_name TEXT NOT NULL,
@@ -835,7 +807,46 @@ impl Database {
         )
         .context("failed to create tables")?;
         drop(conn);
+        self.migrate_retired_rbl_tables()?;
         self.migrate_columns()?;
+        Ok(())
+    }
+
+    /// Carries a database created before the RBL feature was removed onto the
+    /// current schema.
+    ///
+    /// Two things happened to it. The local blocklist was renamed
+    /// (`local_rbl_entries` -> `local_blocklist_entries`): the entries are an
+    /// operator's own list and must survive, so they are moved rather than left
+    /// behind an old name nothing reads — a box whose blocklist silently emptied
+    /// on upgrade would look like the blocklist simply not working. The
+    /// per-scope provider table is dropped outright, because the lookups it
+    /// configured no longer exist and its rows would be unreachable data
+    /// referencing a feature that is gone.
+    ///
+    /// `CREATE TABLE IF NOT EXISTS` above has already created the new table, so
+    /// the move is an INSERT rather than a rename; `OR IGNORE` keeps a name
+    /// present in both (an upgrade interrupted halfway) from failing the boot.
+    fn migrate_retired_rbl_tables(&self) -> Result<()> {
+        let conn = self.lock()?;
+        let legacy: bool = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'local_rbl_entries'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .is_some();
+        if legacy {
+            conn.execute_batch(
+                "INSERT OR IGNORE INTO local_blocklist_entries (name, reason)
+                     SELECT name, reason FROM local_blocklist_entries;
+                 DROP TABLE local_rbl_entries;",
+            )
+            .context("failed to move the local blocklist off its RBL-era table")?;
+        }
+        conn.execute_batch("DROP TABLE IF EXISTS scope_rbl_providers;")
+            .context("failed to drop the retired per-scope RBL provider table")?;
         Ok(())
     }
 
@@ -847,23 +858,8 @@ impl Database {
     /// `DEFAULT`, so the existing rows have a defined value the moment the
     /// column appears.
     fn migrate_columns(&self) -> Result<()> {
-        const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
-            // Per-scope RBL providers gained refusal-code handling: which codes
-            // a provider returns to mean "I refused your query", and how long a
-            // refusal rotates it out. '' means "the built-in codes" and 0 means
-            // "the server-wide cooldown", so pre-existing rows land on the same
-            // defaults a fresh row would.
-            (
-                "scope_rbl_providers",
-                "refusal_codes",
-                "TEXT NOT NULL DEFAULT ''",
-            ),
-            (
-                "scope_rbl_providers",
-                "refusal_cooldown_secs",
-                "INTEGER NOT NULL DEFAULT 0",
-            ),
-        ];
+        const ADDED_COLUMNS: &[(&str, &str, &str)] = &[];
+
         let conn = self.lock()?;
         for (table, column, decl) in ADDED_COLUMNS {
             let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
@@ -956,7 +952,7 @@ impl Database {
         Ok(())
     }
 
-    /// Loads scope_count, local_rbl_cache, dnsbl_allowlist_cache,
+    /// Loads scope_count, local_blocklist_cache, dnsbl_allowlist_cache,
     /// authoritative_zones_cache, and managed_zones_cache from the database at
     /// boot time.
     fn load_caches_at_boot(&self) -> Result<()> {
@@ -967,11 +963,11 @@ impl Database {
             conn.query_row("SELECT COUNT(*) FROM network_scopes", [], |row| row.get(0))?;
         self.scope_count.store(count as usize, Ordering::Relaxed);
 
-        // Local RBL entries
-        let mut stmt = conn.prepare_cached("SELECT name FROM local_rbl_entries")?;
+        // Local blocklist entries
+        let mut stmt = conn.prepare_cached("SELECT name FROM local_blocklist_entries")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         for row in rows {
-            self.local_rbl_cache.insert(row?);
+            self.local_blocklist_cache.insert(row?);
         }
 
         // DNSBL allowlist entries
@@ -2265,7 +2261,7 @@ impl Database {
     /// deployment having to re-issue the call. Expansion happens in
     /// [`crate::metrics::Metrics::set_tracked_tlds`].
     ///
-    /// Replace-not-merge, matching `SetForwarders` and `SetRblConfig`: a setter
+    /// Replace-not-merge, matching `SetForwarders` and `SetDnsblConfig`: a setter
     /// that only ever accumulates gives an operator no way to remove an entry.
     pub fn set_tracked_tlds(&self, tlds: &[String]) -> Result<()> {
         let mut conn = self.lock()?;
@@ -2416,37 +2412,37 @@ impl Database {
     }
 
     // ================================================================
-    // Local RBL Management
+    // Local blocklist management
     // ================================================================
 
-    pub fn add_local_rbl_entry(&self, name: &str, reason: &str) -> Result<()> {
+    pub fn add_local_blocklist_entry(&self, name: &str, reason: &str) -> Result<()> {
         let conn = self.lock()?;
         conn.execute(
-            "INSERT OR REPLACE INTO local_rbl_entries (name, reason) VALUES (?1, ?2)",
+            "INSERT OR REPLACE INTO local_blocklist_entries (name, reason) VALUES (?1, ?2)",
             params![name, reason],
         )
-        .context("failed to add local RBL entry")?;
-        self.local_rbl_cache.insert(name.to_string());
+        .context("failed to add local blocklist entry")?;
+        self.local_blocklist_cache.insert(name.to_string());
         Ok(())
     }
 
-    pub fn remove_local_rbl_entry(&self, name: &str) -> Result<bool> {
+    pub fn remove_local_blocklist_entry(&self, name: &str) -> Result<bool> {
         let conn = self.lock()?;
         let count = conn
             .execute(
-                "DELETE FROM local_rbl_entries WHERE name = ?1",
+                "DELETE FROM local_blocklist_entries WHERE name = ?1",
                 params![name],
             )
-            .context("failed to remove local RBL entry")?;
+            .context("failed to remove local blocklist entry")?;
         if count > 0 {
-            self.local_rbl_cache.remove(name);
+            self.local_blocklist_cache.remove(name);
         }
         Ok(count > 0)
     }
 
-    pub fn list_local_rbl_entries(&self) -> Result<Vec<(String, String)>> {
+    pub fn list_local_blocklist_entries(&self) -> Result<Vec<(String, String)>> {
         let conn = self.lock()?;
-        let mut stmt = conn.prepare_cached("SELECT name, reason FROM local_rbl_entries")?;
+        let mut stmt = conn.prepare_cached("SELECT name, reason FROM local_blocklist_entries")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -2457,8 +2453,8 @@ impl Database {
         Ok(entries)
     }
 
-    pub fn lookup_local_rbl(&self, name: &str) -> bool {
-        self.local_rbl_cache.contains(name)
+    pub fn lookup_local_blocklist(&self, name: &str) -> bool {
+        self.local_blocklist_cache.contains(name)
     }
 
     // ================================================================
@@ -2527,8 +2523,9 @@ impl Database {
     }
 
     /// Whether `literal` is allowlisted as an **exact** entry, with no subtree
-    /// match. This is the form used for IP literals, which is how the local RBL
-    /// blocks an address (`lookup_local_rbl` is given `ip.to_string()`), so it is
+    /// match. This is the form used for IP literals, which is how the local
+    /// blocklist blocks an address (`lookup_local_blocklist` is given
+    /// `ip.to_string()`), so it is
     /// the form an exemption for that address has to take.
     ///
     /// Suffix matching is meaningless on an address: an IPv4 literal is written
@@ -3897,66 +3894,6 @@ impl Database {
     }
 
     // ================================================================
-    // Scope RBL Provider Management
-    // ================================================================
-
-    /// Adds or replaces a per-scope RBL provider.
-    ///
-    /// Refusal codes are stored comma-separated in one column rather than in a
-    /// side table: the list is a handful of short literals that is always read
-    /// and written whole with its provider, so a join would buy nothing.
-    pub fn add_scope_rbl_provider(&self, provider: &ScopeRblProvider) -> Result<()> {
-        let conn = self.lock()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO scope_rbl_providers
-             (scope_name, zone, enabled, refusal_codes, refusal_cooldown_secs)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                provider.scope_name,
-                provider.zone,
-                provider.enabled,
-                provider.refusal_codes.join(","),
-                provider.refusal_cooldown_secs as i64,
-            ],
-        )
-        .context("failed to add scope RBL provider")?;
-        Ok(())
-    }
-
-    /// Removes a per-scope RBL provider. Returns whether anything was deleted.
-    pub fn remove_scope_rbl_provider(&self, scope_name: &str, zone: &str) -> Result<bool> {
-        let conn = self.lock()?;
-        let count = conn.execute(
-            "DELETE FROM scope_rbl_providers WHERE scope_name = ?1 AND zone = ?2",
-            params![scope_name, zone],
-        )?;
-        Ok(count > 0)
-    }
-
-    /// Lists per-scope RBL providers for a given scope.
-    pub fn list_scope_rbl_providers(&self, scope_name: &str) -> Result<Vec<ScopeRblProvider>> {
-        let conn = self.lock()?;
-        let mut stmt = conn.prepare_cached(
-            "SELECT scope_name, zone, enabled, refusal_codes, refusal_cooldown_secs
-             FROM scope_rbl_providers WHERE scope_name = ?1",
-        )?;
-        let rows = stmt.query_map(params![scope_name], |row| {
-            let codes: String = row.get(3)?;
-            let cooldown: i64 = row.get(4)?;
-            Ok(ScopeRblProvider {
-                scope_name: row.get(0)?,
-                zone: row.get(1)?,
-                enabled: row.get(2)?,
-                refusal_codes: split_refusal_codes(&codes),
-                refusal_cooldown_secs: cooldown.max(0) as u64,
-            })
-        })?;
-        let mut providers = Vec::new();
-        for row in rows {
-            providers.push(row?);
-        }
-        Ok(providers)
-    }
 
     // ================================================================
     // DHCP Certificate Option Management
@@ -4076,18 +4013,6 @@ pub struct MetricsCounts {
     /// collector does not recognize are simply not reported, so a future state
     /// value cannot land in the wrong series.
     pub leases_by_state: Vec<(String, u64)>,
-}
-
-/// Splits the comma-separated `refusal_codes` column back into entries,
-/// dropping empties so an empty column reads back as an empty list (which means
-/// "the built-in codes") rather than as one blank entry.
-fn split_refusal_codes(stored: &str) -> Vec<String> {
-    stored
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect()
 }
 
 fn row_mapper(row: &rusqlite::Row) -> rusqlite::Result<DnsRecord> {
@@ -4215,7 +4140,7 @@ pub fn normalize_name(name: &str) -> String {
 /// IPv4 addresses produce `<reversed-octets>.in-addr.arpa.` and IPv6 addresses
 /// produce the 32-nibble `<reversed-nibbles>.ip6.arpa.` form. The result always
 /// carries a trailing dot. This is the inverse of the reverse-name parsing used
-/// for RBL lookups, so a name built here round-trips back to the same address.
+/// for reverse lookups, so a name built here round-trips back to the same address.
 pub fn reverse_ptr_name(ip: std::net::IpAddr) -> String {
     match ip {
         std::net::IpAddr::V4(v4) => {
@@ -5554,159 +5479,6 @@ mod tests {
     // ================================================================
     // Scope RBL Provider Tests
     // ================================================================
-
-    #[test]
-    fn test_scope_rbl_crud() {
-        let db = test_db();
-        db.create_network_scope(&NetworkScope {
-            name: "rbl-scope".to_string(),
-            home_domain: "rbl.home".to_string(),
-        })
-        .unwrap();
-
-        // Add providers
-        db.add_scope_rbl_provider(&ScopeRblProvider {
-            scope_name: "rbl-scope".to_string(),
-            zone: "zen.spamhaus.org".to_string(),
-            enabled: true,
-            ..Default::default()
-        })
-        .unwrap();
-        db.add_scope_rbl_provider(&ScopeRblProvider {
-            scope_name: "rbl-scope".to_string(),
-            zone: "bl.spamcop.net".to_string(),
-            enabled: false,
-            ..Default::default()
-        })
-        .unwrap();
-
-        // List
-        let providers = db.list_scope_rbl_providers("rbl-scope").unwrap();
-        assert_eq!(providers.len(), 2);
-
-        let spamhaus = providers
-            .iter()
-            .find(|p| p.zone == "zen.spamhaus.org")
-            .unwrap();
-        assert!(spamhaus.enabled);
-
-        let spamcop = providers
-            .iter()
-            .find(|p| p.zone == "bl.spamcop.net")
-            .unwrap();
-        assert!(!spamcop.enabled);
-
-        // Update (replace)
-        db.add_scope_rbl_provider(&ScopeRblProvider {
-            scope_name: "rbl-scope".to_string(),
-            zone: "bl.spamcop.net".to_string(),
-            enabled: true,
-            ..Default::default()
-        })
-        .unwrap();
-        let updated = db.list_scope_rbl_providers("rbl-scope").unwrap();
-        let spamcop_updated = updated.iter().find(|p| p.zone == "bl.spamcop.net").unwrap();
-        assert!(spamcop_updated.enabled);
-
-        // Remove
-        let removed = db
-            .remove_scope_rbl_provider("rbl-scope", "zen.spamhaus.org")
-            .unwrap();
-        assert!(removed);
-
-        let removed_again = db
-            .remove_scope_rbl_provider("rbl-scope", "zen.spamhaus.org")
-            .unwrap();
-        assert!(!removed_again);
-
-        let remaining = db.list_scope_rbl_providers("rbl-scope").unwrap();
-        assert_eq!(remaining.len(), 1);
-
-        // Empty scope
-        let empty = db.list_scope_rbl_providers("nonexistent").unwrap();
-        assert!(empty.is_empty());
-    }
-
-    /// Refusal codes and the per-provider cooldown survive a round trip, and an
-    /// unset list comes back empty rather than as one blank entry — empty means
-    /// "the built-in codes", and a stray `""` would fail to parse as one.
-    #[test]
-    fn scope_rbl_provider_refusal_fields_round_trip() {
-        let db = test_db();
-        db.create_network_scope(&NetworkScope {
-            name: "refusal-scope".to_string(),
-            home_domain: "refusal.home".to_string(),
-        })
-        .unwrap();
-
-        db.add_scope_rbl_provider(&ScopeRblProvider {
-            scope_name: "refusal-scope".to_string(),
-            zone: "explicit.rbl".to_string(),
-            enabled: true,
-            refusal_codes: vec!["127.255.255.0/24".to_string(), "127.0.0.1".to_string()],
-            refusal_cooldown_secs: 1800,
-        })
-        .unwrap();
-        db.add_scope_rbl_provider(&ScopeRblProvider {
-            scope_name: "refusal-scope".to_string(),
-            zone: "default.rbl".to_string(),
-            enabled: true,
-            ..Default::default()
-        })
-        .unwrap();
-
-        let providers = db.list_scope_rbl_providers("refusal-scope").unwrap();
-        let explicit = providers.iter().find(|p| p.zone == "explicit.rbl").unwrap();
-        assert_eq!(
-            explicit.refusal_codes,
-            vec!["127.255.255.0/24".to_string(), "127.0.0.1".to_string()]
-        );
-        assert_eq!(explicit.refusal_cooldown_secs, 1800);
-
-        let defaulted = providers.iter().find(|p| p.zone == "default.rbl").unwrap();
-        assert!(defaulted.refusal_codes.is_empty());
-        assert_eq!(defaulted.refusal_cooldown_secs, 0);
-    }
-
-    /// The refusal columns are added by migration, so a database created by a
-    /// build that predates them must gain them rather than failing every read.
-    /// Simulated by dropping the columns back off a fresh schema.
-    #[test]
-    fn scope_rbl_refusal_columns_are_migrated_onto_an_old_database() {
-        let db = test_db();
-        db.create_network_scope(&NetworkScope {
-            name: "old-scope".to_string(),
-            home_domain: "old.home".to_string(),
-        })
-        .unwrap();
-        {
-            let conn = db.lock().unwrap();
-            conn.execute_batch(
-                "ALTER TABLE scope_rbl_providers DROP COLUMN refusal_codes;
-                 ALTER TABLE scope_rbl_providers DROP COLUMN refusal_cooldown_secs;",
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO scope_rbl_providers (scope_name, zone, enabled)
-                 VALUES ('old-scope', 'legacy.rbl', 1)",
-                [],
-            )
-            .unwrap();
-        }
-
-        db.migrate_columns().unwrap();
-
-        let providers = db.list_scope_rbl_providers("old-scope").unwrap();
-        assert_eq!(providers.len(), 1);
-        assert!(
-            providers[0].refusal_codes.is_empty(),
-            "a pre-existing row must land on the built-in codes"
-        );
-        assert_eq!(providers[0].refusal_cooldown_secs, 0);
-
-        // Re-running is a no-op rather than an error.
-        db.migrate_columns().unwrap();
-    }
 
     // ================================================================
     // DHCP Cert Option Tests

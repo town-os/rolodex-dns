@@ -39,7 +39,7 @@ use hickory_proto::rr::{DNSClass, Name, RecordType};
 use hickory_proto::serialize::binary::BinEncodable;
 use rolodex_dns::db::Database;
 use rolodex_dns::dns_server::{DnsServer, ResolutionMode};
-use rolodex_dns::rbl::RblChecker;
+use rolodex_dns::dnsbl::DnsblChecker;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
@@ -138,7 +138,7 @@ async fn start_dot_server() -> DotServer {
         .ok();
 
     let db = Database::open_memory().unwrap();
-    let rbl = Arc::new(RblChecker::new(false, vec![]));
+    let rbl = Arc::new(DnsblChecker::new());
     let server = Arc::new(DnsServer::new(db, rbl, vec![]));
     server.set_resolution_mode(ResolutionMode::Forward);
 

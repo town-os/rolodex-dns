@@ -24,8 +24,6 @@ type mockRolodexDnsService struct {
 	removeRecordFn              func(ctx context.Context, req *pb.RemoveRecordRequest) (*pb.RemoveRecordResponse, error)
 	listRecordsFn               func(ctx context.Context, req *pb.ListRecordsRequest) (*pb.ListRecordsResponse, error)
 	setForwarderFn              func(ctx context.Context, req *pb.SetForwarderRequest) (*pb.SetForwarderResponse, error)
-	setRblConfigFn              func(ctx context.Context, req *pb.SetRblConfigRequest) (*pb.SetRblConfigResponse, error)
-	getRblConfigFn              func(ctx context.Context, req *pb.GetRblConfigRequest) (*pb.GetRblConfigResponse, error)
 	setDnsblConfigFn            func(ctx context.Context, req *pb.SetDnsblConfigRequest) (*pb.SetDnsblConfigResponse, error)
 	getDnsblConfigFn            func(ctx context.Context, req *pb.GetDnsblConfigRequest) (*pb.GetDnsblConfigResponse, error)
 	flushCacheFn                func(ctx context.Context, req *pb.FlushCacheRequest) (*pb.FlushCacheResponse, error)
@@ -49,9 +47,9 @@ type mockRolodexDnsService struct {
 	setTtlDriftConfigFn         func(ctx context.Context, req *pb.SetTtlDriftConfigRequest) (*pb.SetTtlDriftConfigResponse, error)
 	getTtlDriftConfigFn         func(ctx context.Context, req *pb.GetTtlDriftConfigRequest) (*pb.GetTtlDriftConfigResponse, error)
 	getQueryLatencyStatsFn      func(ctx context.Context, req *pb.GetQueryLatencyStatsRequest) (*pb.GetQueryLatencyStatsResponse, error)
-	addLocalRblEntryFn          func(ctx context.Context, req *pb.AddLocalRblEntryRequest) (*pb.AddLocalRblEntryResponse, error)
-	removeLocalRblEntryFn       func(ctx context.Context, req *pb.RemoveLocalRblEntryRequest) (*pb.RemoveLocalRblEntryResponse, error)
-	listLocalRblEntriesFn       func(ctx context.Context, req *pb.ListLocalRblEntriesRequest) (*pb.ListLocalRblEntriesResponse, error)
+	addLocalBlocklistEntryFn    func(ctx context.Context, req *pb.AddLocalBlocklistEntryRequest) (*pb.AddLocalBlocklistEntryResponse, error)
+	removeLocalBlocklistEntryFn func(ctx context.Context, req *pb.RemoveLocalBlocklistEntryRequest) (*pb.RemoveLocalBlocklistEntryResponse, error)
+	listLocalBlocklistEntriesFn func(ctx context.Context, req *pb.ListLocalBlocklistEntriesRequest) (*pb.ListLocalBlocklistEntriesResponse, error)
 	addDnsblAllowlistEntryFn    func(ctx context.Context, req *pb.AddDnsblAllowlistEntryRequest) (*pb.AddDnsblAllowlistEntryResponse, error)
 	removeDnsblAllowlistEntryFn func(ctx context.Context, req *pb.RemoveDnsblAllowlistEntryRequest) (*pb.RemoveDnsblAllowlistEntryResponse, error)
 	listDnsblAllowlistEntriesFn func(ctx context.Context, req *pb.ListDnsblAllowlistEntriesRequest) (*pb.ListDnsblAllowlistEntriesResponse, error)
@@ -80,9 +78,6 @@ type mockRolodexDnsService struct {
 	listDhcpPoolsFn             func(ctx context.Context, req *pb.ListDhcpPoolsRequest) (*pb.ListDhcpPoolsResponse, error)
 	listDhcpLeasesFn            func(ctx context.Context, req *pb.ListDhcpLeasesRequest) (*pb.ListDhcpLeasesResponse, error)
 	deleteDhcpLeaseFn           func(ctx context.Context, req *pb.DeleteDhcpLeaseRequest) (*pb.DeleteDhcpLeaseResponse, error)
-	addScopeRblProviderFn       func(ctx context.Context, req *pb.AddScopeRblProviderRequest) (*pb.AddScopeRblProviderResponse, error)
-	removeScopeRblProviderFn    func(ctx context.Context, req *pb.RemoveScopeRblProviderRequest) (*pb.RemoveScopeRblProviderResponse, error)
-	listScopeRblProvidersFn     func(ctx context.Context, req *pb.ListScopeRblProvidersRequest) (*pb.ListScopeRblProvidersResponse, error)
 	addScopeTldFn               func(ctx context.Context, req *pb.AddScopeTldRequest) (*pb.AddScopeTldResponse, error)
 	removeScopeTldFn            func(ctx context.Context, req *pb.RemoveScopeTldRequest) (*pb.RemoveScopeTldResponse, error)
 	listScopeTldsFn             func(ctx context.Context, req *pb.ListScopeTldsRequest) (*pb.ListScopeTldsResponse, error)
@@ -152,20 +147,6 @@ func (m *mockRolodexDnsService) ListRecords(ctx context.Context, req *pb.ListRec
 func (m *mockRolodexDnsService) SetForwarders(ctx context.Context, req *pb.SetForwarderRequest) (*pb.SetForwarderResponse, error) {
 	if m.setForwarderFn != nil {
 		return m.setForwarderFn(ctx, req)
-	}
-	return nil, status.Error(codes.Unimplemented, "not implemented")
-}
-
-func (m *mockRolodexDnsService) SetRblConfig(ctx context.Context, req *pb.SetRblConfigRequest) (*pb.SetRblConfigResponse, error) {
-	if m.setRblConfigFn != nil {
-		return m.setRblConfigFn(ctx, req)
-	}
-	return nil, status.Error(codes.Unimplemented, "not implemented")
-}
-
-func (m *mockRolodexDnsService) GetRblConfig(ctx context.Context, req *pb.GetRblConfigRequest) (*pb.GetRblConfigResponse, error) {
-	if m.getRblConfigFn != nil {
-		return m.getRblConfigFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
@@ -331,23 +312,23 @@ func (m *mockRolodexDnsService) GetQueryLatencyStats(ctx context.Context, req *p
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexDnsService) AddLocalRblEntry(ctx context.Context, req *pb.AddLocalRblEntryRequest) (*pb.AddLocalRblEntryResponse, error) {
-	if m.addLocalRblEntryFn != nil {
-		return m.addLocalRblEntryFn(ctx, req)
+func (m *mockRolodexDnsService) AddLocalBlocklistEntry(ctx context.Context, req *pb.AddLocalBlocklistEntryRequest) (*pb.AddLocalBlocklistEntryResponse, error) {
+	if m.addLocalBlocklistEntryFn != nil {
+		return m.addLocalBlocklistEntryFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexDnsService) RemoveLocalRblEntry(ctx context.Context, req *pb.RemoveLocalRblEntryRequest) (*pb.RemoveLocalRblEntryResponse, error) {
-	if m.removeLocalRblEntryFn != nil {
-		return m.removeLocalRblEntryFn(ctx, req)
+func (m *mockRolodexDnsService) RemoveLocalBlocklistEntry(ctx context.Context, req *pb.RemoveLocalBlocklistEntryRequest) (*pb.RemoveLocalBlocklistEntryResponse, error) {
+	if m.removeLocalBlocklistEntryFn != nil {
+		return m.removeLocalBlocklistEntryFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (m *mockRolodexDnsService) ListLocalRblEntries(ctx context.Context, req *pb.ListLocalRblEntriesRequest) (*pb.ListLocalRblEntriesResponse, error) {
-	if m.listLocalRblEntriesFn != nil {
-		return m.listLocalRblEntriesFn(ctx, req)
+func (m *mockRolodexDnsService) ListLocalBlocklistEntries(ctx context.Context, req *pb.ListLocalBlocklistEntriesRequest) (*pb.ListLocalBlocklistEntriesResponse, error) {
+	if m.listLocalBlocklistEntriesFn != nil {
+		return m.listLocalBlocklistEntriesFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
@@ -544,27 +525,6 @@ func (m *mockRolodexDnsService) ListDhcpLeases(ctx context.Context, req *pb.List
 func (m *mockRolodexDnsService) DeleteDhcpLease(ctx context.Context, req *pb.DeleteDhcpLeaseRequest) (*pb.DeleteDhcpLeaseResponse, error) {
 	if m.deleteDhcpLeaseFn != nil {
 		return m.deleteDhcpLeaseFn(ctx, req)
-	}
-	return nil, status.Error(codes.Unimplemented, "not implemented")
-}
-
-func (m *mockRolodexDnsService) AddScopeRblProvider(ctx context.Context, req *pb.AddScopeRblProviderRequest) (*pb.AddScopeRblProviderResponse, error) {
-	if m.addScopeRblProviderFn != nil {
-		return m.addScopeRblProviderFn(ctx, req)
-	}
-	return nil, status.Error(codes.Unimplemented, "not implemented")
-}
-
-func (m *mockRolodexDnsService) RemoveScopeRblProvider(ctx context.Context, req *pb.RemoveScopeRblProviderRequest) (*pb.RemoveScopeRblProviderResponse, error) {
-	if m.removeScopeRblProviderFn != nil {
-		return m.removeScopeRblProviderFn(ctx, req)
-	}
-	return nil, status.Error(codes.Unimplemented, "not implemented")
-}
-
-func (m *mockRolodexDnsService) ListScopeRblProviders(ctx context.Context, req *pb.ListScopeRblProvidersRequest) (*pb.ListScopeRblProvidersResponse, error) {
-	if m.listScopeRblProvidersFn != nil {
-		return m.listScopeRblProvidersFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
@@ -853,171 +813,6 @@ func TestSetForwardersServerFailure(t *testing.T) {
 	err := client.SetForwarders(context.Background(), []string{"invalid"})
 	if err == nil {
 		t.Fatal("expected error from server failure")
-	}
-}
-
-func TestSetRblConfig(t *testing.T) {
-	var captured *pb.SetRblConfigRequest
-	mock := &mockRolodexDnsService{
-		setRblConfigFn: func(_ context.Context, req *pb.SetRblConfigRequest) (*pb.SetRblConfigResponse, error) {
-			captured = req
-			return &pb.SetRblConfigResponse{Success: true}, nil
-		},
-	}
-	client := startMockServer(t, mock)
-
-	err := client.SetRblConfig(context.Background(), true, []*RblConfig{
-		{Zone: "zen.spamhaus.org", Enabled: true},
-		{Zone: "bl.spamcop.net", Enabled: false},
-	})
-	if err != nil {
-		t.Fatalf("SetRblConfig returned error: %v", err)
-	}
-	if !captured.Enabled {
-		t.Error("enabled should be true")
-	}
-	if len(captured.Providers) != 2 {
-		t.Fatalf("got %d providers, want 2", len(captured.Providers))
-	}
-	if captured.Providers[0].Zone != "zen.spamhaus.org" {
-		t.Errorf("provider[0].zone = %q, want %q", captured.Providers[0].Zone, "zen.spamhaus.org")
-	}
-	if !captured.Providers[0].Enabled {
-		t.Error("provider[0].enabled should be true")
-	}
-	if captured.Providers[1].Enabled {
-		t.Error("provider[1].enabled should be false")
-	}
-}
-
-func TestGetRblConfig(t *testing.T) {
-	mock := &mockRolodexDnsService{
-		getRblConfigFn: func(_ context.Context, req *pb.GetRblConfigRequest) (*pb.GetRblConfigResponse, error) {
-			return &pb.GetRblConfigResponse{
-				Enabled: true,
-				Providers: []*pb.RblConfig{
-					{Zone: "zen.spamhaus.org", Enabled: true},
-				},
-			}, nil
-		},
-	}
-	client := startMockServer(t, mock)
-
-	rblStatus, err := client.GetRblConfig(context.Background())
-	if err != nil {
-		t.Fatalf("GetRblConfig returned error: %v", err)
-	}
-	if !rblStatus.Enabled {
-		t.Error("enabled should be true")
-	}
-	if len(rblStatus.Providers) != 1 {
-		t.Fatalf("got %d providers, want 1", len(rblStatus.Providers))
-	}
-	if rblStatus.Providers[0].Zone != "zen.spamhaus.org" {
-		t.Errorf("provider zone = %q, want %q", rblStatus.Providers[0].Zone, "zen.spamhaus.org")
-	}
-}
-
-// Town OS programs the blocklists through this client, so the refusal codes
-// and the rotate-out duration have to reach the wire from here. A refusal code
-// is what a provider answers to mean "I refused your query" rather than "this
-// is listed"; reading one as a listing NXDOMAINs every name checked against
-// that provider.
-func TestSetRblConfigWithRefusalCooldown(t *testing.T) {
-	var captured *pb.SetRblConfigRequest
-	mock := &mockRolodexDnsService{
-		setRblConfigFn: func(_ context.Context, req *pb.SetRblConfigRequest) (*pb.SetRblConfigResponse, error) {
-			captured = req
-			return &pb.SetRblConfigResponse{Success: true}, nil
-		},
-	}
-	client := startMockServer(t, mock)
-
-	err := client.SetRblConfigWithRefusalCooldown(context.Background(), true, []*RblConfig{
-		{
-			Zone:                "zen.spamhaus.org",
-			Enabled:             true,
-			RefusalCodes:        []string{"127.255.255.0/24"},
-			RefusalCooldownSecs: 1800,
-		},
-		{Zone: "private.rbl", Enabled: true, RefusalCodes: []string{"none"}},
-	}, 900)
-	if err != nil {
-		t.Fatalf("SetRblConfigWithRefusalCooldown returned error: %v", err)
-	}
-	if captured.RefusalCooldownSecs != 900 {
-		t.Errorf("refusal_cooldown_secs = %d, want 900", captured.RefusalCooldownSecs)
-	}
-	if len(captured.Providers[0].RefusalCodes) != 1 ||
-		captured.Providers[0].RefusalCodes[0] != "127.255.255.0/24" {
-		t.Errorf("provider[0].refusal_codes = %v, want [127.255.255.0/24]", captured.Providers[0].RefusalCodes)
-	}
-	if captured.Providers[0].RefusalCooldownSecs != 1800 {
-		t.Errorf("provider[0].refusal_cooldown_secs = %d, want 1800", captured.Providers[0].RefusalCooldownSecs)
-	}
-	if captured.Providers[1].RefusalCodes[0] != "none" {
-		t.Errorf("provider[1].refusal_codes = %v, want [none]", captured.Providers[1].RefusalCodes)
-	}
-}
-
-// The plain SetRblConfig must send 0, which the server reads as "use the
-// built-in default" — not as "no cooldown", which would re-ask a provider that
-// has just told us to stop.
-func TestSetRblConfigSendsZeroCooldown(t *testing.T) {
-	var captured *pb.SetRblConfigRequest
-	mock := &mockRolodexDnsService{
-		setRblConfigFn: func(_ context.Context, req *pb.SetRblConfigRequest) (*pb.SetRblConfigResponse, error) {
-			captured = req
-			return &pb.SetRblConfigResponse{Success: true}, nil
-		},
-	}
-	client := startMockServer(t, mock)
-
-	if err := client.SetRblConfig(context.Background(), true, nil); err != nil {
-		t.Fatalf("SetRblConfig returned error: %v", err)
-	}
-	if captured.RefusalCooldownSecs != 0 {
-		t.Errorf("refusal_cooldown_secs = %d, want 0", captured.RefusalCooldownSecs)
-	}
-}
-
-// A provider that has gone quiet is otherwise indistinguishable from one that
-// finds nothing, so the rotated-out set has to survive the response mapping.
-func TestGetRblConfigReportsRotatedOut(t *testing.T) {
-	mock := &mockRolodexDnsService{
-		getRblConfigFn: func(_ context.Context, req *pb.GetRblConfigRequest) (*pb.GetRblConfigResponse, error) {
-			return &pb.GetRblConfigResponse{
-				Enabled: true,
-				Providers: []*pb.RblConfig{
-					{Zone: "zen.spamhaus.org", Enabled: true, RefusalCodes: []string{"127.255.255.0/24"}},
-				},
-				RefusalCooldownSecs: 900,
-				RotatedOut: []*pb.RotatedProvider{
-					{Zone: "zen.spamhaus.org", Code: "127.255.255.254", SecondsRemaining: 842},
-				},
-			}, nil
-		},
-	}
-	client := startMockServer(t, mock)
-
-	rblStatus, err := client.GetRblConfig(context.Background())
-	if err != nil {
-		t.Fatalf("GetRblConfig returned error: %v", err)
-	}
-	if rblStatus.RefusalCooldownSecs != 900 {
-		t.Errorf("RefusalCooldownSecs = %d, want 900", rblStatus.RefusalCooldownSecs)
-	}
-	if len(rblStatus.Providers[0].RefusalCodes) != 1 {
-		t.Errorf("refusal codes = %v, want one entry", rblStatus.Providers[0].RefusalCodes)
-	}
-	if len(rblStatus.RotatedOut) != 1 {
-		t.Fatalf("got %d rotated-out providers, want 1", len(rblStatus.RotatedOut))
-	}
-	if rblStatus.RotatedOut[0].Code != "127.255.255.254" {
-		t.Errorf("rotated-out code = %q, want %q", rblStatus.RotatedOut[0].Code, "127.255.255.254")
-	}
-	if rblStatus.RotatedOut[0].SecondsRemaining != 842 {
-		t.Errorf("seconds remaining = %d, want 842", rblStatus.RotatedOut[0].SecondsRemaining)
 	}
 }
 
@@ -1667,13 +1462,13 @@ func TestAuthTokenSentWithAllRPCs(t *testing.T) {
 			tokens["forwarders"] = req.AuthToken
 			return &pb.SetForwarderResponse{Success: true}, nil
 		},
-		setRblConfigFn: func(_ context.Context, req *pb.SetRblConfigRequest) (*pb.SetRblConfigResponse, error) {
-			tokens["setrbl"] = req.AuthToken
-			return &pb.SetRblConfigResponse{Success: true}, nil
+		setDnsblConfigFn: func(_ context.Context, req *pb.SetDnsblConfigRequest) (*pb.SetDnsblConfigResponse, error) {
+			tokens["setdnsbl"] = req.AuthToken
+			return &pb.SetDnsblConfigResponse{Success: true}, nil
 		},
-		getRblConfigFn: func(_ context.Context, req *pb.GetRblConfigRequest) (*pb.GetRblConfigResponse, error) {
-			tokens["getrbl"] = req.AuthToken
-			return &pb.GetRblConfigResponse{}, nil
+		getDnsblConfigFn: func(_ context.Context, req *pb.GetDnsblConfigRequest) (*pb.GetDnsblConfigResponse, error) {
+			tokens["getdnsbl"] = req.AuthToken
+			return &pb.GetDnsblConfigResponse{}, nil
 		},
 		flushCacheFn: func(_ context.Context, req *pb.FlushCacheRequest) (*pb.FlushCacheResponse, error) {
 			tokens["flush"] = req.AuthToken
@@ -1735,11 +1530,11 @@ func TestAuthTokenSentWithAllRPCs(t *testing.T) {
 	if err := client.SetForwarders(ctx, []string{"8.8.8.8:53"}); err != nil {
 		t.Fatalf("SetForwarders: %v", err)
 	}
-	if err := client.SetRblConfig(ctx, false, nil); err != nil {
-		t.Fatalf("SetRblConfig: %v", err)
+	if err := client.SetDnsblConfig(ctx, false, nil); err != nil {
+		t.Fatalf("SetDnsblConfig: %v", err)
 	}
-	if _, err := client.GetRblConfig(ctx); err != nil {
-		t.Fatalf("GetRblConfig: %v", err)
+	if _, err := client.GetDnsblConfig(ctx); err != nil {
+		t.Fatalf("GetDnsblConfig: %v", err)
 	}
 	if err := client.FlushCache(ctx); err != nil {
 		t.Fatalf("FlushCache: %v", err)
@@ -2125,22 +1920,22 @@ func TestGetQueryLatencyStats(t *testing.T) {
 	}
 }
 
-func TestAddLocalRblEntry(t *testing.T) {
-	var captured *pb.AddLocalRblEntryRequest
+func TestAddLocalBlocklistEntry(t *testing.T) {
+	var captured *pb.AddLocalBlocklistEntryRequest
 	mock := &mockRolodexDnsService{
-		addLocalRblEntryFn: func(_ context.Context, req *pb.AddLocalRblEntryRequest) (*pb.AddLocalRblEntryResponse, error) {
+		addLocalBlocklistEntryFn: func(_ context.Context, req *pb.AddLocalBlocklistEntryRequest) (*pb.AddLocalBlocklistEntryResponse, error) {
 			captured = req
-			return &pb.AddLocalRblEntryResponse{Success: true}, nil
+			return &pb.AddLocalBlocklistEntryResponse{Success: true}, nil
 		},
 	}
 	client := startMockServer(t, mock, WithAuthToken("tok"))
-	entry := &LocalRblEntry{
+	entry := &LocalBlocklistEntry{
 		Name:   "malware.example.com",
 		Reason: "known malware domain",
 	}
-	err := client.AddLocalRblEntry(context.Background(), entry)
+	err := client.AddLocalBlocklistEntry(context.Background(), entry)
 	if err != nil {
-		t.Fatalf("AddLocalRblEntry: %v", err)
+		t.Fatalf("AddLocalBlocklistEntry: %v", err)
 	}
 	if captured.Entry.Name != "malware.example.com" {
 		t.Errorf("name = %q, want %q", captured.Entry.Name, "malware.example.com")
@@ -2153,18 +1948,18 @@ func TestAddLocalRblEntry(t *testing.T) {
 	}
 }
 
-func TestRemoveLocalRblEntry(t *testing.T) {
-	var captured *pb.RemoveLocalRblEntryRequest
+func TestRemoveLocalBlocklistEntry(t *testing.T) {
+	var captured *pb.RemoveLocalBlocklistEntryRequest
 	mock := &mockRolodexDnsService{
-		removeLocalRblEntryFn: func(_ context.Context, req *pb.RemoveLocalRblEntryRequest) (*pb.RemoveLocalRblEntryResponse, error) {
+		removeLocalBlocklistEntryFn: func(_ context.Context, req *pb.RemoveLocalBlocklistEntryRequest) (*pb.RemoveLocalBlocklistEntryResponse, error) {
 			captured = req
-			return &pb.RemoveLocalRblEntryResponse{Success: true}, nil
+			return &pb.RemoveLocalBlocklistEntryResponse{Success: true}, nil
 		},
 	}
 	client := startMockServer(t, mock, WithAuthToken("tok"))
-	err := client.RemoveLocalRblEntry(context.Background(), "malware.example.com")
+	err := client.RemoveLocalBlocklistEntry(context.Background(), "malware.example.com")
 	if err != nil {
-		t.Fatalf("RemoveLocalRblEntry: %v", err)
+		t.Fatalf("RemoveLocalBlocklistEntry: %v", err)
 	}
 	if captured.Name != "malware.example.com" {
 		t.Errorf("name = %q, want %q", captured.Name, "malware.example.com")
@@ -2174,11 +1969,11 @@ func TestRemoveLocalRblEntry(t *testing.T) {
 	}
 }
 
-func TestListLocalRblEntries(t *testing.T) {
+func TestListLocalBlocklistEntries(t *testing.T) {
 	mock := &mockRolodexDnsService{
-		listLocalRblEntriesFn: func(_ context.Context, req *pb.ListLocalRblEntriesRequest) (*pb.ListLocalRblEntriesResponse, error) {
-			return &pb.ListLocalRblEntriesResponse{
-				Entries: []*pb.LocalRblEntry{
+		listLocalBlocklistEntriesFn: func(_ context.Context, req *pb.ListLocalBlocklistEntriesRequest) (*pb.ListLocalBlocklistEntriesResponse, error) {
+			return &pb.ListLocalBlocklistEntriesResponse{
+				Entries: []*pb.LocalBlocklistEntry{
 					{Name: "bad.example.com", Reason: "spam"},
 					{Name: "evil.example.com", Reason: "phishing"},
 				},
@@ -2186,9 +1981,9 @@ func TestListLocalRblEntries(t *testing.T) {
 		},
 	}
 	client := startMockServer(t, mock, WithAuthToken("tok"))
-	entries, err := client.ListLocalRblEntries(context.Background())
+	entries, err := client.ListLocalBlocklistEntries(context.Background())
 	if err != nil {
-		t.Fatalf("ListLocalRblEntries: %v", err)
+		t.Fatalf("ListLocalBlocklistEntries: %v", err)
 	}
 	if len(entries) != 2 {
 		t.Fatalf("got %d entries, want 2", len(entries))
@@ -3035,145 +2830,6 @@ func TestDeleteDhcpLease(t *testing.T) {
 	}
 	if captured.AuthToken != "test-token" {
 		t.Errorf("auth token = %q, want %q", captured.AuthToken, "test-token")
-	}
-}
-
-func TestAddScopeRblProvider(t *testing.T) {
-	var captured *pb.AddScopeRblProviderRequest
-	mock := &mockRolodexDnsService{
-		addScopeRblProviderFn: func(_ context.Context, req *pb.AddScopeRblProviderRequest) (*pb.AddScopeRblProviderResponse, error) {
-			captured = req
-			return &pb.AddScopeRblProviderResponse{Success: true}, nil
-		},
-	}
-	client := startMockServer(t, mock, WithAuthToken("test-token"))
-
-	err := client.AddScopeRblProvider(context.Background(), "office", "zen.spamhaus.org", true)
-	if err != nil {
-		t.Fatalf("AddScopeRblProvider returned error: %v", err)
-	}
-
-	if captured == nil {
-		t.Fatal("server did not receive request")
-	}
-	if captured.AuthToken != "test-token" {
-		t.Errorf("auth token = %q, want %q", captured.AuthToken, "test-token")
-	}
-	if captured.Provider.ScopeName != "office" {
-		t.Errorf("scope name = %q, want %q", captured.Provider.ScopeName, "office")
-	}
-	if captured.Provider.Zone != "zen.spamhaus.org" {
-		t.Errorf("zone = %q, want %q", captured.Provider.Zone, "zen.spamhaus.org")
-	}
-	if !captured.Provider.Enabled {
-		t.Errorf("enabled = false, want true")
-	}
-}
-
-// A per-scope provider carries the same refusal configuration, and the plain
-// AddScopeRblProvider must send an empty list — which the server reads as "the
-// built-in codes", the safe reading for a caller that has not thought about it.
-func TestAddScopeRblProviderWithRefusal(t *testing.T) {
-	var captured *pb.AddScopeRblProviderRequest
-	mock := &mockRolodexDnsService{
-		addScopeRblProviderFn: func(_ context.Context, req *pb.AddScopeRblProviderRequest) (*pb.AddScopeRblProviderResponse, error) {
-			captured = req
-			return &pb.AddScopeRblProviderResponse{Success: true}, nil
-		},
-	}
-	client := startMockServer(t, mock)
-
-	err := client.AddScopeRblProviderWithRefusal(
-		context.Background(), "office", "scope.rbl", true,
-		[]string{"127.255.255.0/24", "127.0.1.255"}, 300,
-	)
-	if err != nil {
-		t.Fatalf("AddScopeRblProviderWithRefusal returned error: %v", err)
-	}
-	if len(captured.Provider.RefusalCodes) != 2 {
-		t.Fatalf("refusal codes = %v, want two entries", captured.Provider.RefusalCodes)
-	}
-	if captured.Provider.RefusalCooldownSecs != 300 {
-		t.Errorf("refusal_cooldown_secs = %d, want 300", captured.Provider.RefusalCooldownSecs)
-	}
-
-	if err := client.AddScopeRblProvider(context.Background(), "office", "scope.rbl", true); err != nil {
-		t.Fatalf("AddScopeRblProvider returned error: %v", err)
-	}
-	if len(captured.Provider.RefusalCodes) != 0 {
-		t.Errorf("refusal codes = %v, want empty (meaning the built-in set)", captured.Provider.RefusalCodes)
-	}
-	if captured.Provider.RefusalCooldownSecs != 0 {
-		t.Errorf("refusal_cooldown_secs = %d, want 0 (the server-wide default)", captured.Provider.RefusalCooldownSecs)
-	}
-}
-
-func TestRemoveScopeRblProvider(t *testing.T) {
-	var captured *pb.RemoveScopeRblProviderRequest
-	mock := &mockRolodexDnsService{
-		removeScopeRblProviderFn: func(_ context.Context, req *pb.RemoveScopeRblProviderRequest) (*pb.RemoveScopeRblProviderResponse, error) {
-			captured = req
-			return &pb.RemoveScopeRblProviderResponse{Success: true}, nil
-		},
-	}
-	client := startMockServer(t, mock, WithAuthToken("test-token"))
-
-	err := client.RemoveScopeRblProvider(context.Background(), "office", "zen.spamhaus.org")
-	if err != nil {
-		t.Fatalf("RemoveScopeRblProvider returned error: %v", err)
-	}
-
-	if captured == nil {
-		t.Fatal("server did not receive request")
-	}
-	if captured.ScopeName != "office" {
-		t.Errorf("scope name = %q, want %q", captured.ScopeName, "office")
-	}
-	if captured.Zone != "zen.spamhaus.org" {
-		t.Errorf("zone = %q, want %q", captured.Zone, "zen.spamhaus.org")
-	}
-	if captured.AuthToken != "test-token" {
-		t.Errorf("auth token = %q, want %q", captured.AuthToken, "test-token")
-	}
-}
-
-func TestListScopeRblProviders(t *testing.T) {
-	var captured *pb.ListScopeRblProvidersRequest
-	mock := &mockRolodexDnsService{
-		listScopeRblProvidersFn: func(_ context.Context, req *pb.ListScopeRblProvidersRequest) (*pb.ListScopeRblProvidersResponse, error) {
-			captured = req
-			return &pb.ListScopeRblProvidersResponse{
-				Providers: []*pb.ScopeRblProvider{
-					{ScopeName: "office", Zone: "zen.spamhaus.org", Enabled: true},
-					{ScopeName: "office", Zone: "bl.spamcop.net", Enabled: false},
-				},
-			}, nil
-		},
-	}
-	client := startMockServer(t, mock, WithAuthToken("tok"))
-
-	providers, err := client.ListScopeRblProviders(context.Background(), "office")
-	if err != nil {
-		t.Fatalf("ListScopeRblProviders returned error: %v", err)
-	}
-
-	if captured == nil {
-		t.Fatal("server did not receive request")
-	}
-	if captured.ScopeName != "office" {
-		t.Errorf("scope name = %q, want %q", captured.ScopeName, "office")
-	}
-	if len(providers) != 2 {
-		t.Fatalf("got %d providers, want 2", len(providers))
-	}
-	if providers[0].Zone != "zen.spamhaus.org" {
-		t.Errorf("provider[0] zone = %q, want %q", providers[0].Zone, "zen.spamhaus.org")
-	}
-	if !providers[0].Enabled {
-		t.Errorf("provider[0] enabled = false, want true")
-	}
-	if providers[1].Enabled {
-		t.Errorf("provider[1] enabled = true, want false")
 	}
 }
 

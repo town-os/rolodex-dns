@@ -28,7 +28,7 @@ use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
 use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use rolodex_dns::db::{Database, DnsRecord, NetworkAssociation, NetworkScope, RecordKind};
 use rolodex_dns::dns_server::{DnsServer, ResolutionMode};
-use rolodex_dns::rbl::RblChecker;
+use rolodex_dns::dnsbl::DnsblChecker;
 use std::net::IpAddr;
 use std::sync::Arc;
 
@@ -63,7 +63,7 @@ fn make_scoped_server() -> (Arc<DnsServer>, Database) {
         home_domain: "office.home.".to_string(),
     })
     .unwrap();
-    let rbl = Arc::new(RblChecker::new(false, vec![]));
+    let rbl = Arc::new(DnsblChecker::new());
     let server = Arc::new(DnsServer::new(db.clone(), rbl, vec![]));
     server.set_resolution_mode(ResolutionMode::Forward);
     (server, db)

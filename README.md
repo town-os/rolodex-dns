@@ -10,7 +10,7 @@ Names that are not local are resolved **iteratively from the root servers** by d
 
 Answers resolved from the roots are **DNSSEC-validated** against the IANA trust anchors by default; bogus data is never served and never cached. See [DNSSEC](#dnssec).
 
-Rolodex DNS also supports Realtime Blackhole Lists (RBLs) and domain blocklists (DNSBLs) for spam/malware filtering, DNSSEC zone signing, DANE TLSA certificate association, a built-in ACME certificate authority, DNS64 AAAA synthesis, per-network DNS partitioning, and an integrated DHCPv4 server.
+Rolodex DNS also supports domain blocklists (DNSBLs) for spam/malware filtering, DNSSEC zone signing, DANE TLSA certificate association, a built-in ACME certificate authority, DNS64 AAAA synthesis, per-network DNS partitioning, and an integrated DHCPv4 server.
 
 New here? Start with the **[Configuration Guide](CONFIGURATION.md)** — a task-oriented walkthrough from a minimal working config to each subsystem, with a worked example per deployment shape.
 
@@ -37,20 +37,20 @@ New here? Start with the **[Configuration Guide](CONFIGURATION.md)** — a task-
 - **TTL drift**: Fixed mode (add/subtract duration, supports compound formats like `"1h30m"`) and experimental logarithmic mode (latency-based)
 - **QNAME case randomization**: 0x20 encoding randomizes QNAME case in forwarded queries for cache poisoning defense
 - **gRPC management**: Remote record management via gRPC with shared secret or Unix socket auth
-- **RBL support**: Realtime Blackhole List checking with in-memory caching, plus a local RBL database for custom blocklist entries
+- **Blocklists**: DNSBL provider checking with in-memory caching, plus a local blocklist database for custom entries
 - **DNSBL support**: Domain blocklists (Spamhaus DBL, SURBL, URIBL) checked before any external resolution, so a listed name is refused even if a forwarded answer was previously cached
 - **Blocklist refusal handling**: A DNSxL answers "listed" and "stop querying us" with the same kind of `A` record, so refusal codes (`127.255.255.254`, `127.0.0.1`, …) are recognized as *not* a listing and the provider is rotated out of the lookup rotation for a cooldown — instead of NXDOMAINing every name checked against it
-- **Blocklist allowlist**: One escape hatch covering every list and both gates — an entry exempts a name and its subdomains from the DNSBL/local check, and an address (by reverse name or IP literal) from the RBL check
+- **Blocklist allowlist**: One escape hatch covering every list and both gates — an entry exempts a name and its subdomains from the DNSBL/local check, and an address (by reverse name or IP literal) from the reverse-lookup check
 - **Recursion access control**: `security.recursion_cidrs` decides who may drive *upstream* resolution, defaulting to ranges unroutable from the internet, so a default `0.0.0.0:53` bind is not an open recursive resolver. Strangers still receive this server's authoritative answers
 - **Network scoping**: Split-horizon DNS views with per-scope records and IP-based access control. Scope enforcement is confined to the configured overlay (WireGuard) CIDRs; loopback, LAN, and container sources are trusted and never refused
 - **Per-network owned TLDs**: Globally-unique TLDs owned by a scope, partitioned across overlay peers and never forwarded upstream, with optional per-TLD **ingress DNS listeners** that answer on a network's own address and rewrite programmed names to its ingress controller
 - **Integrated DHCPv4 server**: Per-scope address pools with sticky MAC bindings, automatic A/PTR registration, certificate delivery via site-specific options, and a background lease sweep
 - **Automatic reverse PTR records**: Optional (`dns.auto_ptr`) maintenance of matching `in-addr.arpa`/`ip6.arpa` PTRs for A/AAAA records added through gRPC
 - **Proxy support**: Forward DNS queries through HTTP CONNECT, SOCKS5, or DoH proxy
-- **Prometheus metrics**: an optional, off-by-default `/metrics` endpoint exposing 78 metric families with bounded label cardinality — including per-stage answer attribution and per-TLD isolation, so the split-horizon pipeline is legible from outside. Query names are never labels
+- **Prometheus metrics**: an optional, off-by-default `/metrics` endpoint exposing 80 metric families with bounded label cardinality — including per-stage answer attribution and per-TLD isolation, so the split-horizon pipeline is legible from outside. Query names are never labels
 - **SQLite persistence**: DNS records persist across restarts
 - **TLS hot-reload (partial)**: `TlsManager` rebuilds its `rustls::ServerConfig` from the configured PEM files on demand and publishes it to watchers, keeping the previous certificate serving if the rebuild fails. **Not yet wired to the listeners** — each of DoT/DoH/DoQ/ACME takes a one-time config snapshot at startup, so a renewed certificate still requires a restart to be served
-- **Performance**: Multi-threaded tokio runtime, lock-free RBL and resolver state (`AtomicBool` + `ArcSwap` + atomics), in-memory boot caches for scopes/zones/TLDs/RBL entries, UDP socket pool for upstream forwarding, and DashMap/DashSet concurrent caching throughout
+- **Performance**: Multi-threaded tokio runtime, lock-free blocklist and resolver state (`AtomicBool` + `ArcSwap` + atomics), in-memory boot caches for scopes/zones/TLDs/blocklist entries, UDP socket pool for upstream forwarding, and DashMap/DashSet concurrent caching throughout
 
 ## Building
 
@@ -83,7 +83,7 @@ This will:
    - gRPC Unix socket at `/tmp/rolodex-dns.sock` (no TCP gRPC listener)
    - SQLite database at `/tmp/rolodex-dns-dev.db`
    - No authentication required
-   - RBL checking disabled
+   - Blocklist checking disabled
    - Default upstream forwarders (`8.8.8.8:53`, `8.8.4.4:53`), used as the `local` tier of the default `auto` resolution chain
 
 `make help` lists every target with a description, grouped by section (it is also the default goal, so a bare `make` prints it).
@@ -363,33 +363,21 @@ grpc:
   # Shared secret for TCP gRPC authentication (not required for Unix socket)
   shared_secret: your-secret-here
 
-rbl:
-  # Enable/disable RBL checking globally (default: false)
+# Domain blocklists (checked by name, before any external resolution)
+dnsbl:
+  # Enable/disable blocklist checking globally (default: false)
   enabled: false
   # Seconds a provider that refuses our queries stays out of rotation
   refusal_cooldown_secs: 3600
-  # RBL providers
   providers:
-    - zone: zen.spamhaus.org
+    - zone: dbl.spamhaus.org
       enabled: true
       # Codes meaning "query refused", not "listed". Omit for the built-in set;
       # the single entry "none" disables refusal detection for this provider.
       refusal_codes: []
       # Per-provider override of the rotate-out duration (omit to inherit)
       refusal_cooldown_secs: 3600
-    - zone: bl.spamcop.net
-      enabled: true
-    - zone: b.barracudacentral.org
-      enabled: true
-    - zone: dbl.spamhaus.org
-      enabled: true
-
-# Domain blocklists (checked by name, before any external resolution)
-dnsbl:
-  enabled: false
-  refusal_cooldown_secs: 3600   # independent of the RBL default
-  providers:
-    - zone: dbl.spamhaus.org
+    - zone: multi.surbl.org
       enabled: true
 
 # Integrated DHCPv4 server (omit the section to disable)
@@ -501,18 +489,12 @@ metrics:
 | `grpc.tcp_bind` | `"127.0.0.1:50051"` | TCP gRPC listener; supports interface:port (empty to disable) |
 | `grpc.unix_socket` | `"/var/run/rolodex-dns.sock"` | Unix socket path (empty to disable) |
 | `grpc.shared_secret` | `""` | Shared secret for TCP gRPC auth (empty = no auth) |
-| `rbl.enabled` | `false` | Enable IP-based RBL checking globally |
-| `rbl.providers[].zone` | -- | RBL zone to query (reversed IP is prepended) |
-| `rbl.providers[].enabled` | `true` | Enable/disable individual provider |
-| `rbl.providers[].refusal_codes` | `[]` (built-in set) | Answers meaning "query refused" rather than "listed". Each entry is an IPv4 address or `address/prefix`. Empty means the built-in set; the single entry `none` disables detection for that provider. An explicit list replaces the defaults rather than extending them, and an unparseable code is rejected at startup (see [Refusal Codes](#refusal-codes-and-provider-rotation)) |
-| `rbl.providers[].refusal_cooldown_secs` | (list default) | Per-provider rotate-out duration after a refusal |
-| `rbl.refusal_cooldown_secs` | `3600` | Seconds a refusing RBL provider stays out of rotation, for providers that set none. `0` means "use the default", not "no cooldown" |
 | `dnsbl.enabled` | `false` | Enable domain-blocklist (DNSBL) checking globally |
 | `dnsbl.providers[].zone` | -- | DNSBL zone to query (the queried name is prepended) |
 | `dnsbl.providers[].enabled` | `true` | Enable/disable individual DNSBL provider |
-| `dnsbl.providers[].refusal_codes` | `[]` (built-in set) | As `rbl.providers[].refusal_codes` |
-| `dnsbl.providers[].refusal_cooldown_secs` | (list default) | As `rbl.providers[].refusal_cooldown_secs` |
-| `dnsbl.refusal_cooldown_secs` | `3600` | DNSBL rotate-out default, independent of the RBL one |
+| `dnsbl.providers[].refusal_codes` | `[]` (built-in set) | Answers meaning "query refused" rather than "listed". Each entry is an IPv4 address or `address/prefix`. Empty means the built-in set; the single entry `none` disables detection for that provider. An explicit list replaces the defaults rather than extending them, and an unparseable code is rejected at startup (see [Refusal Codes](#refusal-codes-and-provider-rotation)) |
+| `dnsbl.providers[].refusal_cooldown_secs` | (list default) | Per-provider rotate-out duration after a refusal |
+| `dnsbl.refusal_cooldown_secs` | `3600` | Seconds a refusing provider stays out of rotation, for providers that set none. `0` means "use the default", not "no cooldown" |
 | `dhcp.bind` | `"0.0.0.0:67"` | DHCP listener (section absent = DHCP disabled) |
 | `dhcp.tld` | -- | Required when DHCP is enabled: hostnames register as `<host>.lan.<tld>.` |
 | `dhcp.default_lease_duration` | `3600` | Default lease duration in seconds |
@@ -585,15 +567,13 @@ rolodex-dns-cli [OPTIONS] <COMMAND>
 | `list-records` | List DNS records with optional filters |
 | **Forwarders** | |
 | `set-forwarders` | Set upstream DNS forwarders at runtime |
-| **RBL / DNSBL** | |
-| `set-rbl-config` | Configure IP-based RBL settings at runtime |
-| `get-rbl-config` | Retrieve the current RBL configuration |
+| **Blocklists** | |
 | `set-dnsbl-config` | Configure domain-blocklist (DNSBL) settings at runtime |
 | `get-dnsbl-config` | Retrieve the current DNSBL configuration |
-| `flush-cache` | Flush the RBL/DNSBL result cache |
-| `add-local-rbl` | Add a local RBL blocklist entry |
-| `remove-local-rbl` | Remove a local RBL blocklist entry |
-| `list-local-rbl` | List all local RBL blocklist entries |
+| `flush-cache` | Flush the blocklist result cache |
+| `add-local-blocklist` | Add a local blocklist entry |
+| `remove-local-blocklist` | Remove a local blocklist entry |
+| `list-local-blocklist` | List all local blocklist entries |
 | `add-dnsbl-allow` | Exempt a name (and its subdomains) from the blocklist check |
 | `remove-dnsbl-allow` | Remove a DNSBL allowlist entry |
 | `list-dnsbl-allow` | List all DNSBL allowlist entries |
@@ -615,10 +595,6 @@ rolodex-dns-cli [OPTIONS] <COMMAND>
 | `set-scope-tld-forwarders` | Set the peer forwarders for a scope's TLD |
 | `list-scope-tld-forwarders` | List the peer forwarders for a scope's TLD |
 | `list-scope-tld-listeners` | List the ingress DNS listeners bound to a scope's TLDs |
-| **Per-Scope RBL** | |
-| `add-scope-rbl` | Add an additional RBL provider for a scope |
-| `remove-scope-rbl` | Remove a scope-specific RBL provider |
-| `list-scope-rbl` | List RBL providers for a scope |
 | **Authoritative Zones** | |
 | `add-auth-zone` | Declare a zone as authoritative |
 | `remove-auth-zone` | Remove a zone from the authoritative list |
@@ -778,82 +754,9 @@ rolodex-dns-cli set-forwarders -f 9.9.9.9:53
 rolodex-dns-cli set-forwarders -f ""
 ```
 
-##### `set-rbl-config`
-
-Configure RBL (Realtime Blackhole List) settings at runtime. Replaces the entire RBL configuration.
-**gRPC path:** `/rolodex_dns.RolodexDnsService/SetRblConfig`
-
-```
-rolodex-dns-cli set-rbl-config [OPTIONS]
-```
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `-e, --enabled` | `false` | Enable RBL checking globally. If flag is absent, RBL is disabled |
-| `-p, --providers <SPEC>...` | -- | RBL provider specifications in `"zone:enabled"` format (e.g. `"zen.spamhaus.org:true"`) |
-| `--refusal-codes <ZONE=CODE,...>` | built-in set | Per-provider refusal codes (repeatable). `none` disables refusal detection for that zone |
-| `--provider-cooldown <ZONE=SECS>` | list default | Per-provider rotate-out duration after a refusal (repeatable) |
-| `--refusal-cooldown <SECS>` | `3600` | List-wide rotate-out duration |
-
-A `zone=` entry naming a zone that is not in `--providers` is an error rather than a silently dropped flag.
-
-Examples:
-```bash
-# Enable RBL with Spamhaus
-rolodex-dns-cli set-rbl-config -e -p "zen.spamhaus.org:true"
-
-# Enable RBL with multiple providers (some disabled)
-rolodex-dns-cli set-rbl-config -e \
-  -p "zen.spamhaus.org:true" \
-  -p "bl.spamcop.net:false" \
-  -p "b.barracudacentral.org:true"
-
-# Narrow one provider's refusal codes and back it off for 15 minutes on a refusal
-rolodex-dns-cli set-rbl-config -e \
-  -p "zen.spamhaus.org:true" \
-  --refusal-codes "zen.spamhaus.org=127.255.255.0/24" \
-  --provider-cooldown "zen.spamhaus.org=900"
-
-# A private blocklist whose real listings collide with a default refusal code
-rolodex-dns-cli set-rbl-config -e \
-  -p "rbl.internal.example:true" \
-  --refusal-codes "rbl.internal.example=none"
-
-# Disable RBL entirely
-rolodex-dns-cli set-rbl-config
-```
-
-##### `get-rbl-config`
-
-Retrieve the current RBL configuration.
-**gRPC path:** `/rolodex_dns.RolodexDnsService/GetRblConfig`
-
-```
-rolodex-dns-cli get-rbl-config
-```
-
-Example output:
-```
-RBL enabled: true
-Refusal rotate-out: 3600s (default for providers with no value)
-
-Providers:
-ZONE                             ENABLED  COOLDOWN   REFUSAL CODES
-------------------------------------------------------------------------------------------
-zen.spamhaus.org                 true     default    127.255.255.0/24, 127.0.1.255, ...
-bl.spamcop.net                   false    900s       127.0.0.1
-
-Rotated out (refused our queries):
-ZONE                             REFUSAL CODE       REMAINING
---------------------------------------------------------------
-zen.spamhaus.org                 127.255.255.254    3241s
-```
-
-Refusal codes are reported **as they are in effect**: a provider that configured none reads back as the built-in set rather than as empty, so what is printed is what is running. The `Rotated out` block is only printed when a provider is currently backed off — that is the difference between "the blocklist is clean" and "the blocklist stopped answering us", which otherwise look identical from outside.
-
 ##### `flush-cache`
 
-Flush the RBL result cache. Forces fresh lookups for subsequent reverse DNS queries.
+Flush the blocklist result cache. Forces fresh lookups for subsequent queries.
 **gRPC path:** `/rolodex_dns.RolodexDnsService/FlushCache`
 
 ```
@@ -1100,41 +1003,11 @@ Configures upstream DNS forwarders at runtime.
 - `success` (bool): Whether the operation succeeded
 - `message` (string): Error message if `success` is false
 
-#### `SetRblConfig`
-
-**Path:** `/rolodex_dns.RolodexDnsService/SetRblConfig`
-
-Configures Realtime Blackhole List settings at runtime.
-
-**Parameters:**
-- `enabled` (bool): Whether RBL checking is globally enabled. Default: false
-- `providers` (repeated RblConfig): List of RBL providers
-  - `zone` (string): The DNSBL zone to query (e.g. `"zen.spamhaus.org"`)
-  - `enabled` (bool): Whether this specific provider is enabled. Default: true
-- `auth_token` (string): Shared secret for authentication
-
-**Response:**
-- `success` (bool): Whether the operation succeeded
-- `message` (string): Error message if `success` is false
-
-#### `GetRblConfig`
-
-**Path:** `/rolodex_dns.RolodexDnsService/GetRblConfig`
-
-Retrieves the current RBL configuration.
-
-**Parameters:**
-- `auth_token` (string): Shared secret for authentication
-
-**Response:**
-- `enabled` (bool): Whether RBL checking is globally enabled
-- `providers` (repeated RblConfig): Current RBL providers
-
 #### `FlushCache`
 
 **Path:** `/rolodex_dns.RolodexDnsService/FlushCache`
 
-Clears the RBL lookup cache.
+Clears the blocklist lookup cache.
 
 **Parameters:**
 - `auth_token` (string): Shared secret for authentication
@@ -1307,14 +1180,13 @@ The following methods are also available. See `proto/rolodex_dns.proto` for full
 | `SetTtlDriftConfig` | Configure TTL drift adjustment (fixed or logarithmic mode) |
 | `GetTtlDriftConfig` | Retrieve TTL drift configuration |
 | `GetQueryLatencyStats` | Retrieve per-server upstream query latency statistics |
-| `AddLocalRblEntry` | Add a local RBL blocklist entry |
-| `RemoveLocalRblEntry` | Remove a local RBL blocklist entry |
-| `ListLocalRblEntries` | List all local RBL blocklist entries |
+| `AddLocalBlocklistEntry` | Add a local blocklist entry |
+| `RemoveLocalBlocklistEntry` | Remove a local blocklist entry |
+| `ListLocalBlocklistEntries` | List all local blocklist entries |
 | `SetDnsblConfig` / `GetDnsblConfig` | Configure/retrieve domain-blocklist (DNSBL) settings |
 | `AddDnsblAllowlistEntry` | Exempt a name (and its subdomains) from the blocklist check |
 | `RemoveDnsblAllowlistEntry` | Remove a DNSBL allowlist entry |
 | `ListDnsblAllowlistEntries` | List all DNSBL allowlist entries |
-| `AddScopeRblProvider` / `RemoveScopeRblProvider` / `ListScopeRblProviders` | Manage additional RBL providers for one scope |
 | `AddScopeTld` | Register a globally-unique owned TLD for a scope; an optional `listen_ip` also starts an ingress DNS listener |
 | `RemoveScopeTld` | Remove an owned TLD (and its ingress listener, once unused) |
 | `ListScopeTlds` | List the TLDs owned by a scope |
@@ -1594,9 +1466,9 @@ metrics:
 
 The endpoint is unauthenticated and carries only aggregate counts — no query names, no record values, no certificate material. Bind it to a private address; the default is loopback. TLS is deliberately not offered here, since it would mean shipping a self-signed certificate to every scraper for an endpoint that should not be publicly reachable in the first place.
 
-78 metric families are exposed, all prefixed `rolodex_dns_`, covering queries, the response cache, blocklists (including refusals and rotated-out providers), upstream tiers, the iterative resolver, DNSSEC verdicts, split-horizon state, DHCP, ACME, and gRPC.
+80 metric families are exposed, all prefixed `rolodex_dns_`, covering queries, the response cache, blocklists (including refusals and rotated-out providers), upstream tiers, the iterative resolver, DNSSEC verdicts, split-horizon state, DHCP, ACME, and gRPC.
 
-The one worth knowing about is `rolodex_dns_answers_total{source}`, which reports which stage of the resolution order produced each answer — `cache`, `local`, `scoped`, `scope_fallback`, `tld_peer`, `blocklist`, `rbl`, `dns64`, `upstream`, `authoritative_nxdomain`, `refused`, `error`. Its total equals the query total, which is what makes the split-horizon pipeline legible from outside:
+The one worth knowing about is `rolodex_dns_answers_total{source}`, which reports which stage of the resolution order produced each answer — `cache`, `local`, `scoped`, `scope_fallback`, `tld_peer`, `blocklist`, `reverse_blocklist`, `dns64`, `upstream`, `authoritative_nxdomain`, `refused`, `error`. Its total equals the query total, which is what makes the split-horizon pipeline legible from outside:
 
 ```
 curl -s http://127.0.0.1:9153/metrics | grep answers_total
@@ -1759,50 +1631,36 @@ rolodex_dns_address_family_reachable{family="ipv6"} == 0
 
 Every query above is covered by a test that resolves its metric names and label matchers against the live exposition output, so a documented query cannot reference a series that does not exist.
 
-## RBL (Realtime Blackhole List)
+## Blocklists
 
-When RBL is enabled, Rolodex DNS checks IP addresses found in reverse DNS queries against configured RBL providers. If an IP is listed in any enabled provider, the query receives an `NXDOMAIN` response. RBL is **disabled by default with an empty provider list** — nothing external is queried until an operator adds providers via the `rbl` config section or `SetRblConfig`.
+Rolodex DNS blocks names two ways, and both answer a blocked query with `NXDOMAIN`:
 
-### Local RBL Database
+- **DNSBL providers** — third-party zones queried by name, covered under [DNSBL (Domain Blocklists)](#dnsbl-domain-blocklists) below.
+- **The local list** — a DB-backed table of names and addresses an operator blocked by hand.
 
-In addition to external RBL providers, Rolodex DNS supports locally-managed blocklist entries. Local entries are checked alongside external providers, against both reverse-DNS IP lookups and forward domain names, and are managed via `AddLocalRblEntry`, `RemoveLocalRblEntry`, and `ListLocalRblEntries`.
+Both are disabled/empty by default: nothing external is queried and no name is handed to a blocklist operator until providers are added.
+
+### Local Blocklist Database
+
+Local entries are the operator's own list, checked before any provider is consulted, and managed via `AddLocalBlocklistEntry`, `RemoveLocalBlocklistEntry`, and `ListLocalBlocklistEntries`.
+
+An entry may name a **domain**, matched on the forward-name gate, or an **address**, matched on a reverse lookup. An address may be written either way — as the literal, or as the `in-addr.arpa`/`ip6.arpa` name `dig -x` prints — and both spellings block. Addresses are only ever blocked by this list: a provider is asked about the name being resolved, and on a reverse lookup that is a name nobody publishes reputation for.
 
 ```bash
 # Block a specific IP with a reason
-rolodex-dns-cli add-local-rbl --name 10.0.0.5 --reason "known spam source"
+rolodex-dns-cli add-local-blocklist --name 10.0.0.5 --reason "known spam source"
 
 # List local entries
-rolodex-dns-cli list-local-rbl
+rolodex-dns-cli list-local-blocklist
 
 # Remove an entry
-rolodex-dns-cli remove-local-rbl --name 10.0.0.5
+rolodex-dns-cli remove-local-blocklist --name 10.0.0.5
 ```
-
-### Commonly Used Providers
-
-The provider list ships empty; these are the standard zones an operator typically adds (the same ones used by unbound and other resolvers):
-
-| Zone | Description |
-|------|-------------|
-| `zen.spamhaus.org` | Combined Spamhaus blocklist (SBL + XBL + PBL + CSS) |
-| `bl.spamcop.net` | SpamCop blocklist |
-| `b.barracudacentral.org` | Barracuda Reputation Block List |
-| `dbl.spamhaus.org` | Spamhaus Domain Block List |
-
-### How RBL Works
-
-1. A reverse DNS query arrives (e.g. `100.1.168.192.in-addr.arpa.`)
-2. The IP is extracted from the query name (`192.168.1.100`)
-3. Local RBL entries are checked first
-4. For each enabled RBL provider, Rolodex DNS constructs a query: `<reversed-ip>.<rbl-zone>`
-5. If any RBL responds with an A record, the IP is considered listed
-6. Results are cached in memory for the TTL returned by the RBL
-7. Listed IPs receive `NXDOMAIN` for the original query
 
 ### Caching
 
-- Positive results (IP is listed) are cached for the TTL returned by the RBL provider
-- Negative results (IP is not listed) are cached for 5 minutes
+- Positive results (the name is listed) are cached for the TTL the provider returned
+- Negative results (not listed) are cached for 5 minutes
 - Lookup errors are not cached and are treated as not-listed, to avoid false positives
 - Refusals are not cached either, and take the provider out of rotation — see below
 - The cache can be flushed via the `FlushCache` gRPC method, which also returns every rotated-out provider to rotation
@@ -1829,30 +1687,18 @@ Each entry is an IPv4 address or `address/prefix`. **Empty means the built-in se
 
 - skips **new lookups** only — already-cached verdicts still count, since "this provider will not answer new questions" is not "the answers it already gave were wrong";
 - **lapses on its own**, so a transient over-quota period heals with no operator action;
-- is **cleared** by `flush-cache` and by any `set-rbl-config`/`set-dnsbl-config` — a reconfiguration is often the fix for the refusal (a typo in the zone name is both a cause of `127.255.255.252` and the thing being corrected);
-- is **reported** by `get-rbl-config`/`get-dnsbl-config` and by `rolodex_dns_blocklist_refusals_total{kind}` / `rolodex_dns_blocklist_rotated_out`.
+- is **cleared** by `flush-cache` and by any `set-dnsbl-config` — a reconfiguration is often the fix for the refusal (a typo in the zone name is both a cause of `127.255.255.252` and the thing being corrected);
+- is **reported** by `get-dnsbl-config` and by `rolodex_dns_blocklist_refusals_total{kind}` / `rolodex_dns_blocklist_rotated_out`.
 
 Setting a cooldown to `0` means "use the default", not "no cooldown" — a zero cooldown re-asks the provider that just told you to stop, which is the behaviour rotation exists to prevent.
 
-### Per-Scope Providers
-
-A network scope can opt into additional RBL providers beyond the global list, checked for IPs associated with that scope. A positive from either is the same NXDOMAIN, and the allowlist exempts from either. Managed via `add-scope-rbl`, `remove-scope-rbl`, and `list-scope-rbl`; each provider carries its own refusal codes and cooldown.
-
-Because a scope opts in row by row, per-scope providers are **not** gated on the global `rbl.enabled` flag — a scope may run a blocklist the box as a whole does not. They are skipped when outbound plaintext `:53` is unreachable, since that flag is not a policy switch: it says the lookup can only time out.
-
-```bash
-# --enabled takes a value; omitting it defaults to true
-rolodex-dns-cli add-scope-rbl -s office --zone zen.spamhaus.org --enabled true
-rolodex-dns-cli list-scope-rbl -s office
-```
-
 ## DNSBL (Domain Blocklists)
 
-Where RBL providers block by **IP address** (queried with a reversed IP on reverse-DNS lookups), DNSBL providers block by **domain name**: the queried name's labels are prepended to the provider zone, so `googleadservices.com` against `dbl.spamhaus.org` is queried as `googleadservices.com.dbl.spamhaus.org`. This is how Spamhaus DBL, SURBL, and URIBL operate.
+DNSBL providers block by **domain name**: the queried name's labels are prepended to the provider zone, so `googleadservices.com` against `dbl.spamhaus.org` is queried as `googleadservices.com.dbl.spamhaus.org`. This is how Spamhaus DBL, SURBL, and URIBL operate.
 
 DNSBL gives blocklists **precedence over external DNS**. The check runs after local records and managed/authoritative zones — so internal data always wins — but **before** the upstream response cache and any external resolution. A listed name therefore returns NXDOMAIN even if a forwarded answer for it was previously cached.
 
-Like RBL, DNSBL is disabled by default with an empty provider list, and individual providers can be enabled or disabled independently. An enabled-but-empty DNSBL is a no-op. The standard zones an operator typically adds are `dbl.spamhaus.org`, `multi.surbl.org`, and `multi.uribl.com`. DNSBL results share the RBL result cache (positives for the provider TTL, negatives for 5 minutes).
+DNSBL is disabled by default with an empty provider list, and individual providers can be enabled or disabled independently. An enabled-but-empty DNSBL is a no-op. The standard zones an operator typically adds are `dbl.spamhaus.org`, `multi.surbl.org`, and `multi.uribl.com`. Results are cached as above (positives for the provider TTL, negatives for 5 minutes).
 
 ```bash
 rolodex-dns-cli set-dnsbl-config --enabled --providers dbl.spamhaus.org:true
@@ -1861,7 +1707,7 @@ rolodex-dns-cli get-dnsbl-config
 
 ### Allowlisting a Host
 
-The allowlist is the operator's escape hatch from a false positive, and it covers **every list and both gates**: the forward-name check (DNSBL providers and the local blocklist) *and* the reverse-DNS/IP check (global RBL providers, a scope's own providers, and local entries naming an address). A wrongly-listed IP breaks `dig -x` for a host that is running fine, so an escape hatch that reached only names would not be one.
+The allowlist is the operator's escape hatch from a false positive, and it covers **every list and both gates**: the forward-name check (DNSBL providers and the local blocklist) *and* the reverse-DNS/IP check (local entries naming an address). A wrongly-listed IP breaks `dig -x` for a host that is running fine, so an escape hatch that reached only names would not be one.
 
 - **Names are suffix-matched.** An entry covers the name and every name beneath it, so allowlisting `example.com` also exempts `www.example.com`; matching is on label boundaries, so `notexample.com` is not exempt.
 - **An address can be named either way.** A reverse query is exempted by an entry naming the `in-addr.arpa`/`ip6.arpa` name *or* the IP literal it encodes, so nobody has to hand-reverse octets. The reverse **name** is suffix-matched like any DNS name (allowlisting `1.168.192.in-addr.arpa` lifts the block on that whole /24); the IP **literal** is matched **exactly**, because an address runs most-significant-octet first — `1.100` is not a parent of `192.168.1.100`, and treating it as one would exempt addresses nobody named.
@@ -1960,7 +1806,7 @@ That does three things:
 ### Resolution Order (Scoped)
 
 1. Parse EDNS OPT record (payload size negotiation, DO bit for DNSSEC)
-2. Check RBL (for reverse DNS queries, if enabled) -- includes local RBL entries
+2. Check the local blocklist (for reverse DNS queries)
 3. Check DNS response cache
 4. Check scoped records for the client's scope
 5. Check scoped CNAME records
@@ -2058,20 +1904,17 @@ All methods accept a `context.Context` for cancellation and deadlines.
 |--------|-------------|
 | `SetForwarders(ctx, forwarders) error` | Set upstream DNS forwarders |
 
-#### RBL
+#### Blocklists
 
 | Method | Description |
 |--------|-------------|
-| `SetRblConfig(ctx, enabled, providers) error` | Configure RBL settings |
-| `SetRblConfigWithRefusalCooldown(ctx, enabled, providers, secs) error` | The same, with the list-wide rotate-out duration for refusing providers |
-| `GetRblConfig(ctx) (*RblStatus, error)` | Get current RBL config, resolved refusal codes, and rotated-out providers |
 | `SetDnsblConfig(ctx, enabled, providers) error` | Configure DNSBL (domain blocklist) settings |
-| `SetDnsblConfigWithRefusalCooldown(ctx, enabled, providers, secs) error` | The same, with the DNSBL rotate-out duration |
-| `GetDnsblConfig(ctx) (*DnsblStatus, error)` | Get current DNSBL config |
-| `FlushCache(ctx) error` | Flush the RBL/DNSBL cache and return every rotated-out provider to rotation |
-| `AddLocalRblEntry(ctx, entry) error` | Add a local RBL blocklist entry |
-| `RemoveLocalRblEntry(ctx, name) error` | Remove a local RBL blocklist entry |
-| `ListLocalRblEntries(ctx) ([]*LocalRblEntry, error)` | List local RBL entries |
+| `SetDnsblConfigWithRefusalCooldown(ctx, enabled, providers, secs) error` | The same, with the list-wide rotate-out duration for refusing providers |
+| `GetDnsblConfig(ctx) (*DnsblStatus, error)` | Get current DNSBL config, resolved refusal codes, and rotated-out providers |
+| `FlushCache(ctx) error` | Flush the blocklist cache and return every rotated-out provider to rotation |
+| `AddLocalBlocklistEntry(ctx, entry) error` | Add a local blocklist entry |
+| `RemoveLocalBlocklistEntry(ctx, name) error` | Remove a local blocklist entry |
+| `ListLocalBlocklistEntries(ctx) ([]*LocalBlocklistEntry, error)` | List local blocklist entries |
 | `AddDnsblAllowlistEntry(ctx, entry) error` | Exempt a name (and its subdomains) from the blocklist check |
 | `RemoveDnsblAllowlistEntry(ctx, name) error` | Remove a DNSBL allowlist entry |
 | `ListDnsblAllowlistEntries(ctx) ([]*DnsblAllowlistEntry, error)` | List DNSBL allowlist entries |
@@ -2097,10 +1940,6 @@ All methods accept a `context.Context` for cancellation and deadlines.
 | `SetScopeTldForwarders(ctx, scope, tld, forwarders) error` | Set a TLD's peer forwarders |
 | `ListScopeTldForwarders(ctx, scope, tld) ([]string, error)` | List a TLD's peer forwarders |
 | `ListScopeTldListeners(ctx, scope) ([]*TldListener, error)` | List a scope's ingress DNS listeners |
-| `AddScopeRblProvider(ctx, scope, zone, enabled) error` | Add a per-scope RBL provider |
-| `AddScopeRblProviderWithRefusal(ctx, scope, zone, enabled, codes, secs) error` | The same, with the provider's refusal codes and rotate-out duration |
-| `RemoveScopeRblProvider(ctx, scope, zone) error` | Remove a per-scope RBL provider |
-| `ListScopeRblProviders(ctx, scope) ([]*ScopeRblProvider, error)` | List per-scope RBL providers |
 
 #### DHCP
 
@@ -2237,7 +2076,7 @@ All methods accept a `context.Context` for cancellation and deadlines.
 | RFC 4398 | CERT DNS record | Full (storage, lookup, PKIX CA-chain distribution) |
 | RFC 4592 | Wildcards in DNS | Full (single-label substitution, exact match priority) |
 | RFC 5155 | DNSSEC hashed authenticated denial (NSEC3) | Validation only (closest encloser, opt-out, iteration ceiling per RFC 9276); never generated |
-| RFC 5782 | DNSBL (RBL) | Full (reverse-IP query format, local + external providers, `127.0.0.1` never read as a listing) |
+| RFC 5782 | DNSBL | Full (name-based query format, local + external providers, `127.0.0.1` never read as a listing) |
 | RFC 6147 | DNS64 | Full (AAAA synthesis from A records, configurable prefix) |
 | RFC 6605 / 8080 | ECDSA and Ed25519 for DNSSEC | Full (signing and verification; Ed448 unsupported by `ring`) |
 | RFC 6672 | DNAME | Full (subtree rewriting, does not apply to owner name) |
@@ -2282,7 +2121,7 @@ All methods accept a `context.Context` for cancellation and deadlines.
        ┌────────────┼────────────┬───────────────┐
        │            │            │               │
  ┌─────▼────┐ ┌────▼────┐ ┌────▼──────────┐ ┌──▼───────┐
- │ Local DB  │ │RBL/DNSBL│ │   Upstream     │ │  DNSSEC  │
+ │ Local DB  │ │ DNSBL   │ │   Upstream     │ │  DNSSEC  │
  │ (SQLite)  │ │ Checker │ │   Resolution   │ │ Signing  │
  └──────────┘ └─────────┘ └────┬──────────┘ └──────────┘
        │                        │
@@ -2307,7 +2146,7 @@ All methods accept a `context.Context` for cancellation and deadlines.
 
 Resolution order (when no network scopes are configured):
 1. Parse EDNS OPT record (payload size, DO bit)
-2. Check RBL (for reverse DNS queries, if enabled) -- includes local RBL entries
+2. Check the local blocklist (for reverse DNS queries)
 3. Check DNS response cache
 4. Check local database (split-horizon, always preferred)
 5. Check for CNAME records in local database

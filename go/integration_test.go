@@ -348,44 +348,6 @@ func TestIntegrationSetForwardersInvalid(t *testing.T) {
 	}
 }
 
-func TestIntegrationRblConfigRoundtrip(t *testing.T) {
-	client, _ := setupTestServer(t)
-	ctx := context.Background()
-
-	// Set RBL config
-	err := client.SetRblConfig(ctx, true, []*RblConfig{
-		{Zone: "zen.spamhaus.org", Enabled: true},
-		{Zone: "bl.spamcop.net", Enabled: false},
-	})
-	if err != nil {
-		t.Fatalf("SetRblConfig: %v", err)
-	}
-
-	// Get it back
-	status, err := client.GetRblConfig(ctx)
-	if err != nil {
-		t.Fatalf("GetRblConfig: %v", err)
-	}
-	if !status.Enabled {
-		t.Error("expected RBL to be enabled")
-	}
-	if len(status.Providers) != 2 {
-		t.Fatalf("got %d providers, want 2", len(status.Providers))
-	}
-	if status.Providers[0].Zone != "zen.spamhaus.org" {
-		t.Errorf("provider[0].zone = %q, want %q", status.Providers[0].Zone, "zen.spamhaus.org")
-	}
-	if !status.Providers[0].Enabled {
-		t.Error("provider[0] should be enabled")
-	}
-	if status.Providers[1].Zone != "bl.spamcop.net" {
-		t.Errorf("provider[1].zone = %q, want %q", status.Providers[1].Zone, "bl.spamcop.net")
-	}
-	if status.Providers[1].Enabled {
-		t.Error("provider[1] should be disabled")
-	}
-}
-
 func TestIntegrationDnsblConfigRoundtrip(t *testing.T) {
 	client, _ := setupTestServer(t)
 	ctx := context.Background()
@@ -430,15 +392,6 @@ func TestIntegrationDnsblConfigRoundtrip(t *testing.T) {
 	}
 	if status.Providers[1].Enabled {
 		t.Error("provider[1] should be disabled")
-	}
-
-	// DNSBL config must be independent of the IP-based RBL config.
-	rbl, err := client.GetRblConfig(ctx)
-	if err != nil {
-		t.Fatalf("GetRblConfig: %v", err)
-	}
-	if rbl.Enabled {
-		t.Error("RBL should remain unaffected by DNSBL changes")
 	}
 }
 
@@ -1052,18 +1005,18 @@ func TestIntegrationLocalRblLifecycle(t *testing.T) {
 	ctx := context.Background()
 
 	// Add local RBL entry
-	err := client.AddLocalRblEntry(ctx, &LocalRblEntry{
+	err := client.AddLocalBlocklistEntry(ctx, &LocalBlocklistEntry{
 		Name:   "10.0.0.99",
 		Reason: "test block",
 	})
 	if err != nil {
-		t.Fatalf("AddLocalRblEntry: %v", err)
+		t.Fatalf("AddLocalBlocklistEntry: %v", err)
 	}
 
 	// List entries
-	entries, err := client.ListLocalRblEntries(ctx)
+	entries, err := client.ListLocalBlocklistEntries(ctx)
 	if err != nil {
-		t.Fatalf("ListLocalRblEntries: %v", err)
+		t.Fatalf("ListLocalBlocklistEntries: %v", err)
 	}
 	if len(entries) != 1 {
 		t.Fatalf("got %d entries, want 1", len(entries))
@@ -1076,15 +1029,15 @@ func TestIntegrationLocalRblLifecycle(t *testing.T) {
 	}
 
 	// Remove entry
-	err = client.RemoveLocalRblEntry(ctx, "10.0.0.99")
+	err = client.RemoveLocalBlocklistEntry(ctx, "10.0.0.99")
 	if err != nil {
-		t.Fatalf("RemoveLocalRblEntry: %v", err)
+		t.Fatalf("RemoveLocalBlocklistEntry: %v", err)
 	}
 
 	// Verify removed
-	entries, err = client.ListLocalRblEntries(ctx)
+	entries, err = client.ListLocalBlocklistEntries(ctx)
 	if err != nil {
-		t.Fatalf("ListLocalRblEntries after remove: %v", err)
+		t.Fatalf("ListLocalBlocklistEntries after remove: %v", err)
 	}
 	if len(entries) != 0 {
 		t.Errorf("got %d entries after remove, want 0", len(entries))
@@ -1439,56 +1392,6 @@ func TestDhcpPoolCrud(t *testing.T) {
 	}
 	if len(pools) != 0 {
 		t.Errorf("got %d pools after removal, want 0", len(pools))
-	}
-}
-
-func TestScopeRblProviderCrud(t *testing.T) {
-	client, _ := setupTestServer(t)
-	ctx := context.Background()
-
-	// Create a scope first
-	err := client.CreateNetworkScope(ctx, &NetworkScope{
-		Name:       "rbl-test",
-		HomeDomain: "rbl-test.home.",
-	})
-	if err != nil {
-		t.Fatalf("CreateNetworkScope: %v", err)
-	}
-
-	// Add a scope RBL provider
-	err = client.AddScopeRblProvider(ctx, "rbl-test", "zen.spamhaus.org", true)
-	if err != nil {
-		t.Fatalf("AddScopeRblProvider: %v", err)
-	}
-
-	// List and verify
-	providers, err := client.ListScopeRblProviders(ctx, "rbl-test")
-	if err != nil {
-		t.Fatalf("ListScopeRblProviders: %v", err)
-	}
-	if len(providers) != 1 {
-		t.Fatalf("got %d providers, want 1", len(providers))
-	}
-	if providers[0].Zone != "zen.spamhaus.org" {
-		t.Errorf("zone = %q, want %q", providers[0].Zone, "zen.spamhaus.org")
-	}
-	if !providers[0].Enabled {
-		t.Errorf("enabled = false, want true")
-	}
-
-	// Remove the provider
-	err = client.RemoveScopeRblProvider(ctx, "rbl-test", "zen.spamhaus.org")
-	if err != nil {
-		t.Fatalf("RemoveScopeRblProvider: %v", err)
-	}
-
-	// Verify empty
-	providers, err = client.ListScopeRblProviders(ctx, "rbl-test")
-	if err != nil {
-		t.Fatalf("ListScopeRblProviders after remove: %v", err)
-	}
-	if len(providers) != 0 {
-		t.Errorf("got %d providers after removal, want 0", len(providers))
 	}
 }
 

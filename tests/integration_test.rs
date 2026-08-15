@@ -1,56 +1,40 @@
 use rolodex_dns::db::{Database, DnsRecord, RecordKind};
-use rolodex_dns::dns_server::DnsServer;
+use rolodex_dns::dns_server::{DnsServer, ResolutionMode};
+use rolodex_dns::dnsbl::{DnsblChecker, DnsblResolver};
 use rolodex_dns::grpc_service::RolodexDnsGrpcService;
 use rolodex_dns::grpc_service::proto::rolodex_dns_service_server::RolodexDnsService;
 use rolodex_dns::grpc_service::proto::{
     AddRecordRequest, AddScopeTldRequest, AddScopedRecordRequest, CreateNetworkScopeRequest,
     DeleteNetworkScopeRequest, FlushCacheRequest, GetNetworkAssociationsRequest,
-    GetRblConfigRequest, GetSearchDomainsRequest, JoinNetworkRequest, LeaveNetworkRequest,
+    GetResolutionModeRequest, GetSearchDomainsRequest, JoinNetworkRequest, LeaveNetworkRequest,
     ListNetworkScopesRequest, ListRecordsRequest, ListScopeTldForwardersRequest,
     ListScopeTldListenersRequest, ListScopeTldsRequest, ListScopedRecordsRequest,
     RemoveRecordRequest, RemoveScopeTldRequest, RemoveScopedRecordRequest, SetForwarderRequest,
-    SetRblConfigRequest, SetScopeTldForwardersRequest,
+    SetResolutionModeRequest, SetScopeTldForwardersRequest,
 };
-use rolodex_dns::rbl::{RblChecker, RblProvider, RblResolver};
 use std::sync::Arc;
 use tonic::Request;
 
 struct NeverListedResolver;
 
 #[async_trait::async_trait]
-impl RblResolver for NeverListedResolver {
-    async fn lookup_rbl(
+impl DnsblResolver for NeverListedResolver {
+    async fn lookup(
         &self,
         _query: &str,
-    ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
+    ) -> Result<Option<rolodex_dns::dnsbl::DnsblAnswer>, anyhow::Error> {
         Ok(None)
-    }
-}
-
-struct AlwaysListedResolver;
-
-#[async_trait::async_trait]
-impl RblResolver for AlwaysListedResolver {
-    async fn lookup_rbl(
-        &self,
-        _query: &str,
-    ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
-        Ok(Some(rolodex_dns::rbl::RblAnswer::listed(300)))
     }
 }
 
 fn make_test_stack() -> (
     Database,
     Arc<DnsServer>,
-    Arc<RblChecker>,
+    Arc<DnsblChecker>,
     RolodexDnsGrpcService,
 ) {
     let db = Database::open_memory().unwrap();
-    let rbl = Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(NeverListedResolver),
-    ));
+    let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
     let service = RolodexDnsGrpcService::new(
         db.clone(),
@@ -225,6 +209,106 @@ async fn test_grpc_set_forwarders() {
 }
 
 // ========================================================
+// Integration: gRPC set resolution mode -> DNS server switches
+// ========================================================
+
+/// The mode is otherwise startup-only, read from `resolution.mode` and never
+/// touched again. An orchestrator that had to change it was restarting the
+/// process — a DNS outage for every client of the box — so this asserts the
+/// running server actually switches, not merely that the RPC answers.
+#[tokio::test]
+async fn test_grpc_set_resolution_mode() {
+    let (_db, dns_server, _rbl, service) = make_test_stack();
+
+    for (requested, expected) in [
+        ("forward", ResolutionMode::Forward),
+        ("recursive", ResolutionMode::Recursive),
+        ("auto", ResolutionMode::Auto),
+        // Case-insensitive, matching the config-file parser: a caller that
+        // reads the mode back out of a UI and sends it verbatim must not be
+        // rejected over capitalization.
+        ("AUTO", ResolutionMode::Auto),
+        ("Recursive", ResolutionMode::Recursive),
+    ] {
+        let req = Request::new(SetResolutionModeRequest {
+            mode: requested.to_string(),
+            auth_token: "test-secret".to_string(),
+        });
+        let resp = service.set_resolution_mode(req).await.unwrap();
+        assert!(resp.into_inner().success, "setting mode {requested}");
+        assert_eq!(
+            dns_server.get_resolution_mode(),
+            expected,
+            "server mode after setting {requested}"
+        );
+
+        // The getter reports the mode in effect, lowercased and canonical.
+        let get = Request::new(GetResolutionModeRequest {
+            auth_token: "test-secret".to_string(),
+        });
+        let got = service.get_resolution_mode(get).await.unwrap().into_inner();
+        assert_eq!(
+            got.mode,
+            requested.to_ascii_lowercase(),
+            "GetResolutionMode after setting {requested}"
+        );
+    }
+}
+
+/// An unrecognized mode is refused and changes nothing. The config-file path
+/// warns and falls back to auto, which is right for a file an operator reads
+/// the log for; over RPC it would mean answering "success" while resolving in a
+/// mode the caller never asked for.
+#[tokio::test]
+async fn test_grpc_set_resolution_mode_rejects_unknown() {
+    let (_db, dns_server, _rbl, service) = make_test_stack();
+
+    let req = Request::new(SetResolutionModeRequest {
+        mode: "recursive".to_string(),
+        auth_token: "test-secret".to_string(),
+    });
+    service.set_resolution_mode(req).await.unwrap();
+
+    let req = Request::new(SetResolutionModeRequest {
+        mode: "iterative".to_string(),
+        auth_token: "test-secret".to_string(),
+    });
+    let err = service
+        .set_resolution_mode(req)
+        .await
+        .expect_err("unknown mode must be refused");
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+    assert_eq!(
+        dns_server.get_resolution_mode(),
+        ResolutionMode::Recursive,
+        "a refused mode change must leave the previous mode in effect"
+    );
+}
+
+/// Both new RPCs are authenticated like every other management call. Worth its
+/// own test because the mode is the one setting that can turn a split-horizon
+/// resolver into a forwarder for somebody else's upstreams.
+#[tokio::test]
+async fn test_grpc_resolution_mode_requires_auth() {
+    let (_db, dns_server, _rbl, service) = make_test_stack();
+    let before = dns_server.get_resolution_mode();
+
+    let req = Request::new(SetResolutionModeRequest {
+        mode: "forward".to_string(),
+        auth_token: "wrong-secret".to_string(),
+    });
+    assert!(service.set_resolution_mode(req).await.is_err());
+
+    let get = Request::new(GetResolutionModeRequest {
+        auth_token: "wrong-secret".to_string(),
+    });
+    assert!(service.get_resolution_mode(get).await.is_err());
+
+    assert_eq!(dns_server.get_resolution_mode(), before);
+}
+
+// ========================================================
 // Integration: RBL config via gRPC -> affects DNS resolution
 // ========================================================
 
@@ -254,28 +338,18 @@ async fn poll_until_blocked(
     hickory_proto::op::Message::from_bytes(&bytes).unwrap()
 }
 
+/// A reverse lookup is blocked by the *local* table, which is the only list
+/// that speaks about addresses now that provider lookups are name-only: an
+/// operator names the address (or the reverse name `dig -x` prints) and both
+/// spellings are NXDOMAIN.
 #[tokio::test]
-async fn test_rbl_integration() {
+async fn test_blocklist_integration() {
     let db = Database::open_memory().unwrap();
-    let rbl = Arc::new(RblChecker::with_resolver(
-        true,
-        vec![RblProvider {
-            zone: "test.rbl".to_string(),
-            enabled: true,
-            ..Default::default()
-        }],
-        Arc::new(AlwaysListedResolver),
-    ));
-    let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
-    let service = RolodexDnsGrpcService::new(
-        db.clone(),
-        dns_server.clone(),
-        rbl.clone(),
-        "test-secret".to_string(),
-        false,
-    );
+    db.add_local_blocklist_entry("1.2.3.4", "blocked for testing")
+        .unwrap();
+    let dnsbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
+    let dns_server = Arc::new(DnsServer::new(db.clone(), dnsbl.clone(), vec![]));
 
-    // Query for a reverse DNS name should be blocked (once the async fill lands)
     let query = build_dns_query("4.3.2.1.in-addr.arpa.", hickory_proto::rr::RecordType::PTR);
     let resp = poll_until_blocked(&dns_server, &query, None).await;
     assert_eq!(
@@ -283,66 +357,16 @@ async fn test_rbl_integration() {
         hickory_proto::op::ResponseCode::NXDomain
     );
 
-    // Disable RBL via gRPC
-    let rbl_req = Request::new(SetRblConfigRequest {
-        enabled: false,
-        providers: vec![],
-        auth_token: "test-secret".to_string(),
-        ..Default::default()
-    });
-    service.set_rbl_config(rbl_req).await.unwrap();
-
-    // Now query should not be blocked. It is REFUSED rather than resolved,
-    // because `arpa.` is never resolved off this box; what matters here is only
-    // that it is no longer NXDOMAIN.
+    // Remove the entry and the block goes with it. The query is then REFUSED
+    // rather than resolved, because `arpa.` is never resolved off this box;
+    // what matters here is only that it is no longer NXDOMAIN.
+    db.remove_local_blocklist_entry("1.2.3.4").unwrap();
     let resp_bytes = dns_server.handle_query(&query).await.unwrap();
     let resp = hickory_proto::op::Message::from_bytes(&resp_bytes).unwrap();
     assert_ne!(
         resp.response_code(),
         hickory_proto::op::ResponseCode::NXDomain
     );
-}
-
-// ========================================================
-// Integration: RBL config get/set roundtrip
-// ========================================================
-
-#[tokio::test]
-async fn test_rbl_config_roundtrip() {
-    let (_db, _dns_server, _rbl, service) = make_test_stack();
-
-    // Set RBL config
-    let req = Request::new(SetRblConfigRequest {
-        enabled: true,
-        providers: vec![
-            rolodex_dns::grpc_service::proto::RblConfig {
-                zone: "zen.spamhaus.org".to_string(),
-                enabled: true,
-                ..Default::default()
-            },
-            rolodex_dns::grpc_service::proto::RblConfig {
-                zone: "bl.spamcop.net".to_string(),
-                enabled: false,
-                ..Default::default()
-            },
-        ],
-        auth_token: "test-secret".to_string(),
-        ..Default::default()
-    });
-    service.set_rbl_config(req).await.unwrap();
-
-    // Get config back
-    let get_req = Request::new(GetRblConfigRequest {
-        auth_token: "test-secret".to_string(),
-    });
-    let resp = service.get_rbl_config(get_req).await.unwrap();
-    let config = resp.into_inner();
-    assert!(config.enabled);
-    assert_eq!(config.providers.len(), 2);
-    assert_eq!(config.providers[0].zone, "zen.spamhaus.org");
-    assert!(config.providers[0].enabled);
-    assert_eq!(config.providers[1].zone, "bl.spamcop.net");
-    assert!(!config.providers[1].enabled);
 }
 
 // ========================================================
@@ -492,11 +516,7 @@ async fn test_multiple_record_types_same_name() {
 #[tokio::test]
 async fn test_dns_udp_server() {
     let db = Database::open_memory().unwrap();
-    let rbl = Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(NeverListedResolver),
-    ));
+    let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl, vec![]));
 
     // Add a test record
@@ -556,11 +576,7 @@ async fn test_dns_tcp_server() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let db = Database::open_memory().unwrap();
-    let rbl = Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(NeverListedResolver),
-    ));
+    let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl, vec![]));
 
     // Add a test record
@@ -624,11 +640,7 @@ async fn test_dns_tcp_server() {
 #[tokio::test]
 async fn test_multi_bind_udp_serves_all_addresses() {
     let db = Database::open_memory().unwrap();
-    let rbl = Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(NeverListedResolver),
-    ));
+    let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl, vec![]));
 
     db.add_record(&DnsRecord {
@@ -709,11 +721,7 @@ async fn test_multi_bind_tcp_serves_all_addresses() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let db = Database::open_memory().unwrap();
-    let rbl = Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(NeverListedResolver),
-    ));
+    let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl, vec![]));
 
     db.add_record(&DnsRecord {
@@ -800,11 +808,7 @@ async fn test_multi_bind_tcp_serves_all_addresses() {
 #[tokio::test]
 async fn test_interface_bind_addr_udp_serves_queries() {
     let db = Database::open_memory().unwrap();
-    let rbl = Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(NeverListedResolver),
-    ));
+    let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl, vec![]));
 
     db.add_record(&DnsRecord {
@@ -870,11 +874,7 @@ async fn test_interface_bind_addr_udp_serves_queries() {
 #[tokio::test]
 async fn test_interface_bind_addr_tcp_serves_queries() {
     let db = Database::open_memory().unwrap();
-    let rbl = Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(NeverListedResolver),
-    ));
+    let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl, vec![]));
 
     db.add_record(&DnsRecord {
@@ -934,11 +934,7 @@ async fn test_interface_bind_addr_tcp_serves_queries() {
 #[tokio::test]
 async fn test_interface_bind_resolves_ipv6_and_serves() {
     let db = Database::open_memory().unwrap();
-    let rbl = Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(NeverListedResolver),
-    ));
+    let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl, vec![]));
 
     db.add_record(&DnsRecord {
@@ -1004,11 +1000,7 @@ async fn test_interface_bind_resolves_ipv6_and_serves() {
 #[tokio::test]
 async fn test_primary_bind_addr_udp_serves_queries() {
     let db = Database::open_memory().unwrap();
-    let rbl = Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(NeverListedResolver),
-    ));
+    let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl, vec![]));
 
     db.add_record(&DnsRecord {
@@ -1133,11 +1125,7 @@ async fn test_auth_enforcement() {
 #[tokio::test]
 async fn test_unix_socket_bypasses_auth() {
     let db = Database::open_memory().unwrap();
-    let rbl = Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(NeverListedResolver),
-    ));
+    let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
     let service = RolodexDnsGrpcService::new(
         db.clone(),
@@ -1171,8 +1159,11 @@ fn test_config_roundtrip() {
     assert_eq!(config.dns.bind, deserialized.dns.bind);
     assert_eq!(config.grpc.tcp_bind, deserialized.grpc.tcp_bind);
     assert_eq!(config.forwarders.len(), deserialized.forwarders.len());
-    assert_eq!(config.rbl.enabled, deserialized.rbl.enabled);
-    assert_eq!(config.rbl.providers.len(), deserialized.rbl.providers.len());
+    assert_eq!(config.dnsbl.enabled, deserialized.dnsbl.enabled);
+    assert_eq!(
+        config.dnsbl.providers.len(),
+        deserialized.dnsbl.providers.len()
+    );
 }
 
 // ========================================================
@@ -1198,7 +1189,7 @@ fn test_dev_config_parses() {
     assert_eq!(config.database_path, "/tmp/rolodex-dns-dev.db");
     assert!(config.grpc.tcp_bind.is_empty());
     assert_eq!(config.grpc.unix_socket, "/tmp/rolodex-dns.sock");
-    assert!(!config.rbl.enabled);
+    assert!(!config.dnsbl.enabled);
 }
 
 // ========================================================
@@ -1940,21 +1931,15 @@ async fn test_delete_scope_cascade() {
 }
 
 // ========================================================
-// Integration: RBL with network scoping
+// Integration: local blocklist with network scoping
 // ========================================================
 
 #[tokio::test]
-async fn test_rbl_with_scoping() {
+async fn test_blocklist_with_scoping() {
     let db = Database::open_memory().unwrap();
-    let rbl = Arc::new(RblChecker::with_resolver(
-        true,
-        vec![RblProvider {
-            zone: "test.rbl".to_string(),
-            enabled: true,
-            ..Default::default()
-        }],
-        Arc::new(AlwaysListedResolver),
-    ));
+    db.add_local_blocklist_entry("1.2.3.4", "blocked for testing")
+        .unwrap();
+    let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
 
     // Create scope and associate IP
@@ -1971,7 +1956,7 @@ async fn test_rbl_with_scoping() {
     })
     .unwrap();
 
-    // Reverse DNS query from scoped IP should be blocked by RBL (async fill).
+    // A reverse DNS query from inside the scope is blocked by the local entry.
     let query = build_dns_query("4.3.2.1.in-addr.arpa.", hickory_proto::rr::RecordType::PTR);
     let resp = poll_until_blocked(&dns_server, &query, Some("192.168.1.1".parse().unwrap())).await;
     assert_eq!(
@@ -2196,11 +2181,7 @@ async fn test_forward_all_upstreams_dead_servfail() {
 
 fn make_auto_ptr_stack() -> (Database, RolodexDnsGrpcService) {
     let db = Database::open_memory().unwrap();
-    let rbl = Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(NeverListedResolver),
-    ));
+    let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
     let service = RolodexDnsGrpcService::new(
         db.clone(),
@@ -2333,11 +2314,7 @@ async fn test_auto_ptr_disabled_by_default_constructor() {
     // A service built via `new()` (no `.with_auto_ptr`) must not create PTRs,
     // preserving the behavior existing callers and tests rely on.
     let db = Database::open_memory().unwrap();
-    let rbl = Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(NeverListedResolver),
-    ));
+    let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
     let service = RolodexDnsGrpcService::new(
         db.clone(),

@@ -10,7 +10,7 @@
 use rolodex_dns::db::{Database, DnsRecord, RecordKind};
 use rolodex_dns::dns_cache::DnsCache;
 use rolodex_dns::dns_server::DnsServer;
-use rolodex_dns::rbl::{RblChecker, RblResolver};
+use rolodex_dns::dnsbl::{DnsblChecker, DnsblResolver};
 use std::net::Ipv6Addr;
 use std::sync::Arc;
 
@@ -25,31 +25,27 @@ use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 struct NeverListedResolver;
 
 #[async_trait::async_trait]
-impl RblResolver for NeverListedResolver {
-    async fn lookup_rbl(
+impl DnsblResolver for NeverListedResolver {
+    async fn lookup(
         &self,
         _query: &str,
-    ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
+    ) -> Result<Option<rolodex_dns::dnsbl::DnsblAnswer>, anyhow::Error> {
         Ok(None)
     }
 }
 
-fn make_rbl() -> Arc<RblChecker> {
-    Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(NeverListedResolver),
-    ))
+fn make_dnsbl() -> Arc<DnsblChecker> {
+    Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)))
 }
 
 fn make_server(db: Database) -> Arc<DnsServer> {
-    Arc::new(DnsServer::new(db, make_rbl(), vec![]))
+    Arc::new(DnsServer::new(db, make_dnsbl(), vec![]))
 }
 
 fn make_server_with_dns64(db: Database, prefix: Ipv6Addr) -> Arc<DnsServer> {
     Arc::new(DnsServer::new_with_options(
         db,
-        make_rbl(),
+        make_dnsbl(),
         vec![],
         None,
         Some(prefix),
@@ -255,7 +251,7 @@ async fn test_dns_cache_used_by_server() {
     // Create server with cache but no forwarders (so it would SERVFAIL without cache)
     let server = Arc::new(DnsServer::new_with_options(
         db,
-        make_rbl(),
+        make_dnsbl(),
         vec![],
         Some(cache.clone()),
         None,
@@ -1427,7 +1423,7 @@ async fn test_cache_prevents_upstream() {
     // Server with cache, no forwarders
     let server = Arc::new(DnsServer::new_with_options(
         db,
-        make_rbl(),
+        make_dnsbl(),
         vec![],
         Some(cache),
         None,
@@ -1943,9 +1939,10 @@ async fn test_oversized_query_handled() {
 }
 
 #[tokio::test]
-async fn test_rbl_blocks_ipv4_reverse() {
+async fn test_local_blocklist_blocks_ipv4_reverse() {
     let db = Database::open_memory().unwrap();
-    db.add_local_rbl_entry("192.0.2.1", "test block").unwrap();
+    db.add_local_blocklist_entry("192.0.2.1", "test block")
+        .unwrap();
 
     let server = make_server(db);
 
@@ -1961,9 +1958,10 @@ async fn test_rbl_blocks_ipv4_reverse() {
 }
 
 #[tokio::test]
-async fn test_rbl_no_false_positives() {
+async fn test_blocklist_no_false_positives() {
     let db = Database::open_memory().unwrap();
-    db.add_local_rbl_entry("192.0.2.1", "test block").unwrap();
+    db.add_local_blocklist_entry("192.0.2.1", "test block")
+        .unwrap();
     db.add_record(&DnsRecord {
         id: None,
         name: "safe.example.com.".to_string(),
@@ -2210,22 +2208,14 @@ async fn test_rfc6147_dns64_multiple_a_records() {
 }
 
 #[tokio::test]
-async fn test_rfc5782_rbl_query_format() {
-    use rolodex_dns::rbl::build_rbl_query;
-    let ip: std::net::IpAddr = "192.0.2.1".parse().unwrap();
-    let query = build_rbl_query(&ip, "dnsbl.example.com.");
-    assert_eq!(query, "1.2.0.192.dnsbl.example.com.");
-}
-
-#[tokio::test]
 async fn test_rfc5782_local_rbl_blocks_resolution() {
     let db = Database::open_memory().unwrap();
-    db.add_local_rbl_entry("10.0.0.1", "blocked for testing")
+    db.add_local_blocklist_entry("10.0.0.1", "blocked for testing")
         .unwrap();
 
     // Verify lookup
-    assert!(db.lookup_local_rbl("10.0.0.1"));
-    assert!(!db.lookup_local_rbl("10.0.0.2"));
+    assert!(db.lookup_local_blocklist("10.0.0.1"));
+    assert!(!db.lookup_local_blocklist("10.0.0.2"));
 }
 
 // ========================================================
@@ -2487,25 +2477,27 @@ async fn test_aname_preserves_query_name() {
 async fn test_local_rbl_add_remove_list() {
     let db = Database::open_memory().unwrap();
 
-    db.add_local_rbl_entry("bad.example.com", "spam").unwrap();
-    db.add_local_rbl_entry("evil.example.com", "malware")
+    db.add_local_blocklist_entry("bad.example.com", "spam")
+        .unwrap();
+    db.add_local_blocklist_entry("evil.example.com", "malware")
         .unwrap();
 
-    let entries = db.list_local_rbl_entries().unwrap();
+    let entries = db.list_local_blocklist_entries().unwrap();
     assert_eq!(entries.len(), 2);
 
-    assert!(db.lookup_local_rbl("bad.example.com"));
-    assert!(!db.lookup_local_rbl("good.example.com"));
+    assert!(db.lookup_local_blocklist("bad.example.com"));
+    assert!(!db.lookup_local_blocklist("good.example.com"));
 
-    db.remove_local_rbl_entry("bad.example.com").unwrap();
-    assert!(!db.lookup_local_rbl("bad.example.com"));
-    assert!(db.lookup_local_rbl("evil.example.com"));
+    db.remove_local_blocklist_entry("bad.example.com").unwrap();
+    assert!(!db.lookup_local_blocklist("bad.example.com"));
+    assert!(db.lookup_local_blocklist("evil.example.com"));
 }
 
 #[tokio::test]
 async fn test_local_rbl_blocks_dns_query() {
     let db = Database::open_memory().unwrap();
-    db.add_local_rbl_entry("10.0.0.99", "blocked").unwrap();
+    db.add_local_blocklist_entry("10.0.0.99", "blocked")
+        .unwrap();
 
     let server = make_server(db);
 
@@ -2657,7 +2649,7 @@ use rolodex_dns::grpc_service::proto::rolodex_dns_service_server::RolodexDnsServ
 
 fn make_grpc_service() -> rolodex_dns::grpc_service::RolodexDnsGrpcService {
     let db = Database::open_memory().unwrap();
-    let rbl = make_rbl();
+    let rbl = make_dnsbl();
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
     rolodex_dns::grpc_service::RolodexDnsGrpcService::new(db, dns_server, rbl, String::new(), true)
 }
@@ -2671,7 +2663,7 @@ fn make_grpc_service() -> rolodex_dns::grpc_service::RolodexDnsGrpcService {
 // handle_query pipeline and the gRPC programmable endpoints.
 // ========================================================
 
-use rolodex_dns::rbl::RblProvider;
+use rolodex_dns::dnsbl::DnsblProvider;
 
 /// Mock resolver that reports a DNSBL hit when the queried name (the part of
 /// `<name>.<zone>` before the provider zone) starts with a blocklisted prefix.
@@ -2680,17 +2672,17 @@ struct DnsblPrefixResolver {
 }
 
 #[async_trait::async_trait]
-impl RblResolver for DnsblPrefixResolver {
-    async fn lookup_rbl(
+impl DnsblResolver for DnsblPrefixResolver {
+    async fn lookup(
         &self,
         query: &str,
-    ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
+    ) -> Result<Option<rolodex_dns::dnsbl::DnsblAnswer>, anyhow::Error> {
         if self
             .blocked_prefixes
             .iter()
             .any(|p| query.starts_with(p.as_str()))
         {
-            Ok(Some(rolodex_dns::rbl::RblAnswer::listed(300)))
+            Ok(Some(rolodex_dns::dnsbl::DnsblAnswer::listed(300)))
         } else {
             Ok(None)
         }
@@ -2732,16 +2724,12 @@ async fn test_dnsbl_blocks_forwarded_domain_full_pipeline() {
     })
     .unwrap();
 
-    let rbl = Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(DnsblPrefixResolver {
-            blocked_prefixes: vec!["googleadservices.com.".to_string()],
-        }),
-    ));
-    rbl.set_dnsbl_config(
+    let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(DnsblPrefixResolver {
+        blocked_prefixes: vec!["googleadservices.com.".to_string()],
+    })));
+    rbl.set_config(
         true,
-        vec![RblProvider {
+        vec![DnsblProvider {
             zone: "dbl.test".to_string(),
             enabled: true,
             ..Default::default()
@@ -2779,16 +2767,12 @@ async fn test_dnsbl_blocks_forwarded_domain_full_pipeline() {
 async fn test_dnsbl_disabled_does_not_block() {
     let db = Database::open_memory().unwrap();
     // DNSBL providers present but globally disabled.
-    let rbl = Arc::new(RblChecker::with_resolver(
+    let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(DnsblPrefixResolver {
+        blocked_prefixes: vec!["googleadservices.com.".to_string()],
+    })));
+    rbl.set_config(
         false,
-        vec![],
-        Arc::new(DnsblPrefixResolver {
-            blocked_prefixes: vec!["googleadservices.com.".to_string()],
-        }),
-    ));
-    rbl.set_dnsbl_config(
-        false,
-        vec![RblProvider {
+        vec![DnsblProvider {
             zone: "dbl.test".to_string(),
             enabled: true,
             ..Default::default()
@@ -2811,16 +2795,12 @@ async fn test_dnsbl_programmed_via_grpc_then_blocks() {
     use rolodex_dns::grpc_service::proto;
     use tonic::Request;
 
-    // The gRPC service and the DnsServer share one RblChecker, so configuring
+    // The gRPC service and the DnsServer share one DnsblChecker, so configuring
     // DNSBL through the management API changes live resolution.
     let db = Database::open_memory().unwrap();
-    let rbl = Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(DnsblPrefixResolver {
-            blocked_prefixes: vec!["ads.example.".to_string()],
-        }),
-    ));
+    let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(DnsblPrefixResolver {
+        blocked_prefixes: vec!["ads.example.".to_string()],
+    })));
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
     let service = rolodex_dns::grpc_service::RolodexDnsGrpcService::new(
         db,
@@ -2888,12 +2868,8 @@ async fn test_resolution_with_empty_enabled_rbl_and_dnsbl() {
     })
     .unwrap();
 
-    let rbl = Arc::new(RblChecker::with_resolver(
-        true, // RBL enabled, but no providers
-        vec![],
-        Arc::new(NeverListedResolver),
-    ));
-    rbl.set_dnsbl_config(true, vec![]).await; // DNSBL enabled, but no providers
+    let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
+    rbl.set_config(true, vec![]).await; // enabled, but no providers
     let server = Arc::new(DnsServer::new(db, rbl, vec![]));
 
     // Local record resolves.

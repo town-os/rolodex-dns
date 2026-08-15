@@ -3,7 +3,7 @@ use hickory_proto::serialize::binary::BinEncodable;
 use rolodex_dns::db::{Database, DnsRecord, NetworkAssociation, NetworkScope, RecordKind};
 use rolodex_dns::dns_cache::{DnsCache, cache_key};
 use rolodex_dns::dns_server::{DnsServer, randomize_qname_case};
-use rolodex_dns::rbl::RblChecker;
+use rolodex_dns::dnsbl::DnsblChecker;
 use std::net::IpAddr;
 use std::sync::Arc;
 
@@ -45,20 +45,22 @@ fn build_dns_query_typed(name: &str, qtype: hickory_proto::rr::RecordType) -> Ve
     msg.to_bytes().unwrap()
 }
 
-/// Creates a DnsServer with an in-memory DB and no-op RBL (no upstream forwarders).
+/// Creates a DnsServer with an in-memory DB and an idle blocklist (no upstream
+/// forwarders).
 fn make_bench_server(db: Database) -> Arc<DnsServer> {
-    let rbl = Arc::new(RblChecker::new(false, vec![]));
-    Arc::new(DnsServer::new(db, rbl, vec![]))
+    let dnsbl = Arc::new(DnsblChecker::new());
+    Arc::new(DnsServer::new(db, dnsbl, vec![]))
 }
 
-/// Creates a DnsServer with an in-memory DB, no-op RBL, and DNS cache enabled.
+/// Creates a DnsServer with an in-memory DB, an idle blocklist, and DNS cache
+/// enabled.
 fn make_bench_server_with_cache(db: Database) -> Arc<DnsServer> {
     let cache_db = Database::open_memory().unwrap();
     let cache = Arc::new(DnsCache::new(cache_db));
-    let rbl = Arc::new(RblChecker::new(false, vec![]));
+    let dnsbl = Arc::new(DnsblChecker::new());
     Arc::new(DnsServer::new_with_options(
         db,
-        rbl,
+        dnsbl,
         vec![],
         Some(cache),
         None,

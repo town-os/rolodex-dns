@@ -299,24 +299,20 @@ Leave `recursion_cidrs` alone unless you are *narrowing* it. Widening it toward 
 
 `qname_case_randomization` should stay on. Turn it off only for an upstream that normalizes the case of the question it echoes back — such a resolver will otherwise fail every query, since the case comparison is what makes 0x20 actually defend anything.
 
-### Blocklists (RBL and DNSBL)
+### Blocklists (DNSBL)
 
-Two lists, same machinery, different keys: **RBL blocks by IP** (checked on reverse-DNS lookups), **DNSBL blocks by name** (checked before any external resolution). Both are disabled by default with empty provider lists, so nothing is queried and no name is handed to a blocklist operator until you add providers.
+**DNSBL blocks by name**, checked before any external resolution. It is disabled by default with an empty provider list, so nothing is queried and no name is handed to a blocklist operator until you add providers.
 
 ```yaml
-rbl:
-  enabled: true
-  refusal_cooldown_secs: 3600
-  providers:
-    - zone: zen.spamhaus.org
-      enabled: true
-
 dnsbl:
   enabled: true
+  refusal_cooldown_secs: 3600
   providers:
     - zone: dbl.spamhaus.org
       enabled: true
 ```
+
+Addresses are blocked by the **local list** rather than by a provider — a provider is asked about the name being resolved, and on a reverse lookup that name is one nobody publishes reputation for. See the local entries below.
 
 Three things worth knowing before you turn these on:
 
@@ -328,7 +324,7 @@ Local entries and the allowlist are runtime state, not config:
 
 ```bash
 CLI="rolodex-dns-cli -u /var/run/rolodex-dns.sock"
-$CLI add-local-rbl --name 10.0.0.5 --reason "known spam source"
+$CLI add-local-blocklist --name 10.0.0.5 --reason "known spam source"
 $CLI add-dnsbl-allow --name vendor.example.com --reason "false positive"
 $CLI add-dnsbl-allow --name 192.168.1.100 --reason "our own relay"   # IP works too
 ```
@@ -462,7 +458,7 @@ Much of what looks like configuration is runtime state in SQLite, changed over g
 | ---- | ---- |
 | Records, scoped records, scopes, associations | `dns.bind` and every other bind address |
 | Authoritative zones, owned TLDs, ingress listeners | `resolution.*` and `forwarders` (initial values; `set-forwarders` changes them live) |
-| RBL/DNSBL config, local entries, allowlist | `dnssec.*` |
+| DNSBL config, local entries, allowlist | `dnssec.*` |
 | DNS64, TTL drift, proxy, DoT/DoH/DoQ config | `security.*` |
 | DHCP pools, leases, certificate options | `database_path`, `dhcp.*`, `acme.*`, `metrics.*` |
 | DNSSEC keys and zone signing; ACME CAs and EAB credentials | TLS certificate files (not yet hot-swapped into listeners) |
@@ -493,9 +489,9 @@ A **bind that resolves but fails at the OS** — the port is taken, or the addre
 | **Every** name SERVFAILs, and the chain never degrades to the encrypted upstream | The root zone itself is not validating: a trust anchor this build does not know (a KSK rollover), a wrong `dnssec.trust_anchors`, or something on `:53` answering DNSKEY queries with its own material. This is deliberate — a root that will not validate is a verdict, not a tier failure, so the query is refused rather than quietly re-asked of an upstream that does not validate. `dnssec.validate: false` is the escape hatch while you fix the anchor |
 | A name under `arpa.` is REFUSED (`ipv4only.arpa`, `dig -x` for an address you do not hold) | Working as intended: `arpa.` and everything beneath it is answered from local data or not at all, in every resolution mode. Nothing in that subtree is sent upstream. Add the record locally, or wait for the reverse-zone work |
 | `rolodex_dns_dnssec_blamed_roots` is non-zero | A root server answered with DNSSEC that does not validate against your anchor and has been dropped from the root set for 15 minutes, doubling per offence. If **all** of them are dropped, suspect the anchor or the root zone, not the servers — the log says so explicitly. Blame is in memory only and resets on restart |
-| Every name checked against one blocklist started NXDOMAINing | Pre-refusal-handling behaviour. Check `get-rbl-config` for rotated-out providers, and that provider's quota |
+| Every name checked against one blocklist started NXDOMAINing | Pre-refusal-handling behaviour. Check `get-dnsbl-config` for rotated-out providers, and that provider's quota |
 | A DHCP client's hostname never appears in DNS | It is not a valid single DNS label — hostnames are rejected, not sanitized. The warning names it |
-| `dig -x` fails for a host that is fine | An RBL false positive. `add-dnsbl-allow --name <ip>` lifts it |
+| `dig -x` fails for a host that is fine | A local blocklist entry matched the address. `add-dnsbl-allow --name <ip>` lifts it |
 | A renewed certificate is not being served | Certificate reload is not yet wired to the listeners; restart |
 | Ingress listener never came up | Its IP did not exist at boot. Re-add the TLD once the interface is up |
 

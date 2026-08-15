@@ -35,7 +35,7 @@ use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use rolodex_dns::db::Database;
 use rolodex_dns::dns_cache::DnsCache;
 use rolodex_dns::dns_server::{DnsServer, ResolutionMode};
-use rolodex_dns::rbl::RblChecker;
+use rolodex_dns::dnsbl::DnsblChecker;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -115,7 +115,7 @@ async fn make_server() -> (Arc<DnsServer>, Arc<AtomicUsize>) {
     let (upstream, hits) = spawn_counting_upstream().await;
     let db = Database::open_memory().unwrap();
     let cache = Arc::new(DnsCache::new(db.clone()));
-    let rbl = Arc::new(RblChecker::new(false, vec![]));
+    let rbl = Arc::new(DnsblChecker::new());
     let server = Arc::new(DnsServer::new_with_options(
         db,
         rbl,
@@ -270,7 +270,7 @@ async fn public_source_may_still_receive_authoritative_local_data() {
         priority: 0,
     })
     .unwrap();
-    let rbl = Arc::new(RblChecker::new(false, vec![]));
+    let rbl = Arc::new(DnsblChecker::new());
     let server = Arc::new(DnsServer::new_with_options(
         db,
         rbl,

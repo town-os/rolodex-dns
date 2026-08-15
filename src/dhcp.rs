@@ -2,7 +2,7 @@
 ///
 /// Provides IP address allocation (IPAM) with consistent MAC→IP binding,
 /// automatic DNS hostname registration under `lan.<tld>`, certificate delivery
-/// via DHCP options, and per-scope RBL integration.
+/// via DHCP options.
 use crate::db::{Database, DhcpLease, DhcpPool, DnsRecord, NetworkAssociation, RecordKind};
 use crate::dns_server::DnsServer;
 use anyhow::{Context, Result};

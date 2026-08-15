@@ -28,8 +28,8 @@ use hickory_proto::serialize::binary::BinDecodable;
 use rolodex_dns::db::{Database, DnsRecord, RecordKind};
 use rolodex_dns::dns_cache::DnsCache;
 use rolodex_dns::dns_server::DnsServer;
+use rolodex_dns::dnsbl::{DnsblChecker, DnsblResolver};
 use rolodex_dns::metrics::{MetricsState, Proto, build_router, metrics};
-use rolodex_dns::rbl::{RblChecker, RblResolver};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -41,22 +41,18 @@ static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 struct NeverListedResolver;
 
 #[async_trait::async_trait]
-impl RblResolver for NeverListedResolver {
-    async fn lookup_rbl(
+impl DnsblResolver for NeverListedResolver {
+    async fn lookup(
         &self,
         _query: &str,
-    ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
+    ) -> Result<Option<rolodex_dns::dnsbl::DnsblAnswer>, anyhow::Error> {
         Ok(None)
     }
 }
 
-fn test_server() -> (Database, Arc<DnsServer>, Arc<RblChecker>, Arc<DnsCache>) {
+fn test_server() -> (Database, Arc<DnsServer>, Arc<DnsblChecker>, Arc<DnsCache>) {
     let db = Database::open_memory().expect("in-memory database");
-    let rbl = Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(NeverListedResolver),
-    ));
+    let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
     let cache = Arc::new(DnsCache::new(db.clone()));
     let dns_server = Arc::new(DnsServer::new_with_options(
         db.clone(),
@@ -137,7 +133,7 @@ async fn scrape_serves_a_well_formed_exposition_body() {
         db,
         dns_server,
         dns_cache: Some(cache),
-        rbl,
+        dnsbl: rbl,
     })
     .await;
 
@@ -179,7 +175,7 @@ async fn index_points_at_the_metrics_path() {
         db,
         dns_server,
         dns_cache: Some(cache),
-        rbl,
+        dnsbl: rbl,
     })
     .await;
 
@@ -196,7 +192,7 @@ async fn scrape_counter_advances_per_scrape() {
         db,
         dns_server,
         dns_cache: Some(cache),
-        rbl,
+        dnsbl: rbl,
     })
     .await;
 
@@ -218,7 +214,7 @@ async fn database_counts_are_sampled_at_scrape_time() {
         db: db.clone(),
         dns_server,
         dns_cache: Some(cache),
-        rbl,
+        dnsbl: rbl,
     })
     .await;
 
@@ -458,52 +454,52 @@ async fn a_refusal_is_counted_and_the_provider_shows_as_rotated_out() {
     /// Answers every lookup with Spamhaus's "excessive queries" code.
     struct RefusingResolver;
     #[async_trait::async_trait]
-    impl RblResolver for RefusingResolver {
-        async fn lookup_rbl(
+    impl DnsblResolver for RefusingResolver {
+        async fn lookup(
             &self,
             _query: &str,
-        ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
-            Ok(Some(rolodex_dns::rbl::RblAnswer::single(
+        ) -> Result<Option<rolodex_dns::dnsbl::DnsblAnswer>, anyhow::Error> {
+            Ok(Some(rolodex_dns::dnsbl::DnsblAnswer::single(
                 std::net::Ipv4Addr::new(127, 255, 255, 255),
                 300,
             )))
         }
     }
 
-    let rbl = Arc::new(RblChecker::with_resolver(
+    let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(RefusingResolver)));
+    rbl.set_config(
         true,
-        vec![rolodex_dns::rbl::RblProvider {
+        vec![rolodex_dns::dnsbl::DnsblProvider {
             zone: "refusing.test".to_string(),
             enabled: true,
             cooldown: Some(std::time::Duration::from_secs(3600)),
             ..Default::default()
         }],
-        Arc::new(RefusingResolver),
-    ));
+    )
+    .await;
 
     let m = metrics();
-    // Index 0 of BLOCK_KINDS is "rbl_provider"; index 3 of the lookup outcomes
-    // is "refused".
-    let refusals_before = m.blocklist_refusals.get(0);
-    let refused_before = m.blocklist_lookups.get(0, 3);
-    let listed_before = m.blocklist_lookups.get(0, 0);
+    // Index 1 of BLOCK_KINDS is "dnsbl_provider"; index 3 of the lookup
+    // outcomes is "refused".
+    let refusals_before = m.blocklist_refusals.get(1);
+    let refused_before = m.blocklist_lookups.get(1, 3);
+    let listed_before = m.blocklist_lookups.get(1, 0);
 
     assert!(
-        !rbl.is_listed(&std::net::IpAddr::V4(std::net::Ipv4Addr::new(1, 2, 3, 4)))
-            .await,
+        !rbl.is_name_listed("refused.example.").await,
         "a refusal code must never block"
     );
     for _ in 0..250 {
-        if m.blocklist_refusals.get(0) > refusals_before {
+        if m.blocklist_refusals.get(1) > refusals_before {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
 
-    assert_eq!(m.blocklist_refusals.get(0), refusals_before + 1);
-    assert_eq!(m.blocklist_lookups.get(0, 3), refused_before + 1);
+    assert_eq!(m.blocklist_refusals.get(1), refusals_before + 1);
+    assert_eq!(m.blocklist_lookups.get(1, 3), refused_before + 1);
     assert_eq!(
-        m.blocklist_lookups.get(0, 0),
+        m.blocklist_lookups.get(1, 0),
         listed_before,
         "a refusal must not also be counted as a listing"
     );
@@ -774,114 +770,5 @@ async fn an_allowlisted_reverse_name_and_ip_literal_are_attributed_apart() {
         allowlisted(2),
         literal_before + 1,
         "the ip-literal gate did not advance"
-    );
-}
-
-/// An RBL resolver that lists everything, so the blocklist paths fire.
-struct AlwaysListedResolver;
-
-#[async_trait::async_trait]
-impl RblResolver for AlwaysListedResolver {
-    async fn lookup_rbl(
-        &self,
-        _query: &str,
-    ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
-        // 127.0.0.2 is the canonical "listed" code, and deliberately not one of
-        // the refusal codes — a refusal would be a different verdict entirely.
-        Ok(Some(rolodex_dns::rbl::RblAnswer::single(
-            std::net::Ipv4Addr::new(127, 0, 0, 2),
-            300,
-        )))
-    }
-}
-
-#[tokio::test]
-async fn a_scope_opted_in_provider_is_attributed_apart_from_the_global_list() {
-    let _serial = SERIAL.lock().await;
-    let db = Database::open_memory().expect("in-memory database");
-    // The global list is enabled but carries NO providers of its own, so any
-    // block here can only have come from the scope's opted-in provider — which
-    // is what makes the separate kind observable.
-    let rbl = Arc::new(RblChecker::with_resolver(
-        true,
-        vec![],
-        Arc::new(AlwaysListedResolver),
-    ));
-    let cache = Arc::new(DnsCache::new(db.clone()));
-    let dns_server = Arc::new(DnsServer::new_with_options(
-        db.clone(),
-        rbl.clone(),
-        vec![],
-        Some(Arc::clone(&cache)),
-        None,
-        false,
-    ));
-
-    db.create_network_scope(&rolodex_dns::db::NetworkScope {
-        name: "blocknet".to_string(),
-        home_domain: "blocknet.home.".to_string(),
-    })
-    .expect("create scope");
-    db.join_network(&rolodex_dns::db::NetworkAssociation {
-        ip_address: "10.64.0.9".to_string(),
-        scope_name: "blocknet".to_string(),
-        ttl_seconds: 3600,
-    })
-    .expect("join");
-    db.add_scope_rbl_provider(&rolodex_dns::db::ScopeRblProvider {
-        scope_name: "blocknet".to_string(),
-        zone: "scope-only.example.invalid".to_string(),
-        enabled: true,
-        refusal_codes: vec![],
-        refusal_cooldown_secs: 0,
-    })
-    .expect("add scope provider");
-
-    let m = metrics();
-    const KIND_RBL_PROVIDER: usize = 0;
-    const KIND_RBL_SCOPE_PROVIDER: usize = 3;
-    let global_before = m.blocklist_blocks.get(KIND_RBL_PROVIDER);
-    let scope_before = m.blocklist_blocks.get(KIND_RBL_SCOPE_PROVIDER);
-
-    // Provider verdicts are filled fire-and-forget, so the first query answers
-    // from a cold cache and the block lands on a later one. Retry rather than
-    // sleeping a fixed interval.
-    let query = build_query("50.2.0.192.in-addr.arpa.", RecordType::PTR);
-    let mut rcode = ResponseCode::NoError;
-    for _ in 0..50 {
-        let response = dns_server
-            .handle_query_proto(
-                &query,
-                Some("10.64.0.9".parse().expect("ip")),
-                None,
-                Proto::Udp,
-            )
-            .await
-            .expect("query");
-        rcode = Message::from_bytes(&response)
-            .expect("parse response")
-            .response_code();
-        if rcode == ResponseCode::NXDomain {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    assert_eq!(
-        rcode,
-        ResponseCode::NXDomain,
-        "a scope-provider listing must still be an NXDOMAIN"
-    );
-
-    assert_eq!(
-        m.blocklist_blocks.get(KIND_RBL_SCOPE_PROVIDER),
-        scope_before + 1,
-        "the scope-provider block was not attributed to rbl_scope_provider"
-    );
-    // The control: folded together, "this network's own blocklist broke this
-    // network" and "the global list broke everyone" are indistinguishable.
-    assert_eq!(
-        m.blocklist_blocks.get(KIND_RBL_PROVIDER),
-        global_before,
-        "a scope-provider block must not be attributed to the global list"
     );
 }

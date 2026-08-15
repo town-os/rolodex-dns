@@ -92,10 +92,6 @@ grpc:
   unix_socket: "${socketPath}"
   shared_secret: ""
 
-rbl:
-  enabled: false
-  providers: []
-
 acme:
   bind: "127.0.0.1:${acmePort}"
   portal_bind: "127.0.0.1:${portalPort}"

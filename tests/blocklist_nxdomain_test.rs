@@ -22,15 +22,15 @@
 //! "positives are NXDOMAIN" and a gate that blocks nothing satisfies "the
 //! allowlist exempts"; only the pair together says anything.
 
-use rolodex_dns::db::{Database, DnsRecord, NetworkAssociation, NetworkScope, RecordKind};
+use rolodex_dns::db::{Database, DnsRecord, RecordKind};
 use rolodex_dns::dns_server::DnsServer;
+use rolodex_dns::dnsbl::{DnsblChecker, DnsblProvider, DnsblResolver};
 use rolodex_dns::grpc_service::RolodexDnsGrpcService;
 use rolodex_dns::grpc_service::proto::rolodex_dns_service_server::RolodexDnsService;
 use rolodex_dns::grpc_service::proto::{
-    AddDnsblAllowlistEntryRequest, AddLocalRblEntryRequest, AddScopeRblProviderRequest,
-    DnsblAllowlistEntry, LocalRblEntry, ScopeRblProvider,
+    AddDnsblAllowlistEntryRequest, AddLocalBlocklistEntryRequest, DnsblAllowlistEntry,
+    LocalBlocklistEntry,
 };
-use rolodex_dns::rbl::{RblChecker, RblProvider, RblResolver};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -49,11 +49,11 @@ use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 struct NeverListedResolver;
 
 #[async_trait::async_trait]
-impl RblResolver for NeverListedResolver {
-    async fn lookup_rbl(
+impl DnsblResolver for NeverListedResolver {
+    async fn lookup(
         &self,
         _query: &str,
-    ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
+    ) -> Result<Option<rolodex_dns::dnsbl::DnsblAnswer>, anyhow::Error> {
         Ok(None)
     }
 }
@@ -63,12 +63,12 @@ impl RblResolver for NeverListedResolver {
 struct AlwaysListedResolver;
 
 #[async_trait::async_trait]
-impl RblResolver for AlwaysListedResolver {
-    async fn lookup_rbl(
+impl DnsblResolver for AlwaysListedResolver {
+    async fn lookup(
         &self,
         _query: &str,
-    ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
-        Ok(Some(rolodex_dns::rbl::RblAnswer::listed(300)))
+    ) -> Result<Option<rolodex_dns::dnsbl::DnsblAnswer>, anyhow::Error> {
+        Ok(Some(rolodex_dns::dnsbl::DnsblAnswer::listed(300)))
     }
 }
 
@@ -83,38 +83,24 @@ struct Stack {
 /// Builds the full stack — database, DNS server, gRPC service — sharing one
 /// database handle, which is what makes a control-plane mutation visible to the
 /// query path the way it is in the real server.
-fn make_stack(rbl: Arc<RblChecker>) -> Stack {
+fn make_stack(rbl: Arc<DnsblChecker>) -> Stack {
     let db = Database::open_memory().unwrap();
     let dns = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
     let grpc = RolodexDnsGrpcService::new(db.clone(), dns.clone(), rbl, AUTH.to_string(), false);
     Stack { db, dns, grpc }
 }
 
-/// The IP-based RBL, enabled, with one global provider backed by `resolver`.
-fn rbl_with_provider(resolver: Arc<dyn RblResolver>) -> Arc<RblChecker> {
-    Arc::new(RblChecker::with_resolver(
-        true,
-        vec![RblProvider::new("ip.test", true)],
-        resolver,
-    ))
-}
-
-/// The domain blocklist, enabled, with one provider backed by `resolver`. The
-/// IP-based RBL is left off so a block can only be the DNSBL.
-async fn rbl_with_dnsbl(resolver: Arc<dyn RblResolver>) -> Arc<RblChecker> {
-    let rbl = Arc::new(RblChecker::with_resolver(false, vec![], resolver));
-    rbl.set_dnsbl_config(true, vec![RblProvider::new("dbl.test", true)])
+/// The domain blocklist, enabled, with one provider backed by `resolver`.
+async fn rbl_with_dnsbl(resolver: Arc<dyn DnsblResolver>) -> Arc<DnsblChecker> {
+    let rbl = Arc::new(DnsblChecker::with_resolver(resolver));
+    rbl.set_config(true, vec![DnsblProvider::new("dbl.test", true)])
         .await;
     rbl
 }
 
-/// Neither list enabled: only the local tables can block.
-fn rbl_local_only() -> Arc<RblChecker> {
-    Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(NeverListedResolver),
-    ))
+/// No provider configured: only the local tables can block.
+fn rbl_local_only() -> Arc<DnsblChecker> {
+    Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)))
 }
 
 fn build_query(name: &str, qtype: RecordType) -> Vec<u8> {
@@ -254,9 +240,9 @@ fn allowlist_req(name: &str) -> Request<AddDnsblAllowlistEntryRequest> {
     })
 }
 
-fn local_rbl_req(name: &str) -> Request<AddLocalRblEntryRequest> {
-    Request::new(AddLocalRblEntryRequest {
-        entry: Some(LocalRblEntry {
+fn local_blocklist_req(name: &str) -> Request<AddLocalBlocklistEntryRequest> {
+    Request::new(AddLocalBlocklistEntryRequest {
+        entry: Some(LocalBlocklistEntry {
             name: name.to_string(),
             reason: "listed".to_string(),
         }),
@@ -272,11 +258,11 @@ fn local_rbl_req(name: &str) -> Request<AddLocalRblEntryRequest> {
 /// real socket. The control address proves the listener is not simply refusing
 /// every reverse query.
 #[tokio::test]
-async fn test_local_rbl_ip_entry_is_nxdomain_over_udp() {
+async fn test_local_blocklist_ip_entry_is_nxdomain_over_udp() {
     let stack = make_stack(rbl_local_only());
     stack
         .grpc
-        .add_local_rbl_entry(local_rbl_req("192.168.1.100"))
+        .add_local_blocklist_entry(local_blocklist_req("192.168.1.100"))
         .await
         .unwrap();
     let addr = serve_udp(stack.dns.clone()).await;
@@ -307,11 +293,11 @@ async fn test_local_rbl_ip_entry_is_nxdomain_over_udp() {
 /// blocks identically. An operator should not have to hand-reverse octets for
 /// their blocklist entry to mean anything.
 #[tokio::test]
-async fn test_local_rbl_reverse_name_entry_is_nxdomain_over_udp() {
+async fn test_local_blocklist_reverse_name_entry_is_nxdomain_over_udp() {
     let stack = make_stack(rbl_local_only());
     stack
         .grpc
-        .add_local_rbl_entry(local_rbl_req("100.1.168.192.in-addr.arpa"))
+        .add_local_blocklist_entry(local_blocklist_req("100.1.168.192.in-addr.arpa"))
         .await
         .unwrap();
     let addr = serve_udp(stack.dns.clone()).await;
@@ -341,11 +327,11 @@ async fn test_local_rbl_reverse_name_entry_is_nxdomain_over_udp() {
 /// applies on TCP — the two transports funnel through one resolution path, and
 /// a blocklist that only covered UDP would be trivially bypassed by `dig +tcp`.
 #[tokio::test]
-async fn test_local_rbl_forward_name_is_nxdomain_on_udp_and_tcp() {
+async fn test_local_blocklist_forward_name_is_nxdomain_on_udp_and_tcp() {
     let stack = make_stack(rbl_local_only());
     stack
         .grpc
-        .add_local_rbl_entry(local_rbl_req("tracker.example.com"))
+        .add_local_blocklist_entry(local_blocklist_req("tracker.example.com"))
         .await
         .unwrap();
     let udp = serve_udp(stack.dns.clone()).await;
@@ -376,21 +362,6 @@ async fn test_local_rbl_forward_name_is_nxdomain_on_udp_and_tcp() {
 // Provider positives, over the wire
 // ========================================================
 
-/// An IP-based provider positive is NXDOMAIN over a real socket.
-#[tokio::test]
-async fn test_rbl_provider_positive_is_nxdomain_over_udp() {
-    let stack = make_stack(rbl_with_provider(Arc::new(AlwaysListedResolver)));
-    let addr = serve_udp(stack.dns.clone()).await;
-
-    let resp = udp_until_blocked(
-        addr,
-        &build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR),
-    )
-    .await;
-    assert_eq!(resp.response_code(), ResponseCode::NXDomain);
-    assert!(resp.answers().is_empty());
-}
-
 /// A domain provider positive is NXDOMAIN over a real socket, and it beats a
 /// previously-cached upstream answer because the gate sits ahead of the cache.
 #[tokio::test]
@@ -403,116 +374,9 @@ async fn test_dnsbl_provider_positive_is_nxdomain_over_udp() {
     assert!(resp.answers().is_empty());
 }
 
-/// A provider a *scope* opted into blocks inside that scope. Registered over
-/// gRPC, exactly as an operator would, because the failure this pins was a
-/// configuration that stored and listed back correctly while never being
-/// consulted on the query path.
-#[tokio::test]
-async fn test_scope_rbl_provider_positive_is_nxdomain() {
-    // Global RBL enabled but with no providers of its own: any block is the
-    // scope's list.
-    let rbl = Arc::new(RblChecker::with_resolver(
-        true,
-        vec![],
-        Arc::new(AlwaysListedResolver),
-    ));
-    let stack = make_stack(rbl);
-    stack
-        .db
-        .create_network_scope(&NetworkScope {
-            name: "office".to_string(),
-            home_domain: "office.home".to_string(),
-        })
-        .unwrap();
-    stack
-        .db
-        .join_network(&NetworkAssociation {
-            ip_address: "127.0.0.1".to_string(),
-            scope_name: "office".to_string(),
-            ttl_seconds: 3600,
-        })
-        .unwrap();
-    stack
-        .grpc
-        .add_scope_rbl_provider(Request::new(AddScopeRblProviderRequest {
-            provider: Some(ScopeRblProvider {
-                scope_name: "office".to_string(),
-                zone: "office.rbl".to_string(),
-                enabled: true,
-                ..Default::default()
-            }),
-            auth_token: AUTH.to_string(),
-        }))
-        .await
-        .unwrap();
-
-    let addr = serve_udp(stack.dns.clone()).await;
-    let resp = udp_until_blocked(
-        addr,
-        &build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR),
-    )
-    .await;
-    assert_eq!(resp.response_code(), ResponseCode::NXDomain);
-}
-
 // ========================================================
 // The allowlist is the exemption — for every list
 // ========================================================
-
-/// An allowlist entry added over gRPC exempts a reverse lookup from the IP-based
-/// RBL, and takes effect on the next query: the gate runs ahead of the response
-/// cache, so no flush is needed. The control address stays blocked.
-#[tokio::test]
-async fn test_allowlist_exempts_reverse_lookup_from_rbl_provider() {
-    let stack = make_stack(rbl_with_provider(Arc::new(AlwaysListedResolver)));
-    let addr = serve_udp(stack.dns.clone()).await;
-
-    // Blocked first, so the exemption below is a change and not a starting state.
-    let blocked = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
-    assert_eq!(
-        udp_until_blocked(addr, &blocked).await.response_code(),
-        ResponseCode::NXDomain
-    );
-
-    stack
-        .grpc
-        .add_dnsbl_allowlist_entry(allowlist_req("192.168.1.100"))
-        .await
-        .unwrap();
-
-    udp_never_blocked(addr, &blocked, "an allowlisted address").await;
-
-    let other = build_query("101.1.168.192.in-addr.arpa.", RecordType::PTR);
-    assert_eq!(
-        udp_until_blocked(addr, &other).await.response_code(),
-        ResponseCode::NXDomain
-    );
-}
-
-/// The reverse *name* is the other accepted spelling of that exemption, and
-/// being a DNS name it is suffix-matched: one entry lifts a block on a whole
-/// reverse zone.
-#[tokio::test]
-async fn test_allowlist_reverse_zone_exempts_whole_subtree() {
-    let stack = make_stack(rbl_with_provider(Arc::new(AlwaysListedResolver)));
-    stack
-        .grpc
-        .add_dnsbl_allowlist_entry(allowlist_req("1.168.192.in-addr.arpa"))
-        .await
-        .unwrap();
-    let addr = serve_udp(stack.dns.clone()).await;
-
-    for name in ["100.1.168.192.in-addr.arpa.", "7.1.168.192.in-addr.arpa."] {
-        udp_never_blocked(addr, &build_query(name, RecordType::PTR), name).await;
-    }
-
-    // A different /24 is untouched.
-    let other = build_query("100.2.168.192.in-addr.arpa.", RecordType::PTR);
-    assert_eq!(
-        udp_until_blocked(addr, &other).await.response_code(),
-        ResponseCode::NXDomain
-    );
-}
 
 /// The allowlist overrides a local entry too — under either spelling — because
 /// a false positive in the local table is as much an operator problem as one at
@@ -523,7 +387,7 @@ async fn test_allowlist_overrides_local_entries_over_udp() {
         let stack = make_stack(rbl_local_only());
         stack
             .grpc
-            .add_local_rbl_entry(local_rbl_req(entry))
+            .add_local_blocklist_entry(local_blocklist_req(entry))
             .await
             .unwrap();
         let addr = serve_udp(stack.dns.clone()).await;
@@ -548,61 +412,6 @@ async fn test_allowlist_overrides_local_entries_over_udp() {
              off this box"
         );
     }
-}
-
-/// The allowlist reaches the scoped path. Which lists apply to a source is the
-/// scope's business; whether the escape hatch exists is not.
-#[tokio::test]
-async fn test_allowlist_exempts_inside_a_scope() {
-    let rbl = Arc::new(RblChecker::with_resolver(
-        true,
-        vec![],
-        Arc::new(AlwaysListedResolver),
-    ));
-    let stack = make_stack(rbl);
-    stack
-        .db
-        .create_network_scope(&NetworkScope {
-            name: "office".to_string(),
-            home_domain: "office.home".to_string(),
-        })
-        .unwrap();
-    stack
-        .db
-        .join_network(&NetworkAssociation {
-            ip_address: "127.0.0.1".to_string(),
-            scope_name: "office".to_string(),
-            ttl_seconds: 3600,
-        })
-        .unwrap();
-    stack
-        .grpc
-        .add_scope_rbl_provider(Request::new(AddScopeRblProviderRequest {
-            provider: Some(ScopeRblProvider {
-                scope_name: "office".to_string(),
-                zone: "office.rbl".to_string(),
-                enabled: true,
-                ..Default::default()
-            }),
-            auth_token: AUTH.to_string(),
-        }))
-        .await
-        .unwrap();
-    stack
-        .grpc
-        .add_dnsbl_allowlist_entry(allowlist_req("192.168.1.100"))
-        .await
-        .unwrap();
-
-    let addr = serve_udp(stack.dns.clone()).await;
-    let exempt = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
-    udp_never_blocked(addr, &exempt, "an allowlisted address inside a scope").await;
-
-    let blocked = build_query("101.1.168.192.in-addr.arpa.", RecordType::PTR);
-    assert_eq!(
-        udp_until_blocked(addr, &blocked).await.response_code(),
-        ResponseCode::NXDomain
-    );
 }
 
 /// The forward-name exemption over both transports, for completeness alongside
@@ -641,7 +450,12 @@ async fn test_allowlist_exempts_forward_name_on_udp_and_tcp() {
 /// allowlisting `1.100` must not exempt `192.168.1.100`.
 #[tokio::test]
 async fn test_allowlist_ip_literal_does_not_suffix_match() {
-    let stack = make_stack(rbl_with_provider(Arc::new(AlwaysListedResolver)));
+    let stack = make_stack(rbl_local_only());
+    stack
+        .grpc
+        .add_local_blocklist_entry(local_blocklist_req("192.168.1.100"))
+        .await
+        .unwrap();
     stack
         .grpc
         .add_dnsbl_allowlist_entry(allowlist_req("1.100"))

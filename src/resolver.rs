@@ -58,6 +58,13 @@ const PRIMING_FAILURE: usize = 1;
 
 /// Maximum number of CNAME indirections we will follow.
 const MAX_CNAME_CHAIN: usize = 16;
+
+/// Maximum number of zone cuts a single response may make us establish because
+/// its RRSIGs name a signer below the zone we are talking to. Real ones are one
+/// deep (`cdnjs.cloudflare.com.` under `cloudflare.com.`); this only has to stay
+/// clear of that while keeping a forged signer name from turning one answer into
+/// a long serial walk of DS lookups.
+const MAX_HIDDEN_CUTS: usize = 4;
 /// Maximum recursion depth (CNAME chasing + glue-less NS resolution).
 const MAX_RESOLUTION_DEPTH: u32 = 16;
 /// Maximum number of NS targets to try when resolving a glue-less delegation.
@@ -974,14 +981,21 @@ impl IterativeResolver {
 
             match classify(&response, qtype) {
                 Step::Answer(records) => {
-                    let verdict = self.validate_answer(
-                        name,
-                        qtype,
-                        &records,
-                        &response,
-                        &current_zone,
-                        &trust,
-                    );
+                    // The answer may have come from a zone below this one, with
+                    // no referral to say so. Establish that zone's keys first, or
+                    // the signatures get checked against the wrong ones.
+                    let (zone, zone_trust) = match self
+                        .keys_for(&current_zone, &records, &trust, &servers, qclass, budget)
+                        .await
+                    {
+                        Ok(pair) => pair,
+                        Err(verdict) => {
+                            return Ok(Resolution::answer(ResponseCode::ServFail, Vec::new())
+                                .with_verdict(verdict));
+                        }
+                    };
+                    let verdict =
+                        self.validate_answer(name, qtype, &records, &response, &zone, &zone_trust);
                     if verdict.withholds_answer() {
                         return Ok(Resolution::answer(ResponseCode::ServFail, Vec::new())
                             .with_verdict(verdict));
@@ -1012,13 +1026,23 @@ impl IterativeResolver {
                     // the sub-resolution. Validating the hop here rather than
                     // trusting the whole answer section is what stops a server from
                     // stapling unsigned records for the target onto a signed CNAME.
+                    let (zone, zone_trust) = match self
+                        .keys_for(&current_zone, &records, &trust, &servers, qclass, budget)
+                        .await
+                    {
+                        Ok(pair) => pair,
+                        Err(verdict) => {
+                            return Ok(Resolution::answer(ResponseCode::ServFail, Vec::new())
+                                .with_verdict(verdict));
+                        }
+                    };
                     let hop_verdict = self.validate_answer(
                         name,
                         RecordType::CNAME,
                         &records,
                         &response,
-                        &current_zone,
-                        &trust,
+                        &zone,
+                        &zone_trust,
                     );
                     if hop_verdict.withholds_answer() {
                         return Ok(Resolution::answer(ResponseCode::ServFail, Vec::new())
@@ -1048,14 +1072,29 @@ impl IterativeResolver {
                     return Ok(Resolution::answer(sub.rcode, accumulated).with_verdict(verdict));
                 }
                 Step::Negative { rcode, soa } => {
-                    let verdict = self.validate_negative(
-                        name,
-                        qtype,
-                        rcode,
-                        &response,
-                        &current_zone,
-                        &trust,
-                    );
+                    // A negative answer is proven by the SOA and NSEC/NSEC3 in
+                    // the authority section, and those are signed by whichever
+                    // zone actually holds the name — below this one when the cut
+                    // was never announced.
+                    let (zone, zone_trust) = match self
+                        .keys_for(
+                            &current_zone,
+                            response.name_servers(),
+                            &trust,
+                            &servers,
+                            qclass,
+                            budget,
+                        )
+                        .await
+                    {
+                        Ok(pair) => pair,
+                        Err(verdict) => {
+                            return Ok(Resolution::answer(ResponseCode::ServFail, Vec::new())
+                                .with_verdict(verdict));
+                        }
+                    };
+                    let verdict =
+                        self.validate_negative(name, qtype, rcode, &response, &zone, &zone_trust);
                     if verdict.withholds_answer() {
                         return Ok(Resolution::answer(ResponseCode::ServFail, Vec::new())
                             .with_verdict(verdict));
@@ -1387,6 +1426,221 @@ impl IterativeResolver {
         }
     }
 
+    /// The zone whose keys must validate `records`, together with the trust to
+    /// validate them with.
+    ///
+    /// Normally that is `current_zone` and the trust the walk already holds. It
+    /// is not when the response was signed by a zone *below* the one the walk
+    /// thinks it is talking to — see [`validate::signer_below`] for how a zone
+    /// cut reaches a resolver without a referral, which is the case one
+    /// nameserver serving both sides of the cut produces routinely.
+    ///
+    /// The pair is returned rather than written back into the walk's own
+    /// `current_zone`: the descent establishes what validates *this* response,
+    /// while the walk's position must keep tracking referrals, which is what its
+    /// bailiwick and delegation-loop checks are written against.
+    #[allow(clippy::too_many_arguments)]
+    async fn keys_for(
+        &self,
+        current_zone: &Name,
+        records: &[Record],
+        trust: &Option<TrustState>,
+        servers: &[IpAddr],
+        qclass: DNSClass,
+        budget: &QueryBudget,
+    ) -> std::result::Result<(Name, Option<TrustState>), Verdict> {
+        // Validation is off: there is no chain to extend and no verdict to fail
+        // with, so the signer name is of no interest.
+        if trust.is_none() {
+            return Ok((current_zone.clone(), None));
+        }
+        let Some(signer) = validate::signer_below(records, current_zone) else {
+            return Ok((current_zone.clone(), trust.clone()));
+        };
+        crate::metrics::metrics().dnssec_hidden_zone_cuts.inc();
+        match self
+            .descend_to(current_zone, &signer, trust, servers, qclass, budget)
+            .await
+        {
+            TrustOutcome::Trust(state) => Ok((signer, state)),
+            TrustOutcome::Failed(verdict) => Err(verdict),
+        }
+    }
+
+    /// Extends the chain of trust from `from` down to `to`, one zone cut at a
+    /// time, for delegations no referral announced.
+    ///
+    /// This is [`Self::extend_trust`] with the DS RRset fetched rather than
+    /// found: a referral hands the DS over in its authority section, while here
+    /// nobody offered one, so each cut costs an explicit DS query — answered by
+    /// the parent side of the cut, which is where a DS lives and which the
+    /// servers we are already talking to are authoritative for.
+    ///
+    /// Every security property is the one `extend_trust` enforces, because the
+    /// situation is the same one: the DS must validate under the parent's keys,
+    /// the child's DNSKEY RRset must match that DS, and an *absent* DS must be
+    /// proven absent by the parent's own signed denial rather than assumed from
+    /// its absence in a packet. A cut that cannot be established withholds the
+    /// answer instead of quietly validating it against the wrong zone's keys.
+    #[allow(clippy::too_many_arguments)]
+    async fn descend_to(
+        &self,
+        from: &Name,
+        to: &Name,
+        trust: &Option<TrustState>,
+        servers: &[IpAddr],
+        qclass: DNSClass,
+        budget: &QueryBudget,
+    ) -> TrustOutcome {
+        let Some(start) = trust.as_ref() else {
+            return TrustOutcome::Trust(None);
+        };
+        // Below a provably unsigned zone everything is unsigned: an insecure zone
+        // has no keys to sign a DS for its children with, so there is nothing
+        // left to check on the way down.
+        if start.keys().is_none() {
+            return TrustOutcome::Trust(Some(TrustState::Insecure));
+        }
+        // `signer_below` already guarantees this; asserting it here is what makes
+        // the label-stripping loop below terminate on its own terms rather than
+        // on its caller's good behaviour.
+        if from == to || !from.zone_of(to) {
+            return TrustOutcome::Trust(trust.clone());
+        }
+
+        // The cuts to cross, outermost first: `example.test.` down to
+        // `a.b.example.test.` crosses `b.example.test.` and then
+        // `a.b.example.test.`.
+        let mut cuts: Vec<Name> = Vec::new();
+        let mut cursor = to.clone();
+        while &cursor != from {
+            cuts.push(cursor.clone());
+            cursor = cursor.base_name();
+        }
+        cuts.reverse();
+
+        // A response gets to name its signer, so it gets to choose how many DS
+        // queries this costs. The query budget bounds that already; this bounds
+        // it in one place, visibly, so a deep name cannot turn one answer into a
+        // long serial walk before the budget notices.
+        if cuts.len() > MAX_HIDDEN_CUTS {
+            return TrustOutcome::Failed(Verdict::Indeterminate(format!(
+                "{to} is {} zone cuts below {from}, more than this resolver will establish for \
+                 one answer",
+                cuts.len()
+            )));
+        }
+
+        let mut parent = from.clone();
+        let mut state = start.clone();
+        for cut in cuts {
+            if let Some(cached) = self.keys.get(&cut) {
+                state = cached;
+                parent = cut;
+                continue;
+            }
+            // Cloned rather than borrowed: `state` is reassigned below, and the
+            // keys in hand belong to the parent it is about to stop being.
+            let parent_keys: Vec<hickory_proto::dnssec::rdata::DNSKEY> = match state.keys() {
+                Some(keys) => keys.to_vec(),
+                None => {
+                    self.keys
+                        .insert(&cut, TrustState::Insecure, self.default_ttl);
+                    state = TrustState::Insecure;
+                    parent = cut;
+                    continue;
+                }
+            };
+            let now = match crate::dnssec::now_secs() {
+                Ok(now) => now,
+                Err(e) => return TrustOutcome::Failed(Verdict::Indeterminate(e.to_string())),
+            };
+
+            let response = match self
+                .query_servers(servers, &cut, RecordType::DS, qclass, budget)
+                .await
+            {
+                Ok(answered) => answered.message,
+                // Unreachable is not a claim that anybody lied, but the chain
+                // cannot be established without it and the response below this
+                // cut must not be validated against the zone above it.
+                Err(e) => {
+                    return TrustOutcome::Failed(Verdict::Indeterminate(format!(
+                        "could not fetch the DS RRset for {cut}: {e}"
+                    )));
+                }
+            };
+
+            let ds_rrset = validate::records_at(response.answers(), &cut, RecordType::DS);
+            if ds_rrset.is_empty() {
+                // No DS. As at any other delegation, the absence has to be signed
+                // by the parent to mean anything at all.
+                let denial =
+                    self.verified_denial(response.name_servers(), &parent, &parent_keys, now);
+                match validate::prove_no_ds(&cut, &denial) {
+                    Ok(_) => {
+                        crate::metrics::metrics().dnssec_insecure_delegations.inc();
+                        let ttl = validate::min_ttl(response.name_servers(), self.default_ttl);
+                        self.keys.insert(&cut, TrustState::Insecure, ttl);
+                        state = TrustState::Insecure;
+                    }
+                    Err(e) => {
+                        return TrustOutcome::Failed(Verdict::Bogus(format!(
+                            "the delegation from {parent} to {cut} cannot be shown to be \
+                             unsigned: {e}"
+                        )));
+                    }
+                }
+                parent = cut;
+                continue;
+            }
+
+            if let Err(e) = validate::verify_rrset(
+                &cut,
+                RecordType::DS,
+                &ds_rrset,
+                response.answers(),
+                &parent_keys,
+                &parent,
+                now,
+            ) {
+                return TrustOutcome::Failed(Verdict::Bogus(format!(
+                    "the DS RRset for {cut} published by {parent} did not validate: {e}"
+                )));
+            }
+
+            let ds = validate::ds_records(&ds_rrset, &cut);
+            if !validate::ds_algorithms_supported(&ds) {
+                // RFC 6840 §5.11, as in `extend_trust`: an algorithm this build
+                // cannot verify makes the delegation insecure, not broken.
+                let ttl = validate::min_ttl(&ds_rrset, self.default_ttl);
+                self.keys.insert(&cut, TrustState::Insecure, ttl);
+                state = TrustState::Insecure;
+                parent = cut;
+                continue;
+            }
+
+            match self
+                .fetch_dnskeys(&cut, servers, &KeySource::Ds(&ds), qclass, budget)
+                .await
+            {
+                Ok(validated) => {
+                    let secure = TrustState::Secure(Arc::new(validated.keys));
+                    self.keys.insert(&cut, secure.clone(), validated.ttl);
+                    state = secure;
+                }
+                Err(e) => {
+                    return TrustOutcome::Failed(Verdict::Bogus(format!(
+                        "{cut} has a DS in {parent} but its DNSKEY RRset did not validate: {e}"
+                    )));
+                }
+            }
+            parent = cut;
+        }
+
+        TrustOutcome::Trust(Some(state))
+    }
+
     /// The NSEC/NSEC3 records from an authority section whose signatures check
     /// out against `keys`.
     ///
@@ -1416,6 +1670,38 @@ impl IterativeResolver {
         Denial::from_records(&verified)
     }
 
+    /// Counts a response that arrived with no signatures at all inside a zone
+    /// the chain says is signed. The answer is refused either way; this only
+    /// records *which* of the two causes it looks like.
+    ///
+    /// The innocent cause is the unsigned twin of a hidden zone cut: a child
+    /// zone that is legitimately unsigned, served by its signed parent's own
+    /// nameservers, so no referral announces the cut and — having no signatures
+    /// — the response carries no signer name to chase either. `descend_to`
+    /// cannot help there, because there is nothing to point it at. The guilty
+    /// cause is signatures stripped in flight, which produces the same packet
+    /// and must keep being refused.
+    ///
+    /// Nothing here decides anything; the SOA it reads is unsigned and therefore
+    /// forgeable. It exists so the case is *visible*: without it the only trace
+    /// of an unresolvable unsigned child is a SERVFAIL that looks like every
+    /// other SERVFAIL.
+    fn note_unsigned_response(&self, authority: &[Record], zone: &Name) {
+        let evidence = match validate::soa_below(authority, zone) {
+            Some(apex) => {
+                debug!(
+                    "{apex} answered unsigned below the signed zone {zone}: an unsigned child on \
+                     its parent's nameservers cannot be validated, and is refused"
+                );
+                crate::metrics::UNSIGNED_EVIDENCE_CHILD_APEX_SOA
+            }
+            None => crate::metrics::UNSIGNED_EVIDENCE_NONE,
+        };
+        crate::metrics::metrics()
+            .dnssec_unsigned_responses
+            .inc(evidence);
+    }
+
     /// Validates an answer section against the current zone's keys.
     fn validate_answer(
         &self,
@@ -1440,6 +1726,9 @@ impl IterativeResolver {
         let (sets, sigs) = validate::group_rrsets(records);
         if sets.is_empty() {
             return Verdict::Secure;
+        }
+        if sigs.is_empty() {
+            self.note_unsigned_response(response.name_servers(), zone);
         }
 
         // Every RRset in the answer section must verify, not just the one that
@@ -1504,6 +1793,10 @@ impl IterativeResolver {
             Ok(now) => now,
             Err(e) => return Verdict::Indeterminate(e.to_string()),
         };
+
+        if !validate::has_any_rrsig(response.name_servers()) {
+            self.note_unsigned_response(response.name_servers(), zone);
+        }
 
         let denial = self.verified_denial(response.name_servers(), zone, keys, now);
         if denial.is_empty() {

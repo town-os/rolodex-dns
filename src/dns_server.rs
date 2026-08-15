@@ -1,7 +1,7 @@
 use crate::db::{Database, RecordKind};
 use crate::dns_cache::DnsCache;
+use crate::dnsbl::DnsblChecker;
 use crate::metrics::{AnswerSource, Proto, QueryObservation, metrics};
-use crate::rbl::RblChecker;
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
@@ -27,10 +27,8 @@ const FORWARD_POOL_SIZE: usize = 8;
 pub const DEFAULT_DNS64_PREFIX: Ipv6Addr = Ipv6Addr::new(0x64, 0xff9b, 0, 0, 0, 0, 0, 0);
 
 /// Indices into [`crate::metrics::BLOCK_KINDS`].
-const BLOCK_RBL_PROVIDER: usize = 0;
-const BLOCK_RBL_LOCAL: usize = 1;
-const BLOCK_DNSBL_PROVIDER: usize = 2;
-const BLOCK_RBL_SCOPE_PROVIDER: usize = 3;
+const BLOCK_LOCAL: usize = 0;
+const BLOCK_DNSBL_PROVIDER: usize = 1;
 
 /// Indices into [`crate::metrics::ALLOWLIST_KINDS`].
 const ALLOW_FORWARD_NAME: usize = 0;
@@ -232,10 +230,10 @@ pub const MAX_TCP_CONNECTIONS: usize = 1024;
 ///
 /// When network scoping is active, DNS queries are resolved within the context
 /// of the network scope associated with the source IP. Unassociated IPs receive
-/// REFUSED responses. RBL checks are also scoped to the network.
+/// REFUSED responses. Blocklist checks are also scoped to the network.
 pub struct DnsServer {
     db: Database,
-    rbl: Arc<RblChecker>,
+    dnsbl: Arc<DnsblChecker>,
     forwarders: Arc<ArcSwap<Vec<SocketAddr>>>,
     /// Optional DNS response cache for privacy-first resolution.
     dns_cache: Option<Arc<DnsCache>>,
@@ -349,13 +347,13 @@ fn default_recursion_cidrs() -> Vec<crate::cidr::IpCidr> {
 }
 
 impl DnsServer {
-    pub fn new(db: Database, rbl: Arc<RblChecker>, forwarders: Vec<SocketAddr>) -> Self {
+    pub fn new(db: Database, dnsbl: Arc<DnsblChecker>, forwarders: Vec<SocketAddr>) -> Self {
         let forward_sockets = (0..FORWARD_POOL_SIZE)
             .map(|_| Arc::new(tokio::sync::Mutex::new(None)))
             .collect();
         Self {
             db,
-            rbl,
+            dnsbl,
             forwarders: Arc::new(ArcSwap::from_pointee(forwarders)),
             dns_cache: None,
             dns64_enabled: AtomicBool::new(false),
@@ -391,7 +389,7 @@ impl DnsServer {
     /// Creates a DnsServer with all optional features configurable.
     pub fn new_with_options(
         db: Database,
-        rbl: Arc<RblChecker>,
+        dnsbl: Arc<DnsblChecker>,
         forwarders: Vec<SocketAddr>,
         dns_cache: Option<Arc<DnsCache>>,
         dns64_prefix: Option<Ipv6Addr>,
@@ -402,7 +400,7 @@ impl DnsServer {
             .collect();
         Self {
             db,
-            rbl,
+            dnsbl,
             forwarders: Arc::new(ArcSwap::from_pointee(forwarders)),
             dns_cache,
             dns64_enabled: AtomicBool::new(dns64_prefix.is_some()),
@@ -1318,14 +1316,14 @@ impl DnsServer {
 
         debug!("DNS query: {} {:?} (scope: {:?})", qname, qtype, scope_name);
 
-        // If we have a network scope, check scoped RBL first
+        // If we have a network scope, check its blocklist first
         if let Some(ref scope) = scope_name {
             if let Some(ip) = extract_ip_from_name(&qname)
                 && let Some(kind) = self.ip_blocklist_kind(&qname, ip, Some(scope)).await
             {
-                debug!("RBL block in scope {}: {} is blacklisted", scope, qname);
+                debug!("blocklist block in scope {}: {} is blocked", scope, qname);
                 metrics().blocklist_blocks.inc(kind);
-                tag.set(AnswerSource::Rbl);
+                tag.set(AnswerSource::ReverseBlocklist);
                 return Ok(build_response_edns(
                     &message,
                     ResponseCode::NXDomain,
@@ -1528,14 +1526,14 @@ impl DnsServer {
             // Fall through to global records and forwarding
         }
 
-        // Check RBL for reverse DNS queries (global, non-scoped)
+        // Check the blocklist for reverse DNS queries (global, non-scoped)
         if scope_name.is_none()
             && let Some(ip) = extract_ip_from_name(&qname)
             && let Some(kind) = self.ip_blocklist_kind(&qname, ip, None).await
         {
-            debug!("RBL block: {} is blacklisted", qname);
+            debug!("blocklist block: {} is blocked", qname);
             metrics().blocklist_blocks.inc(kind);
-            tag.set(AnswerSource::Rbl);
+            tag.set(AnswerSource::ReverseBlocklist);
             return Ok(build_response_edns(
                 &message,
                 ResponseCode::NXDomain,
@@ -1865,12 +1863,12 @@ impl DnsServer {
             if let Some(kind) = self.blocklist_exempt(&qname, None) {
                 metrics().blocklist_allowlisted.inc(kind);
             } else {
-                let by_local = self.local_rbl_lists_name(&qname);
-                let by_provider = !by_local && self.rbl.is_name_listed(&qname).await;
+                let by_local = self.local_lists_name(&qname);
+                let by_provider = !by_local && self.dnsbl.is_name_listed(&qname).await;
                 if by_local || by_provider {
-                    debug!("RBL block (domain): {} is blacklisted", qname);
+                    debug!("blocklist block (domain): {} is blocked", qname);
                     metrics().blocklist_blocks.inc(if by_local {
-                        BLOCK_RBL_LOCAL
+                        BLOCK_LOCAL
                     } else {
                         BLOCK_DNSBL_PROVIDER
                     });
@@ -2592,12 +2590,12 @@ impl DnsServer {
     /// tolerating the trailing-dot/case differences between stored entries and
     /// wire-format query names. The local RBL set holds arbitrary strings, so
     /// an operator may have added either `example.com` or `example.com.`.
-    fn local_rbl_lists_name(&self, qname: &str) -> bool {
-        if self.db.lookup_local_rbl(qname) {
+    fn local_lists_name(&self, qname: &str) -> bool {
+        if self.db.lookup_local_blocklist(qname) {
             return true;
         }
-        let normalized = crate::rbl::normalize_rbl_name(qname);
-        !normalized.is_empty() && normalized != qname && self.db.lookup_local_rbl(&normalized)
+        let normalized = crate::dnsbl::normalize_blocklist_name(qname);
+        !normalized.is_empty() && normalized != qname && self.db.lookup_local_blocklist(&normalized)
     }
 
     /// Whether every blocklist must be skipped for this query.
@@ -2640,86 +2638,32 @@ impl DnsServer {
         None
     }
 
-    /// The IP-address blocklist gate (resolution step 2), shared by the scoped and
-    /// the global reverse-DNS paths. Returns the [`crate::metrics::BLOCK_KINDS`]
-    /// index of the list that matched, or `None` to keep resolving.
+    /// The IP-address blocklist gate (resolution step 2), shared by the scoped
+    /// and the global reverse-DNS paths. Returns the
+    /// [`crate::metrics::BLOCK_KINDS`] index of the list that matched, or `None`
+    /// to keep resolving.
     ///
-    /// A positive from *any* list here is an NXDOMAIN at the call site. Providers
-    /// are consulted before the local table, and the local lookups only run when
-    /// no provider listed the address, so an address on both lists is attributed
-    /// to the provider — the same order (and the same metric) as before this was
-    /// factored out of the two call sites.
-    ///
-    /// `scope` pulls in that scope's opted-in RBL providers alongside the global
-    /// ones. They are read from SQLite per query rather than cached, which is
-    /// affordable because this path is reached only by a reverse-DNS query
-    /// arriving inside a scope — the same query already pays a
-    /// `get_scope_for_ip` lookup.
+    /// Only the local table is consulted here. Provider lookups are a
+    /// *domain*-blocklist mechanism: a provider is asked about the name being
+    /// resolved, which on this path is a reverse name nobody publishes
+    /// reputation for. A local entry, by contrast, is an operator naming
+    /// something explicitly, and they may name it either way — as the address
+    /// literal, or as the reverse name `dig -x` prints — so both spellings match
+    /// and both are NXDOMAIN. Otherwise an entry that reads as a block sits in
+    /// the table doing nothing.
     async fn ip_blocklist_kind(
         &self,
         qname: &str,
         ip: IpAddr,
-        scope: Option<&str>,
+        _scope: Option<&str>,
     ) -> Option<usize> {
         if let Some(kind) = self.blocklist_exempt(qname, Some(ip)) {
             metrics().blocklist_allowlisted.inc(kind);
             return None;
         }
 
-        // Global providers first, then the scope's own, kept apart so a block
-        // can be attributed to whichever the operator actually configured.
-        if self.rbl.is_listed(&ip).await {
-            return Some(BLOCK_RBL_PROVIDER);
-        }
-
-        let by_scope_provider = match scope {
-            Some(scope) => {
-                let extra: Vec<crate::rbl::RblProvider> = self
-                    .db
-                    .list_scope_rbl_providers(scope)
-                    .unwrap_or_else(|e| {
-                        warn!("Failed to read RBL providers for scope {}: {}", scope, e);
-                        Vec::new()
-                    })
-                    .into_iter()
-                    .map(|p| {
-                        // Carry the scope's refusal configuration through. A
-                        // scoped provider that lost it would read its own "stop
-                        // querying me" answer as a listing and NXDOMAIN every
-                        // name checked against it, for that scope only.
-                        let base = crate::rbl::RblProvider::new(p.zone.clone(), p.enabled);
-                        match crate::rbl::resolve_refusal_codes(&p.refusal_codes) {
-                            Ok(codes) => crate::rbl::RblProvider {
-                                refusal_codes: codes.into(),
-                                cooldown: (p.refusal_cooldown_secs > 0).then(|| {
-                                    std::time::Duration::from_secs(p.refusal_cooldown_secs)
-                                }),
-                                ..base
-                            },
-                            // Fall back to the built-in codes rather than to
-                            // none: a bad override must not silently turn
-                            // refusal detection off for the scope.
-                            Err(e) => {
-                                warn!("scope {} provider {}: {}", scope, p.zone, e);
-                                base
-                            }
-                        }
-                    })
-                    .collect();
-                self.rbl.is_listed_by_extra_providers(&ip, &extra).await
-            }
-            None => false,
-        };
-        if by_scope_provider {
-            return Some(BLOCK_RBL_SCOPE_PROVIDER);
-        }
-
-        // The address as a literal is how a local entry blocks an IP; the reverse
-        // name is how an operator who typed what `dig -x` prints blocks the same
-        // thing. Both are local-list positives, so both are NXDOMAIN — otherwise
-        // an entry that reads as a block sits in the table doing nothing.
-        if self.db.lookup_local_rbl(&ip.to_string()) || self.local_rbl_lists_name(qname) {
-            return Some(BLOCK_RBL_LOCAL);
+        if self.db.lookup_local_blocklist(&ip.to_string()) || self.local_lists_name(qname) {
+            return Some(BLOCK_LOCAL);
         }
 
         None
@@ -3706,7 +3650,7 @@ fn dns_record_to_db_record(record: &Record) -> Option<crate::db::DnsRecord> {
 mod tests {
     use super::*;
     use crate::db::{Database, DnsRecord, RecordKind};
-    use crate::rbl::{RblAnswer, RblChecker, RblProvider, RblResolver};
+    use crate::dnsbl::{DnsblAnswer, DnsblChecker, DnsblProvider, DnsblResolver};
     use hickory_proto::op::Message;
     use hickory_proto::rr::{DNSClass, Name, RecordType};
     use hickory_proto::serialize::binary::BinDecodable;
@@ -3715,8 +3659,8 @@ mod tests {
     struct NeverListedResolver;
 
     #[async_trait::async_trait]
-    impl RblResolver for NeverListedResolver {
-        async fn lookup_rbl(&self, _query: &str) -> Result<Option<RblAnswer>, anyhow::Error> {
+    impl DnsblResolver for NeverListedResolver {
+        async fn lookup(&self, _query: &str) -> Result<Option<DnsblAnswer>, anyhow::Error> {
             Ok(None)
         }
     }
@@ -3724,9 +3668,9 @@ mod tests {
     struct AlwaysListedResolver;
 
     #[async_trait::async_trait]
-    impl RblResolver for AlwaysListedResolver {
-        async fn lookup_rbl(&self, _query: &str) -> Result<Option<RblAnswer>, anyhow::Error> {
-            Ok(Some(RblAnswer::listed(300)))
+    impl DnsblResolver for AlwaysListedResolver {
+        async fn lookup(&self, _query: &str) -> Result<Option<DnsblAnswer>, anyhow::Error> {
+            Ok(Some(DnsblAnswer::listed(300)))
         }
     }
 
@@ -3738,14 +3682,14 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl RblResolver for PrefixListedResolver {
-        async fn lookup_rbl(&self, query: &str) -> Result<Option<RblAnswer>, anyhow::Error> {
+    impl DnsblResolver for PrefixListedResolver {
+        async fn lookup(&self, query: &str) -> Result<Option<DnsblAnswer>, anyhow::Error> {
             if self
                 .listed_prefixes
                 .iter()
                 .any(|p| query.starts_with(p.as_str()))
             {
-                Ok(Some(RblAnswer::listed(300)))
+                Ok(Some(DnsblAnswer::listed(300)))
             } else {
                 Ok(None)
             }
@@ -3812,18 +3756,18 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl RblResolver for RecordingDnsblResolver {
-        async fn lookup_rbl(
+    impl DnsblResolver for RecordingDnsblResolver {
+        async fn lookup(
             &self,
             query: &str,
-        ) -> Result<Option<crate::rbl::RblAnswer>, anyhow::Error> {
+        ) -> Result<Option<crate::dnsbl::DnsblAnswer>, anyhow::Error> {
             if let Ok(mut seen) = self.seen.lock() {
                 seen.push(query.to_string());
             }
             if self.listed.iter().any(|l| l == query) {
                 // The conventional listing answer. A refusal code here would be
                 // read as "the provider declined", not as a block.
-                Ok(Some(crate::rbl::RblAnswer::listed(300)))
+                Ok(Some(crate::dnsbl::DnsblAnswer::listed(300)))
             } else {
                 Ok(None)
             }
@@ -3835,46 +3779,45 @@ mod tests {
     /// disabled to prove domain blocking is driven by the DNSBL config alone.
     async fn make_test_server_with_dnsbl(
         db: Database,
-        resolver: Arc<dyn RblResolver>,
+        resolver: Arc<dyn DnsblResolver>,
     ) -> Arc<DnsServer> {
-        let rbl = Arc::new(RblChecker::with_resolver(false, vec![], resolver));
-        rbl.set_dnsbl_config(
-            true,
-            vec![RblProvider {
-                zone: "dbl.test".to_string(),
-                enabled: true,
-                ..Default::default()
-            }],
-        )
-        .await;
-        Arc::new(DnsServer::new(db, rbl, vec![]))
+        let dnsbl = Arc::new(DnsblChecker::with_resolver(resolver));
+        dnsbl
+            .set_config(
+                true,
+                vec![DnsblProvider {
+                    zone: "dbl.test".to_string(),
+                    enabled: true,
+                    ..Default::default()
+                }],
+            )
+            .await;
+        Arc::new(DnsServer::new(db, dnsbl, vec![]))
     }
 
     fn make_test_server(db: Database) -> Arc<DnsServer> {
-        let rbl = Arc::new(RblChecker::with_resolver(
-            false,
-            vec![],
-            Arc::new(NeverListedResolver),
-        ));
-        Arc::new(DnsServer::new(db, rbl, vec![]))
+        let dnsbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
+        Arc::new(DnsServer::new(db, dnsbl, vec![]))
     }
 
-    fn make_test_server_with_rbl(db: Database, listed: bool) -> Arc<DnsServer> {
-        let resolver: Arc<dyn RblResolver> = if listed {
+    async fn make_test_server_with_rbl(db: Database, listed: bool) -> Arc<DnsServer> {
+        let resolver: Arc<dyn DnsblResolver> = if listed {
             Arc::new(AlwaysListedResolver)
         } else {
             Arc::new(NeverListedResolver)
         };
-        let rbl = Arc::new(RblChecker::with_resolver(
-            true,
-            vec![RblProvider {
-                zone: "test.rbl".to_string(),
-                enabled: true,
-                ..Default::default()
-            }],
-            resolver,
-        ));
-        Arc::new(DnsServer::new(db, rbl, vec![]))
+        let dnsbl = Arc::new(DnsblChecker::with_resolver(resolver));
+        dnsbl
+            .set_config(
+                true,
+                vec![DnsblProvider {
+                    zone: "test.example".to_string(),
+                    enabled: true,
+                    ..Default::default()
+                }],
+            )
+            .await;
+        Arc::new(DnsServer::new(db, dnsbl, vec![]))
     }
 
     fn build_query(name: &str, qtype: RecordType) -> Vec<u8> {
@@ -4227,33 +4170,6 @@ mod tests {
         Message::from_bytes(&server.handle_query(query).await.unwrap()).unwrap()
     }
 
-    async fn query_from_until_blocked(
-        server: &Arc<DnsServer>,
-        query: &[u8],
-        source: std::net::IpAddr,
-    ) -> Message {
-        for _ in 0..200 {
-            let resp = Message::from_bytes(&server.handle_query_from(query, source).await.unwrap())
-                .unwrap();
-            if resp.response_code() == ResponseCode::NXDomain {
-                return resp;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-        }
-        Message::from_bytes(&server.handle_query_from(query, source).await.unwrap()).unwrap()
-    }
-
-    #[tokio::test]
-    async fn test_rbl_blocks_reverse_dns() {
-        let db = Database::open_memory().unwrap();
-        let server = make_test_server_with_rbl(db, true);
-        // Query for a reverse DNS name (blocked once the async RBL fill lands).
-        let query = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
-        let response = query_until_blocked(&server, &query).await;
-
-        assert_eq!(response.response_code(), ResponseCode::NXDomain);
-    }
-
     /// RBL precedence over external DNS: a domain-blocklisted name (e.g.
     /// `googleadservices.com`) must be answered with NXDOMAIN rather than being
     /// forwarded upstream, while a locally-defined name in the same query batch
@@ -4433,14 +4349,13 @@ mod tests {
         ]));
         // Providers configured but the global flag off — the case an operator
         // reaches for to turn blocking off without losing their provider list.
-        let rbl = Arc::new(RblChecker::with_resolver(
-            false,
-            vec![],
-            resolver.clone() as Arc<dyn RblResolver>,
+        let dnsbl = Arc::new(DnsblChecker::with_resolver(
+            resolver.clone() as Arc<dyn DnsblResolver>
         ));
-        rbl.set_dnsbl_config(false, vec![RblProvider::new("dbl.test", true)])
+        dnsbl
+            .set_config(false, vec![DnsblProvider::new("dbl.test", true)])
             .await;
-        let server = Arc::new(DnsServer::new(db, rbl, vec![]));
+        let server = Arc::new(DnsServer::new(db, dnsbl, vec![]));
 
         let query = build_query("doubleclick.net.", RecordType::A);
         let resp = Message::from_bytes(&server.handle_query(&query).await.unwrap()).unwrap();
@@ -4514,16 +4429,17 @@ mod tests {
         let resolver = Arc::new(PrefixListedResolver {
             listed_prefixes: vec!["ads.tracker.example.".to_string()],
         });
-        let rbl = Arc::new(RblChecker::with_resolver(false, vec![], resolver));
-        rbl.set_dnsbl_config(
-            true,
-            vec![RblProvider {
-                zone: "dbl.test".to_string(),
-                enabled: true,
-                ..Default::default()
-            }],
-        )
-        .await;
+        let dnsbl = Arc::new(DnsblChecker::with_resolver(resolver));
+        dnsbl
+            .set_config(
+                true,
+                vec![DnsblProvider {
+                    zone: "dbl.test".to_string(),
+                    enabled: true,
+                    ..Default::default()
+                }],
+            )
+            .await;
         let cache = Arc::new(crate::dns_cache::DnsCache::new(
             Database::open_memory().unwrap(),
         ));
@@ -4543,7 +4459,7 @@ mod tests {
         );
         let server = Arc::new(DnsServer::new_with_options(
             db,
-            rbl,
+            dnsbl,
             vec![],
             Some(cache),
             None,
@@ -4563,7 +4479,7 @@ mod tests {
     async fn test_local_rbl_blocks_forward_domain() {
         let db = Database::open_memory().unwrap();
         // Stored without a trailing dot, as an operator would type it.
-        db.add_local_rbl_entry("tracker.example.com", "ad tracker")
+        db.add_local_blocklist_entry("tracker.example.com", "ad tracker")
             .unwrap();
 
         // RBL DNS providers are disabled; only the local list is consulted.
@@ -4589,10 +4505,10 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl RblResolver for CountingListedResolver {
-        async fn lookup_rbl(&self, _query: &str) -> Result<Option<RblAnswer>, anyhow::Error> {
+    impl DnsblResolver for CountingListedResolver {
+        async fn lookup(&self, _query: &str) -> Result<Option<DnsblAnswer>, anyhow::Error> {
             self.lookups.fetch_add(1, Ordering::Relaxed);
-            Ok(Some(RblAnswer::listed(300)))
+            Ok(Some(DnsblAnswer::listed(300)))
         }
     }
 
@@ -4658,17 +4574,15 @@ mod tests {
     // so each test carries its own control.
     // ================================================================
 
-    /// Builds a server with the IP-based RBL enabled and an explicit provider
-    /// list, so a test can distinguish "listed by a global provider" from
-    /// "listed by a provider this scope opted into" — the latter needs the
-    /// global list to be *empty*.
-    fn make_test_server_with_rbl_providers(
+    /// Builds a server with the blocklist enabled and an explicit provider list.
+    async fn make_test_server_with_providers(
         db: Database,
-        providers: Vec<RblProvider>,
-        resolver: Arc<dyn RblResolver>,
+        providers: Vec<DnsblProvider>,
+        resolver: Arc<dyn DnsblResolver>,
     ) -> Arc<DnsServer> {
-        let rbl = Arc::new(RblChecker::with_resolver(true, providers, resolver));
-        Arc::new(DnsServer::new(db, rbl, vec![]))
+        let dnsbl = Arc::new(DnsblChecker::with_resolver(resolver));
+        dnsbl.set_config(true, providers).await;
+        Arc::new(DnsServer::new(db, dnsbl, vec![]))
     }
 
     /// Fails if `query` is ever answered NXDOMAIN.
@@ -4709,13 +4623,17 @@ mod tests {
             "false positive on our mail host",
         )
         .unwrap();
-        let server = make_test_server_with_rbl(db, true);
+        db.add_local_blocklist_entry("192.168.1.100", "blocked")
+            .unwrap();
+        db.add_local_blocklist_entry("192.168.1.101", "blocked")
+            .unwrap();
+        let server = make_test_server_with_rbl(db, false).await;
 
         let exempt = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
         assert_never_blocked(&server, &exempt, LOOPBACK, "an allowlisted reverse name").await;
 
         // Control: the neighbouring address is not allowlisted and is blocked,
-        // so the exemption above is the allowlist and not a dead RBL.
+        // so the exemption above is the allowlist and not a dead blocklist.
         let blocked = build_query("101.1.168.192.in-addr.arpa.", RecordType::PTR);
         assert_eq!(
             query_until_blocked(&server, &blocked).await.response_code(),
@@ -4731,7 +4649,11 @@ mod tests {
         let db = Database::open_memory().unwrap();
         db.add_dnsbl_allowlist_entry("192.168.1.100", "our mail host")
             .unwrap();
-        let server = make_test_server_with_rbl(db, true);
+        db.add_local_blocklist_entry("192.168.1.100", "blocked")
+            .unwrap();
+        db.add_local_blocklist_entry("192.168.1.101", "blocked")
+            .unwrap();
+        let server = make_test_server_with_rbl(db, false).await;
 
         let exempt = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
         assert_never_blocked(&server, &exempt, LOOPBACK, "an allowlisted IP literal").await;
@@ -4752,7 +4674,9 @@ mod tests {
         let db = Database::open_memory().unwrap();
         db.add_dnsbl_allowlist_entry("1.100", "not a parent of any address")
             .unwrap();
-        let server = make_test_server_with_rbl(db, true);
+        db.add_local_blocklist_entry("192.168.1.100", "blocked")
+            .unwrap();
+        let server = make_test_server_with_rbl(db, false).await;
 
         let blocked = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
         assert_eq!(
@@ -4769,7 +4693,10 @@ mod tests {
         let db = Database::open_memory().unwrap();
         db.add_dnsbl_allowlist_entry("1.168.192.in-addr.arpa", "our own /24")
             .unwrap();
-        let server = make_test_server_with_rbl(db, true);
+        for ip in ["192.168.1.100", "192.168.1.101", "192.168.2.100"] {
+            db.add_local_blocklist_entry(ip, "blocked").unwrap();
+        }
+        let server = make_test_server_with_rbl(db, false).await;
 
         for name in ["100.1.168.192.in-addr.arpa.", "101.1.168.192.in-addr.arpa."] {
             let query = build_query(name, RecordType::PTR);
@@ -4797,11 +4724,12 @@ mod tests {
         let resolver = Arc::new(CountingListedResolver {
             lookups: lookups.clone(),
         });
-        let server = make_test_server_with_rbl_providers(
+        let server = make_test_server_with_providers(
             db,
-            vec![RblProvider::new("test.rbl", true)],
+            vec![DnsblProvider::new("test.example", true)],
             resolver,
-        );
+        )
+        .await;
 
         let query = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
         for _ in 0..5 {
@@ -4823,7 +4751,7 @@ mod tests {
     #[tokio::test]
     async fn test_local_rbl_entry_on_reverse_name_blocks() {
         let db = Database::open_memory().unwrap();
-        db.add_local_rbl_entry("100.1.168.192.in-addr.arpa", "compromised host")
+        db.add_local_blocklist_entry("100.1.168.192.in-addr.arpa", "compromised host")
             .unwrap();
         // RBL providers disabled entirely: the block can only come from the
         // local table, so this also proves no provider lookup is involved.
@@ -4851,7 +4779,7 @@ mod tests {
     async fn test_rbl_allowlist_overrides_local_entry() {
         for entry in ["192.168.1.100", "100.1.168.192.in-addr.arpa"] {
             let db = Database::open_memory().unwrap();
-            db.add_local_rbl_entry(entry, "listed").unwrap();
+            db.add_local_blocklist_entry(entry, "listed").unwrap();
             db.add_dnsbl_allowlist_entry("100.1.168.192.in-addr.arpa", "false positive")
                 .unwrap();
             let server = make_test_server(db);
@@ -4866,122 +4794,6 @@ mod tests {
                 "the allowlist must override a local entry written as {entry}"
             );
         }
-    }
-
-    /// A provider a scope opted into blocks within that scope. Without this the
-    /// per-scope RBL configuration is stored, listed back by the API, and never
-    /// consulted — a blocklist positive that resolves normally.
-    #[tokio::test]
-    async fn test_scope_rbl_provider_blocks_reverse_dns() {
-        let db = Database::open_memory().unwrap();
-        db.create_network_scope(&NetworkScope {
-            name: "scoperbl".to_string(),
-            home_domain: "scoperbl.home".to_string(),
-        })
-        .unwrap();
-        db.join_network(&NetworkAssociation {
-            ip_address: "10.64.0.7".to_string(),
-            scope_name: "scoperbl".to_string(),
-            ttl_seconds: 3600,
-        })
-        .unwrap();
-        db.add_scope_rbl_provider(&crate::db::ScopeRblProvider {
-            scope_name: "scoperbl".to_string(),
-            zone: "scope.rbl".to_string(),
-            enabled: true,
-            ..Default::default()
-        })
-        .unwrap();
-
-        // No *global* providers: any block here is the scope's own list.
-        let server =
-            make_test_server_with_rbl_providers(db, vec![], Arc::new(AlwaysListedResolver));
-
-        let query = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
-        let peer: std::net::IpAddr = "10.64.0.7".parse().unwrap();
-        assert_eq!(
-            query_from_until_blocked(&server, &query, peer)
-                .await
-                .response_code(),
-            ResponseCode::NXDomain
-        );
-
-        // Control: the same query from outside the scope is not blocked, which
-        // is what "per-scope" means — the provider is the scope's, not the box's.
-        assert_never_blocked(&server, &query, LOOPBACK, "a query outside the scope").await;
-    }
-
-    /// A disabled per-scope provider is not consulted, so it blocks nothing.
-    #[tokio::test]
-    async fn test_disabled_scope_rbl_provider_does_not_block() {
-        let db = Database::open_memory().unwrap();
-        db.create_network_scope(&NetworkScope {
-            name: "scoperbl".to_string(),
-            home_domain: "scoperbl.home".to_string(),
-        })
-        .unwrap();
-        db.join_network(&NetworkAssociation {
-            ip_address: "10.64.0.7".to_string(),
-            scope_name: "scoperbl".to_string(),
-            ttl_seconds: 3600,
-        })
-        .unwrap();
-        db.add_scope_rbl_provider(&crate::db::ScopeRblProvider {
-            scope_name: "scoperbl".to_string(),
-            zone: "scope.rbl".to_string(),
-            enabled: false,
-            ..Default::default()
-        })
-        .unwrap();
-
-        let server =
-            make_test_server_with_rbl_providers(db, vec![], Arc::new(AlwaysListedResolver));
-        let query = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
-        let peer: std::net::IpAddr = "10.64.0.7".parse().unwrap();
-        assert_never_blocked(&server, &query, peer, "a disabled per-scope provider").await;
-    }
-
-    /// The allowlist reaches the scoped path too. A source's scope decides which
-    /// lists apply to it; it must not decide whether the escape hatch exists.
-    #[tokio::test]
-    async fn test_scoped_rbl_allowlist_exempts_reverse_name() {
-        let db = Database::open_memory().unwrap();
-        db.create_network_scope(&NetworkScope {
-            name: "scoperbl".to_string(),
-            home_domain: "scoperbl.home".to_string(),
-        })
-        .unwrap();
-        db.join_network(&NetworkAssociation {
-            ip_address: "10.64.0.7".to_string(),
-            scope_name: "scoperbl".to_string(),
-            ttl_seconds: 3600,
-        })
-        .unwrap();
-        db.add_scope_rbl_provider(&crate::db::ScopeRblProvider {
-            scope_name: "scoperbl".to_string(),
-            zone: "scope.rbl".to_string(),
-            enabled: true,
-            ..Default::default()
-        })
-        .unwrap();
-        db.add_dnsbl_allowlist_entry("192.168.1.100", "false positive")
-            .unwrap();
-
-        let server =
-            make_test_server_with_rbl_providers(db, vec![], Arc::new(AlwaysListedResolver));
-        let peer: std::net::IpAddr = "10.64.0.7".parse().unwrap();
-
-        let exempt = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
-        assert_never_blocked(&server, &exempt, peer, "an allowlisted address in a scope").await;
-
-        // Control: the scope's provider still blocks everything else.
-        let blocked = build_query("101.1.168.192.in-addr.arpa.", RecordType::PTR);
-        assert_eq!(
-            query_from_until_blocked(&server, &blocked, peer)
-                .await
-                .response_code(),
-            ResponseCode::NXDomain
-        );
     }
 
     /// The allowlist runs *before* the provider lookup, so an exempt name costs
@@ -5019,7 +4831,7 @@ mod tests {
     #[tokio::test]
     async fn test_dnsbl_allowlist_overrides_local_rbl_entry() {
         let db = Database::open_memory().unwrap();
-        db.add_local_rbl_entry("tracker.example.com", "ad tracker")
+        db.add_local_blocklist_entry("tracker.example.com", "ad tracker")
             .unwrap();
         db.add_dnsbl_allowlist_entry("tracker.example.com", "needed by vendor app")
             .unwrap();
@@ -5057,13 +4869,9 @@ mod tests {
     /// provider lists — the default configuration — to prove an enabled-but-empty
     /// blocklist blocks nothing.
     async fn make_test_server_empty_blocklists(db: Database) -> Arc<DnsServer> {
-        let rbl = Arc::new(RblChecker::with_resolver(
-            true,
-            vec![],
-            Arc::new(NeverListedResolver),
-        ));
-        rbl.set_dnsbl_config(true, vec![]).await;
-        Arc::new(DnsServer::new(db, rbl, vec![]))
+        let dnsbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
+        dnsbl.set_config(true, vec![]).await;
+        Arc::new(DnsServer::new(db, dnsbl, vec![]))
     }
 
     #[tokio::test]
@@ -5343,13 +5151,15 @@ mod tests {
     async fn test_auto_recovery_immediate_and_flushes_cache() {
         let db = Database::open_memory().unwrap();
         let cache = Arc::new(crate::dns_cache::DnsCache::new(db.clone()));
-        let rbl = Arc::new(RblChecker::with_resolver(
-            false,
+        let dnsbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
+        let server = DnsServer::new_with_options(
+            db.clone(),
+            dnsbl,
             vec![],
-            Arc::new(NeverListedResolver),
-        ));
-        let server =
-            DnsServer::new_with_options(db.clone(), rbl, vec![], Some(cache.clone()), None, false);
+            Some(cache.clone()),
+            None,
+            false,
+        );
 
         // Pretend we had degraded to the local tier and cached an answer there.
         server.active_tier.store(TIER_LOCAL, Ordering::Relaxed);
@@ -5747,28 +5557,6 @@ mod tests {
         if let RData::A(rdata::A(ip)) = resp.answers()[0].data() {
             assert_eq!(*ip, Ipv4Addr::new(10, 0, 0, 2));
         }
-    }
-
-    #[tokio::test]
-    async fn test_scoped_rbl_blocks_reverse_dns() {
-        let db = Database::open_memory().unwrap();
-
-        db.create_network_scope(&NetworkScope {
-            name: "rblscope".to_string(),
-            home_domain: "rblscope.home".to_string(),
-        })
-        .unwrap();
-        db.join_network(&NetworkAssociation {
-            ip_address: "192.168.1.1".to_string(),
-            scope_name: "rblscope".to_string(),
-            ttl_seconds: 3600,
-        })
-        .unwrap();
-
-        let server = make_test_server_with_rbl(db, true);
-        let query = build_query("100.1.168.192.in-addr.arpa.", RecordType::PTR);
-        let resp = query_from_until_blocked(&server, &query, "192.168.1.1".parse().unwrap()).await;
-        assert_eq!(resp.response_code(), ResponseCode::NXDomain);
     }
 
     #[tokio::test]
@@ -6879,13 +6667,9 @@ mod tests {
     async fn test_cname_chain_is_cached_under_the_question() {
         let db = Database::open_memory().unwrap();
         let cache = Arc::new(crate::dns_cache::DnsCache::new(db.clone()));
-        let rbl = Arc::new(RblChecker::with_resolver(
-            false,
-            vec![],
-            Arc::new(NeverListedResolver),
-        ));
+        let dnsbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
         let server =
-            DnsServer::new_with_options(db, rbl, vec![], Some(Arc::clone(&cache)), None, true);
+            DnsServer::new_with_options(db, dnsbl, vec![], Some(Arc::clone(&cache)), None, true);
 
         let mut question = hickory_proto::op::Query::new();
         question
@@ -6943,13 +6727,9 @@ mod tests {
     async fn test_cache_key_survives_qname_case_randomization() {
         let db = Database::open_memory().unwrap();
         let cache = Arc::new(crate::dns_cache::DnsCache::new(db.clone()));
-        let rbl = Arc::new(RblChecker::with_resolver(
-            false,
-            vec![],
-            Arc::new(NeverListedResolver),
-        ));
+        let dnsbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
         let server =
-            DnsServer::new_with_options(db, rbl, vec![], Some(Arc::clone(&cache)), None, true);
+            DnsServer::new_with_options(db, dnsbl, vec![], Some(Arc::clone(&cache)), None, true);
 
         // The question exactly as a 0x20-randomized response echoes it back.
         let mut question = hickory_proto::op::Query::new();
@@ -7377,14 +7157,10 @@ mod tests {
 
         // Configure a bogus GLOBAL forwarder. A name under the querying scope's
         // owned TLD must still NXDOMAIN (partition) rather than be forwarded.
-        let rbl = Arc::new(RblChecker::with_resolver(
-            false,
-            vec![],
-            Arc::new(NeverListedResolver),
-        ));
+        let dnsbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
         let server = Arc::new(DnsServer::new(
             db,
-            rbl,
+            dnsbl,
             vec!["203.0.113.1:53".parse().unwrap()],
         ));
         let query = build_query("nothing.office.", RecordType::A);

@@ -16,10 +16,10 @@
 
 use rolodex_dns::db::{Database, DnsRecord, RecordKind};
 use rolodex_dns::dns_server::DnsServer;
+use rolodex_dns::dnsbl::{DnsblChecker, DnsblResolver};
 use rolodex_dns::dnssec::{self, DnssecAlgorithm, KeyType, Rrsig, SigningKey};
 use rolodex_dns::grpc_service::proto;
 use rolodex_dns::grpc_service::proto::rolodex_dns_service_server::RolodexDnsService;
-use rolodex_dns::rbl::{RblChecker, RblResolver};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -34,21 +34,17 @@ use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 struct NeverListedResolver;
 
 #[async_trait::async_trait]
-impl RblResolver for NeverListedResolver {
-    async fn lookup_rbl(
+impl DnsblResolver for NeverListedResolver {
+    async fn lookup(
         &self,
         _query: &str,
-    ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
+    ) -> Result<Option<rolodex_dns::dnsbl::DnsblAnswer>, anyhow::Error> {
         Ok(None)
     }
 }
 
-fn make_rbl() -> Arc<RblChecker> {
-    Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(NeverListedResolver),
-    ))
+fn make_rbl() -> Arc<DnsblChecker> {
+    Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)))
 }
 
 /// Builds a service over an in-memory database, handing back both so tests can

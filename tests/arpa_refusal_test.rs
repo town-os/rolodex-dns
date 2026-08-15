@@ -32,8 +32,8 @@ use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use rolodex_dns::db::{Database, DnsRecord, RecordKind};
 use rolodex_dns::dns_cache::DnsCache;
 use rolodex_dns::dns_server::{DnsServer, ResolutionMode};
+use rolodex_dns::dnsbl::DnsblChecker;
 use rolodex_dns::dnssec_validate::{Anchors, Verdict};
-use rolodex_dns::rbl::RblChecker;
 use rolodex_dns::resolver::IterativeResolver;
 use signed_hierarchy::{NsecSpec, SignedNs, Zone, ZoneKey, bind_levels, name, serve};
 use std::net::{Ipv4Addr, SocketAddr};
@@ -336,7 +336,7 @@ async fn spawn_upstream() -> Upstream {
 fn server_with(mode: ResolutionMode, upstream: &Upstream) -> (Arc<DnsServer>, Database) {
     let db = Database::open_memory().expect("in-memory database");
     let cache = Arc::new(DnsCache::new(db.clone()));
-    let rbl = Arc::new(RblChecker::new(false, vec![]));
+    let rbl = Arc::new(DnsblChecker::new());
     let server = Arc::new(DnsServer::new_with_options(
         db.clone(),
         rbl,

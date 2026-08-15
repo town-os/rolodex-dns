@@ -3,9 +3,9 @@ use assert_cmd::cargo;
 use predicates::prelude::*;
 use rolodex_dns::db::Database;
 use rolodex_dns::dns_server::DnsServer;
+use rolodex_dns::dnsbl::{DnsblChecker, DnsblResolver};
 use rolodex_dns::grpc_service::RolodexDnsGrpcService;
 use rolodex_dns::grpc_service::proto::rolodex_dns_service_server::RolodexDnsServiceServer;
-use rolodex_dns::rbl::{RblChecker, RblResolver};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::net::UnixListener;
@@ -14,11 +14,11 @@ use tonic::transport::Server;
 struct NeverListedResolver;
 
 #[async_trait::async_trait]
-impl RblResolver for NeverListedResolver {
-    async fn lookup_rbl(
+impl DnsblResolver for NeverListedResolver {
+    async fn lookup(
         &self,
         _query: &str,
-    ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
+    ) -> Result<Option<rolodex_dns::dnsbl::DnsblAnswer>, anyhow::Error> {
         Ok(None)
     }
 }
@@ -45,11 +45,7 @@ impl TestServer {
         let socket_path_str = socket_path.to_str().unwrap().to_string();
 
         let db = Database::open_memory().unwrap();
-        let rbl = Arc::new(RblChecker::with_resolver(
-            false,
-            vec![],
-            Arc::new(NeverListedResolver),
-        ));
+        let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
         let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
 
         // Start TCP server
@@ -410,169 +406,6 @@ async fn test_cli_set_forwarders_tcp() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_cli_set_and_get_rbl_config_tcp() {
-    let server = TestServer::start("test-secret").await;
-
-    // Set RBL config
-    run_cmd({
-        let mut cmd = server.cli_tcp();
-        cmd.args([
-            "set-rbl-config",
-            "-e",
-            "-p",
-            "zen.spamhaus.org:true",
-            "bl.spamcop.net:false",
-        ]);
-        cmd
-    })
-    .await
-    .success()
-    .stdout(predicate::str::contains(
-        "RBL config updated (enabled: true)",
-    ));
-
-    // Get RBL config
-    run_cmd({
-        let mut cmd = server.cli_tcp();
-        cmd.args(["get-rbl-config"]);
-        cmd
-    })
-    .await
-    .success()
-    .stdout(predicate::str::contains("RBL enabled: true"))
-    .stdout(predicate::str::contains("zen.spamhaus.org"))
-    .stdout(predicate::str::contains("bl.spamcop.net"));
-
-    server.shutdown();
-}
-
-/// Refusal codes and the rotate-out duration are reachable from the CLI, and
-/// `get-rbl-config` shows what is actually in effect. An operator who cannot
-/// see which codes a provider is using cannot tell a misconfigured blocklist
-/// from a working one until it starts NXDOMAINing everything.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_cli_set_and_get_rbl_refusal_codes_tcp() {
-    let server = TestServer::start("test-secret").await;
-
-    run_cmd({
-        let mut cmd = server.cli_tcp();
-        cmd.args([
-            "set-rbl-config",
-            "-e",
-            "-p",
-            "zen.spamhaus.org:true",
-            "private.rbl:true",
-            "--refusal-codes",
-            "zen.spamhaus.org=127.255.255.0/24,127.0.0.1",
-            "private.rbl=none",
-            "--provider-cooldown",
-            "zen.spamhaus.org=1800",
-            "--refusal-cooldown",
-            "900",
-        ]);
-        cmd
-    })
-    .await
-    .success();
-
-    run_cmd({
-        let mut cmd = server.cli_tcp();
-        cmd.args(["get-rbl-config"]);
-        cmd
-    })
-    .await
-    .success()
-    .stdout(predicate::str::contains("Refusal rotate-out: 900s"))
-    .stdout(predicate::str::contains("127.255.255.0/24"))
-    .stdout(predicate::str::contains("1800s"))
-    // A provider with detection off reads back as `none`, not as blank —
-    // blank means "the defaults" on the way back in.
-    .stdout(predicate::str::contains("none"));
-
-    // A zone named in --refusal-codes but absent from --providers is an error
-    // rather than a silently dropped flag: the operator would otherwise believe
-    // they had configured codes that were never sent.
-    run_cmd({
-        let mut cmd = server.cli_tcp();
-        cmd.args([
-            "set-rbl-config",
-            "-e",
-            "-p",
-            "zen.spamhaus.org:true",
-            "--refusal-codes",
-            "typo.spamhaus.org=127.0.0.1",
-        ]);
-        cmd
-    })
-    .await
-    .failure()
-    .stderr(predicate::str::contains("not in --providers"));
-
-    // A malformed code is refused by the server.
-    run_cmd({
-        let mut cmd = server.cli_tcp();
-        cmd.args([
-            "set-rbl-config",
-            "-e",
-            "-p",
-            "zen.spamhaus.org:true",
-            "--refusal-codes",
-            "zen.spamhaus.org=not-an-ip",
-        ]);
-        cmd
-    })
-    .await
-    .failure();
-
-    server.shutdown();
-}
-
-/// The per-scope provider carries the same knobs, over the Unix socket path.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_cli_add_scope_rbl_with_refusal_codes_unix() {
-    let server = TestServer::start("test-secret").await;
-
-    run_cmd({
-        let mut cmd = server.cli_unix();
-        cmd.args(["create-scope", "--name", "refusal-scope"]);
-        cmd
-    })
-    .await
-    .success();
-
-    run_cmd({
-        let mut cmd = server.cli_unix();
-        cmd.args([
-            "add-scope-rbl",
-            "--scope",
-            "refusal-scope",
-            "--zone",
-            "scope.rbl",
-            "--refusal-code",
-            "127.255.255.0/24",
-            "--refusal-code",
-            "127.0.1.255",
-            "--refusal-cooldown",
-            "300",
-        ]);
-        cmd
-    })
-    .await
-    .success();
-
-    run_cmd({
-        let mut cmd = server.cli_unix();
-        cmd.args(["list-scope-rbl", "--scope", "refusal-scope"]);
-        cmd
-    })
-    .await
-    .success()
-    .stdout(predicate::str::contains("scope.rbl"));
-
-    server.shutdown();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_cli_set_and_get_dnsbl_config_tcp() {
     let server = TestServer::start("test-secret").await;
 
@@ -724,23 +557,6 @@ async fn test_cli_dnsbl_allowlist_unix() {
     .success()
     .stdout(predicate::str::contains("cdn.example.net."))
     .stdout(predicate::str::contains("vendor"));
-
-    server.shutdown();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_cli_get_rbl_config_default_tcp() {
-    let server = TestServer::start("test-secret").await;
-
-    run_cmd({
-        let mut cmd = server.cli_tcp();
-        cmd.args(["get-rbl-config"]);
-        cmd
-    })
-    .await
-    .success()
-    .stdout(predicate::str::contains("RBL enabled: false"))
-    .stdout(predicate::str::contains("No RBL providers configured"));
 
     server.shutdown();
 }
@@ -942,33 +758,6 @@ async fn test_cli_set_forwarders_unix() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_cli_rbl_config_roundtrip_unix() {
-    let server = TestServer::start("test-secret").await;
-
-    // Set
-    run_cmd({
-        let mut cmd = server.cli_unix();
-        cmd.args(["set-rbl-config", "-e", "-p", "zen.spamhaus.org:true"]);
-        cmd
-    })
-    .await
-    .success();
-
-    // Get
-    run_cmd({
-        let mut cmd = server.cli_unix();
-        cmd.args(["get-rbl-config"]);
-        cmd
-    })
-    .await
-    .success()
-    .stdout(predicate::str::contains("RBL enabled: true"))
-    .stdout(predicate::str::contains("zen.spamhaus.org"));
-
-    server.shutdown();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_cli_flush_cache_unix() {
     let server = TestServer::start("test-secret").await;
 
@@ -1142,8 +931,6 @@ fn test_cli_help_output() {
         .stdout(predicate::str::contains("remove-record"))
         .stdout(predicate::str::contains("list-records"))
         .stdout(predicate::str::contains("set-forwarders"))
-        .stdout(predicate::str::contains("set-rbl-config"))
-        .stdout(predicate::str::contains("get-rbl-config"))
         .stdout(predicate::str::contains("set-dnsbl-config"))
         .stdout(predicate::str::contains("get-dnsbl-config"))
         .stdout(predicate::str::contains("flush-cache"));
@@ -1203,25 +990,6 @@ async fn test_cli_empty_auth_server() {
     })
     .await
     .success();
-
-    server.shutdown();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_cli_set_rbl_config_disabled() {
-    let server = TestServer::start("test-secret").await;
-
-    // Set RBL to disabled with no providers
-    run_cmd({
-        let mut cmd = server.cli_tcp();
-        cmd.args(["set-rbl-config"]);
-        cmd
-    })
-    .await
-    .success()
-    .stdout(predicate::str::contains(
-        "RBL config updated (enabled: false)",
-    ));
 
     server.shutdown();
 }
@@ -1753,24 +1521,26 @@ async fn test_cli_auth_zones_and_cache_unix() {
     server.shutdown();
 }
 
-/// The local RBL entry commands.
+/// The local blocklist entry commands.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_cli_local_rbl_lifecycle_tcp() {
+async fn test_cli_local_blocklist_lifecycle_tcp() {
     let server = TestServer::start("test-secret").await;
 
     run_cmd({
         let mut cmd = server.cli_tcp();
-        cmd.args(["list-local-rbl"]);
+        cmd.args(["list-local-blocklist"]);
         cmd
     })
     .await
     .success()
-    .stdout(predicate::str::contains("No local RBL entries configured."));
+    .stdout(predicate::str::contains(
+        "No local blocklist entries configured.",
+    ));
 
     run_cmd({
         let mut cmd = server.cli_tcp();
         cmd.args([
-            "add-local-rbl",
+            "add-local-blocklist",
             "-n",
             "spammer.example.com.",
             "-r",
@@ -1780,13 +1550,13 @@ async fn test_cli_local_rbl_lifecycle_tcp() {
     })
     .await
     .success()
-    .stdout(predicate::str::contains("Added local RBL entry"));
+    .stdout(predicate::str::contains("Added local blocklist entry"));
 
     // The reason is the operator's note to their future self; a command that
     // accepted it and dropped it would look identical here without this.
     run_cmd({
         let mut cmd = server.cli_tcp();
-        cmd.args(["list-local-rbl"]);
+        cmd.args(["list-local-blocklist"]);
         cmd
     })
     .await
@@ -1797,21 +1567,23 @@ async fn test_cli_local_rbl_lifecycle_tcp() {
 
     run_cmd({
         let mut cmd = server.cli_tcp();
-        cmd.args(["remove-local-rbl", "-n", "spammer.example.com."]);
+        cmd.args(["remove-local-blocklist", "-n", "spammer.example.com."]);
         cmd
     })
     .await
     .success()
-    .stdout(predicate::str::contains("Removed local RBL entry"));
+    .stdout(predicate::str::contains("Removed local blocklist entry"));
 
     run_cmd({
         let mut cmd = server.cli_tcp();
-        cmd.args(["list-local-rbl"]);
+        cmd.args(["list-local-blocklist"]);
         cmd
     })
     .await
     .success()
-    .stdout(predicate::str::contains("No local RBL entries configured."));
+    .stdout(predicate::str::contains(
+        "No local blocklist entries configured.",
+    ));
 
     server.shutdown();
 }
@@ -2167,169 +1939,6 @@ async fn test_cli_dhcp_cert_options_tcp() {
     .await
     .success()
     .stdout(predicate::str::contains("No DHCP cert options for scope"));
-
-    server.shutdown();
-}
-
-/// Per-scope RBL providers, and the ingress-listener listing.
-///
-/// `list-scope-tld-listeners` is checked in its empty form only: binding a real
-/// listener requires an address on the host, and these tests must not touch the
-/// host's networking.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_cli_scope_rbl_and_listeners_unix() {
-    let server = TestServer::start("test-secret").await;
-
-    run_cmd({
-        let mut cmd = server.cli_unix();
-        cmd.args(["create-scope", "-n", "office"]);
-        cmd
-    })
-    .await
-    .success();
-
-    run_cmd({
-        let mut cmd = server.cli_unix();
-        cmd.args(["list-scope-rbl", "-s", "office"]);
-        cmd
-    })
-    .await
-    .success()
-    .stdout(predicate::str::contains("No scope RBL providers"));
-
-    run_cmd({
-        let mut cmd = server.cli_unix();
-        cmd.args([
-            "add-scope-rbl",
-            "-s",
-            "office",
-            "-z",
-            "zen.spamhaus.org",
-            "-e",
-            "true",
-        ]);
-        cmd
-    })
-    .await
-    .success()
-    .stdout(predicate::str::contains("Added RBL provider"));
-
-    run_cmd({
-        let mut cmd = server.cli_unix();
-        cmd.args(["list-scope-rbl", "-s", "office"]);
-        cmd
-    })
-    .await
-    .success()
-    .stdout(predicate::str::contains("zen.spamhaus.org"))
-    .stdout(predicate::str::contains("true"));
-
-    // `--enabled` takes a value and defaults to `true`, so omitting it adds a
-    // provider that is actually checked — which is what the documentation says
-    // and the only reading of `add` that does anything.
-    //
-    // This is pinned in both directions because the flag has been wrong in both
-    // directions. Spelled as a bare `bool` with `default_value = "true"`, clap
-    // gives the field the `SetTrue` action: older versions ignored the default
-    // and made omission mean `false` (an operator following the docs added a
-    // provider that silently checked nothing), and clap 4.6 applies the default
-    // instead, which makes the flag decorative and a disabled provider
-    // impossible to express. Taking a value is what makes both halves reachable.
-    run_cmd({
-        let mut cmd = server.cli_unix();
-        cmd.args(["add-scope-rbl", "-s", "office", "-z", "bl.spamcop.net"]);
-        cmd
-    })
-    .await
-    .success();
-
-    let providers = server
-        .db
-        .list_scope_rbl_providers("office")
-        .expect("list providers");
-    let spamcop = providers
-        .iter()
-        .find(|p| p.zone == "bl.spamcop.net")
-        .expect("the provider was not stored");
-    assert!(
-        spamcop.enabled,
-        "omitting --enabled must register an *enabled* provider, as documented"
-    );
-
-    // The other half: a provider can still be registered without turning it on.
-    // If this ever fails with a parse error, the flag has gone back to being a
-    // bare switch and the disabled state is unreachable again.
-    run_cmd({
-        let mut cmd = server.cli_unix();
-        cmd.args([
-            "add-scope-rbl",
-            "-s",
-            "office",
-            "-z",
-            "multi.uribl.com",
-            "--enabled",
-            "false",
-        ]);
-        cmd
-    })
-    .await
-    .success();
-
-    let providers = server
-        .db
-        .list_scope_rbl_providers("office")
-        .expect("list providers");
-    let uribl = providers
-        .iter()
-        .find(|p| p.zone == "multi.uribl.com")
-        .expect("the disabled provider was not stored");
-    assert!(
-        !uribl.enabled,
-        "--enabled false must register a disabled provider"
-    );
-
-    run_cmd({
-        let mut cmd = server.cli_unix();
-        cmd.args(["remove-scope-rbl", "-s", "office", "-z", "multi.uribl.com"]);
-        cmd
-    })
-    .await
-    .success();
-
-    run_cmd({
-        let mut cmd = server.cli_unix();
-        cmd.args(["remove-scope-rbl", "-s", "office", "-z", "bl.spamcop.net"]);
-        cmd
-    })
-    .await
-    .success();
-
-    run_cmd({
-        let mut cmd = server.cli_unix();
-        cmd.args(["remove-scope-rbl", "-s", "office", "-z", "zen.spamhaus.org"]);
-        cmd
-    })
-    .await
-    .success()
-    .stdout(predicate::str::contains("Removed RBL provider"));
-
-    run_cmd({
-        let mut cmd = server.cli_unix();
-        cmd.args(["list-scope-rbl", "-s", "office"]);
-        cmd
-    })
-    .await
-    .success()
-    .stdout(predicate::str::contains("No scope RBL providers"));
-
-    run_cmd({
-        let mut cmd = server.cli_unix();
-        cmd.args(["list-scope-tld-listeners", "-s", "office"]);
-        cmd
-    })
-    .await
-    .success()
-    .stdout(predicate::str::contains("No ingress listeners for scope"));
 
     server.shutdown();
 }

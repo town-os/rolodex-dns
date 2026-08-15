@@ -12,6 +12,8 @@
 //! | `a_premature_signature_is_refused` | The other end of the same window, and the one a validator that only checks expiry misses. |
 //! | `a_signature_from_an_unpublished_key_is_refused` | Any key verifies, so the DS and the DNSKEY RRset constrain nothing and the chain is decorative. |
 //! | `a_foreign_signer_name_is_refused` | An attacker signs `www.bank.test` with a zone they own and supply the keys for, and the arithmetic checks out. |
+//! | `a_signer_below_the_zone_that_does_not_enclose_its_owner_is_refused` | Crossing unannounced zone cuts becomes steerable: a signer name that is not a zone over this data sends the resolver to ask about a name that is not a delegation, and "no DS there" downgrades data the real zone signs. |
+//! | `an_invented_zone_cut_at_the_owner_is_refused` | Any name can be nominated as a zone boundary; the parent never delegated it, so nothing under it is unsigned and treating it so forges signed data. |
 //! | `data_mutated_after_signing_is_refused` | The signature is checked for presence rather than over the data, so records can be rewritten freely. |
 //! | `an_unproven_negative_is_refused` | An NXDOMAIN needs no proof, so any name can be made to disappear — a denial-of-service that looks like the name simply not existing. |
 //! | `bogus_data_is_never_returned_as_an_answer` | Bogus records reach the client (and the cache) despite the verdict. |
@@ -40,8 +42,8 @@ use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use rolodex_dns::db::Database;
 use rolodex_dns::dns_cache::DnsCache;
 use rolodex_dns::dns_server::{DnsServer, ResolutionMode};
+use rolodex_dns::dnsbl::DnsblChecker;
 use rolodex_dns::dnssec_validate::{Anchors, Verdict};
-use rolodex_dns::rbl::RblChecker;
 use rolodex_dns::resolver::IterativeResolver;
 use signed_hierarchy::{
     NsecSpec, SignedNs, Tamper, TamperSwitch, Zone, ZoneKey, bind_levels, name, serve,
@@ -135,6 +137,16 @@ fn zones(
             "example.test.",
             &[RecordType::A, RecordType::RRSIG, RecordType::NSEC],
         ))
+        // A real, provably-unsigned child. Nothing resolves through it here; it
+        // exists so that `unsigned.example.test.` is a name the parent will
+        // honestly prove carries no DS, which is what makes
+        // `a_signer_below_the_zone_that_does_not_enclose_its_owner_is_refused`
+        // an attack rather than a lookup that fails on its own.
+        .with_unsigned_child(
+            "unsigned.example.test.",
+            Ipv4Addr::new(127, 0, 0, 49),
+            "www.example.test.",
+        )
         .with_tamper(attack.zone.clone());
 
     (root_zone, tld_zone, leaf_zone)
@@ -322,6 +334,65 @@ async fn a_foreign_signer_name_is_refused() {
     .await;
     let res = resolve(&harness, "www.example.test.", RecordType::A).await;
     assert_withheld(&res, "an RRSIG naming a signer outside the zone");
+}
+
+/// The same attack aimed *inside* the zone rather than outside it, which is the
+/// half that a resolver willing to cross unannounced zone cuts has to keep
+/// refusing.
+///
+/// Answers legitimately arrive signed by a zone below the one being talked to —
+/// a child served by its parent's own nameservers, which is why
+/// `tests/dnssec_hidden_cut_test.rs` exists. So a signer name below the zone can
+/// no longer be rejected out of hand; it sends the resolver off to establish
+/// that zone's keys. This is what stops an attacker steering that: the signer
+/// here does not *contain* the name it signed, so it is not a zone cut over this
+/// data at all. Chasing it would ask the parent about a name that is not a
+/// delegation, get a truthful "there is no DS there", and conclude that data the
+/// real zone does sign is insecure.
+/// The signer named here is a *genuine* unsigned delegation: `example.test.`
+/// really does delegate `unsigned.example.test.` with no DS, and really will
+/// prove it. That is what makes this the sharp version of the attack — every
+/// lookup the resolver makes while chasing the signer succeeds and tells the
+/// truth. Only the containment test stands between "this zone is legitimately
+/// unsigned" and "therefore this data, which belongs to a zone that signs it, is
+/// unsigned too".
+#[tokio::test]
+async fn a_signer_below_the_zone_that_does_not_enclose_its_owner_is_refused() {
+    let harness = harness(Attack {
+        zone: Tamper::AnswerSignerName(name("unsigned.example.test.")),
+        ..Attack::default()
+    })
+    .await;
+    let res = resolve(&harness, "www.example.test.", RecordType::A).await;
+    assert_withheld(
+        &res,
+        "an RRSIG naming a signer that does not contain its owner",
+    );
+}
+
+/// A zone cut invented at a name that *does* enclose the owner — the strongest
+/// form of the attack, because the signer name is shaped exactly like a real
+/// hidden delegation.
+///
+/// The names alone cannot settle it, so the chain has to: the resolver asks the
+/// parent for a DS at that name and the parent's answer says no delegation
+/// exists there — no DS, and no NSEC asserting an NS either. An invented cut
+/// must therefore fail closed. If this ever passes an answer through, the fix
+/// for hidden zone cuts has become a way to nominate any name as the boundary
+/// of a zone that does not exist and have everything under it treated as
+/// unsigned.
+#[tokio::test]
+async fn an_invented_zone_cut_at_the_owner_is_refused() {
+    let harness = harness(Attack {
+        zone: Tamper::AnswerSignerName(name("www.example.test.")),
+        ..Attack::default()
+    })
+    .await;
+    let res = resolve(&harness, "www.example.test.", RecordType::A).await;
+    assert_withheld(
+        &res,
+        "an RRSIG naming a zone cut the parent does not delegate",
+    );
 }
 
 /// Every signature in the packet is genuine; the A record was rewritten after
@@ -582,7 +653,7 @@ async fn spawn_forwarder() -> Forwarder {
 fn auto_server(resolver: IterativeResolver, forwarder: &Forwarder) -> Arc<DnsServer> {
     let db = Database::open_memory().expect("in-memory database");
     let cache = Arc::new(DnsCache::new(db.clone()));
-    let rbl = Arc::new(RblChecker::new(false, vec![]));
+    let rbl = Arc::new(DnsblChecker::new());
     let server = Arc::new(DnsServer::new_with_options(
         db,
         rbl,

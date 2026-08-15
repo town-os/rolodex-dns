@@ -28,8 +28,8 @@ use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use rolodex_dns::db::Database;
 use rolodex_dns::dns_cache::DnsCache;
 use rolodex_dns::dns_server::{DnsServer, ResolutionMode};
+use rolodex_dns::dnsbl::DnsblChecker;
 use rolodex_dns::dnssec_validate::Anchors;
-use rolodex_dns::rbl::RblChecker;
 use rolodex_dns::resolver::IterativeResolver;
 use signed_hierarchy::{SignedNs, Tamper, Zone, ZoneKey, bind_levels, serve};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -111,7 +111,7 @@ async fn degraded_server() -> (Arc<DnsServer>, SocketAddr) {
     let forwarder = spawn_forwarder(Ipv4Addr::new(10, 0, 0, 7)).await;
     let db = Database::open_memory().expect("in-memory db");
     let cache = Arc::new(DnsCache::new(db.clone()));
-    let rbl = Arc::new(RblChecker::new(false, vec![]));
+    let rbl = Arc::new(DnsblChecker::new());
     let server = Arc::new(DnsServer::new_with_options(
         db,
         rbl,
@@ -275,7 +275,7 @@ async fn roots_not_reclaimed_when_unreachable_and_probe_is_bounded() {
 async fn probe_is_a_noop_at_the_top_tier() {
     let (resolver, root, _tld) = signed_roots(Tamper::None).await;
     let db = Database::open_memory().expect("in-memory db");
-    let rbl = Arc::new(RblChecker::new(false, vec![]));
+    let rbl = Arc::new(DnsblChecker::new());
     let server = Arc::new(DnsServer::new(db, rbl, vec![]));
     server.set_resolution_mode(ResolutionMode::Auto);
     server.set_resolver(resolver);

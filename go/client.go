@@ -87,9 +87,6 @@ const (
 // DnsRecord represents a DNS record managed by the Rolodex DNS server.
 type DnsRecord = pb.DnsRecord
 
-// RblConfig represents a single RBL (Realtime Blackhole List) provider configuration.
-type RblConfig = pb.RblConfig
-
 // DnsblConfig represents a single DNSBL (domain blocklist) provider configuration.
 type DnsblConfig = pb.DnsblConfig
 
@@ -102,8 +99,8 @@ type TtlDriftConfig = pb.TtlDriftConfig
 // QueryLatencyStats represents per-server query latency statistics.
 type QueryLatencyStats = pb.QueryLatencyStat
 
-// LocalRblEntry represents a local RBL blocklist entry.
-type LocalRblEntry = pb.LocalRblEntry
+// LocalBlocklistEntry represents a local blocklist entry.
+type LocalBlocklistEntry = pb.LocalBlocklistEntry
 
 // DnsblAllowlistEntry represents a name exempted from the name-based blocklist
 // check. An entry covers the name and every name beneath it.
@@ -150,9 +147,6 @@ type DhcpPool = pb.DhcpPool
 
 // DhcpLease represents a DHCP lease.
 type DhcpLease = pb.DhcpLease
-
-// ScopeRblProvider represents a per-scope RBL provider.
-type ScopeRblProvider = pb.ScopeRblProvider
 
 // RotatedProvider reports a blocklist provider currently taken out of the
 // lookup rotation because it refused a query.
@@ -381,80 +375,46 @@ func (c *Client) SetForwarders(ctx context.Context, forwarders []string) error {
 	return nil
 }
 
-// SetRblConfig configures Realtime Blackhole List settings on the Rolodex DNS server.
-// This replaces the entire RBL configuration.
+// SetResolutionMode changes how the server resolves names it is not
+// authoritative for, without restarting it.
+//
+// The mode is otherwise read once from `resolution.mode` at startup, so an
+// orchestrator that wanted to change it had to rewrite the config file and
+// restart the process — a DNS outage for every client of that box.
 //
 // Parameters:
-//   - enabled: whether RBL checking is globally enabled (default: false when first configured)
-//   - providers: list of RBL provider configurations, each with a zone name and enabled flag
+//   - mode: "auto" (root-first fallback chain), "recursive" (roots only), or
+//     "forward" (configured forwarders only). Case-insensitive. An
+//     unrecognized value is refused rather than defaulted.
 //
-// Remote API path: /rolodex_dns.RolodexDnsService/SetRblConfig
-func (c *Client) SetRblConfig(ctx context.Context, enabled bool, providers []*RblConfig) error {
-	return c.SetRblConfigWithRefusalCooldown(ctx, enabled, providers, 0)
-}
-
-// SetRblConfigWithRefusalCooldown is [Client.SetRblConfig] with the list-wide
-// rotate-out duration.
-//
-// A provider that answers with a refusal code — a documented "I refused your
-// query" reply such as 127.255.255.254, as opposed to a listing — is taken out
-// of the lookup rotation for this long, so a blocklist that has stopped
-// answering us is backed off rather than queried on every request. Providers
-// may override it individually via RblConfig.RefusalCooldownSecs.
-//
-// Parameters:
-//   - refusalCooldownSecs: seconds to rotate a refusing provider out; 0 uses
-//     the server's built-in default (3600)
-//
-// Remote API path: /rolodex_dns.RolodexDnsService/SetRblConfig
-func (c *Client) SetRblConfigWithRefusalCooldown(ctx context.Context, enabled bool, providers []*RblConfig, refusalCooldownSecs uint32) error {
-	resp, err := c.rpc.SetRblConfig(ctx, &pb.SetRblConfigRequest{
-		Enabled:             enabled,
-		Providers:           providers,
-		AuthToken:           c.authToken,
-		RefusalCooldownSecs: refusalCooldownSecs,
+// Remote API path: /rolodex_dns.RolodexDnsService/SetResolutionMode
+func (c *Client) SetResolutionMode(ctx context.Context, mode string) error {
+	resp, err := c.rpc.SetResolutionMode(ctx, &pb.SetResolutionModeRequest{
+		Mode:      mode,
+		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex-dns: set rbl config: %w", err)
+		return fmt.Errorf("rolodex-dns: set resolution mode: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex-dns: set rbl config: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: set resolution mode: %s", resp.Message)
 	}
 	return nil
 }
 
-// RblStatus holds the current RBL configuration returned by [Client.GetRblConfig].
-type RblStatus struct {
-	// Enabled indicates whether RBL checking is globally enabled.
-	Enabled bool
-	// Providers lists the configured RBL providers, with their refusal codes
-	// resolved to what is actually in effect (so a provider configured with an
-	// empty list reads back as the built-in codes).
-	Providers []*RblConfig
-	// RefusalCooldownSecs is the list-wide rotate-out duration applied to
-	// providers that set none of their own.
-	RefusalCooldownSecs uint32
-	// RotatedOut lists providers currently out of rotation after refusing a
-	// query, with the code they refused with and the time remaining.
-	RotatedOut []*RotatedProvider
-}
-
-// GetRblConfig retrieves the current RBL configuration from the Rolodex DNS server.
+// GetResolutionMode returns the resolution mode currently in effect on the
+// server, which is the mode actually resolving queries rather than the one the
+// config file names — the two differ after a SetResolutionMode call.
 //
-// Remote API path: /rolodex_dns.RolodexDnsService/GetRblConfig
-func (c *Client) GetRblConfig(ctx context.Context) (*RblStatus, error) {
-	resp, err := c.rpc.GetRblConfig(ctx, &pb.GetRblConfigRequest{
+// Remote API path: /rolodex_dns.RolodexDnsService/GetResolutionMode
+func (c *Client) GetResolutionMode(ctx context.Context) (string, error) {
+	resp, err := c.rpc.GetResolutionMode(ctx, &pb.GetResolutionModeRequest{
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("rolodex-dns: get rbl config: %w", err)
+		return "", fmt.Errorf("rolodex-dns: get resolution mode: %w", err)
 	}
-	return &RblStatus{
-		Enabled:             resp.Enabled,
-		Providers:           resp.Providers,
-		RefusalCooldownSecs: resp.RefusalCooldownSecs,
-		RotatedOut:          resp.RotatedOut,
-	}, nil
+	return resp.Mode, nil
 }
 
 // SetDnsblConfig configures DNSBL (domain blocklist) settings on the Rolodex DNS
@@ -473,9 +433,9 @@ func (c *Client) SetDnsblConfig(ctx context.Context, enabled bool, providers []*
 }
 
 // SetDnsblConfigWithRefusalCooldown is [Client.SetDnsblConfig] with the
-// list-wide rotate-out duration for providers that refuse our queries; see
-// [Client.SetRblConfigWithRefusalCooldown]. The DNSBL value is independent of
-// the RBL one.
+// list-wide rotate-out duration for providers that refuse our queries: a
+// provider that answers "stop querying me" is taken out of rotation for this
+// long rather than having its complaint read as a listing.
 //
 // Remote API path: /rolodex_dns.RolodexDnsService/SetDnsblConfig
 func (c *Client) SetDnsblConfigWithRefusalCooldown(ctx context.Context, enabled bool, providers []*DnsblConfig, refusalCooldownSecs uint32) error {
@@ -527,7 +487,7 @@ func (c *Client) GetDnsblConfig(ctx context.Context) (*DnsblStatus, error) {
 	}, nil
 }
 
-// FlushCache clears the RBL lookup cache on the Rolodex DNS server.
+// FlushCache clears the blocklist lookup cache on the Rolodex DNS server.
 //
 // Remote API path: /rolodex_dns.RolodexDnsService/FlushCache
 func (c *Client) FlushCache(ctx context.Context) error {
@@ -982,62 +942,62 @@ func (c *Client) GetQueryLatencyStats(ctx context.Context) ([]*QueryLatencyStats
 	return resp.Stats, nil
 }
 
-// AddLocalRblEntry adds an entry to the local RBL blocklist.
+// AddLocalBlocklistEntry adds an entry to the local blocklist.
 //
 // Parameters:
-//   - entry: the local RBL entry to add (name and reason)
+//   - entry: the local blocklist entry to add (name and reason)
 //
-// Remote API path: /rolodex_dns.RolodexDnsService/AddLocalRblEntry
-func (c *Client) AddLocalRblEntry(ctx context.Context, entry *LocalRblEntry) error {
-	resp, err := c.rpc.AddLocalRblEntry(ctx, &pb.AddLocalRblEntryRequest{
+// Remote API path: /rolodex_dns.RolodexDnsService/AddLocalBlocklistEntry
+func (c *Client) AddLocalBlocklistEntry(ctx context.Context, entry *LocalBlocklistEntry) error {
+	resp, err := c.rpc.AddLocalBlocklistEntry(ctx, &pb.AddLocalBlocklistEntryRequest{
 		Entry:     entry,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex-dns: add local rbl entry: %w", err)
+		return fmt.Errorf("rolodex-dns: add local blocklist entry: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex-dns: add local rbl entry: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: add local blocklist entry: %s", resp.Message)
 	}
 	return nil
 }
 
-// RemoveLocalRblEntry removes an entry from the local RBL blocklist.
+// RemoveLocalBlocklistEntry removes an entry from the local blocklist.
 //
 // Parameters:
 //   - name: the name or IP to unblock
 //
-// Remote API path: /rolodex_dns.RolodexDnsService/RemoveLocalRblEntry
-func (c *Client) RemoveLocalRblEntry(ctx context.Context, name string) error {
-	resp, err := c.rpc.RemoveLocalRblEntry(ctx, &pb.RemoveLocalRblEntryRequest{
+// Remote API path: /rolodex_dns.RolodexDnsService/RemoveLocalBlocklistEntry
+func (c *Client) RemoveLocalBlocklistEntry(ctx context.Context, name string) error {
+	resp, err := c.rpc.RemoveLocalBlocklistEntry(ctx, &pb.RemoveLocalBlocklistEntryRequest{
 		Name:      name,
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return fmt.Errorf("rolodex-dns: remove local rbl entry: %w", err)
+		return fmt.Errorf("rolodex-dns: remove local blocklist entry: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("rolodex-dns: remove local rbl entry: %s", resp.Message)
+		return fmt.Errorf("rolodex-dns: remove local blocklist entry: %s", resp.Message)
 	}
 	return nil
 }
 
-// ListLocalRblEntries retrieves all entries in the local RBL blocklist.
+// ListLocalBlocklistEntries retrieves all entries in the local blocklist.
 //
-// Remote API path: /rolodex_dns.RolodexDnsService/ListLocalRblEntries
-func (c *Client) ListLocalRblEntries(ctx context.Context) ([]*LocalRblEntry, error) {
-	resp, err := c.rpc.ListLocalRblEntries(ctx, &pb.ListLocalRblEntriesRequest{
+// Remote API path: /rolodex_dns.RolodexDnsService/ListLocalBlocklistEntries
+func (c *Client) ListLocalBlocklistEntries(ctx context.Context) ([]*LocalBlocklistEntry, error) {
+	resp, err := c.rpc.ListLocalBlocklistEntries(ctx, &pb.ListLocalBlocklistEntriesRequest{
 		AuthToken: c.authToken,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("rolodex-dns: list local rbl entries: %w", err)
+		return nil, fmt.Errorf("rolodex-dns: list local blocklist entries: %w", err)
 	}
 	return resp.Entries, nil
 }
 
 // AddDnsblAllowlistEntry exempts a name (and every name beneath it) from the
 // name-based blocklist check, overriding both the configured DNSBL providers
-// and any matching local RBL entry.
+// and any matching local blocklist entry.
 //
 // Parameters:
 //   - entry: the allowlist entry to add (name and reason)
@@ -1575,90 +1535,6 @@ func (c *Client) DeleteDhcpLease(ctx context.Context, mac string) error {
 		return fmt.Errorf("rolodex-dns: delete dhcp lease: %s", resp.Message)
 	}
 	return nil
-}
-
-// AddScopeRblProvider adds an additional RBL provider for a specific scope.
-//
-// Parameters:
-//   - scopeName: the network scope name
-//   - zone: the RBL zone (e.g. "zen.spamhaus.org")
-//   - enabled: whether the provider is enabled
-//
-// Remote API path: /rolodex_dns.RolodexDnsService/AddScopeRblProvider
-func (c *Client) AddScopeRblProvider(ctx context.Context, scopeName, zone string, enabled bool) error {
-	return c.AddScopeRblProviderWithRefusal(ctx, scopeName, zone, enabled, nil, 0)
-}
-
-// AddScopeRblProviderWithRefusal is [Client.AddScopeRblProvider] with the
-// provider's refusal-code handling.
-//
-// Parameters:
-//   - refusalCodes: codes this provider returns to mean "I refused your query"
-//     rather than "this is listed"; each is an IPv4 address or
-//     "address/prefix". nil or empty uses the server's built-in set; the single
-//     entry "none" disables refusal detection for this provider. An
-//     unparseable code is rejected rather than ignored.
-//   - refusalCooldownSecs: seconds to rotate this provider out after a
-//     refusal; 0 uses the server-wide RBL default.
-//
-// Remote API path: /rolodex_dns.RolodexDnsService/AddScopeRblProvider
-func (c *Client) AddScopeRblProviderWithRefusal(ctx context.Context, scopeName, zone string, enabled bool, refusalCodes []string, refusalCooldownSecs uint32) error {
-	resp, err := c.rpc.AddScopeRblProvider(ctx, &pb.AddScopeRblProviderRequest{
-		Provider: &pb.ScopeRblProvider{
-			ScopeName:           scopeName,
-			Zone:                zone,
-			Enabled:             enabled,
-			RefusalCodes:        refusalCodes,
-			RefusalCooldownSecs: refusalCooldownSecs,
-		},
-		AuthToken: c.authToken,
-	})
-	if err != nil {
-		return fmt.Errorf("rolodex-dns: add scope rbl provider: %w", err)
-	}
-	if !resp.Success {
-		return fmt.Errorf("rolodex-dns: add scope rbl provider: %s", resp.Message)
-	}
-	return nil
-}
-
-// RemoveScopeRblProvider removes a scope-specific RBL provider.
-//
-// Parameters:
-//   - scopeName: the network scope name
-//   - zone: the RBL zone to remove
-//
-// Remote API path: /rolodex_dns.RolodexDnsService/RemoveScopeRblProvider
-func (c *Client) RemoveScopeRblProvider(ctx context.Context, scopeName, zone string) error {
-	resp, err := c.rpc.RemoveScopeRblProvider(ctx, &pb.RemoveScopeRblProviderRequest{
-		ScopeName: scopeName,
-		Zone:      zone,
-		AuthToken: c.authToken,
-	})
-	if err != nil {
-		return fmt.Errorf("rolodex-dns: remove scope rbl provider: %w", err)
-	}
-	if !resp.Success {
-		return fmt.Errorf("rolodex-dns: remove scope rbl provider: %s", resp.Message)
-	}
-	return nil
-}
-
-// ListScopeRblProviders lists RBL providers for a specific scope.
-//
-// Parameters:
-//   - scopeName: the network scope name to list providers for
-//
-// Remote API path: /rolodex_dns.RolodexDnsService/ListScopeRblProviders
-func (c *Client) ListScopeRblProviders(ctx context.Context, scopeName string) ([]*ScopeRblProvider, error) {
-	resp, err := c.rpc.ListScopeRblProviders(ctx, &pb.ListScopeRblProvidersRequest{
-		ScopeName: scopeName,
-		AuthToken: c.authToken,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("rolodex-dns: list scope rbl providers: %w", err)
-	}
-	return resp.Providers, nil
 }
 
 // AddScopeTld registers a globally-unique TLD as owned by a network scope.

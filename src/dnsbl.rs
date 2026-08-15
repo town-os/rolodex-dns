@@ -7,11 +7,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
-/// Indices into [`crate::metrics::BLOCK_KINDS`], naming which blocklist a
-/// provider lookup belongs to.
-const BLOCK_RBL_PROVIDER: usize = 0;
-const BLOCK_DNSBL_PROVIDER: usize = 2;
-const BLOCK_RBL_SCOPE_PROVIDER: usize = 3;
+/// Index into [`crate::metrics::BLOCK_KINDS`] for a provider lookup.
+const BLOCK_DNSBL_PROVIDER: usize = 1;
 
 /// Outcome indices for the second dimension of
 /// [`crate::metrics::Metrics::blocklist_lookups`].
@@ -155,18 +152,35 @@ pub fn resolve_refusal_codes(specs: &[String]) -> Result<Vec<RefusalCode>, Strin
     specs.iter().map(|s| RefusalCode::parse(s)).collect()
 }
 
-/// A cached RBL lookup result.
+/// How long past its TTL a cached **positive** keeps blocking while a refill
+/// runs. See [`DnsblChecker::cached_verdict`] for why an expired positive is not
+/// simply dropped.
+const STALE_POSITIVE_GRACE: Duration = Duration::from_secs(600);
+
+/// What the result cache can say about one provider lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CachedVerdict {
+    /// A live entry, within its TTL.
+    Fresh(bool),
+    /// A positive past its TTL but inside [`STALE_POSITIVE_GRACE`]: keep
+    /// blocking, and refresh it in the background.
+    StalePositive,
+    /// Nothing usable — allow the query now and fill in the background.
+    Miss,
+}
+
+/// A cached blocklist lookup result.
 #[derive(Debug, Clone)]
 struct CacheEntry {
-    /// Whether the IP is listed in this RBL.
+    /// Whether the name is listed in this provider's zone.
     listed: bool,
     /// When the entry expires.
     expires_at: Instant,
 }
 
-/// An RBL provider configuration used at runtime.
+/// A domain-blocklist provider configuration used at runtime.
 #[derive(Debug, Clone)]
-pub struct RblProvider {
+pub struct DnsblProvider {
     /// The DNSBL zone (e.g. "zen.spamhaus.org").
     pub zone: String,
     /// Whether this provider is enabled.
@@ -178,11 +192,11 @@ pub struct RblProvider {
     pub refusal_codes: Arc<[RefusalCode]>,
     /// How long this provider is rotated out of the lookup rotation after a
     /// refusal. `None` uses the list-wide default (see
-    /// [`RblChecker::set_refusal_cooldown`]).
+    /// [`DnsblChecker::set_refusal_cooldown`]).
     pub cooldown: Option<Duration>,
 }
 
-impl Default for RblProvider {
+impl Default for DnsblProvider {
     fn default() -> Self {
         Self {
             zone: String::new(),
@@ -193,7 +207,7 @@ impl Default for RblProvider {
     }
 }
 
-impl RblProvider {
+impl DnsblProvider {
     /// A provider with the built-in default refusal codes and the list-wide
     /// cooldown. Use struct-update syntax to override either.
     pub fn new(zone: impl Into<String>, enabled: bool) -> Self {
@@ -231,14 +245,14 @@ fn default_refusal_codes() -> Arc<[RefusalCode]> {
 /// listing and `127.255.255.254` is "you are querying via a public resolver",
 /// and only the address tells them apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RblAnswer {
+pub struct DnsblAnswer {
     /// The returned `A` records, in the order the provider sent them.
     pub codes: Vec<Ipv4Addr>,
     /// TTL of the first `A` record.
     pub ttl: u32,
 }
 
-impl RblAnswer {
+impl DnsblAnswer {
     /// An answer carrying one code.
     pub fn single(code: Ipv4Addr, ttl: u32) -> Self {
         Self {
@@ -256,7 +270,7 @@ impl RblAnswer {
 /// How one provider answered one lookup, after the returned codes have been
 /// read against the provider's refusal codes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RblVerdict {
+pub enum DnsblVerdict {
     /// The provider listed the queried IP/name.
     Listed,
     /// The provider answered, and did not list it.
@@ -273,28 +287,28 @@ pub enum RblVerdict {
 /// A provider that is complaining is not simultaneously reporting reputation,
 /// and erring this way fails *open* (nothing is blocked) where the other order
 /// fails closed on every name the provider is asked about.
-pub fn classify(answer: Option<&RblAnswer>, refusal_codes: &[RefusalCode]) -> RblVerdict {
+pub fn classify(answer: Option<&DnsblAnswer>, refusal_codes: &[RefusalCode]) -> DnsblVerdict {
     let Some(answer) = answer else {
-        return RblVerdict::NotListed;
+        return DnsblVerdict::NotListed;
     };
     if let Some(code) = answer
         .codes
         .iter()
         .find(|c| refusal_codes.iter().any(|r| r.matches(**c)))
     {
-        return RblVerdict::Refused(*code);
+        return DnsblVerdict::Refused(*code);
     }
     if answer.codes.is_empty() {
-        RblVerdict::NotListed
+        DnsblVerdict::NotListed
     } else {
-        RblVerdict::Listed
+        DnsblVerdict::Listed
     }
 }
 
-/// Trait for performing RBL DNS lookups, enabling mock testing.
+/// Trait for performing blocklist DNS lookups, enabling mock testing.
 /// Uses async_trait for dyn-compatibility.
 #[async_trait::async_trait]
-pub trait RblResolver: Send + Sync {
+pub trait DnsblResolver: Send + Sync {
     /// Looks up the given query name's `A` records.
     ///
     /// Returns `Ok(Some(answer))` with the codes the zone returned, or
@@ -302,21 +316,21 @@ pub trait RblResolver: Send + Sync {
     /// listed). The codes are returned rather than a verdict because whether a
     /// code means "listed" or "refused" is per-provider configuration, which
     /// the resolver does not hold.
-    async fn lookup_rbl(&self, query: &str) -> Result<Option<RblAnswer>, anyhow::Error>;
+    async fn lookup(&self, query: &str) -> Result<Option<DnsblAnswer>, anyhow::Error>;
 }
 
-/// Default RBL resolver using hickory-resolver.
-pub struct HickoryRblResolver {
+/// Default blocklist resolver using hickory-resolver.
+pub struct HickoryDnsblResolver {
     resolver: hickory_resolver::TokioResolver,
 }
 
-impl Default for HickoryRblResolver {
+impl Default for HickoryDnsblResolver {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl HickoryRblResolver {
+impl HickoryDnsblResolver {
     pub fn new() -> Self {
         let resolver = hickory_resolver::TokioResolver::builder_tokio()
             .expect("failed to create system resolver")
@@ -326,21 +340,21 @@ impl HickoryRblResolver {
 }
 
 #[async_trait::async_trait]
-impl RblResolver for HickoryRblResolver {
-    async fn lookup_rbl(&self, query: &str) -> Result<Option<RblAnswer>, anyhow::Error> {
+impl DnsblResolver for HickoryDnsblResolver {
+    async fn lookup(&self, query: &str) -> Result<Option<DnsblAnswer>, anyhow::Error> {
         match self.resolver.lookup_ip(query).await {
             Ok(response) => Ok(a_answer(response.as_lookup().records())),
             Err(e) => {
                 // On any error (including NXDOMAIN), treat as not listed
                 // to avoid false positives
-                debug!("RBL lookup for {}: {}", query, e);
+                debug!("blocklist lookup for {}: {}", query, e);
                 Ok(None)
             }
         }
     }
 }
 
-/// RBL/DNSBL resolver that resolves blocklist queries the way rolodex resolves
+/// Blocklist resolver that resolves provider queries the way rolodex resolves
 /// everything else — **recursively from the root servers**, with the configured
 /// forwarder(s) as a fallback — instead of via the system resolver.
 ///
@@ -352,7 +366,7 @@ impl RblResolver for HickoryRblResolver {
 /// and loops forever — the process spins emitting ever-longer names and never
 /// answers the original query. Recursing from the roots (or forwarding to a real
 /// upstream) never touches the local resolver, so there is no loop.
-pub struct RecursiveRblResolver {
+pub struct RecursiveDnsblResolver {
     /// Iterative (root-recursive) resolver — the primary path.
     resolver: crate::resolver::IterativeResolver,
     /// Upstream forwarders to fall back to when root recursion can't reach an
@@ -363,7 +377,7 @@ pub struct RecursiveRblResolver {
     timeout: Duration,
 }
 
-impl RecursiveRblResolver {
+impl RecursiveDnsblResolver {
     /// Builds a resolver recursing from `root_hints` (built-in roots when empty),
     /// falling back to `forwarders`.
     pub fn new(root_hints: Vec<IpAddr>, forwarders: Vec<SocketAddr>) -> Self {
@@ -376,15 +390,15 @@ impl RecursiveRblResolver {
 }
 
 #[async_trait::async_trait]
-impl RblResolver for RecursiveRblResolver {
-    async fn lookup_rbl(&self, query: &str) -> Result<Option<RblAnswer>, anyhow::Error> {
+impl DnsblResolver for RecursiveDnsblResolver {
+    async fn lookup(&self, query: &str) -> Result<Option<DnsblAnswer>, anyhow::Error> {
         use hickory_proto::op::ResponseCode;
         use hickory_proto::rr::{DNSClass, Name, RecordType};
 
         let name = match Name::from_ascii(query) {
             Ok(n) => n,
             Err(e) => {
-                debug!("RBL: skipping unparseable name {}: {}", query, e);
+                debug!("blocklist: skipping unparseable name {}: {}", query, e);
                 return Ok(None);
             }
         };
@@ -402,12 +416,12 @@ impl RblResolver for RecursiveRblResolver {
                 ResponseCode::NXDomain => return Ok(None),
                 // ServFail/Refused/etc. are not definitive — try a forwarder.
                 other => debug!(
-                    "RBL roots lookup for {} returned {:?}; trying forwarder",
+                    "blocklist roots lookup for {} returned {:?}; trying forwarder",
                     query, other
                 ),
             },
             Err(e) => debug!(
-                "RBL roots lookup for {} failed: {}; trying forwarder",
+                "blocklist roots lookup for {} failed: {}; trying forwarder",
                 query, e
             ),
         }
@@ -417,7 +431,10 @@ impl RblResolver for RecursiveRblResolver {
             match query_forwarder_a(&name, *fwd, self.timeout).await {
                 Ok(result) => return Ok(result),
                 Err(e) => {
-                    debug!("RBL forwarder {} lookup for {} failed: {}", fwd, query, e);
+                    debug!(
+                        "blocklist forwarder {} lookup for {} failed: {}",
+                        fwd, query, e
+                    );
                     continue;
                 }
             }
@@ -428,11 +445,11 @@ impl RblResolver for RecursiveRblResolver {
     }
 }
 
-/// Collects the `A` records in `answers` into an [`RblAnswer`], or `None` when
+/// Collects the `A` records in `answers` into an [`DnsblAnswer`], or `None` when
 /// there are none — a DNSxL answers with an `A` record (`127.0.0.x`), so its
 /// absence (NODATA) means the zone had nothing to say. The addresses are kept
 /// because they are the provider's verdict *or* its refusal; see [`classify`].
-fn a_answer(answers: &[hickory_proto::rr::Record]) -> Option<RblAnswer> {
+fn a_answer(answers: &[hickory_proto::rr::Record]) -> Option<DnsblAnswer> {
     use hickory_proto::rr::{RData, rdata};
     let mut codes = Vec::new();
     let mut ttl = 0;
@@ -447,7 +464,7 @@ fn a_answer(answers: &[hickory_proto::rr::Record]) -> Option<RblAnswer> {
     if codes.is_empty() {
         None
     } else {
-        Some(RblAnswer { codes, ttl })
+        Some(DnsblAnswer { codes, ttl })
     }
 }
 
@@ -459,7 +476,7 @@ async fn query_forwarder_a(
     name: &hickory_proto::rr::Name,
     forwarder: SocketAddr,
     timeout: Duration,
-) -> Result<Option<RblAnswer>, anyhow::Error> {
+) -> Result<Option<DnsblAnswer>, anyhow::Error> {
     use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
     use hickory_proto::rr::{DNSClass, RecordType};
     use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
@@ -489,50 +506,40 @@ async fn query_forwarder_a(
     }
 }
 
-/// The RBL checker performs DNS-based blackhole list lookups.
+/// The DNSBL checker performs domain-blocklist lookups.
 ///
-/// It checks IP addresses against configured RBL providers by performing
-/// DNS lookups in the format `<reversed-ip>.<rbl-zone>`. If the lookup
-/// returns a result, the IP is considered listed (blacklisted).
-///
-/// Results are cached in memory for the TTL duration returned by the RBL.
-pub struct RblChecker {
-    /// Whether RBL checking is globally enabled.
+/// A name is checked by prepending it to each configured provider zone
+/// (`googleadservices.com` + `dbl.spamhaus.org` ->
+/// `googleadservices.com.dbl.spamhaus.org`) and reading the `A` records that
+/// come back. Results are cached in memory for the TTL the provider returned.
+pub struct DnsblChecker {
+    /// Whether domain-blocklist checking is globally enabled.
     enabled: AtomicBool,
-    /// Configured RBL providers (IP blocklists, queried with a reversed IP).
-    providers: ArcSwap<Vec<RblProvider>>,
-    /// Whether DNSBL (domain blocklist) checking is globally enabled.
-    dnsbl_enabled: AtomicBool,
-    /// Configured DNSBL providers (domain blocklists, queried with the name
-    /// prepended to the zone). These are kept separate from `providers` because
-    /// the two query forms are different and a zone is one or the other.
-    dnsbl_providers: ArcSwap<Vec<RblProvider>>,
-    /// Cache of RBL/DNSBL lookup results keyed by "<ip-or-name>/<zone>".
+    /// Configured providers, queried with the name prepended to the zone.
+    providers: ArcSwap<Vec<DnsblProvider>>,
+    /// Cache of lookup results keyed by "<name>/<zone>".
     cache: Arc<DashMap<String, CacheEntry>>,
-    /// DNS resolver for RBL lookups.
-    resolver: Arc<dyn RblResolver>,
-    /// Whether outbound plaintext DNS (:53) — which RBL/DNSBL lookups require —
-    /// is currently usable. When false, the resolver-backed RBL and DNSBL checks
-    /// are SKIPPED entirely (they would only time out and add latency on a
-    /// network that filters :53). Updated by a background probe; the local
-    /// DB-backed RBL is unaffected. Defaults to true so behavior is unchanged
-    /// until a probe says otherwise.
+    /// DNS resolver for blocklist lookups.
+    resolver: Arc<dyn DnsblResolver>,
+    /// Whether outbound plaintext DNS (:53) — which provider lookups require —
+    /// is currently usable. When false the provider checks are SKIPPED entirely
+    /// (they would only time out and add latency on a network that filters
+    /// :53). Updated by a background probe; the local DB-backed blocklist is
+    /// unaffected. Defaults to true so behavior is unchanged until a probe says
+    /// otherwise.
     resolver_available: AtomicBool,
-    /// Cache keys with an async fill currently in flight. RBL/DNSBL lookups are
-    /// fire-and-forget: on a cache miss the query is answered immediately and the
-    /// verdict is resolved in the background, then served from cache on a later
-    /// query. This set dedups concurrent misses for the same `<ip-or-name>/<zone>`
-    /// so they don't fan out duplicate lookups.
+    /// Cache keys with an async fill currently in flight. Lookups are
+    /// fire-and-forget: on a cache miss the query is answered immediately and
+    /// the verdict is resolved in the background, then served from cache on a
+    /// later query. This set dedups concurrent misses for the same
+    /// `<name>/<zone>` so they don't fan out duplicate lookups.
     inflight: Arc<DashMap<String, ()>>,
     /// Providers currently rotated out of the lookup rotation because they
-    /// refused a query, keyed by zone. See [`RblChecker::rotated_out`].
+    /// refused a query, keyed by zone. See [`DnsblChecker::rotated_out`].
     rotated: Arc<DashMap<String, RotatedOut>>,
-    /// Seconds a refusing RBL provider stays rotated out when the provider
-    /// itself configures no value.
+    /// Seconds a refusing provider stays rotated out when the provider itself
+    /// configures no value.
     refusal_cooldown_secs: AtomicU64,
-    /// The same for DNSBL providers, configured independently because the two
-    /// lists have independent configuration sections.
-    dnsbl_refusal_cooldown_secs: AtomicU64,
 }
 
 /// A provider taken out of rotation after refusing a query.
@@ -572,33 +579,30 @@ struct ProviderLookup {
     cooldown: Duration,
 }
 
-impl RblChecker {
-    /// Creates a new RBL checker with the default hickory resolver.
-    pub fn new(enabled: bool, providers: Vec<RblProvider>) -> Self {
-        Self::with_resolver(enabled, providers, Arc::new(HickoryRblResolver::new()))
+impl Default for DnsblChecker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DnsblChecker {
+    /// Creates a checker with the default hickory resolver, starting disabled
+    /// with no providers; configure it via [`set_config`](Self::set_config).
+    pub fn new() -> Self {
+        Self::with_resolver(Arc::new(HickoryDnsblResolver::new()))
     }
 
-    /// Creates a new RBL checker with a custom resolver (for testing).
-    ///
-    /// DNSBL checking starts disabled with no providers; configure it via
-    /// [`set_dnsbl_config`](Self::set_dnsbl_config).
-    pub fn with_resolver(
-        enabled: bool,
-        providers: Vec<RblProvider>,
-        resolver: Arc<dyn RblResolver>,
-    ) -> Self {
+    /// Creates a checker with a custom resolver (for testing).
+    pub fn with_resolver(resolver: Arc<dyn DnsblResolver>) -> Self {
         Self {
-            enabled: AtomicBool::new(enabled),
-            providers: ArcSwap::from_pointee(providers),
-            dnsbl_enabled: AtomicBool::new(false),
-            dnsbl_providers: ArcSwap::from_pointee(Vec::new()),
+            enabled: AtomicBool::new(false),
+            providers: ArcSwap::from_pointee(Vec::new()),
             cache: Arc::new(DashMap::new()),
             resolver,
             resolver_available: AtomicBool::new(true),
             inflight: Arc::new(DashMap::new()),
             rotated: Arc::new(DashMap::new()),
             refusal_cooldown_secs: AtomicU64::new(DEFAULT_REFUSAL_COOLDOWN_SECS),
-            dnsbl_refusal_cooldown_secs: AtomicU64::new(DEFAULT_REFUSAL_COOLDOWN_SECS),
         }
     }
 
@@ -616,25 +620,9 @@ impl RblChecker {
         self.refusal_cooldown_secs.store(secs, Ordering::Relaxed);
     }
 
-    /// The RBL list's default rotate-out duration.
+    /// The default rotate-out duration.
     pub fn refusal_cooldown(&self) -> Duration {
         Duration::from_secs(self.refusal_cooldown_secs.load(Ordering::Relaxed))
-    }
-
-    /// [`set_refusal_cooldown`](Self::set_refusal_cooldown) for the DNSBL list.
-    pub fn set_dnsbl_refusal_cooldown(&self, secs: u64) {
-        let secs = if secs == 0 {
-            DEFAULT_REFUSAL_COOLDOWN_SECS
-        } else {
-            secs
-        };
-        self.dnsbl_refusal_cooldown_secs
-            .store(secs, Ordering::Relaxed);
-    }
-
-    /// The DNSBL list's default rotate-out duration.
-    pub fn dnsbl_refusal_cooldown(&self) -> Duration {
-        Duration::from_secs(self.dnsbl_refusal_cooldown_secs.load(Ordering::Relaxed))
     }
 
     /// Providers currently out of rotation, with the code that removed them and
@@ -679,7 +667,7 @@ impl RblChecker {
         None
     }
 
-    /// Whether resolver-backed RBL/DNSBL lookups are currently usable (outbound
+    /// Whether resolver-backed provider lookups are currently usable (outbound
     /// :53 reachable).
     pub fn resolver_available(&self) -> bool {
         self.resolver_available.load(Ordering::Relaxed)
@@ -693,49 +681,53 @@ impl RblChecker {
             return;
         }
         if available {
-            info!("RBL/DNSBL re-enabled: outbound DNS port 53 is reachable again");
+            info!("blocklists re-enabled: outbound DNS port 53 is reachable again");
         } else {
             warn!(
-                "RBL/DNSBL DISABLED: outbound DNS port 53 appears filtered — skipping all \
-                 resolver-backed blocklist lookups (local DB-backed RBL still applies)"
+                "blocklists DISABLED: outbound DNS port 53 appears filtered — skipping all \
+                 resolver-backed provider lookups (the local DB-backed blocklist still \
+                 applies)"
             );
         }
     }
 
-    /// Checks if an IP address is listed in any enabled RBL.
-    /// Returns true if the IP is blacklisted and should be blocked (NXDOMAIN).
-    pub async fn is_listed(&self, ip: &IpAddr) -> bool {
-        if !self.enabled.load(Ordering::Relaxed) {
-            return false;
-        }
-        // Outbound :53 is filtered — skip the doomed lookups (see the flag field).
-        if !self.resolver_available.load(Ordering::Relaxed) {
-            crate::metrics::metrics().blocklist_skipped.inc();
-            return false;
-        }
-
-        let providers = self.providers.load();
-        let default_cooldown = self.refusal_cooldown();
-        let lookups = providers
-            .iter()
-            .filter(|p| p.enabled)
-            .map(|p| ip_lookup(ip, p, default_cooldown));
-        self.check_cached_or_fill(lookups, BLOCK_RBL_PROVIDER)
-    }
-
-    /// Returns the cached verdict for `cache_key`: `Some(true)` fresh positive,
-    /// `Some(false)` fresh negative, `None` if absent or expired (expired entries
-    /// are evicted). Never performs a network lookup.
-    fn cached_verdict(&self, cache_key: &str) -> Option<bool> {
+    /// Returns the cached verdict for `cache_key`. Never performs a network
+    /// lookup.
+    ///
+    /// An expired **positive** does not become a miss. A miss is answered by
+    /// allowing the query (see [`check_cached_or_fill`](Self::check_cached_or_fill)),
+    /// so evicting a positive the moment its TTL runs out unblocks the name for
+    /// every query until the background refill lands — the blocklist fails
+    /// *open*, on a cycle as short as the provider's TTL. Spamhaus DBL answers
+    /// with a 60-second TTL, so a listed domain came back to life for a moment
+    /// every single minute, which is indistinguishable from the blocklist simply
+    /// not working.
+    ///
+    /// So an expired positive is served stale — it keeps blocking — while a
+    /// refill runs, for up to [`STALE_POSITIVE_GRACE`] past expiry. The grace is
+    /// bounded because "keep blocking forever" is the opposite failure: a
+    /// genuinely delisted name has to be able to come back, and the refill only
+    /// overwrites the entry when the provider actually answers (a lookup error
+    /// caches nothing). It is generous next to the sub-second refill it covers,
+    /// because what it is really covering is a provider having a bad minute.
+    ///
+    /// An expired **negative** is a miss as before: allowing a name whose
+    /// not-listed verdict just went stale is what the code already did on every
+    /// cold name, and failing open there is the deliberate hot-path tradeoff.
+    fn cached_verdict(&self, cache_key: &str) -> CachedVerdict {
         if let Some(entry) = self.cache.get(cache_key) {
-            if entry.expires_at > Instant::now() {
-                return Some(entry.listed);
+            let now = Instant::now();
+            if entry.expires_at > now {
+                return CachedVerdict::Fresh(entry.listed);
             }
-            // Expired: drop the reference before removing.
+            if entry.listed && now < entry.expires_at + STALE_POSITIVE_GRACE {
+                return CachedVerdict::StalePositive;
+            }
+            // Past all usefulness: drop the reference before removing.
             drop(entry);
             self.cache.remove(cache_key);
         }
-        None
+        CachedVerdict::Miss
     }
 
     /// Cache-only verdict across a set of provider lookups, with fire-and-forget
@@ -749,6 +741,11 @@ impl RblChecker {
     /// blocked on the network — a cold name is allowed now and its verdict is
     /// served from cache on a later query once the lookup lands.
     ///
+    /// A positive whose TTL has run out still blocks while its refill runs (see
+    /// [`cached_verdict`](Self::cached_verdict)) — otherwise expiry would unblock
+    /// a listed name once per TTL. That case fires its fill and then returns,
+    /// rather than returning early the way a warm positive does.
+    ///
     /// A provider that is **rotated out** (see [`rotate_out`](Self::rotate_out))
     /// is skipped for the *fill* only. Its already-cached verdicts still count:
     /// rotation says "this provider will not answer new questions", not "the
@@ -760,14 +757,22 @@ impl RblChecker {
         kind: usize,
     ) -> bool {
         let mut misses = Vec::new();
+        // Set by an expired positive being served stale. Unlike a warm positive
+        // it does NOT return early: the whole point is that this entry is due a
+        // refresh, so its fill has to be fired before we answer.
+        let mut stale_block = false;
         for lookup in lookups {
             match self.cached_verdict(&lookup.cache_key) {
-                Some(true) => return true, // warm positive → block now
-                Some(false) => {}          // warm negative → nothing to do
-                None => misses.push(lookup),
+                CachedVerdict::Fresh(true) => return true, // warm positive → block now
+                CachedVerdict::Fresh(false) => {}          // warm negative → nothing to do
+                CachedVerdict::StalePositive => {
+                    stale_block = true;
+                    misses.push(lookup);
+                }
+                CachedVerdict::Miss => misses.push(lookup),
             }
         }
-        // No warm positive: answer now, fill the cold verdicts in the background.
+        // No warm positive: fill the cold and stale verdicts in the background.
         for lookup in misses {
             if self.rotated_out_for(&lookup.zone).is_some() {
                 crate::metrics::metrics().blocklist_skipped.inc();
@@ -775,7 +780,7 @@ impl RblChecker {
             }
             self.fill_cache_async(lookup, kind);
         }
-        false
+        stale_block
     }
 
     /// Fire-and-forget: unless a fill for this cache key is already in flight,
@@ -802,12 +807,12 @@ impl RblChecker {
         let inflight = self.inflight.clone();
         let rotated = self.rotated.clone();
         tokio::spawn(async move {
-            match resolver.lookup_rbl(&query).await {
+            match resolver.lookup(&query).await {
                 Ok(answer) => match classify(answer.as_ref(), &refusal_codes) {
-                    RblVerdict::Listed => {
+                    DnsblVerdict::Listed => {
                         // `classify` only returns Listed for a non-empty answer.
                         let ttl = answer.as_ref().map(|a| a.ttl).unwrap_or(300);
-                        debug!("RBL async fill: {} listed (TTL: {})", query, ttl);
+                        debug!("blocklist async fill: {} listed (TTL: {})", query, ttl);
                         crate::metrics::metrics()
                             .blocklist_lookups
                             .inc(kind, LOOKUP_LISTED);
@@ -819,7 +824,7 @@ impl RblChecker {
                             },
                         );
                     }
-                    RblVerdict::NotListed => {
+                    DnsblVerdict::NotListed => {
                         crate::metrics::metrics()
                             .blocklist_lookups
                             .inc(kind, LOOKUP_NOT_LISTED);
@@ -831,7 +836,7 @@ impl RblChecker {
                             },
                         );
                     }
-                    RblVerdict::Refused(code) => {
+                    DnsblVerdict::Refused(code) => {
                         let m = crate::metrics::metrics();
                         m.blocklist_lookups.inc(kind, LOOKUP_REFUSED);
                         m.blocklist_refusals.inc(kind);
@@ -839,7 +844,7 @@ impl RblChecker {
                     }
                 },
                 Err(e) => {
-                    debug!("RBL async lookup failed for {}: {}", query, e);
+                    debug!("blocklist async lookup failed for {}: {}", query, e);
                     crate::metrics::metrics()
                         .blocklist_lookups
                         .inc(kind, LOOKUP_ERROR);
@@ -860,7 +865,7 @@ impl RblChecker {
     /// Used to give DNSBLs precedence over externally-resolved (forwarded or
     /// iterative) answers.
     pub async fn is_name_listed(&self, name: &str) -> bool {
-        if !self.dnsbl_enabled.load(Ordering::Relaxed) {
+        if !self.enabled.load(Ordering::Relaxed) {
             return false;
         }
         // Outbound :53 is filtered — skip the doomed lookups (see the flag field).
@@ -869,13 +874,13 @@ impl RblChecker {
             return false;
         }
 
-        let normalized = normalize_rbl_name(name);
+        let normalized = normalize_blocklist_name(name);
         if normalized.is_empty() {
             return false;
         }
 
-        let providers = self.dnsbl_providers.load();
-        let default_cooldown = self.dnsbl_refusal_cooldown();
+        let providers = self.providers.load();
+        let default_cooldown = self.refusal_cooldown();
         let lookups = providers
             .iter()
             .filter(|p| p.enabled)
@@ -883,45 +888,29 @@ impl RblChecker {
         self.check_cached_or_fill(lookups, BLOCK_DNSBL_PROVIDER)
     }
 
-    /// Updates the RBL configuration. Rotations are cleared: a reconfiguration
-    /// is an operator saying "try this again", and a provider that was rotated
-    /// out for a typo in its zone name is exactly the one being fixed here.
-    pub async fn set_config(&self, enabled: bool, providers: Vec<RblProvider>) {
-        self.enabled.store(enabled, Ordering::Relaxed);
-        self.providers.store(Arc::new(providers));
-        self.rotated.clear();
-    }
-
-    /// Returns the current RBL configuration.
-    pub async fn get_config(&self) -> (bool, Vec<RblProvider>) {
-        let enabled = self.enabled.load(Ordering::Relaxed);
-        let providers = self.providers.load();
-        (enabled, providers.as_ref().clone())
-    }
-
     /// Updates the DNSBL (domain blocklist) configuration. The shared result
     /// cache is flushed so that newly added/removed providers take effect
     /// immediately rather than serving a stale not-listed verdict.
-    pub async fn set_dnsbl_config(&self, enabled: bool, providers: Vec<RblProvider>) {
-        self.dnsbl_enabled.store(enabled, Ordering::Relaxed);
-        self.dnsbl_providers.store(Arc::new(providers));
+    pub async fn set_config(&self, enabled: bool, providers: Vec<DnsblProvider>) {
+        self.enabled.store(enabled, Ordering::Relaxed);
+        self.providers.store(Arc::new(providers));
         self.cache.clear();
         self.rotated.clear();
     }
 
     /// Returns the current DNSBL configuration.
-    pub async fn get_dnsbl_config(&self) -> (bool, Vec<RblProvider>) {
-        let enabled = self.dnsbl_enabled.load(Ordering::Relaxed);
-        let providers = self.dnsbl_providers.load();
+    pub async fn get_config(&self) -> (bool, Vec<DnsblProvider>) {
+        let enabled = self.enabled.load(Ordering::Relaxed);
+        let providers = self.providers.load();
         (enabled, providers.as_ref().clone())
     }
 
     /// Returns whether DNSBL checking is enabled.
-    pub async fn is_dnsbl_enabled(&self) -> bool {
-        self.dnsbl_enabled.load(Ordering::Relaxed)
+    pub async fn is_enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
     }
 
-    /// Flushes the RBL cache, and returns every rotated-out provider to
+    /// Flushes the result cache, and returns every rotated-out provider to
     /// rotation — a flush is the operator's "re-check everything", and a
     /// provider held out for the rest of an hour's cooldown would not be
     /// re-checked.
@@ -930,83 +919,18 @@ impl RblChecker {
         self.rotated.clear();
     }
 
-    /// Number of entries in the shared RBL/DNSBL result cache. Sampled by the
+    /// Number of entries in the blocklist result cache. Sampled by the
     /// Prometheus collector; synchronous because a scrape must not await.
     pub fn cache_entries(&self) -> usize {
         self.cache.len()
     }
-
-    /// Returns whether RBL checking is enabled.
-    pub async fn is_enabled(&self) -> bool {
-        self.enabled.load(Ordering::Relaxed)
-    }
-
-    /// Checks if an IP address is listed in any enabled global RBL
-    /// or in the provided extra per-scope RBL providers.
-    ///
-    /// A scope opts into its extra providers row by row, so they are not gated on
-    /// the global `enabled` flag — a scope may run a blocklist the box as a whole
-    /// does not. They *are* gated on `resolver_available`, because that flag is
-    /// not a policy switch: it says plaintext :53 is unusable, and a lookup that
-    /// can only time out is latency with no verdict at the end of it.
-    pub async fn is_listed_with_extra_providers(&self, ip: &IpAddr, extra: &[RblProvider]) -> bool {
-        // Check global providers first
-        if self.is_listed(ip).await {
-            return true;
-        }
-        self.is_listed_by_extra_providers(ip, extra).await
-    }
-
-    /// Checks **only** the scope's opted-in providers, leaving the global list
-    /// alone.
-    ///
-    /// Split out from [`Self::is_listed_with_extra_providers`] so the caller can
-    /// tell the two apart: a block from a provider one network opted into and a
-    /// block from the box-wide list are different operator decisions with
-    /// different blast radii, and reporting both as `rbl_provider` makes "this
-    /// network's own blocklist broke this network" indistinguishable from "the
-    /// global list broke everyone". The lookups are the same ones
-    /// `is_listed_with_extra_providers` would have issued in its second half, so
-    /// calling `is_listed` and then this costs nothing extra — the two cover
-    /// disjoint provider sets and the result cache is keyed per `<ip>/<zone>`.
-    ///
-    /// Not gated on the global `enabled` flag: a scope opts into its providers
-    /// row by row, so it may run a blocklist the box as a whole does not.
-    pub async fn is_listed_by_extra_providers(&self, ip: &IpAddr, extra: &[RblProvider]) -> bool {
-        if extra.is_empty() {
-            return false;
-        }
-        if !self.resolver_available.load(Ordering::Relaxed) {
-            crate::metrics::metrics().blocklist_skipped.inc();
-            return false;
-        }
-
-        // Check extra per-scope providers (same cache-first, fire-and-forget fill).
-        let default_cooldown = self.refusal_cooldown();
-        let lookups = extra
-            .iter()
-            .filter(|p| p.enabled)
-            .map(|p| ip_lookup(ip, p, default_cooldown));
-        self.check_cached_or_fill(lookups, BLOCK_RBL_SCOPE_PROVIDER)
-    }
-}
-
-/// Builds the per-provider lookup for an IP-based (reversed-IP) RBL check.
-fn ip_lookup(ip: &IpAddr, provider: &RblProvider, default_cooldown: Duration) -> ProviderLookup {
-    ProviderLookup {
-        cache_key: format!("{}/{}", ip, provider.zone),
-        query: build_rbl_query(ip, &provider.zone),
-        zone: provider.zone.clone(),
-        refusal_codes: provider.refusal_codes.clone(),
-        cooldown: provider.cooldown.unwrap_or(default_cooldown),
-    }
 }
 
 /// Builds the per-provider lookup for a name-based (DNSBL) check. `normalized`
-/// must already have been through [`normalize_rbl_name`].
+/// must already have been through [`normalize_blocklist_name`].
 fn name_lookup(
     normalized: &str,
-    provider: &RblProvider,
+    provider: &DnsblProvider,
     default_cooldown: Duration,
 ) -> ProviderLookup {
     ProviderLookup {
@@ -1052,17 +976,17 @@ fn rotate_out(
     }
 }
 
-/// Normalizes a domain name for RBL lookups: lowercased with the trailing
+/// Normalizes a domain name for blocklist lookups: lowercased with the trailing
 /// dot stripped, so that `GoogleAdServices.com.` and `googleadservices.com`
 /// produce the same query and cache key.
-pub fn normalize_rbl_name(name: &str) -> String {
+pub fn normalize_blocklist_name(name: &str) -> String {
     name.trim_end_matches('.').to_ascii_lowercase()
 }
 
 /// Probes whether outbound **plaintext DNS on port 53** works, by sending a UDP
 /// query for a stable name to public resolvers and awaiting any reply. This is
-/// the transport RBL/DNSBL lookups depend on; when it fails, those lookups only
-/// time out and add latency, so [`RblChecker::set_resolver_available`] is driven
+/// the transport blocklist provider lookups depend on; when it fails, those only
+/// time out and add latency, so [`DnsblChecker::set_resolver_available`] is driven
 /// off this to skip them. Deliberately a *direct* :53 test (not via the system
 /// resolver) so it reflects raw :53 reachability, not a DoH-backed fallback.
 pub async fn probe_public_dns53() -> bool {
@@ -1111,45 +1035,10 @@ async fn probe_dns53_target(query: &[u8], target: &str) -> bool {
     )
 }
 
-/// Builds an RBL DNS query for an IP address.
-///
-/// For IPv4: reverses the octets and appends the zone.
-///   e.g., 192.168.1.1 + zen.spamhaus.org -> 1.1.168.192.zen.spamhaus.org
-///
-/// For IPv6: expands and reverses the nibbles and appends the zone.
-///   e.g., ::1 + zen.spamhaus.org -> 1.0.0.0...0.0.0.0.zen.spamhaus.org
-pub fn build_rbl_query(ip: &IpAddr, zone: &str) -> String {
-    match ip {
-        IpAddr::V4(ipv4) => {
-            let octets = ipv4.octets();
-            format!(
-                "{}.{}.{}.{}.{}",
-                octets[3], octets[2], octets[1], octets[0], zone
-            )
-        }
-        IpAddr::V6(ipv6) => {
-            let octets = ipv6.octets();
-            // 32 nibbles * 2 chars each (nibble + dot) + zone length
-            let mut result = String::with_capacity(64 + zone.len());
-            for &byte in octets.iter().rev() {
-                let lo = byte & 0x0f;
-                let hi = (byte >> 4) & 0x0f;
-                result.push(char::from(b"0123456789abcdef"[lo as usize]));
-                result.push('.');
-                result.push(char::from(b"0123456789abcdef"[hi as usize]));
-                result.push('.');
-            }
-            // String already ends with '.', just append the zone
-            result.push_str(zone);
-            result
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::net::Ipv4Addr;
 
     // ================================================================
     // Refusal codes
@@ -1296,13 +1185,13 @@ mod tests {
     #[test]
     fn classify_reads_refusal_over_listing() {
         let codes = default_refusal_codes();
-        let listing = RblAnswer::listed(300);
-        assert_eq!(classify(Some(&listing), &codes), RblVerdict::Listed);
+        let listing = DnsblAnswer::listed(300);
+        assert_eq!(classify(Some(&listing), &codes), DnsblVerdict::Listed);
 
         // A refusal alongside a listing is still a refusal: a provider that is
         // complaining is not simultaneously reporting reputation, and this
         // direction fails open rather than blocking every name.
-        let mixed = RblAnswer {
+        let mixed = DnsblAnswer {
             codes: vec![
                 Ipv4Addr::new(127, 0, 0, 2),
                 Ipv4Addr::new(127, 255, 255, 254),
@@ -1311,65 +1200,35 @@ mod tests {
         };
         assert_eq!(
             classify(Some(&mixed), &codes),
-            RblVerdict::Refused(Ipv4Addr::new(127, 255, 255, 254))
+            DnsblVerdict::Refused(Ipv4Addr::new(127, 255, 255, 254))
         );
     }
 
     #[test]
     fn classify_verdicts() {
         let codes = default_refusal_codes();
-        assert_eq!(classify(None, &codes), RblVerdict::NotListed);
+        assert_eq!(classify(None, &codes), DnsblVerdict::NotListed);
         assert_eq!(
-            classify(Some(&RblAnswer::listed(300)), &codes),
-            RblVerdict::Listed
+            classify(Some(&DnsblAnswer::listed(300)), &codes),
+            DnsblVerdict::Listed
         );
         assert_eq!(
             classify(
-                Some(&RblAnswer::single(Ipv4Addr::new(127, 255, 255, 255), 300)),
+                Some(&DnsblAnswer::single(Ipv4Addr::new(127, 255, 255, 255), 300)),
                 &codes
             ),
-            RblVerdict::Refused(Ipv4Addr::new(127, 255, 255, 255))
+            DnsblVerdict::Refused(Ipv4Addr::new(127, 255, 255, 255))
         );
         // With detection disabled the same code reads as a listing — which is
         // exactly the failure the defaults exist to prevent, and is why `none`
         // is opt-in rather than the default.
         assert_eq!(
             classify(
-                Some(&RblAnswer::single(Ipv4Addr::new(127, 255, 255, 255), 300)),
+                Some(&DnsblAnswer::single(Ipv4Addr::new(127, 255, 255, 255), 300)),
                 &[]
             ),
-            RblVerdict::Listed
+            DnsblVerdict::Listed
         );
-    }
-
-    #[test]
-    fn test_build_rbl_query_ipv4() {
-        let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
-        let query = build_rbl_query(&ip, "zen.spamhaus.org");
-        assert_eq!(query, "100.1.168.192.zen.spamhaus.org");
-    }
-
-    #[test]
-    fn test_build_rbl_query_ipv4_simple() {
-        let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
-        let query = build_rbl_query(&ip, "bl.spamcop.net");
-        assert_eq!(query, "4.3.2.1.bl.spamcop.net");
-    }
-
-    #[test]
-    fn test_build_rbl_query_ipv6_loopback() {
-        let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
-        let query = build_rbl_query(&ip, "zen.spamhaus.org");
-        assert!(query.starts_with("1.0.0.0.0.0.0.0"));
-        assert!(query.ends_with("zen.spamhaus.org"));
-    }
-
-    #[test]
-    fn test_build_rbl_query_ipv6() {
-        let ip = IpAddr::V6(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1));
-        let query = build_rbl_query(&ip, "test.rbl");
-        assert!(query.ends_with(".test.rbl"));
-        assert!(query.starts_with("1.0.0.0.0.0.0.0"));
     }
 
     /// A resolver that always answers with a fixed code, counting its calls —
@@ -1394,10 +1253,10 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl RblResolver for FixedCodeResolver {
-        async fn lookup_rbl(&self, _query: &str) -> Result<Option<RblAnswer>, anyhow::Error> {
+    impl DnsblResolver for FixedCodeResolver {
+        async fn lookup(&self, _query: &str) -> Result<Option<DnsblAnswer>, anyhow::Error> {
             self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(Some(RblAnswer::single(self.code, 300)))
+            Ok(Some(DnsblAnswer::single(self.code, 300)))
         }
     }
 
@@ -1416,17 +1275,23 @@ mod tests {
     }
 
     /// A checker with one enabled provider using the built-in refusal codes.
-    fn refusal_checker(resolver: Arc<dyn RblResolver>, cooldown: Option<Duration>) -> RblChecker {
-        RblChecker::with_resolver(
-            true,
-            vec![RblProvider {
-                zone: "test.rbl".to_string(),
-                enabled: true,
-                cooldown,
-                ..Default::default()
-            }],
-            resolver,
-        )
+    async fn refusal_checker(
+        resolver: Arc<dyn DnsblResolver>,
+        cooldown: Option<Duration>,
+    ) -> DnsblChecker {
+        let checker = DnsblChecker::with_resolver(resolver);
+        checker
+            .set_config(
+                true,
+                vec![DnsblProvider {
+                    zone: "test.example".to_string(),
+                    enabled: true,
+                    cooldown,
+                    ..Default::default()
+                }],
+            )
+            .await;
+        checker
     }
 
     /// The finding this whole mechanism exists for: a provider answering with
@@ -1439,16 +1304,16 @@ mod tests {
     async fn refusal_code_does_not_list() {
         let resolver = Arc::new(FixedCodeResolver::new([127, 255, 255, 255]));
         let counter = resolver.counter();
-        let checker = refusal_checker(resolver, None);
-        let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+        let checker = refusal_checker(resolver, None).await;
+        let name = "one.example.";
 
         assert!(
-            !checker.is_listed(&ip).await,
+            !checker.is_name_listed(name).await,
             "cold query is never blocking"
         );
         wait_for_lookups(&counter, 1).await;
         assert!(
-            !checker.is_listed(&ip).await,
+            !checker.is_name_listed(name).await,
             "127.255.255.255 is 'excessive queries', not a listing"
         );
     }
@@ -1460,29 +1325,21 @@ mod tests {
         let resolver = Arc::new(FixedCodeResolver::new([127, 255, 255, 254]));
         let counter = resolver.counter();
         // An hour, so nothing can expire mid-test.
-        let checker = refusal_checker(resolver, Some(Duration::from_secs(3600)));
+        let checker = refusal_checker(resolver, Some(Duration::from_secs(3600))).await;
 
-        assert!(
-            !checker
-                .is_listed(&IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)))
-                .await
-        );
+        assert!(!checker.is_name_listed("one.example.").await);
         wait_for_lookups(&counter, 1).await;
 
         let rotated = checker.rotated_out();
         assert_eq!(rotated.len(), 1);
-        assert_eq!(rotated[0].zone, "test.rbl");
+        assert_eq!(rotated[0].zone, "test.example");
         assert_eq!(rotated[0].code, "127.255.255.254");
         assert!(rotated[0].seconds_remaining > 3500);
         assert_eq!(checker.rotated_out_count(), 1);
 
         // Different IPs, so no cache entry can be what suppresses the lookups.
         for last in 5..15u8 {
-            assert!(
-                !checker
-                    .is_listed(&IpAddr::V4(Ipv4Addr::new(1, 2, 3, last)))
-                    .await
-            );
+            assert!(!checker.is_name_listed(&format!("h{last}.example.")).await);
         }
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert_eq!(
@@ -1498,10 +1355,10 @@ mod tests {
     async fn rotation_expires_after_the_configured_cooldown() {
         let resolver = Arc::new(FixedCodeResolver::new([127, 255, 255, 255]));
         let counter = resolver.counter();
-        let checker = refusal_checker(resolver, Some(Duration::from_millis(50)));
-        let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+        let checker = refusal_checker(resolver, Some(Duration::from_millis(50))).await;
+        let name = "one.example.";
 
-        assert!(!checker.is_listed(&ip).await);
+        assert!(!checker.is_name_listed(name).await);
         wait_for_lookups(&counter, 1).await;
         assert_eq!(checker.rotated_out_count(), 1);
 
@@ -1513,7 +1370,7 @@ mod tests {
         );
         // A fresh key (the first is cached negative? no — a refusal caches
         // nothing, so the same key refills).
-        assert!(!checker.is_listed(&ip).await);
+        assert!(!checker.is_name_listed(name).await);
         wait_for_lookups(&counter, 2).await;
     }
 
@@ -1524,10 +1381,10 @@ mod tests {
     async fn refusal_is_not_cached_as_a_negative() {
         let resolver = Arc::new(FixedCodeResolver::new([127, 255, 255, 252]));
         let counter = resolver.counter();
-        let checker = refusal_checker(resolver, Some(Duration::from_millis(30)));
-        let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+        let checker = refusal_checker(resolver, Some(Duration::from_millis(30))).await;
+        let name = "one.example.";
 
-        assert!(!checker.is_listed(&ip).await);
+        assert!(!checker.is_name_listed(name).await);
         wait_for_lookups(&counter, 1).await;
         assert_eq!(checker.cache_entries(), 0, "a refusal is not a verdict");
     }
@@ -1543,13 +1400,13 @@ mod tests {
             calls: std::sync::atomic::AtomicU32,
         }
         #[async_trait::async_trait]
-        impl RblResolver for ListThenRefuse {
-            async fn lookup_rbl(&self, _query: &str) -> Result<Option<RblAnswer>, anyhow::Error> {
+        impl DnsblResolver for ListThenRefuse {
+            async fn lookup(&self, _query: &str) -> Result<Option<DnsblAnswer>, anyhow::Error> {
                 let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 Ok(Some(if n == 0 {
-                    RblAnswer::listed(300)
+                    DnsblAnswer::listed(300)
                 } else {
-                    RblAnswer::single(Ipv4Addr::new(127, 255, 255, 255), 300)
+                    DnsblAnswer::single(Ipv4Addr::new(127, 255, 255, 255), 300)
                 }))
             }
         }
@@ -1559,17 +1416,14 @@ mod tests {
                 calls: std::sync::atomic::AtomicU32::new(0),
             }),
             Some(Duration::from_secs(3600)),
-        );
-        let listed_ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+        )
+        .await;
+        let listed = "listed.example.";
 
-        assert!(eventually_listed_ip(&checker, &listed_ip).await);
+        assert!(eventually_listed_name(&checker, listed).await);
 
         // A second IP triggers the refusal and rotates the provider out.
-        assert!(
-            !checker
-                .is_listed(&IpAddr::V4(Ipv4Addr::new(5, 6, 7, 8)))
-                .await
-        );
+        assert!(!checker.is_name_listed("other.example.").await);
         for _ in 0..200 {
             if checker.rotated_out_count() == 1 {
                 break;
@@ -1579,7 +1433,7 @@ mod tests {
         assert_eq!(checker.rotated_out_count(), 1);
 
         assert!(
-            checker.is_listed(&listed_ip).await,
+            checker.is_name_listed(listed).await,
             "the cached listing predates the refusal and is still valid"
         );
     }
@@ -1591,23 +1445,15 @@ mod tests {
     async fn flush_cache_returns_providers_to_rotation() {
         let resolver = Arc::new(FixedCodeResolver::new([127, 255, 255, 254]));
         let counter = resolver.counter();
-        let checker = refusal_checker(resolver, Some(Duration::from_secs(3600)));
+        let checker = refusal_checker(resolver, Some(Duration::from_secs(3600))).await;
 
-        assert!(
-            !checker
-                .is_listed(&IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)))
-                .await
-        );
+        assert!(!checker.is_name_listed("one.example.").await);
         wait_for_lookups(&counter, 1).await;
         assert_eq!(checker.rotated_out_count(), 1);
 
         checker.flush_cache().await;
         assert_eq!(checker.rotated_out_count(), 0);
-        assert!(
-            !checker
-                .is_listed(&IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)))
-                .await
-        );
+        assert!(!checker.is_name_listed("third.example.").await);
         wait_for_lookups(&counter, 2).await;
     }
 
@@ -1617,18 +1463,14 @@ mod tests {
     async fn set_config_returns_providers_to_rotation() {
         let resolver = Arc::new(FixedCodeResolver::new([127, 255, 255, 252]));
         let counter = resolver.counter();
-        let checker = refusal_checker(resolver, Some(Duration::from_secs(3600)));
+        let checker = refusal_checker(resolver, Some(Duration::from_secs(3600))).await;
 
-        assert!(
-            !checker
-                .is_listed(&IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)))
-                .await
-        );
+        assert!(!checker.is_name_listed("one.example.").await);
         wait_for_lookups(&counter, 1).await;
         assert_eq!(checker.rotated_out_count(), 1);
 
         checker
-            .set_config(true, vec![RblProvider::new("test.rbl", true)])
+            .set_config(true, vec![DnsblProvider::new("test.example", true)])
             .await;
         assert_eq!(checker.rotated_out_count(), 0);
     }
@@ -1639,34 +1481,36 @@ mod tests {
     #[tokio::test]
     async fn refusal_detection_can_be_disabled_per_provider() {
         let resolver = Arc::new(FixedCodeResolver::new([127, 0, 0, 1]));
-        let checker = RblChecker::with_resolver(
-            true,
-            vec![RblProvider {
-                zone: "test.rbl".to_string(),
-                enabled: true,
-                refusal_codes: resolve_refusal_codes(&["none".to_string()]).unwrap().into(),
-                cooldown: None,
-            }],
-            resolver,
-        );
-        let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+        let checker = DnsblChecker::with_resolver(resolver);
+        checker
+            .set_config(
+                true,
+                vec![DnsblProvider {
+                    zone: "test.example".to_string(),
+                    enabled: true,
+                    refusal_codes: resolve_refusal_codes(&["none".to_string()]).unwrap().into(),
+                    cooldown: None,
+                }],
+            )
+            .await;
+        let name = "one.example.";
         assert!(
-            eventually_listed_ip(&checker, &ip).await,
+            eventually_listed_name(&checker, name).await,
             "with detection off, 127.0.0.1 is read as a listing"
         );
         assert_eq!(checker.rotated_out_count(), 0);
     }
 
-    /// The DNSBL path shares the mechanism, and has its own cooldown default.
+    /// The list-wide cooldown default.
     #[tokio::test]
     async fn dnsbl_refusal_rotates_out() {
         let resolver = Arc::new(FixedCodeResolver::new([127, 0, 1, 255]));
         let counter = resolver.counter();
-        let checker = RblChecker::with_resolver(false, vec![], resolver);
+        let checker = DnsblChecker::with_resolver(resolver);
         checker
-            .set_dnsbl_config(
+            .set_config(
                 true,
-                vec![RblProvider {
+                vec![DnsblProvider {
                     zone: "dbl.test".to_string(),
                     enabled: true,
                     cooldown: Some(Duration::from_secs(3600)),
@@ -1689,7 +1533,7 @@ mod tests {
     /// that just told us to stop, which is the behaviour rotation prevents.
     #[test]
     fn list_wide_cooldown_defaults_and_rejects_zero() {
-        let checker = RblChecker::with_resolver(false, vec![], Arc::new(MockResolver::new(false)));
+        let checker = DnsblChecker::with_resolver(Arc::new(MockResolver::new(false)));
         assert_eq!(
             checker.refusal_cooldown(),
             Duration::from_secs(DEFAULT_REFUSAL_COOLDOWN_SECS)
@@ -1701,28 +1545,20 @@ mod tests {
             checker.refusal_cooldown(),
             Duration::from_secs(DEFAULT_REFUSAL_COOLDOWN_SECS)
         );
-
-        // The DNSBL default is separate.
-        checker.set_dnsbl_refusal_cooldown(45);
-        assert_eq!(checker.dnsbl_refusal_cooldown(), Duration::from_secs(45));
-        assert_eq!(
-            checker.refusal_cooldown(),
-            Duration::from_secs(DEFAULT_REFUSAL_COOLDOWN_SECS)
-        );
     }
 
     #[test]
     fn refusal_code_strings_round_trip() {
-        let p = RblProvider::new("test.rbl", true);
+        let p = DnsblProvider::new("test.example", true);
         assert_eq!(p.refusal_code_strings().len(), DEFAULT_REFUSAL_CODES.len());
         assert!(
             p.refusal_code_strings()
                 .contains(&"127.255.255.0/24".to_string())
         );
 
-        let off = RblProvider {
+        let off = DnsblProvider {
             refusal_codes: Arc::from(Vec::new()),
-            ..RblProvider::new("test.rbl", true)
+            ..DnsblProvider::new("test.example", true)
         };
         assert_eq!(
             off.refusal_code_strings(),
@@ -1744,10 +1580,10 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl RblResolver for MockResolver {
-        async fn lookup_rbl(&self, _query: &str) -> Result<Option<RblAnswer>, anyhow::Error> {
+    impl DnsblResolver for MockResolver {
+        async fn lookup(&self, _query: &str) -> Result<Option<DnsblAnswer>, anyhow::Error> {
             if self.listed {
-                Ok(Some(RblAnswer::listed(300)))
+                Ok(Some(DnsblAnswer::listed(300)))
             } else {
                 Ok(None)
             }
@@ -1774,32 +1610,18 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl RblResolver for CountingResolver {
-        async fn lookup_rbl(&self, _query: &str) -> Result<Option<RblAnswer>, anyhow::Error> {
+    impl DnsblResolver for CountingResolver {
+        async fn lookup(&self, _query: &str) -> Result<Option<DnsblAnswer>, anyhow::Error> {
             self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if self.listed {
-                Ok(Some(RblAnswer::listed(300)))
+                Ok(Some(DnsblAnswer::listed(300)))
             } else {
                 Ok(None)
             }
         }
     }
 
-    /// RBL/DNSBL fills are fire-and-forget: the first check on a cold name primes
-    /// the cache and returns not-listed; the verdict is served once the async
-    /// lookup lands. These helpers poll until the block takes effect (or give up),
-    /// so tests can assert the eventual listed state deterministically.
-    async fn eventually_listed_ip(checker: &RblChecker, ip: &IpAddr) -> bool {
-        for _ in 0..200 {
-            if checker.is_listed(ip).await {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
-        false
-    }
-
-    async fn eventually_listed_name(checker: &RblChecker, name: &str) -> bool {
+    async fn eventually_listed_name(checker: &DnsblChecker, name: &str) -> bool {
         for _ in 0..200 {
             if checker.is_name_listed(name).await {
                 return true;
@@ -1812,19 +1634,11 @@ mod tests {
     #[tokio::test]
     async fn test_resolver_unavailable_skips_lookups() {
         let counting = Arc::new(CountingResolver::new(true)); // would list everything
-        let checker = RblChecker::with_resolver(
-            true,
-            vec![RblProvider {
-                zone: "test.rbl".to_string(),
-                enabled: true,
-                ..Default::default()
-            }],
-            counting.clone(),
-        );
+        let checker = DnsblChecker::with_resolver(counting.clone());
         checker
-            .set_dnsbl_config(
+            .set_config(
                 true,
-                vec![RblProvider {
+                vec![DnsblProvider {
                     zone: "dbl.test".to_string(),
                     enabled: true,
                     ..Default::default()
@@ -1835,11 +1649,7 @@ mod tests {
         // :53 down → both IP-RBL and DNSBL checks are skipped: no lookups issued,
         // nothing reported as listed.
         checker.set_resolver_available(false);
-        assert!(
-            !checker
-                .is_listed(&IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)))
-                .await
-        );
+        assert!(!checker.is_name_listed("one.example.").await);
         assert!(!checker.is_name_listed("evil.example.com").await);
         assert_eq!(
             counting.count(),
@@ -1850,7 +1660,7 @@ mod tests {
         // :53 recovers → lookups resume and the (listed) resolver blocks again
         // (once the async fill lands).
         checker.set_resolver_available(true);
-        assert!(eventually_listed_ip(&checker, &IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4))).await);
+        assert!(eventually_listed_name(&checker, "one.example.").await);
         assert!(eventually_listed_name(&checker, "evil.example.com").await);
         assert!(counting.count() >= 1);
     }
@@ -1911,7 +1721,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             listed,
-            Some(RblAnswer::single(Ipv4Addr::new(127, 0, 0, 2), 111)),
+            Some(DnsblAnswer::single(Ipv4Addr::new(127, 0, 0, 2), 111)),
             "listed name must resolve to an A → its codes and TTL"
         );
 
@@ -1926,137 +1736,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_rbl_checker_disabled() {
-        let checker = RblChecker::with_resolver(
-            false,
-            vec![RblProvider {
-                zone: "test.rbl".to_string(),
-                enabled: true,
-                ..Default::default()
-            }],
-            Arc::new(MockResolver::new(false)),
-        );
-        let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
-        assert!(!checker.is_listed(&ip).await);
-    }
-
-    #[tokio::test]
-    async fn test_rbl_checker_listed() {
-        let checker = RblChecker::with_resolver(
-            true,
-            vec![RblProvider {
-                zone: "test.rbl".to_string(),
-                enabled: true,
-                ..Default::default()
-            }],
-            Arc::new(MockResolver::new(true)),
-        );
-        let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
-        assert!(eventually_listed_ip(&checker, &ip).await);
-    }
-
-    #[tokio::test]
-    async fn test_rbl_checker_not_listed() {
-        let checker = RblChecker::with_resolver(
-            true,
-            vec![RblProvider {
-                zone: "test.rbl".to_string(),
-                enabled: true,
-                ..Default::default()
-            }],
-            Arc::new(MockResolver::new(false)),
-        );
-        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
-        assert!(!checker.is_listed(&ip).await);
-    }
-
-    #[tokio::test]
-    async fn test_rbl_checker_caching() {
+    async fn flush_cache_forces_a_fresh_lookup() {
         let resolver = Arc::new(CountingResolver::new(true));
-        let checker = RblChecker::with_resolver(
-            true,
-            vec![RblProvider {
-                zone: "test.rbl".to_string(),
-                enabled: true,
-                ..Default::default()
-            }],
-            resolver.clone(),
-        );
-        let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+        let checker = dnsbl_checker(resolver.clone()).await;
+        let name = "one.example.";
 
-        // The async fill hits the resolver exactly once (dedup guard), then the
-        // verdict is cached.
-        assert!(eventually_listed_ip(&checker, &ip).await);
-        assert_eq!(resolver.count(), 1);
-
-        // Second lookup should be served from cache — no new resolver call.
-        assert!(checker.is_listed(&ip).await);
-        assert_eq!(resolver.count(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_rbl_checker_flush_cache() {
-        let resolver = Arc::new(CountingResolver::new(true));
-        let checker = RblChecker::with_resolver(
-            true,
-            vec![RblProvider {
-                zone: "test.rbl".to_string(),
-                enabled: true,
-                ..Default::default()
-            }],
-            resolver.clone(),
-        );
-        let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
-
-        assert!(eventually_listed_ip(&checker, &ip).await);
+        assert!(eventually_listed_name(&checker, name).await);
         assert_eq!(resolver.count(), 1);
 
         checker.flush_cache().await;
 
         // After a flush the verdict must be resolved again (fresh async fill).
-        assert!(eventually_listed_ip(&checker, &ip).await);
+        assert!(eventually_listed_name(&checker, name).await);
         assert_eq!(resolver.count(), 2);
     }
 
-    #[tokio::test]
-    async fn test_rbl_set_config() {
-        let checker = RblChecker::with_resolver(false, vec![], Arc::new(MockResolver::new(true)));
-
-        let (enabled, providers) = checker.get_config().await;
-        assert!(!enabled);
-        assert!(providers.is_empty());
-
-        checker
-            .set_config(
-                true,
-                vec![RblProvider {
-                    zone: "new.rbl".to_string(),
-                    enabled: true,
-                    ..Default::default()
-                }],
-            )
-            .await;
-
-        let (enabled, providers) = checker.get_config().await;
-        assert!(enabled);
-        assert_eq!(providers.len(), 1);
-        assert_eq!(providers[0].zone, "new.rbl");
-    }
-
     #[test]
-    fn test_normalize_rbl_name() {
-        assert_eq!(normalize_rbl_name("Example.COM."), "example.com");
-        assert_eq!(normalize_rbl_name("example.com"), "example.com");
-        assert_eq!(normalize_rbl_name("."), "");
+    fn test_normalize_blocklist_name() {
+        assert_eq!(normalize_blocklist_name("Example.COM."), "example.com");
+        assert_eq!(normalize_blocklist_name("example.com"), "example.com");
+        assert_eq!(normalize_blocklist_name("."), "");
     }
 
     /// Builds a checker with DNSBL enabled and a single `dbl.test` provider.
-    async fn dnsbl_checker(resolver: Arc<dyn RblResolver>) -> RblChecker {
-        let checker = RblChecker::with_resolver(false, vec![], resolver);
+    async fn dnsbl_checker(resolver: Arc<dyn DnsblResolver>) -> DnsblChecker {
+        let checker = DnsblChecker::with_resolver(resolver);
         checker
-            .set_dnsbl_config(
+            .set_config(
                 true,
-                vec![RblProvider {
+                vec![DnsblProvider {
                     zone: "dbl.test".to_string(),
                     enabled: true,
                     ..Default::default()
@@ -2081,33 +1789,17 @@ mod tests {
     #[tokio::test]
     async fn test_is_name_listed_disabled() {
         // DNSBL globally disabled: even a listed name is not reported.
-        let checker = RblChecker::with_resolver(false, vec![], Arc::new(MockResolver::new(true)));
+        let checker = DnsblChecker::with_resolver(Arc::new(MockResolver::new(true)));
         checker
-            .set_dnsbl_config(
+            .set_config(
                 false,
-                vec![RblProvider {
+                vec![DnsblProvider {
                     zone: "dbl.test".to_string(),
                     enabled: true,
                     ..Default::default()
                 }],
             )
             .await;
-        assert!(!checker.is_name_listed("googleadservices.com.").await);
-    }
-
-    #[tokio::test]
-    async fn test_is_name_listed_independent_of_rbl() {
-        // RBL is enabled but DNSBL is not configured: domain checks must not
-        // fall back to the IP-based RBL provider list.
-        let checker = RblChecker::with_resolver(
-            true,
-            vec![RblProvider {
-                zone: "test.rbl".to_string(),
-                enabled: true,
-                ..Default::default()
-            }],
-            Arc::new(MockResolver::new(true)),
-        );
         assert!(!checker.is_name_listed("googleadservices.com.").await);
     }
 
@@ -2123,40 +1815,96 @@ mod tests {
         assert_eq!(resolver.count(), 1);
     }
 
+    /// A resolver that lists everything with an already-expired TTL, and counts
+    /// how many times it was asked. Spamhaus DBL answers with a 60-second TTL,
+    /// so on a real box a listed name's cache entry expires constantly; TTL 0 is
+    /// that same situation with the waiting removed.
+    struct ExpiredListingResolver {
+        count: std::sync::atomic::AtomicU32,
+    }
+
+    impl ExpiredListingResolver {
+        fn new() -> Self {
+            Self {
+                count: std::sync::atomic::AtomicU32::new(0),
+            }
+        }
+
+        fn count(&self) -> u32 {
+            self.count.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DnsblResolver for ExpiredListingResolver {
+        async fn lookup(&self, _query: &str) -> Result<Option<DnsblAnswer>, anyhow::Error> {
+            self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Some(DnsblAnswer::listed(0)))
+        }
+    }
+
+    /// An expired positive keeps blocking while it is refreshed.
+    ///
+    /// A cache miss is answered by ALLOWING the query, so dropping a positive the
+    /// instant its TTL runs out means every expiry unblocks the name until the
+    /// background refill lands — the blocklist fails open once per TTL. Against a
+    /// provider like Spamhaus DBL (60-second TTLs) that is a hole that reopens
+    /// every minute.
+    ///
+    /// The control is `test_is_name_listed_not_listed`: a name no provider lists
+    /// is not blocked, so this passing is not just "blocks everything".
     #[tokio::test]
-    async fn test_enabled_but_empty_rbl_is_noop() {
-        // RBL globally enabled with no providers: nothing is queried and the
-        // resolver is never consulted, so no IP is listed.
-        let resolver = Arc::new(CountingResolver::new(true));
-        let checker = RblChecker::with_resolver(true, vec![], resolver.clone());
-        let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
-        assert!(!checker.is_listed(&ip).await);
-        assert_eq!(resolver.count(), 0);
+    async fn test_expired_positive_still_blocks_while_refreshing() {
+        let resolver = Arc::new(ExpiredListingResolver::new());
+        let checker = dnsbl_checker(resolver.clone()).await;
+
+        // First check is cold: allowed, and it primes the cache.
+        assert!(eventually_listed_name(&checker, "ads.example.com.").await);
+        let after_first = resolver.count();
+        assert!(after_first >= 1, "the cold check must fire a fill");
+
+        // The entry landed already expired. Every subsequent check must still
+        // block rather than fall open while the refill runs.
+        for _ in 0..5 {
+            assert!(
+                checker.is_name_listed("ads.example.com.").await,
+                "an expired positive must keep blocking, not unblock the name"
+            );
+        }
+
+        // ...and it is genuinely being refreshed, not just pinned forever.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        checker.is_name_listed("ads.example.com.").await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            resolver.count() > after_first,
+            "a stale positive must fire a refill"
+        );
     }
 
     #[tokio::test]
     async fn test_enabled_but_empty_dnsbl_is_noop() {
         // DNSBL globally enabled with no providers: nothing is queried.
         let resolver = Arc::new(CountingResolver::new(true));
-        let checker = RblChecker::with_resolver(false, vec![], resolver.clone());
-        checker.set_dnsbl_config(true, vec![]).await;
+        let checker = DnsblChecker::with_resolver(resolver.clone());
+        checker.set_config(true, vec![]).await;
         assert!(!checker.is_name_listed("googleadservices.com.").await);
         assert_eq!(resolver.count(), 0);
     }
 
     #[tokio::test]
     async fn test_dnsbl_get_set_config() {
-        let checker = RblChecker::with_resolver(false, vec![], Arc::new(MockResolver::new(true)));
+        let checker = DnsblChecker::with_resolver(Arc::new(MockResolver::new(true)));
 
-        let (enabled, providers) = checker.get_dnsbl_config().await;
+        let (enabled, providers) = checker.get_config().await;
         assert!(!enabled);
         assert!(providers.is_empty());
-        assert!(!checker.is_dnsbl_enabled().await);
+        assert!(!checker.is_enabled().await);
 
         checker
-            .set_dnsbl_config(
+            .set_config(
                 true,
-                vec![RblProvider {
+                vec![DnsblProvider {
                     zone: "dbl.spamhaus.org".to_string(),
                     enabled: true,
                     ..Default::default()
@@ -2164,32 +1912,19 @@ mod tests {
             )
             .await;
 
-        let (enabled, providers) = checker.get_dnsbl_config().await;
+        let (enabled, providers) = checker.get_config().await;
         assert!(enabled);
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].zone, "dbl.spamhaus.org");
-        assert!(checker.is_dnsbl_enabled().await);
-
-        // DNSBL config is independent of the IP-based RBL config.
-        let (rbl_enabled, rbl_providers) = checker.get_config().await;
-        assert!(!rbl_enabled);
-        assert!(rbl_providers.is_empty());
+        assert!(checker.is_enabled().await);
     }
 
     #[tokio::test]
-    async fn test_rbl_disabled_provider() {
+    async fn a_disabled_provider_is_not_queried() {
         let resolver = Arc::new(CountingResolver::new(true));
-        let checker = RblChecker::with_resolver(
-            true,
-            vec![RblProvider {
-                zone: "test.rbl".to_string(),
-                enabled: false,
-                ..Default::default()
-            }],
-            resolver.clone(),
-        );
-        let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
-        assert!(!checker.is_listed(&ip).await);
+        let checker = DnsblChecker::with_resolver(resolver.clone());
+        let name = "one.example.";
+        assert!(!checker.is_name_listed(name).await);
         assert_eq!(resolver.count(), 0);
     }
 }

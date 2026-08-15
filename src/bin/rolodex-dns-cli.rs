@@ -9,7 +9,7 @@ use tower::service_fn;
 /// CLI client for managing a Rolodex DNS server via its gRPC management interface.
 ///
 /// Supports connecting over TCP or Unix socket. All record management,
-/// forwarder configuration, and RBL settings can be controlled through
+/// forwarder configuration, and blocklist settings can be controlled through
 /// subcommands.
 #[derive(Parser)]
 #[command(name = "rolodex-dns-cli")]
@@ -18,7 +18,7 @@ use tower::service_fn;
 #[command(
     long_about = "CLI client for managing a Rolodex split-horizon DNS server.\n\n\
     Connects to the Rolodex gRPC management interface over TCP or Unix socket \
-    to manage DNS records, upstream forwarders, and RBL configuration.\n\n\
+    to manage DNS records, upstream forwarders, and blocklist configuration.\n\n\
     TCP connections require authentication via --auth-token when the server \
     has a shared secret configured. Unix socket connections bypass authentication."
 )]
@@ -242,53 +242,6 @@ enum Commands {
         forwarders: Vec<String>,
     },
 
-    /// Configure RBL (Realtime Blackhole List) settings at runtime.
-    /// Replaces the entire RBL configuration including the global enable
-    /// flag and all providers.
-    /// gRPC path: /rolodex_dns.RolodexDnsService/SetRblConfig
-    #[command(name = "set-rbl-config")]
-    SetRblConfig {
-        /// Enable or disable RBL checking globally.
-        /// When disabled, no reverse DNS queries are checked against RBL providers.
-        /// Default: false
-        #[arg(short, long)]
-        enabled: bool,
-
-        /// RBL provider specifications in "zone:enabled" format.
-        /// The "enabled" part is a boolean (true/false) controlling whether
-        /// this specific provider is active.
-        /// Example: --providers "zen.spamhaus.org:true" "bl.spamcop.net:false"
-        #[arg(short, long, num_args = 0..)]
-        providers: Vec<String>,
-
-        /// Per-provider refusal codes, as "zone=code,code". A refusal code is
-        /// what a provider answers to mean "I refused your query" rather than
-        /// "this is listed" (e.g. 127.255.255.254, "query via a public
-        /// resolver"); reading one as a listing NXDOMAINs every name checked
-        /// against that provider. Each code is an IPv4 address or
-        /// "address/prefix". Omitted uses the built-in set; "none" disables
-        /// refusal detection for that provider.
-        /// Example: --refusal-codes "zen.spamhaus.org=127.255.255.0/24"
-        #[arg(long, num_args = 0.., value_name = "ZONE=CODES")]
-        refusal_codes: Vec<String>,
-
-        /// Per-provider rotate-out duration in seconds, as "zone=secs".
-        /// Example: --provider-cooldown "zen.spamhaus.org=1800"
-        #[arg(long, num_args = 0.., value_name = "ZONE=SECS")]
-        provider_cooldown: Vec<String>,
-
-        /// Seconds a refusing provider stays out of the lookup rotation, for
-        /// providers with no value of their own. 0 uses the server default.
-        #[arg(long, default_value_t = 0)]
-        refusal_cooldown: u32,
-    },
-
-    /// Retrieve the current RBL configuration.
-    /// Shows the global enabled state and all configured providers.
-    /// gRPC path: /rolodex_dns.RolodexDnsService/GetRblConfig
-    #[command(name = "get-rbl-config")]
-    GetRblConfig,
-
     /// Configure DNSBL (domain blocklist) settings.
     /// Replaces the entire DNSBL configuration including the global enable
     /// flag and all providers. DNSBL listings block forward domain names and
@@ -307,7 +260,7 @@ enum Commands {
         providers: Vec<String>,
 
         /// Per-provider refusal codes, as "zone=code,code"; see
-        /// set-rbl-config. Omitted uses the built-in set, "none" disables.
+        /// Omitted uses the built-in set, "none" disables.
         #[arg(long, num_args = 0.., value_name = "ZONE=CODES")]
         refusal_codes: Vec<String>,
 
@@ -327,8 +280,8 @@ enum Commands {
     #[command(name = "get-dnsbl-config")]
     GetDnsblConfig,
 
-    /// Flush the RBL result cache.
-    /// Clears all cached RBL lookup results, forcing fresh lookups
+    /// Flush the blocklist result cache.
+    /// Clears all cached blocklist lookup results, forcing fresh lookups
     /// for subsequent reverse DNS queries.
     /// gRPC path: /rolodex_dns.RolodexDnsService/FlushCache
     #[command(name = "flush-cache")]
@@ -538,10 +491,10 @@ enum Commands {
     #[command(name = "cache-stats")]
     CacheStats,
 
-    /// Add a local RBL entry.
-    /// gRPC path: /rolodex_dns.RolodexDnsService/AddLocalRblEntry
-    #[command(name = "add-local-rbl")]
-    AddLocalRbl {
+    /// Add a local blocklist entry.
+    /// gRPC path: /rolodex_dns.RolodexDnsService/AddLocalBlocklistEntry
+    #[command(name = "add-local-blocklist")]
+    AddLocalBlocklist {
         /// The name or IP to block
         #[arg(short, long)]
         name: String,
@@ -551,19 +504,19 @@ enum Commands {
         reason: String,
     },
 
-    /// Remove a local RBL entry.
-    /// gRPC path: /rolodex_dns.RolodexDnsService/RemoveLocalRblEntry
-    #[command(name = "remove-local-rbl")]
-    RemoveLocalRbl {
+    /// Remove a local blocklist entry.
+    /// gRPC path: /rolodex_dns.RolodexDnsService/RemoveLocalBlocklistEntry
+    #[command(name = "remove-local-blocklist")]
+    RemoveLocalBlocklist {
         /// The name to unblock
         #[arg(short, long)]
         name: String,
     },
 
-    /// List all local RBL entries.
-    /// gRPC path: /rolodex_dns.RolodexDnsService/ListLocalRblEntries
-    #[command(name = "list-local-rbl")]
-    ListLocalRbl,
+    /// List all local blocklist entries.
+    /// gRPC path: /rolodex_dns.RolodexDnsService/ListLocalBlocklistEntries
+    #[command(name = "list-local-blocklist")]
+    ListLocalBlocklist,
 
     /// Exempt a name (and its subdomains) from the DNSBL/blocklist check.
     /// gRPC path: /rolodex_dns.RolodexDnsService/AddDnsblAllowlistEntry
@@ -685,56 +638,6 @@ enum Commands {
     DeleteDhcpLease {
         #[arg(long)]
         mac: String,
-    },
-
-    /// Add a per-scope RBL provider.
-    #[command(name = "add-scope-rbl")]
-    AddScopeRbl {
-        #[arg(short, long)]
-        scope: String,
-        #[arg(short, long)]
-        zone: String,
-        /// Whether the provider is checked: "true" (the default) or "false" to
-        /// register it without turning it on.
-        // Takes a value rather than being a bare switch, because a bare switch
-        // cannot express both halves. Written as `#[arg(short, long,
-        // default_value = "true")]` on a `bool`, clap gives the field the
-        // `SetTrue` action — a flag with no value — and the stated default then
-        // makes the field `true` whether or not the flag is passed, so
-        // `--enabled` becomes decorative and a disabled provider is unreachable
-        // from the CLI. Older clap versions ignored the default instead and made
-        // omission mean `false`, contradicting the documentation in the other
-        // direction. Taking a value is the spelling that means the same thing
-        // under both.
-        #[arg(short, long, default_value_t = true, action = clap::ArgAction::Set)]
-        enabled: bool,
-
-        /// Codes this provider returns to mean "query refused" rather than
-        /// "listed"; see set-rbl-config. Repeatable. Omitted uses the built-in
-        /// set; "none" disables refusal detection for this provider.
-        #[arg(long, value_name = "CODE")]
-        refusal_code: Vec<String>,
-
-        /// Seconds this provider stays out of the lookup rotation after a
-        /// refusal. 0 uses the server-wide RBL default.
-        #[arg(long, default_value_t = 0)]
-        refusal_cooldown: u32,
-    },
-
-    /// Remove a per-scope RBL provider.
-    #[command(name = "remove-scope-rbl")]
-    RemoveScopeRbl {
-        #[arg(short, long)]
-        scope: String,
-        #[arg(short, long)]
-        zone: String,
-    },
-
-    /// List per-scope RBL providers.
-    #[command(name = "list-scope-rbl")]
-    ListScopeRbl {
-        #[arg(short, long)]
-        scope: String,
     },
 
     /// Register an additional owned TLD for a network scope. TLDs are globally
@@ -1201,79 +1104,6 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::SetRblConfig {
-            enabled,
-            providers,
-            refusal_codes,
-            provider_cooldown,
-            refusal_cooldown,
-        } => {
-            let codes_by_zone = parse_zone_map(&refusal_codes, "--refusal-codes")?;
-            let cooldown_by_zone = parse_zone_map(&provider_cooldown, "--provider-cooldown")?;
-            let mut rbl_providers = Vec::new();
-            for p in &providers {
-                let (zone, enabled_flag) = parse_provider_spec(p, "zen.spamhaus.org:true")?;
-                rbl_providers.push(RblConfig {
-                    refusal_codes: zone_codes(&codes_by_zone, &zone),
-                    refusal_cooldown_secs: zone_cooldown(&cooldown_by_zone, &zone)?,
-                    zone,
-                    enabled: enabled_flag,
-                });
-            }
-            reject_unmatched(&codes_by_zone, &rbl_providers, |p| &p.zone)?;
-            reject_unmatched(&cooldown_by_zone, &rbl_providers, |p| &p.zone)?;
-            let response = client
-                .set_rbl_config(SetRblConfigRequest {
-                    enabled,
-                    providers: rbl_providers,
-                    auth_token: cli.auth_token.clone(),
-                    refusal_cooldown_secs: refusal_cooldown,
-                })
-                .await
-                .context("set-rbl-config RPC failed")?;
-            let resp = response.into_inner();
-            if resp.success {
-                println!("RBL config updated (enabled: {})", enabled);
-            } else {
-                anyhow::bail!("Failed to set RBL config: {}", resp.message);
-            }
-        }
-
-        Commands::GetRblConfig => {
-            let response = client
-                .get_rbl_config(GetRblConfigRequest {
-                    auth_token: cli.auth_token.clone(),
-                })
-                .await
-                .context("get-rbl-config RPC failed")?;
-            let config = response.into_inner();
-            println!("RBL enabled: {}", config.enabled);
-            println!(
-                "Refusal rotate-out: {}s (default for providers with no value)",
-                config.refusal_cooldown_secs
-            );
-            if config.providers.is_empty() {
-                println!("No RBL providers configured.");
-            } else {
-                println!("\nProviders:");
-                println!(
-                    "{:<32} {:<8} {:<10} REFUSAL CODES",
-                    "ZONE", "ENABLED", "COOLDOWN"
-                );
-                println!("{}", "-".repeat(90));
-                for p in &config.providers {
-                    println!(
-                        "{:<32} {:<8} {:<10} {}",
-                        p.zone,
-                        p.enabled,
-                        cooldown_display(p.refusal_cooldown_secs),
-                        p.refusal_codes.join(", ")
-                    );
-                }
-            }
-            print_rotated_out(&config.rotated_out);
-        }
-
         Commands::SetDnsblConfig {
             enabled,
             providers,
@@ -1738,10 +1568,10 @@ async fn main() -> Result<()> {
             println!("  Miss count:    {}", stats.miss_count);
         }
 
-        Commands::AddLocalRbl { name, reason } => {
+        Commands::AddLocalBlocklist { name, reason } => {
             let response = client
-                .add_local_rbl_entry(AddLocalRblEntryRequest {
-                    entry: Some(LocalRblEntry {
+                .add_local_blocklist_entry(AddLocalBlocklistEntryRequest {
+                    entry: Some(LocalBlocklistEntry {
                         name: name.clone(),
                         reason: reason.clone(),
                     }),
@@ -1751,15 +1581,15 @@ async fn main() -> Result<()> {
                 .context("add-local-rbl RPC failed")?;
             let resp = response.into_inner();
             if resp.success {
-                println!("Added local RBL entry: {}", name);
+                println!("Added local blocklist entry: {}", name);
             } else {
-                anyhow::bail!("Failed to add local RBL entry: {}", resp.message);
+                anyhow::bail!("Failed to add local blocklist entry: {}", resp.message);
             }
         }
 
-        Commands::RemoveLocalRbl { name } => {
+        Commands::RemoveLocalBlocklist { name } => {
             let response = client
-                .remove_local_rbl_entry(RemoveLocalRblEntryRequest {
+                .remove_local_blocklist_entry(RemoveLocalBlocklistEntryRequest {
                     name: name.clone(),
                     auth_token: cli.auth_token.clone(),
                 })
@@ -1767,22 +1597,22 @@ async fn main() -> Result<()> {
                 .context("remove-local-rbl RPC failed")?;
             let resp = response.into_inner();
             if resp.success {
-                println!("Removed local RBL entry: {}", name);
+                println!("Removed local blocklist entry: {}", name);
             } else {
-                anyhow::bail!("Failed to remove local RBL entry: {}", resp.message);
+                anyhow::bail!("Failed to remove local blocklist entry: {}", resp.message);
             }
         }
 
-        Commands::ListLocalRbl => {
+        Commands::ListLocalBlocklist => {
             let response = client
-                .list_local_rbl_entries(ListLocalRblEntriesRequest {
+                .list_local_blocklist_entries(ListLocalBlocklistEntriesRequest {
                     auth_token: cli.auth_token.clone(),
                 })
                 .await
                 .context("list-local-rbl RPC failed")?;
             let entries = response.into_inner().entries;
             if entries.is_empty() {
-                println!("No local RBL entries configured.");
+                println!("No local blocklist entries configured.");
             } else {
                 println!("{:<40} REASON", "NAME");
                 println!("{}", "-".repeat(60));
@@ -2066,71 +1896,6 @@ async fn main() -> Result<()> {
                 println!("DHCP lease for {} deleted", mac);
             } else {
                 anyhow::bail!("Failed: {}", resp.message);
-            }
-        }
-
-        Commands::AddScopeRbl {
-            scope,
-            zone,
-            enabled,
-            refusal_code,
-            refusal_cooldown,
-        } => {
-            let response = client
-                .add_scope_rbl_provider(AddScopeRblProviderRequest {
-                    provider: Some(ScopeRblProvider {
-                        scope_name: scope.clone(),
-                        zone: zone.clone(),
-                        enabled,
-                        refusal_codes: refusal_code,
-                        refusal_cooldown_secs: refusal_cooldown,
-                    }),
-                    auth_token: cli.auth_token.clone(),
-                })
-                .await
-                .context("add-scope-rbl RPC failed")?;
-            let resp = response.into_inner();
-            if resp.success {
-                println!("Added RBL provider {} for scope {}", zone, scope);
-            } else {
-                anyhow::bail!("Failed: {}", resp.message);
-            }
-        }
-
-        Commands::RemoveScopeRbl { scope, zone } => {
-            let response = client
-                .remove_scope_rbl_provider(RemoveScopeRblProviderRequest {
-                    scope_name: scope.clone(),
-                    zone: zone.clone(),
-                    auth_token: cli.auth_token.clone(),
-                })
-                .await
-                .context("remove-scope-rbl RPC failed")?;
-            let resp = response.into_inner();
-            if resp.success {
-                println!("Removed RBL provider {} from scope {}", zone, scope);
-            } else {
-                anyhow::bail!("Failed: {}", resp.message);
-            }
-        }
-
-        Commands::ListScopeRbl { scope } => {
-            let response = client
-                .list_scope_rbl_providers(ListScopeRblProvidersRequest {
-                    scope_name: scope.clone(),
-                    auth_token: cli.auth_token.clone(),
-                })
-                .await
-                .context("list-scope-rbl RPC failed")?;
-            let resp = response.into_inner();
-            if resp.providers.is_empty() {
-                println!("No scope RBL providers for {}", scope);
-            } else {
-                println!("{:<40} {:<10}", "ZONE", "ENABLED");
-                println!("{}", "-".repeat(50));
-                for p in resp.providers {
-                    println!("{:<40} {:<10}", p.zone, p.enabled);
-                }
             }
         }
 

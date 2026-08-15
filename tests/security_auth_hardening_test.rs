@@ -38,11 +38,11 @@
 
 use rolodex_dns::db::Database;
 use rolodex_dns::dns_server::DnsServer;
+use rolodex_dns::dnsbl::DnsblChecker;
 use rolodex_dns::grpc_service::RolodexDnsGrpcService;
 use rolodex_dns::grpc_service::proto::rolodex_dns_service_client::RolodexDnsServiceClient;
 use rolodex_dns::grpc_service::proto::rolodex_dns_service_server::RolodexDnsServiceServer;
 use rolodex_dns::grpc_service::proto::{ListRecordsRequest, ListRecordsResponse};
-use rolodex_dns::rbl::RblChecker;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tonic::transport::Server;
@@ -53,7 +53,7 @@ const SECRET: &str = "correct-horse-battery-staple";
 /// Starts a gRPC TCP server requiring `SECRET` and returns its `host:port`.
 async fn start_server() -> String {
     let db = Database::open_memory().unwrap();
-    let rbl = Arc::new(RblChecker::new(false, vec![]));
+    let rbl = Arc::new(DnsblChecker::new());
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
     let service = RolodexDnsGrpcService::new(
         db,

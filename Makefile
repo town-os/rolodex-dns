@@ -128,9 +128,10 @@ rust-integration-test: build ## Run each Rust integration test file
 	# ROLODEX_PROMETHEUS_TEST=1 and runs from the `prometheus-test` target, which
 	# `test` also depends on.
 	cargo test --test prometheus_integration_test
-	cargo test --test rbl_refusal_test
+	cargo test --test blocklist_refusal_test
 	cargo test --test dnssec_signing_test
 	cargo test --test dnssec_validation_test
+	cargo test --test dnssec_hidden_cut_test
 	cargo test --test arpa_refusal_test
 	cargo test --test blocklist_nxdomain_test
 	cargo test --test zonemd_test

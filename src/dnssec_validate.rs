@@ -1127,6 +1127,86 @@ pub fn records_at(records: &[Record], owner: &Name, rtype: RecordType) -> Vec<Re
         .collect()
 }
 
+/// The zone that signed `records`, when it lies strictly *below* `zone`.
+///
+/// This is how a zone cut that never produced a referral is detected. A
+/// delegation is normally visible: the parent's servers answer with NS records
+/// and the walk crosses the cut deliberately. But when one nameserver is
+/// authoritative for a parent *and* its signed child — `cloudflare.com.` and
+/// `cdnjs.cloudflare.com.`, both on the same NS set — a query for a name in the
+/// child is answered from the child zone directly. No referral is ever sent, so
+/// a resolver tracking only referrals still believes it is talking to the
+/// parent, and validates the child's signatures against the parent's keys. That
+/// mismatch is not an attack, it is the correct behaviour of both servers, and
+/// rejecting it makes every such name unresolvable.
+///
+/// RFC 4035 §5.3.1 puts the signer name in charge: the key set to validate with
+/// is the one belonging to the RRSIG's signer, not the one belonging to whatever
+/// zone the resolver last descended into. This returns that signer so the caller
+/// can extend the chain of trust down to it.
+///
+/// Three conditions, and each one is load-bearing:
+///
+///   - **Every** RRSIG present must name the same signer. A section mixing
+///     signers cannot be validated against one key set anyway, and picking one
+///     of them would decide which half goes unchecked.
+///   - The signer must be a proper descendant of `zone` — never `zone` itself
+///     (nothing to cross) and never outside it (a zone may not vouch for a name
+///     it does not contain).
+///   - The signer must contain every owner name it signed. Without this a
+///     forged answer could name any signer it liked — say `nonexistent.zone.` —
+///     and the caller would go off to establish trust for a name unrelated to
+///     the data, which is precisely how "no DS there" becomes a downgrade of
+///     data that really is signed by `zone`.
+pub fn signer_below(records: &[Record], zone: &Name) -> Option<Name> {
+    let mut signer: Option<Name> = None;
+    for record in records {
+        let Some(sig) = record.data().as_dnssec().and_then(|d| d.as_rrsig()) else {
+            continue;
+        };
+        let candidate = sig.signer_name();
+        // Equal to `zone` means the walk is already where it needs to be; outside
+        // `zone` means this signature has no business here at all. Either way
+        // there is no cut to cross, and a section that mixes the two is not one
+        // key set's to validate.
+        if candidate == zone || !zone.zone_of(candidate) {
+            return None;
+        }
+        // The signature is over `record`'s owner; a signer that does not contain
+        // that owner is not a zone cut, it is a claim.
+        if !candidate.zone_of(record.name()) {
+            return None;
+        }
+        match &signer {
+            Some(seen) if seen != candidate => return None,
+            Some(_) => {}
+            None => signer = Some(candidate.clone()),
+        }
+    }
+    signer
+}
+
+/// The apex of a zone *below* `zone` that an authority section's SOA names.
+///
+/// A server answering from a zone it holds puts that zone's SOA in the authority
+/// section of a negative response. When the SOA names a zone below the one the
+/// walk is at, the response came from a child served on the same nameserver —
+/// the same hidden cut [`signer_below`] finds, seen from the one angle still
+/// available when the child is *unsigned* and so has no signer name to report.
+///
+/// This is **diagnostic only**, and the distinction matters: an SOA in an
+/// unsigned response is unsigned like everything else around it, so an attacker
+/// can put any name there. It is fit for telling an operator which of two things
+/// they are probably looking at — an unsigned zone below a signed parent, or
+/// signatures stripped in flight — and it must never decide a verdict, which is
+/// why nothing outside the metrics path calls it.
+pub fn soa_below(records: &[Record], zone: &Name) -> Option<Name> {
+    records
+        .iter()
+        .find(|r| r.record_type() == RecordType::SOA && zone.zone_of(r.name()) && r.name() != zone)
+        .map(|r| r.name().clone())
+}
+
 /// Whether `records` contains any RRSIG at all — used only to phrase a failure,
 /// never to decide security. An absent signature is not evidence of an unsigned
 /// zone; see the module docs.
@@ -1476,6 +1556,176 @@ mod tests {
         assert_eq!(sets.len(), 2, "two owners means two RRsets");
         assert_eq!(sets[0].2.len(), 2, "the two a. records are one RRset");
         assert!(sigs.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // signer_below: finding a zone cut nobody announced
+    // -----------------------------------------------------------------------
+
+    /// An A record at `owner`, plus an RRSIG over it naming `signer`. The
+    /// signature bytes are never checked here — `signer_below` reads names to
+    /// decide *which keys to go and get*, and the cryptography is `verify_rrset`'s
+    /// job afterwards.
+    fn signed_by(owner: &str, signer: &str) -> Vec<Record> {
+        use hickory_proto::dnssec::rdata::DNSSECRData;
+        use hickory_proto::rr::rdata;
+        use std::net::Ipv4Addr;
+
+        let owner = name(owner);
+        let data = Record::from_rdata(
+            owner.clone(),
+            60,
+            RData::A(rdata::A(Ipv4Addr::new(192, 0, 2, 1))),
+        );
+        let sig = Record::from_rdata(
+            owner.clone(),
+            60,
+            RData::DNSSEC(DNSSECRData::RRSIG(RRSIG::new(
+                RecordType::A,
+                Algorithm::ED25519,
+                owner.num_labels(),
+                60,
+                2_000_000_000,
+                1_000_000_000,
+                1234,
+                name(signer),
+                vec![0u8; 64],
+            ))),
+        );
+        vec![data, sig]
+    }
+
+    /// The case this exists for: `cdnjs.cloudflare.com.` is its own signed zone
+    /// on `cloudflare.com.`'s nameservers, so its answers arrive signed by itself
+    /// with no referral ever crossing the cut.
+    #[test]
+    fn signer_below_finds_a_child_zone_that_answered_for_itself() {
+        let records = signed_by("cdnjs.cloudflare.com.", "cdnjs.cloudflare.com.");
+        assert_eq!(
+            signer_below(&records, &name("cloudflare.com.")),
+            Some(name("cdnjs.cloudflare.com.")),
+            "an answer signed below the zone we are talking to names the cut to cross"
+        );
+    }
+
+    /// The ordinary case: the zone we are talking to signed its own data. There
+    /// is no cut, and reporting one would cost a DS lookup per answer.
+    #[test]
+    fn signer_below_is_silent_when_the_current_zone_signed() {
+        let records = signed_by("www.example.com.", "example.com.");
+        assert_eq!(signer_below(&records, &name("example.com.")), None);
+    }
+
+    /// A signer outside the zone is not a delegation to descend into — it is a
+    /// zone claiming a name it does not contain, and `verify_rrset` must be left
+    /// to reject it.
+    #[test]
+    fn signer_below_ignores_a_signer_outside_the_zone() {
+        let records = signed_by("www.example.com.", "attacker.test.");
+        assert_eq!(signer_below(&records, &name("example.com.")), None);
+    }
+
+    /// The downgrade this guard exists for. A forged answer names a signer that
+    /// does not contain the owner it signed; if that name were chased, the
+    /// parent would answer "no DS there" — truthfully, since it is not a
+    /// delegation at all — and a *signed* name would end up validated as
+    /// insecure. The owner containment test is what keeps it Bogus.
+    #[test]
+    fn signer_below_rejects_a_signer_that_does_not_contain_its_owner() {
+        let records = signed_by("www.example.com.", "nowhere.example.com.");
+        assert_eq!(
+            signer_below(&records, &name("example.com.")),
+            None,
+            "a signer that does not enclose the owner is a claim, not a zone cut"
+        );
+    }
+
+    /// One key set cannot validate two signers, so a mixed section is left to
+    /// fail rather than half-checked against whichever one was picked.
+    #[test]
+    fn signer_below_refuses_a_section_with_two_signers() {
+        let mut records = signed_by("a.sub.example.com.", "sub.example.com.");
+        records.extend(signed_by("b.example.com.", "example.com."));
+        assert_eq!(signer_below(&records, &name("example.com.")), None);
+    }
+
+    /// No signatures at all is not a cut. It is an unsigned answer, and what to
+    /// make of that is the caller's decision, not this function's.
+    #[test]
+    fn signer_below_reports_nothing_for_unsigned_records() {
+        use hickory_proto::rr::rdata;
+        use std::net::Ipv4Addr;
+
+        let unsigned = vec![Record::from_rdata(
+            name("www.example.com."),
+            60,
+            RData::A(rdata::A(Ipv4Addr::new(192, 0, 2, 1))),
+        )];
+        assert_eq!(signer_below(&unsigned, &name("example.com.")), None);
+    }
+
+    /// Several cuts at once, which the resolver must then descend one at a time.
+    #[test]
+    fn signer_below_reports_a_signer_several_labels_down() {
+        let records = signed_by("host.a.b.example.com.", "a.b.example.com.");
+        assert_eq!(
+            signer_below(&records, &name("example.com.")),
+            Some(name("a.b.example.com."))
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // soa_below: the unsigned twin of a hidden zone cut
+    // -----------------------------------------------------------------------
+
+    fn soa_at(owner: &str) -> Record {
+        use hickory_proto::rr::rdata::SOA;
+        Record::from_rdata(
+            name(owner),
+            60,
+            RData::SOA(SOA::new(
+                name("ns1.example.com."),
+                name("hostmaster.example.com."),
+                1,
+                7200,
+                3600,
+                1_209_600,
+                300,
+            )),
+        )
+    }
+
+    /// An unsigned child on its parent's nameservers: the SOA names the child's
+    /// apex, which is the only hint available once there are no signatures to
+    /// read a signer name from.
+    #[test]
+    fn soa_below_names_a_child_apex() {
+        let authority = vec![soa_at("cdn.example.com.")];
+        assert_eq!(
+            soa_below(&authority, &name("example.com.")),
+            Some(name("cdn.example.com."))
+        );
+    }
+
+    /// The zone's own SOA is the ordinary case and says nothing about a cut.
+    #[test]
+    fn soa_below_ignores_the_zones_own_apex() {
+        let authority = vec![soa_at("example.com.")];
+        assert_eq!(soa_below(&authority, &name("example.com.")), None);
+    }
+
+    /// An SOA for somewhere else entirely is not evidence about this zone.
+    #[test]
+    fn soa_below_ignores_a_foreign_apex() {
+        let authority = vec![soa_at("elsewhere.test.")];
+        assert_eq!(soa_below(&authority, &name("example.com.")), None);
+    }
+
+    /// Stripped signatures leave an authority section with no SOA to read, which
+    /// is the "no evidence" case the counter separates out.
+    #[test]
+    fn soa_below_reports_nothing_without_an_soa() {
+        assert_eq!(soa_below(&[], &name("example.com.")), None);
     }
 
     #[test]

@@ -12,7 +12,7 @@
 //! interpreted as any sort of reputation".
 //!
 //! These tests drive the whole path over real UDP DNS — a mock blocklist zone
-//! answering with real `A` records, through `RecursiveRblResolver`'s forwarder
+//! answering with real `A` records, through `RecursiveDnsblResolver`'s forwarder
 //! fallback, through classification, into `DnsServer`'s query handler — because
 //! every layer in between is somewhere the distinction could be lost. Asserting
 //! on `classify` alone would pass just as happily with a query path that never
@@ -27,9 +27,9 @@ use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordType, rdata};
 use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use rolodex_dns::db::Database;
 use rolodex_dns::dns_server::DnsServer;
+use rolodex_dns::dnsbl::{DnsblChecker, DnsblProvider, RecursiveDnsblResolver};
 use rolodex_dns::grpc_service::proto::rolodex_dns_service_server::RolodexDnsService;
 use rolodex_dns::grpc_service::{RolodexDnsGrpcService, proto};
-use rolodex_dns::rbl::{RblChecker, RblProvider, RecursiveRblResolver};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -103,8 +103,8 @@ impl MockBlocklist {
 /// the roots tier fails immediately (ICMP port unreachable) and the forwarder
 /// fallback — the mock — answers. This is the same shape `auto_resolution_test`
 /// uses to keep the real internet out of the test.
-fn mock_resolver(mock: &MockBlocklist) -> Arc<RecursiveRblResolver> {
-    Arc::new(RecursiveRblResolver::new(
+fn mock_resolver(mock: &MockBlocklist) -> Arc<RecursiveDnsblResolver> {
+    Arc::new(RecursiveDnsblResolver::new(
         vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))],
         vec![mock.addr],
     ))
@@ -115,19 +115,15 @@ async fn dnsbl_server(
     mock: &MockBlocklist,
     refusal_codes: Vec<String>,
     cooldown: Option<Duration>,
-) -> (Arc<DnsServer>, Arc<RblChecker>) {
+) -> (Arc<DnsServer>, Arc<DnsblChecker>) {
     let db = Database::open_memory().unwrap();
-    let rbl = Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        mock_resolver(mock),
-    ));
-    rbl.set_dnsbl_config(
+    let rbl = Arc::new(DnsblChecker::with_resolver(mock_resolver(mock)));
+    rbl.set_config(
         true,
-        vec![RblProvider {
+        vec![DnsblProvider {
             zone: "dbl.test".to_string(),
             enabled: true,
-            refusal_codes: rolodex_dns::rbl::resolve_refusal_codes(&refusal_codes)
+            refusal_codes: rolodex_dns::dnsbl::resolve_refusal_codes(&refusal_codes)
                 .unwrap()
                 .into(),
             cooldown,
@@ -332,104 +328,21 @@ async fn explicit_refusal_codes_replace_the_defaults() {
 }
 
 /// Builds a service and server sharing one checker, as the daemon does.
-fn grpc_service(mock: &MockBlocklist) -> (RolodexDnsGrpcService, Arc<DnsServer>, Arc<RblChecker>) {
+fn grpc_service(
+    mock: &MockBlocklist,
+) -> (RolodexDnsGrpcService, Arc<DnsServer>, Arc<DnsblChecker>) {
     let db = Database::open_memory().unwrap();
-    let rbl = Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        mock_resolver(mock),
-    ));
+    let rbl = Arc::new(DnsblChecker::with_resolver(mock_resolver(mock)));
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
     let service =
         RolodexDnsGrpcService::new(db, dns_server.clone(), rbl.clone(), String::new(), true);
     (service, dns_server, rbl)
 }
 
-/// Town OS programs the blocklists over gRPC, so the refusal codes and the
-/// rotate-out duration have to be settable and readable there — a feature that
-/// only exists in the YAML is one the control plane cannot use.
+/// Refusal codes and cooldowns are programmable over gRPC, per provider and
+/// list-wide.
 #[tokio::test]
 async fn refusal_codes_are_programmable_over_grpc() {
-    let mock = MockBlocklist::start(None).await;
-    let (service, _, _) = grpc_service(&mock);
-
-    service
-        .set_rbl_config(Request::new(proto::SetRblConfigRequest {
-            enabled: true,
-            providers: vec![
-                proto::RblConfig {
-                    zone: "zen.spamhaus.org".to_string(),
-                    enabled: true,
-                    refusal_codes: vec!["127.255.255.0/24".to_string()],
-                    refusal_cooldown_secs: 1800,
-                },
-                proto::RblConfig {
-                    zone: "private.rbl".to_string(),
-                    enabled: true,
-                    refusal_codes: vec!["none".to_string()],
-                    refusal_cooldown_secs: 0,
-                },
-                proto::RblConfig {
-                    zone: "default.rbl".to_string(),
-                    enabled: true,
-                    ..Default::default()
-                },
-            ],
-            auth_token: String::new(),
-            refusal_cooldown_secs: 900,
-        }))
-        .await
-        .unwrap();
-
-    let cfg = service
-        .get_rbl_config(Request::new(proto::GetRblConfigRequest {
-            auth_token: String::new(),
-        }))
-        .await
-        .unwrap()
-        .into_inner();
-
-    assert_eq!(cfg.refusal_cooldown_secs, 900);
-    let zen = cfg
-        .providers
-        .iter()
-        .find(|p| p.zone == "zen.spamhaus.org")
-        .unwrap();
-    assert_eq!(zen.refusal_codes, vec!["127.255.255.0/24".to_string()]);
-    assert_eq!(zen.refusal_cooldown_secs, 1800);
-
-    let private = cfg
-        .providers
-        .iter()
-        .find(|p| p.zone == "private.rbl")
-        .unwrap();
-    assert_eq!(
-        private.refusal_codes,
-        vec!["none".to_string()],
-        "detection-off must read back as 'none'; empty would mean 'the defaults' on \
-         the way back in, so a get/set round trip would silently re-enable it"
-    );
-
-    let defaulted = cfg
-        .providers
-        .iter()
-        .find(|p| p.zone == "default.rbl")
-        .unwrap();
-    assert_eq!(
-        defaulted.refusal_codes.len(),
-        rolodex_dns::rbl::DEFAULT_REFUSAL_CODES.len(),
-        "an unset list reads back as what is actually in effect"
-    );
-    assert_eq!(
-        defaulted.refusal_cooldown_secs, 0,
-        "0 means 'the list default'"
-    );
-    assert!(cfg.rotated_out.is_empty());
-}
-
-/// The DNSBL half of the same, with its own independent cooldown.
-#[tokio::test]
-async fn dnsbl_refusal_codes_are_programmable_over_grpc() {
     let mock = MockBlocklist::start(None).await;
     let (service, _, _) = grpc_service(&mock);
 
@@ -458,19 +371,6 @@ async fn dnsbl_refusal_codes_are_programmable_over_grpc() {
     assert_eq!(cfg.refusal_cooldown_secs, 600);
     assert_eq!(cfg.providers[0].refusal_codes.len(), 2);
     assert_eq!(cfg.providers[0].refusal_cooldown_secs, 120);
-
-    // The RBL default is untouched by the DNSBL one.
-    let rbl_cfg = service
-        .get_rbl_config(Request::new(proto::GetRblConfigRequest {
-            auth_token: String::new(),
-        }))
-        .await
-        .unwrap()
-        .into_inner();
-    assert_eq!(
-        rbl_cfg.refusal_cooldown_secs,
-        rolodex_dns::rbl::DEFAULT_REFUSAL_COOLDOWN_SECS as u32
-    );
 }
 
 /// A code that does not parse is rejected, not dropped. A silently-ignored code
@@ -482,10 +382,10 @@ async fn malformed_refusal_code_is_rejected() {
     let (service, _, _) = grpc_service(&mock);
 
     let status = service
-        .set_rbl_config(Request::new(proto::SetRblConfigRequest {
+        .set_dnsbl_config(Request::new(proto::SetDnsblConfigRequest {
             enabled: true,
-            providers: vec![proto::RblConfig {
-                zone: "bad.rbl".to_string(),
+            providers: vec![proto::DnsblConfig {
+                zone: "bad.example".to_string(),
                 enabled: true,
                 refusal_codes: vec!["not-an-ip".to_string()],
                 refusal_cooldown_secs: 0,
@@ -497,7 +397,7 @@ async fn malformed_refusal_code_is_rejected() {
         .expect_err("a malformed refusal code must not be accepted");
     assert_eq!(status.code(), tonic::Code::InvalidArgument);
     assert!(
-        status.message().contains("bad.rbl"),
+        status.message().contains("bad.example"),
         "unhelpful: {status:?}"
     );
 
@@ -585,70 +485,4 @@ async fn rotated_out_providers_are_reported_over_grpc() {
         .unwrap()
         .into_inner();
     assert!(after.rotated_out.is_empty());
-}
-
-/// Per-scope providers are stored, so their refusal configuration has to
-/// survive the database round trip that the global lists never take.
-#[tokio::test]
-async fn scope_rbl_provider_refusal_config_round_trips_over_grpc() {
-    let mock = MockBlocklist::start(None).await;
-    let (service, _, _) = grpc_service(&mock);
-
-    service
-        .create_network_scope(Request::new(proto::CreateNetworkScopeRequest {
-            scope: Some(proto::NetworkScope {
-                name: "lab".to_string(),
-                home_domain: "lab.home".to_string(),
-                ..Default::default()
-            }),
-            auth_token: String::new(),
-        }))
-        .await
-        .unwrap();
-
-    service
-        .add_scope_rbl_provider(Request::new(proto::AddScopeRblProviderRequest {
-            provider: Some(proto::ScopeRblProvider {
-                scope_name: "lab".to_string(),
-                zone: "scope.rbl".to_string(),
-                enabled: true,
-                refusal_codes: vec!["127.255.255.0/24".to_string()],
-                refusal_cooldown_secs: 300,
-            }),
-            auth_token: String::new(),
-        }))
-        .await
-        .unwrap();
-
-    let listed = service
-        .list_scope_rbl_providers(Request::new(proto::ListScopeRblProvidersRequest {
-            scope_name: "lab".to_string(),
-            auth_token: String::new(),
-        }))
-        .await
-        .unwrap()
-        .into_inner();
-    assert_eq!(listed.providers.len(), 1);
-    assert_eq!(
-        listed.providers[0].refusal_codes,
-        vec!["127.255.255.0/24".to_string()]
-    );
-    assert_eq!(listed.providers[0].refusal_cooldown_secs, 300);
-
-    // A malformed code is rejected at the API rather than at query time, where
-    // it would fail silently on the path that matters.
-    let status = service
-        .add_scope_rbl_provider(Request::new(proto::AddScopeRblProviderRequest {
-            provider: Some(proto::ScopeRblProvider {
-                scope_name: "lab".to_string(),
-                zone: "bad.rbl".to_string(),
-                enabled: true,
-                refusal_codes: vec!["127.0.0.1/99".to_string()],
-                refusal_cooldown_secs: 0,
-            }),
-            auth_token: String::new(),
-        }))
-        .await
-        .expect_err("a malformed code must be rejected");
-    assert_eq!(status.code(), tonic::Code::InvalidArgument);
 }

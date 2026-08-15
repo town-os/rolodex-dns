@@ -40,7 +40,7 @@ use rolodex_dns::config::DhcpConfig;
 use rolodex_dns::db::{Database, DhcpPool, NetworkScope, RecordKind};
 use rolodex_dns::dhcp::DhcpServer;
 use rolodex_dns::dns_server::DnsServer;
-use rolodex_dns::rbl::{RblChecker, RblResolver};
+use rolodex_dns::dnsbl::{DnsblChecker, DnsblResolver};
 use std::sync::Arc;
 
 const SCOPE: &str = "testnet";
@@ -49,22 +49,18 @@ const TLD: &str = "example.com";
 struct NeverListedResolver;
 
 #[async_trait::async_trait]
-impl RblResolver for NeverListedResolver {
-    async fn lookup_rbl(
+impl DnsblResolver for NeverListedResolver {
+    async fn lookup(
         &self,
         _query: &str,
-    ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
+    ) -> Result<Option<rolodex_dns::dnsbl::DnsblAnswer>, anyhow::Error> {
         Ok(None)
     }
 }
 
 fn make_server() -> (Database, DhcpServer) {
     let db = Database::open_memory().unwrap();
-    let rbl = Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(NeverListedResolver),
-    ));
+    let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
     let dns_server = Arc::new(DnsServer::new(db.clone(), rbl, vec![]));
     let config = DhcpConfig {
         bind: "127.0.0.1:0".to_string(),

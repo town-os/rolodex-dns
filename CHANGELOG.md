@@ -2,6 +2,39 @@
 
 > Languages: **English** | [繁體中文](CHANGELOG.zh-TW.md) | [简体中文](CHANGELOG.zh-CN.md) | [Español (España)](CHANGELOG.es-ES.md) | [Español (México)](CHANGELOG.es-MX.md) | [日本語](CHANGELOG.ja.md)
 
+## Unreleased
+
+### Breaking changes
+
+- **RBL is removed. DNSBL remains, and is now the blocklist.** The reverse-IP provider lookup — a reversed address queried against a provider zone on every reverse-DNS query — is gone, along with per-scope RBL providers, the `rbl:` config section, `SetRblConfig`/`GetRblConfig`, `AddScopeRblProvider`/`RemoveScopeRblProvider`/`ListScopeRblProviders`, and the `set-rbl-config`/`get-rbl-config`/`*-scope-rbl` CLI commands. `src/rbl.rs` is now `src/dnsbl.rs`, and the machinery both lists shared — providers, refusal codes, rotation, the result cache, the recursive resolver — survives under `DnsblChecker`/`DnsblProvider`/`DnsblResolver`. With one list left, `set_dnsbl_config` and friends are simply `set_config`.
+
+  **Addresses are still blockable**, by the local list rather than by a provider: an operator names the address (or the reverse name `dig -x` prints) and both spellings are NXDOMAIN. That is what a provider could never do well here anyway — it is asked about the *name* being resolved, which on a reverse lookup is a name nobody publishes reputation for.
+
+  **The local list is renamed, and its rows are migrated**: `local_rbl_entries` becomes `local_blocklist_entries` and the entries are moved onto it at startup. They are an operator's own list, and a box whose blocklist silently emptied on upgrade would look exactly like the blocklist not working. `scope_rbl_providers` is dropped outright — the lookups it configured no longer exist. Over gRPC, `LocalRblEntry` and its Add/Remove/List methods are now `LocalBlocklistEntry` / `AddLocalBlocklistEntry` / `RemoveLocalBlocklistEntry` / `ListLocalBlocklistEntries`; the HTTP paths Town OS serves them on (`/dns/rbl/local*`) keep their historical spelling, because they are a published contract with the UI.
+
+  proto3 can reserve a *field* number but not a message or method **name**, and every retired piece was a whole message or method — so the proto carries an explicit retired-names block instead, and none of those names may be reused.
+
+- **Blocklist metric labels changed.** `blocklist_blocks_total{kind}` is now `local` or `dnsbl_provider`; `rbl_provider`, `rbl_local` and `rbl_scope_provider` are gone. `answers_total{source}` reports `reverse_blocklist` where it reported `rbl`. Dashboards that name the old label values need updating; anything summing by `kind` keeps working.
+
+### Fixes
+
+- **A zone cut that no referral announces is now crossed instead of rejected.** When one nameserver is authoritative for a parent *and* a signed child of it, a query for a name in the child is answered from the child zone directly — no referral is ever sent — so a resolver that picks its keys from the last delegation it followed validated the child's signatures against the parent's keys and called a good answer bogus:
+
+  ```
+  answer for cdnjs.cloudflare.com. A is bogus: RRSIG over cdnjs.cloudflare.com. A
+  is signed by cdnjs.cloudflare.com., which is not the zone cloudflare.com.
+  ```
+
+  This is the validator defect v0.5.1 named and left open. RFC 4035 §5.3.1 decides it: the RRSIG's signer name says which keys apply. Before validating an answer, a CNAME hop, or a negative's denial, the resolver now checks whether the signatures name a zone below the current one and extends the chain of trust down to it, one cut at a time, fetching the DS the referral never delivered. Each cut is established exactly as a referral's is — the DS validates under the parent's keys, the child's DNSKEY RRset matches it, an absent DS must be *proven* absent — and a cut that cannot be established still withholds the answer.
+
+  Every name behind a provider that hosts a subzone on the same infrastructure was affected. The one that found it was `cdnjs.cloudflare.com`, whose SERVFAIL leaves pages that load assets from it rendering blank.
+
+  The descent is not steerable by the response: the signer is chased only when every RRSIG in the section names it, it lies strictly inside the current zone, and it contains every owner it signed. Without that last condition a forged answer could nominate a genuinely-unsigned sibling zone as its signer, have the parent truthfully prove that delegation carries no DS, and get data the real zone signs accepted as insecure — `a_signer_below_the_zone_that_does_not_enclose_its_owner_is_refused` is that attack, and it fails the suite if the check is removed.
+
+- **An *unsigned* child on its parent's nameservers is now visible.** It is the same hidden cut with nothing to chase: the response carries no signatures, so there is no signer name for the descent above to follow, and it stays refused — that packet is also exactly what stripping every RRSIG in flight produces, and the two cannot be told apart from the resolver's side. `dnssec_unsigned_responses_total{evidence}` now counts each one, labelled `child_apex_soa` when the authority section's SOA names a zone below the current one (what an unsigned child's negative answer carries) and `none` otherwise. The SOA is unsigned and therefore forgeable, so it is diagnostic only and decides nothing; before this the case left no trace but a SERVFAIL indistinguishable from any other.
+
+- **Two new metrics**, bringing the exposed families to 80: `rolodex_dns_dnssec_hidden_zone_cuts_total`, counting responses signed by a zone below the one queried (i.e. how often the DS lookup above is paid), and `rolodex_dns_dnssec_unsigned_responses_total{evidence}` described above.
+
 ## v0.5.1 (2026-08-12)
 
 ### Breaking changes

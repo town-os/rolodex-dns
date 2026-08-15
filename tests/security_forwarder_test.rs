@@ -29,7 +29,7 @@ use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use rolodex_dns::db::Database;
 use rolodex_dns::dns_cache::DnsCache;
 use rolodex_dns::dns_server::{DnsServer, ResolutionMode};
-use rolodex_dns::rbl::RblChecker;
+use rolodex_dns::dnsbl::DnsblChecker;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
@@ -145,7 +145,7 @@ async fn spawn_hostile_upstream(forgery: Forgery) -> SocketAddr {
 fn make_forwarding_server(forwarder: SocketAddr, qname_randomization: bool) -> Arc<DnsServer> {
     let db = Database::open_memory().unwrap();
     let cache = Arc::new(DnsCache::new(db.clone()));
-    let rbl = Arc::new(RblChecker::new(false, vec![]));
+    let rbl = Arc::new(DnsblChecker::new());
     let server = Arc::new(DnsServer::new_with_options(
         db,
         rbl,

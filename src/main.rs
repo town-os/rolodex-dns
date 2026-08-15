@@ -8,9 +8,9 @@ use rolodex_dns::db::Database;
 use rolodex_dns::dns_cache::DnsCache;
 use rolodex_dns::dns_server::DnsServer;
 use rolodex_dns::dns_server::ResolutionMode;
+use rolodex_dns::dnsbl::{DnsblChecker, DnsblProvider, RecursiveDnsblResolver};
 use rolodex_dns::grpc_service::RolodexDnsGrpcService;
 use rolodex_dns::grpc_service::proto::rolodex_dns_service_server::RolodexDnsServiceServer;
-use rolodex_dns::rbl::{RblChecker, RblProvider, RecursiveRblResolver};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
@@ -52,7 +52,7 @@ async fn main() -> Result<()> {
     // Upstreams for both the main resolver and the RBL/DNSBL resolver. Parsed
     // here (before the RBL checker) so blocklist lookups can resolve the same way
     // rolodex does — from the roots, then the forwarder — instead of via the
-    // local stub (which points back at rolodex and loops; see RecursiveRblResolver).
+    // local stub (which points back at rolodex and loops; see RecursiveDnsblResolver).
     let forwarders: Vec<SocketAddr> = config
         .forwarders
         .iter()
@@ -68,33 +68,27 @@ async fn main() -> Result<()> {
     // A malformed refusal code fails startup rather than being dropped: a code
     // that silently does not apply means the provider's "stop querying me"
     // answer reads as a listing and NXDOMAINs every name checked against it.
-    let rbl_providers: Vec<RblProvider> =
-        rolodex_dns::config::to_providers(&config.rbl.providers).map_err(anyhow::Error::msg)?;
-    let rbl = Arc::new(RblChecker::with_resolver(
-        config.rbl.enabled,
-        rbl_providers,
-        Arc::new(RecursiveRblResolver::new(
-            root_hint_ips.clone(),
-            forwarders.clone(),
-        )),
-    ));
-    rbl.set_refusal_cooldown(config.rbl.refusal_cooldown_secs);
-    rbl.set_dnsbl_refusal_cooldown(config.dnsbl.refusal_cooldown_secs);
+    let dnsbl = Arc::new(DnsblChecker::with_resolver(Arc::new(
+        RecursiveDnsblResolver::new(root_hint_ips.clone(), forwarders.clone()),
+    )));
+    dnsbl.set_refusal_cooldown(config.dnsbl.refusal_cooldown_secs);
 
-    let dnsbl_providers: Vec<RblProvider> =
+    let dnsbl_providers: Vec<DnsblProvider> =
         rolodex_dns::config::to_providers(&config.dnsbl.providers).map_err(anyhow::Error::msg)?;
-    rbl.set_dnsbl_config(config.dnsbl.enabled, dnsbl_providers)
+    dnsbl
+        .set_config(config.dnsbl.enabled, dnsbl_providers)
         .await;
 
-    // RBL/DNSBL lookups go out over plaintext :53. On a network that filters :53
+    // Provider lookups go out over plaintext :53. On a network that filters :53
     // they only time out and add latency, so gate them on a live :53 probe:
-    // disable the resolver-backed blocklists (with a logged flag) when :53 is
-    // down, re-enable when it recovers. Only run when a blocklist is configured.
-    if config.rbl.enabled || config.dnsbl.enabled {
-        let rbl_probe = rbl.clone();
+    // disable the resolver-backed blocklist (with a logged flag) when :53 is
+    // down, re-enable when it recovers. Only run when the blocklist is on.
+    if config.dnsbl.enabled {
+        let probe_checker = dnsbl.clone();
         tokio::spawn(async move {
             loop {
-                rbl_probe.set_resolver_available(rolodex_dns::rbl::probe_public_dns53().await);
+                probe_checker
+                    .set_resolver_available(rolodex_dns::dnsbl::probe_public_dns53().await);
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             }
         });
@@ -125,7 +119,7 @@ async fn main() -> Result<()> {
 
     let dns_server = Arc::new(DnsServer::new_with_options(
         db.clone(),
-        rbl.clone(),
+        dnsbl.clone(),
         forwarders,
         Some(Arc::clone(&dns_cache)),
         dns64_prefix,
@@ -321,17 +315,27 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             warm_server.prewarm_auto().await;
         });
-
-        // Recovery runs here, on its own canary, rather than on the query path:
-        // a client's lookup must never be spent probing a tier the box has
-        // already stopped trusting. Reclaiming the roots additionally requires a
-        // DNSSEC-validated answer, so a network that merely intercepts :53
-        // cannot promote itself back to the most-trusted tier.
-        let probe_server = Arc::clone(&dns_server);
-        tokio::spawn(async move {
-            probe_server.recovery_probe_loop().await;
-        });
     }
+
+    // Recovery runs here, on its own canary, rather than on the query path: a
+    // client's lookup must never be spent probing a tier the box has already
+    // stopped trusting. Reclaiming the roots additionally requires a
+    // DNSSEC-validated answer, so a network that merely intercepts :53 cannot
+    // promote itself back to the most-trusted tier.
+    //
+    // Spawned unconditionally, NOT under the auto branch above, because the
+    // mode is no longer fixed for the life of the process — SetResolutionMode
+    // can switch into auto at runtime, and a box that reached auto that way
+    // would otherwise degrade past a dead tier and never climb back, with no
+    // symptom beyond permanently slower and less private resolution. Each pass
+    // re-checks the current mode and returns immediately outside auto, so this
+    // costs one sleeping task in the modes that do not use it. The prewarm
+    // above stays gated: it is a one-shot, and the RPC fires its own on the
+    // transition into auto.
+    let probe_server = Arc::clone(&dns_server);
+    tokio::spawn(async move {
+        probe_server.recovery_probe_loop().await;
+    });
 
     // Shard every UDP listener across SO_REUSEPORT sockets so receive and send
     // scale across cores instead of funnelling through one socket. Must be set
@@ -547,7 +551,7 @@ async fn main() -> Result<()> {
                 db: db.clone(),
                 dns_server: Arc::clone(&dns_server),
                 dns_cache: Some(Arc::clone(&dns_cache)),
-                rbl: rbl.clone(),
+                dnsbl: dnsbl.clone(),
             };
             tokio::spawn(async move {
                 if let Err(e) = rolodex_dns::metrics::serve_metrics(&metrics_bind, state).await {
@@ -578,7 +582,7 @@ async fn main() -> Result<()> {
             let grpc_service = RolodexDnsGrpcService::new(
                 db.clone(),
                 Arc::clone(&dns_server),
-                rbl.clone(),
+                dnsbl.clone(),
                 config.grpc.shared_secret.clone(),
                 false,
             )
@@ -637,7 +641,7 @@ async fn main() -> Result<()> {
         let grpc_service = RolodexDnsGrpcService::new(
             db.clone(),
             Arc::clone(&dns_server),
-            rbl.clone(),
+            dnsbl.clone(),
             config.grpc.shared_secret.clone(),
             true,
         )

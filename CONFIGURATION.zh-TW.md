@@ -299,24 +299,20 @@ security:
 
 `qname_case_randomization` 應該保持開啟。只有當某個上游會把它回送的問題名稱大小寫正規化時，才需要關掉它——否則這種解析器會讓每一次查詢都失敗，因為大小寫比對正是讓 0x20 真正具有防護力的機制。
 
-### 封鎖清單（RBL 與 DNSBL）
+### 封鎖清單（DNSBL）
 
-兩份清單、同一套機制、不同的鍵：**RBL 以 IP 封鎖**（在反向 DNS 查找時檢查），**DNSBL 以名稱封鎖**（在任何外部解析之前檢查）。兩者預設皆為停用且供應商清單為空，所以在你加入供應商之前，不會發出任何查詢，也不會把任何名稱交給封鎖清單營運方。
+**DNSBL 以名稱封鎖**，在任何外部解析之前檢查。它預設為停用且供應商清單為空，所以在你加入供應商之前，不會發出任何查詢，也不會把任何名稱交給封鎖清單營運方。
 
 ```yaml
-rbl:
-  enabled: true
-  refusal_cooldown_secs: 3600
-  providers:
-    - zone: zen.spamhaus.org
-      enabled: true
-
 dnsbl:
   enabled: true
+  refusal_cooldown_secs: 3600
   providers:
     - zone: dbl.spamhaus.org
       enabled: true
 ```
+
+位址是由**本地清單**封鎖的，而不是由供應商封鎖：供應商被問及的是正在解析的那個名稱，而在反向查找中，那是一個沒有人會為其發布信譽資料的名稱。見下面的本地項目。
 
 開啟它們之前有三件事值得知道：
 
@@ -328,7 +324,7 @@ dnsbl:
 
 ```bash
 CLI="rolodex-dns-cli -u /var/run/rolodex-dns.sock"
-$CLI add-local-rbl --name 10.0.0.5 --reason "known spam source"
+$CLI add-local-blocklist --name 10.0.0.5 --reason "known spam source"
 $CLI add-dnsbl-allow --name vendor.example.com --reason "false positive"
 $CLI add-dnsbl-allow --name 192.168.1.100 --reason "our own relay"   # IP 也可以
 ```
@@ -462,7 +458,7 @@ address_family:
 | ---- | ---- |
 | 記錄、範圍內記錄、範圍、關聯 | `dns.bind` 以及所有其他綁定位址 |
 | 權威區域、專屬 TLD、入口監聽器 | `resolution.*` 與 `forwarders`（初始值；`set-forwarders` 可即時變更） |
-| RBL/DNSBL 設定、本地項目、允許清單 | `dnssec.*` |
+| DNSBL 設定、本地項目、允許清單 | `dnssec.*` |
 | DNS64、TTL 漂移、代理、DoT/DoH/DoQ 設定 | `security.*` |
 | DHCP 位址池、租約、憑證選項 | `database_path`、`dhcp.*`、`acme.*`、`metrics.*` |
 | DNSSEC 金鑰與區域簽章；ACME 憑證機構與 EAB 憑據 | TLS 憑證檔（尚未熱抽換進監聽器） |
@@ -490,9 +486,9 @@ YAML 的剖析錯誤同樣是致命的。檔案不存在則不是。
 | 某個疊加網路對等節點查任何名稱都得到 REFUSED | 它落在 `security.overlay_cidrs` 內卻沒呼叫 `JoinNetwork`，或其關聯 TTL 已過期 |
 | 你覆寫過的網域底下，某個公開名稱回 NXDOMAIN | 加了一筆記錄就讓這台伺服器對整個區域具權威。請在本地補上該名稱，或把覆寫改到你自己擁有的名稱上 |
 | 某個名稱在別處都能解析，在這裡卻 SERVFAIL | DNSSEC 驗證把它擋掉了。檢查 `rolodex_dns_dnssec_verdicts_total{verdict="bogus"}`；再用 `dig +cd`（停用檢查）確認 |
-| 對照某個封鎖清單檢查的每個名稱都開始 NXDOMAIN | 這是尚未做拒答處理時的行為。用 `get-rbl-config` 檢查被移出輪替的供應商，以及該供應商的配額 |
+| 對照某個封鎖清單檢查的每個名稱都開始 NXDOMAIN | 這是尚未做拒答處理時的行為。用 `get-dnsbl-config` 檢查被移出輪替的供應商，以及該供應商的配額 |
 | 某個 DHCP 用戶端的主機名稱始終沒出現在 DNS | 它不是合法的單一 DNS 標籤——主機名稱是被拒絕而非被清洗。警告訊息會指出它 |
-| 某台明明正常的主機 `dig -x` 失敗 | RBL 誤判。`add-dnsbl-allow --name <ip>` 可解除 |
+| 某台明明正常的主機 `dig -x` 失敗 | 有一條本地封鎖項目匹配到了該位址。`add-dnsbl-allow --name <ip>` 可解除 |
 | 更新後的憑證沒有被提供 | 憑證重新載入尚未接到監聽器上；請重啟 |
 | 入口監聽器始終沒起來 | 它的 IP 在開機時還不存在。介面起來後重新加入該 TLD 即可 |
 

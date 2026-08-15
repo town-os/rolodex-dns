@@ -137,30 +137,46 @@ message SetForwarderResponse {
   string message = 2;
 }
 
-// RblConfig configures a single RBL provider.
-message RblConfig {
-  // The RBL zone to query (e.g. "zen.spamhaus.org")
-  string zone = 1;
-  // Whether this RBL is enabled (default: true when added)
-  bool enabled = 2;
-  // Codes this provider returns to mean "I refused your query" rather than
-  // "this is listed". A DNSxL answers both with an A record under 127.0.0.0/8,
-  // so only the address distinguishes a listing (127.0.0.2) from a complaint
-  // about the querier (127.255.255.254, "query via a public resolver"), and
-  // reading the latter as a listing NXDOMAINs every name checked against the
-  // provider. Each entry is an IPv4 address or "address/prefix".
-  //
-  // Empty uses the built-in set covering the documented codes of the common
-  // providers: 127.255.255.0/24 (Spamhaus errors), 127.0.1.255 and 127.0.2.255
-  // (Spamhaus DBL/ZRD "IP queries not supported"), 127.0.0.1 and 127.0.0.255
-  // (URIBL/SURBL "query blocked"). The single entry "none" disables refusal
-  // detection for this provider — for a blocklist whose real listings collide
-  // with one of those.
-  repeated string refusal_codes = 3;
-  // Seconds this provider is rotated out of the lookup rotation after a
-  // refusal. 0 uses the request's refusal_cooldown_secs.
-  uint32 refusal_cooldown_secs = 4;
+// SetResolutionModeRequest changes how names this server is not authoritative
+// for are resolved, without a restart.
+//
+// The mode is otherwise a startup-only setting read from `resolution.mode` in
+// the config file, which makes it the one piece of upstream behaviour an
+// orchestrator cannot change without rewriting that file and restarting the
+// process — and a restart of a box's only resolver is a DNS outage for
+// everything on it.
+message SetResolutionModeRequest {
+  // "auto" (root-first fallback chain), "recursive" (iterative from the roots
+  // only), or "forward" (configured forwarders only). Case-insensitive. An
+  // unrecognized value is rejected rather than silently defaulted: a caller
+  // that mistypes a mode must not be told the box is in one mode while it
+  // resolves in another.
+  string mode = 1;
+  // Shared secret for authentication
+  string auth_token = 2;
 }
+
+// SetResolutionModeResponse is returned after setting the resolution mode.
+message SetResolutionModeResponse {
+  // Whether the operation succeeded
+  bool success = 1;
+  string message = 2;
+}
+
+// GetResolutionModeRequest retrieves the mode currently in effect.
+message GetResolutionModeRequest {
+  // Shared secret for authentication
+  string auth_token = 1;
+}
+
+// GetResolutionModeResponse carries the mode currently in effect, which is the
+// mode actually resolving queries rather than the one the config file names —
+// they differ after a SetResolutionMode call.
+message GetResolutionModeResponse {
+  // "auto", "recursive" or "forward"
+  string mode = 1;
+}
+
 
 // RotatedProvider reports a provider currently taken out of the lookup rotation
 // because it refused a query.
@@ -173,42 +189,9 @@ message RotatedProvider {
   uint32 seconds_remaining = 3;
 }
 
-// SetRblConfigRequest configures RBL providers.
-message SetRblConfigRequest {
-  // The list of RBL providers to use
-  repeated RblConfig providers = 1;
-  // Whether RBL checking is globally enabled
-  bool enabled = 2;
-  // Shared secret for authentication
-  string auth_token = 3;
-  // Default seconds a refusing provider stays rotated out, for providers that
-  // set no value of their own. 0 uses the server's built-in default (3600).
-  uint32 refusal_cooldown_secs = 4;
-}
 
-// SetRblConfigResponse is returned after configuring RBL.
-message SetRblConfigResponse {
-  bool success = 1;
-  string message = 2;
-}
 
-// GetRblConfigRequest retrieves the current RBL configuration.
-message GetRblConfigRequest {
-  string auth_token = 1;
-}
 
-// GetRblConfigResponse contains the current RBL configuration.
-message GetRblConfigResponse {
-  bool enabled = 1;
-  // Providers with their refusal codes resolved to what is actually in effect,
-  // so an empty configured list reads back as the built-in codes rather than
-  // as empty.
-  repeated RblConfig providers = 2;
-  // The list-wide default rotate-out duration
-  uint32 refusal_cooldown_secs = 3;
-  // Providers currently out of rotation after refusing a query
-  repeated RotatedProvider rotated_out = 4;
-}
 
 // DnsblConfig configures a single DNSBL (domain blocklist) provider.
 //
@@ -223,7 +206,7 @@ message DnsblConfig {
   // Whether this DNSBL is enabled (default: true when added)
   bool enabled = 2;
   // Codes meaning "query refused" rather than "listed"; see
-  // RblConfig.refusal_codes. Empty uses the built-in set, "none" disables.
+  // DnsblConfig.refusal_codes. Empty uses the built-in set, "none" disables.
   repeated string refusal_codes = 3;
   // Seconds this provider is rotated out after a refusal; 0 uses the request's
   // refusal_cooldown_secs.
@@ -270,7 +253,7 @@ message GetDnsblConfigResponse {
 // An entry covers the name itself and every name under it, so allowlisting
 // "example.com" also exempts "www.example.com". Allowlisted names skip the
 // name-based blocklist step entirely — both the configured DNSBL providers and
-// any matching local RBL entry — so an allowlist entry is the operator's escape
+// any matching local blocklist entry — so an allowlist entry is the operator's escape
 // hatch from a blocklist false positive.
 message DnsblAllowlistEntry {
   // The name to exempt (matched on the name and all subdomains)
@@ -313,7 +296,7 @@ message ListDnsblAllowlistEntriesResponse {
   repeated DnsblAllowlistEntry entries = 1;
 }
 
-// FlushCacheRequest clears the DNS and/or RBL cache.
+// FlushCacheRequest clears the DNS and/or blocklist cache.
 message FlushCacheRequest {
   // Shared secret for authentication
   string auth_token = 1;
@@ -546,7 +529,7 @@ message ListAuthoritativeZonesResponse {
 // SetTrackedTldsRequest replaces the operator's tracked-TLD list — the TLDs that
 // get their own `tld` label value on the Prometheus per-TLD query metrics.
 //
-// Replace, not merge, matching SetForwarders and SetRblConfig: a setter that only
+// Replace, not merge, matching SetForwarders and SetDnsblConfig: a setter that only
 // ever accumulates leaves an operator no way to drop an entry.
 //
 // TLDs owned by a network scope (including each scope's implicit `.home` domain)
@@ -660,46 +643,46 @@ message GetQueryLatencyStatsResponse {
   repeated QueryLatencyStat stats = 1;
 }
 
-// LocalRblEntry represents a local RBL entry.
-message LocalRblEntry {
+// LocalBlocklistEntry represents a local blocklist entry.
+message LocalBlocklistEntry {
   // The name or IP to block
   string name = 1;
   // Reason for blocking
   string reason = 2;
 }
 
-// AddLocalRblEntryRequest adds a local RBL entry.
-message AddLocalRblEntryRequest {
-  LocalRblEntry entry = 1;
+// AddLocalBlocklistEntryRequest adds a local blocklist entry.
+message AddLocalBlocklistEntryRequest {
+  LocalBlocklistEntry entry = 1;
   string auth_token = 2;
 }
 
-// AddLocalRblEntryResponse is returned after adding a local RBL entry.
-message AddLocalRblEntryResponse {
+// AddLocalBlocklistEntryResponse is returned after adding a local blocklist entry.
+message AddLocalBlocklistEntryResponse {
   bool success = 1;
   string message = 2;
 }
 
-// RemoveLocalRblEntryRequest removes a local RBL entry.
-message RemoveLocalRblEntryRequest {
+// RemoveLocalBlocklistEntryRequest removes a local blocklist entry.
+message RemoveLocalBlocklistEntryRequest {
   string name = 1;
   string auth_token = 2;
 }
 
-// RemoveLocalRblEntryResponse is returned after removing a local RBL entry.
-message RemoveLocalRblEntryResponse {
+// RemoveLocalBlocklistEntryResponse is returned after removing a local blocklist entry.
+message RemoveLocalBlocklistEntryResponse {
   bool success = 1;
   string message = 2;
 }
 
-// ListLocalRblEntriesRequest retrieves all local RBL entries.
-message ListLocalRblEntriesRequest {
+// ListLocalBlocklistEntriesRequest retrieves all local blocklist entries.
+message ListLocalBlocklistEntriesRequest {
   string auth_token = 1;
 }
 
-// ListLocalRblEntriesResponse contains all local RBL entries.
-message ListLocalRblEntriesResponse {
-  repeated LocalRblEntry entries = 1;
+// ListLocalBlocklistEntriesResponse contains all local blocklist entries.
+message ListLocalBlocklistEntriesResponse {
+  repeated LocalBlocklistEntry entries = 1;
 }
 
 // TlsConfig configures TLS certificate settings.
@@ -1159,51 +1142,14 @@ message DeleteDhcpLeaseResponse {
 }
 
 // ================================================================
-// Per-Scope RBL Providers
 // ================================================================
 
-// ScopeRblProvider represents an additional RBL provider for a specific scope.
-message ScopeRblProvider {
-  string scope_name = 1;
-  string zone = 2;
-  bool enabled = 3;
-  // Codes meaning "query refused" rather than "listed"; see
-  // RblConfig.refusal_codes. Empty uses the built-in set, "none" disables.
-  repeated string refusal_codes = 4;
-  // Seconds this provider is rotated out after a refusal; 0 uses the server's
-  // RBL-wide default.
-  uint32 refusal_cooldown_secs = 5;
-}
 
-message AddScopeRblProviderRequest {
-  ScopeRblProvider provider = 1;
-  string auth_token = 2;
-}
 
-message AddScopeRblProviderResponse {
-  bool success = 1;
-  string message = 2;
-}
 
-message RemoveScopeRblProviderRequest {
-  string scope_name = 1;
-  string zone = 2;
-  string auth_token = 3;
-}
 
-message RemoveScopeRblProviderResponse {
-  bool success = 1;
-  string message = 2;
-}
 
-message ListScopeRblProvidersRequest {
-  string scope_name = 1;
-  string auth_token = 2;
-}
 
-message ListScopeRblProvidersResponse {
-  repeated ScopeRblProvider providers = 1;
-}
 
 // ================================================================
 // Scope TLDs (per-network owned zones, partitioned across networks)
@@ -1343,6 +1289,32 @@ message ListDhcpCertOptionsResponse {
   repeated DhcpCertOption options = 1;
 }
 
+// ---------------------------------------------------------------------------
+// Retired with the RBL feature.
+//
+// proto3 reserves *field numbers* inside a message and *values* inside an enum;
+// it has no way to reserve a message name or an RPC name, and every part of the
+// RBL surface was a whole message or a whole method rather than a field of a
+// surviving one — so there is nothing the compiler can hold for us and this
+// list is the reservation. None of these names may be reused for anything else:
+// a client built against an older schema still sends these method paths, and a
+// method that answers to one of them with different semantics is worse than one
+// that answers Unimplemented.
+//
+//   messages: RblConfig, SetRblConfigRequest, SetRblConfigResponse,
+//             GetRblConfigRequest, GetRblConfigResponse, ScopeRblProvider,
+//             AddScopeRblProviderRequest, AddScopeRblProviderResponse,
+//             RemoveScopeRblProviderRequest, RemoveScopeRblProviderResponse,
+//             ListScopeRblProvidersRequest, ListScopeRblProvidersResponse
+//   rpcs:     SetRblConfig, GetRblConfig, AddScopeRblProvider,
+//             RemoveScopeRblProvider, ListScopeRblProviders
+//
+// The local blocklist was *renamed* rather than retired — LocalRblEntry and its
+// Add/Remove/List methods are now LocalBlocklistEntry and
+// Add/Remove/ListLocalBlocklistEntry(-ies) — so those old names are equally
+// spoken for, and for the same reason.
+// ---------------------------------------------------------------------------
+
 // RolodexDnsService provides the gRPC management interface for rolodex-dns.
 //
 // All methods accept an auth_token field for shared-secret authentication.
@@ -1364,13 +1336,15 @@ service RolodexDnsService {
   // Path: /rolodex_dns.RolodexDnsService/SetForwarders
   rpc SetForwarders(SetForwarderRequest) returns (SetForwarderResponse);
 
-  // SetRblConfig configures RBL (Realtime Blackhole List) settings.
-  // Path: /rolodex_dns.RolodexDnsService/SetRblConfig
-  rpc SetRblConfig(SetRblConfigRequest) returns (SetRblConfigResponse);
+  // SetResolutionMode changes the upstream resolution mode at runtime.
+  // Path: /rolodex_dns.RolodexDnsService/SetResolutionMode
+  rpc SetResolutionMode(SetResolutionModeRequest) returns (SetResolutionModeResponse);
 
-  // GetRblConfig retrieves the current RBL configuration.
-  // Path: /rolodex_dns.RolodexDnsService/GetRblConfig
-  rpc GetRblConfig(GetRblConfigRequest) returns (GetRblConfigResponse);
+  // GetResolutionMode returns the resolution mode currently in effect.
+  // Path: /rolodex_dns.RolodexDnsService/GetResolutionMode
+  rpc GetResolutionMode(GetResolutionModeRequest) returns (GetResolutionModeResponse);
+
+
 
   // SetDnsblConfig configures DNSBL (domain blocklist) settings.
   // Path: /rolodex_dns.RolodexDnsService/SetDnsblConfig
@@ -1380,7 +1354,7 @@ service RolodexDnsService {
   // Path: /rolodex_dns.RolodexDnsService/GetDnsblConfig
   rpc GetDnsblConfig(GetDnsblConfigRequest) returns (GetDnsblConfigResponse);
 
-  // FlushCache clears DNS and RBL caches.
+  // FlushCache clears the DNS and blocklist caches.
   // Path: /rolodex_dns.RolodexDnsService/FlushCache
   rpc FlushCache(FlushCacheRequest) returns (FlushCacheResponse);
 
@@ -1465,17 +1439,17 @@ service RolodexDnsService {
   // Path: /rolodex_dns.RolodexDnsService/GetQueryLatencyStats
   rpc GetQueryLatencyStats(GetQueryLatencyStatsRequest) returns (GetQueryLatencyStatsResponse);
 
-  // AddLocalRblEntry adds a local RBL entry.
-  // Path: /rolodex_dns.RolodexDnsService/AddLocalRblEntry
-  rpc AddLocalRblEntry(AddLocalRblEntryRequest) returns (AddLocalRblEntryResponse);
+  // AddLocalBlocklistEntry adds a local blocklist entry.
+  // Path: /rolodex_dns.RolodexDnsService/AddLocalBlocklistEntry
+  rpc AddLocalBlocklistEntry(AddLocalBlocklistEntryRequest) returns (AddLocalBlocklistEntryResponse);
 
-  // RemoveLocalRblEntry removes a local RBL entry.
-  // Path: /rolodex_dns.RolodexDnsService/RemoveLocalRblEntry
-  rpc RemoveLocalRblEntry(RemoveLocalRblEntryRequest) returns (RemoveLocalRblEntryResponse);
+  // RemoveLocalBlocklistEntry removes a local blocklist entry.
+  // Path: /rolodex_dns.RolodexDnsService/RemoveLocalBlocklistEntry
+  rpc RemoveLocalBlocklistEntry(RemoveLocalBlocklistEntryRequest) returns (RemoveLocalBlocklistEntryResponse);
 
-  // ListLocalRblEntries retrieves all local RBL entries.
-  // Path: /rolodex_dns.RolodexDnsService/ListLocalRblEntries
-  rpc ListLocalRblEntries(ListLocalRblEntriesRequest) returns (ListLocalRblEntriesResponse);
+  // ListLocalBlocklistEntries retrieves all local blocklist entries.
+  // Path: /rolodex_dns.RolodexDnsService/ListLocalBlocklistEntries
+  rpc ListLocalBlocklistEntries(ListLocalBlocklistEntriesRequest) returns (ListLocalBlocklistEntriesResponse);
 
   // AddDnsblAllowlistEntry exempts a name (and its subdomains) from the
   // name-based blocklist check.
@@ -1594,17 +1568,10 @@ service RolodexDnsService {
   rpc DeleteDhcpLease(DeleteDhcpLeaseRequest) returns (DeleteDhcpLeaseResponse);
 
   // ================================================================
-  // Per-Scope RBL Providers
-  // ================================================================
+    // ================================================================
 
-  // AddScopeRblProvider adds an additional RBL provider for a specific scope.
-  rpc AddScopeRblProvider(AddScopeRblProviderRequest) returns (AddScopeRblProviderResponse);
 
-  // RemoveScopeRblProvider removes a scope-specific RBL provider.
-  rpc RemoveScopeRblProvider(RemoveScopeRblProviderRequest) returns (RemoveScopeRblProviderResponse);
 
-  // ListScopeRblProviders lists RBL providers for a specific scope.
-  rpc ListScopeRblProviders(ListScopeRblProvidersRequest) returns (ListScopeRblProvidersResponse);
 
   // ================================================================
   // Scope TLDs (per-network owned zones, partitioned across networks)

@@ -18,8 +18,6 @@ pub struct Config {
     pub dnssec: DnssecConfig,
     /// Database file path for persistent DNS records.
     pub database_path: String,
-    /// RBL (Realtime Blackhole List) configuration.
-    pub rbl: RblSettings,
     /// DNSBL (domain blocklist) configuration.
     #[serde(default)]
     pub dnsbl: DnsblSettings,
@@ -305,15 +303,15 @@ pub struct GrpcConfig {
     pub shared_secret: String,
 }
 
-/// RBL provider configuration.
+/// Domain-blocklist provider configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RblProviderConfig {
-    /// The RBL zone to query (e.g. "zen.spamhaus.org").
+pub struct DnsblProviderConfig {
+    /// The blocklist zone to query (e.g. "dbl.spamhaus.org").
     pub zone: String,
     /// Whether this provider is enabled.
     pub enabled: bool,
     /// Codes this provider returns to mean "I refused your query" rather than
-    /// "this is listed" — see [`crate::rbl::DEFAULT_REFUSAL_CODES`]. Each entry
+    /// "this is listed" — see [`crate::dnsbl::DEFAULT_REFUSAL_CODES`]. Each entry
     /// is an IPv4 address or `address/prefix`. Empty (the default, and what
     /// every configuration predating this field has) uses the built-in set; the
     /// single entry `none` disables refusal detection for this provider.
@@ -325,35 +323,22 @@ pub struct RblProviderConfig {
     pub refusal_cooldown_secs: Option<u64>,
 }
 
-/// RBL settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RblSettings {
-    /// Whether RBL checking is globally enabled.
-    pub enabled: bool,
-    /// List of RBL providers.
-    pub providers: Vec<RblProviderConfig>,
-    /// Default seconds a refusing provider stays rotated out, for providers
-    /// that do not set their own. `0` means the built-in default.
-    #[serde(default = "default_refusal_cooldown_secs")]
-    pub refusal_cooldown_secs: u64,
-}
-
 /// The built-in rotate-out duration, used when nothing configures one.
 fn default_refusal_cooldown_secs() -> u64 {
-    crate::rbl::DEFAULT_REFUSAL_COOLDOWN_SECS
+    crate::dnsbl::DEFAULT_REFUSAL_COOLDOWN_SECS
 }
 
-impl RblProviderConfig {
+impl DnsblProviderConfig {
     /// Converts to the runtime provider, resolving the refusal codes.
     ///
     /// An unparseable code is an error rather than a skipped entry: a code that
     /// silently does not apply turns back into "the provider's complaint reads
     /// as a listing", which is the failure this whole mechanism exists to stop,
     /// and it would do so invisibly.
-    pub fn to_provider(&self) -> Result<crate::rbl::RblProvider, String> {
-        let refusal_codes = crate::rbl::resolve_refusal_codes(&self.refusal_codes)
+    pub fn to_provider(&self) -> Result<crate::dnsbl::DnsblProvider, String> {
+        let refusal_codes = crate::dnsbl::resolve_refusal_codes(&self.refusal_codes)
             .map_err(|e| format!("blocklist provider '{}': {e}", self.zone))?;
-        Ok(crate::rbl::RblProvider {
+        Ok(crate::dnsbl::DnsblProvider {
             zone: self.zone.clone(),
             enabled: self.enabled,
             refusal_codes: refusal_codes.into(),
@@ -367,16 +352,15 @@ impl RblProviderConfig {
 
 /// Converts a configured provider list, reporting the first bad entry.
 pub fn to_providers(
-    providers: &[RblProviderConfig],
-) -> Result<Vec<crate::rbl::RblProvider>, String> {
+    providers: &[DnsblProviderConfig],
+) -> Result<Vec<crate::dnsbl::DnsblProvider>, String> {
     providers.iter().map(|p| p.to_provider()).collect()
 }
 
 /// DNSBL (domain blocklist) settings.
 ///
-/// DNSBL providers are queried by prepending the looked-up domain name to the
-/// zone (e.g. `dbl.spamhaus.org`), as opposed to RBL providers which are queried
-/// with a reversed IP. DNSBL listings take precedence over forwarded/iterative
+/// Providers are queried by prepending the looked-up domain name to the zone
+/// (e.g. `dbl.spamhaus.org`). Listings take precedence over forwarded/iterative
 /// answers. Disabled with no providers by default; operators add the providers
 /// they want via config or `SetDnsblConfig`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -384,10 +368,9 @@ pub struct DnsblSettings {
     /// Whether DNSBL checking is globally enabled.
     pub enabled: bool,
     /// List of DNSBL providers.
-    pub providers: Vec<RblProviderConfig>,
+    pub providers: Vec<DnsblProviderConfig>,
     /// Default seconds a refusing provider stays rotated out, for providers
-    /// that do not set their own. `0` means the built-in default. Independent
-    /// of the RBL setting because the two lists are configured independently.
+    /// that do not set their own. `0` means the built-in default.
     #[serde(default = "default_refusal_cooldown_secs")]
     pub refusal_cooldown_secs: u64,
 }
@@ -1141,11 +1124,6 @@ impl Default for Config {
             resolution: ResolutionConfig::default(),
             dnssec: DnssecConfig::default(),
             database_path: "rolodex-dns.db".to_string(),
-            rbl: RblSettings {
-                enabled: false,
-                providers: Vec::new(),
-                refusal_cooldown_secs: default_refusal_cooldown_secs(),
-            },
             dnsbl: DnsblSettings::default(),
             dot: None,
             doh: None,
@@ -1177,9 +1155,7 @@ mod tests {
             ]
         );
         assert_eq!(config.grpc.tcp_bind, "127.0.0.1:50051");
-        // RBL and DNSBL default to disabled with empty provider lists.
-        assert!(!config.rbl.enabled);
-        assert!(config.rbl.providers.is_empty());
+        // DNSBL defaults to disabled with an empty provider list.
         assert!(!config.dnsbl.enabled);
         assert!(config.dnsbl.providers.is_empty());
         // Resolution defaults to the auto fallback chain with no custom hints,
@@ -1197,7 +1173,7 @@ mod tests {
     fn test_resolution_config_defaults_when_omitted() {
         // A YAML document without a `resolution:` section must default to
         // auto mode (the field is `#[serde(default)]`).
-        let yaml = "dns:\n  bind:\n    - udp: \"0.0.0.0:53\"\ngrpc:\n  tcp_bind: \"127.0.0.1:50051\"\n  unix_socket: \"\"\n  shared_secret: \"\"\nforwarders: []\ndatabase_path: \"x.db\"\nrbl:\n  enabled: false\n  providers: []\n";
+        let yaml = "dns:\n  bind:\n    - udp: \"0.0.0.0:53\"\ngrpc:\n  tcp_bind: \"127.0.0.1:50051\"\n  unix_socket: \"\"\n  shared_secret: \"\"\nforwarders: []\ndatabase_path: \"x.db\"\ndnsbl:\n  enabled: false\n  providers: []\n";
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.resolution.mode, "auto");
         assert!(config.resolution.root_hints.is_empty());
@@ -1216,20 +1192,20 @@ mod tests {
     /// that an unmodified deployment stops reading a provider's "stop querying
     /// me" answer as a listing.
     #[test]
-    fn rbl_provider_without_refusal_fields_gets_defaults() {
-        let yaml = "dns:\n  bind:\n    - udp: \"0.0.0.0:53\"\ngrpc:\n  tcp_bind: \"127.0.0.1:50051\"\n  unix_socket: \"\"\n  shared_secret: \"\"\nforwarders: []\ndatabase_path: \"x.db\"\nrbl:\n  enabled: true\n  providers:\n    - zone: \"zen.spamhaus.org\"\n      enabled: true\n";
+    fn dnsbl_provider_without_refusal_fields_gets_defaults() {
+        let yaml = "dns:\n  bind:\n    - udp: \"0.0.0.0:53\"\ngrpc:\n  tcp_bind: \"127.0.0.1:50051\"\n  unix_socket: \"\"\n  shared_secret: \"\"\nforwarders: []\ndatabase_path: \"x.db\"\ndnsbl:\n  enabled: true\n  providers:\n    - zone: \"zen.spamhaus.org\"\n      enabled: true\n";
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        assert!(config.rbl.providers[0].refusal_codes.is_empty());
-        assert!(config.rbl.providers[0].refusal_cooldown_secs.is_none());
+        assert!(config.dnsbl.providers[0].refusal_codes.is_empty());
+        assert!(config.dnsbl.providers[0].refusal_cooldown_secs.is_none());
         assert_eq!(
-            config.rbl.refusal_cooldown_secs,
-            crate::rbl::DEFAULT_REFUSAL_COOLDOWN_SECS
+            config.dnsbl.refusal_cooldown_secs,
+            crate::dnsbl::DEFAULT_REFUSAL_COOLDOWN_SECS
         );
 
-        let provider = config.rbl.providers[0].to_provider().unwrap();
+        let provider = config.dnsbl.providers[0].to_provider().unwrap();
         assert_eq!(
             provider.refusal_codes.len(),
-            crate::rbl::DEFAULT_REFUSAL_CODES.len()
+            crate::dnsbl::DEFAULT_REFUSAL_CODES.len()
         );
         assert!(
             provider.cooldown.is_none(),
@@ -1238,18 +1214,18 @@ mod tests {
     }
 
     #[test]
-    fn rbl_provider_refusal_fields_parse() {
-        let yaml = "dns:\n  bind:\n    - udp: \"0.0.0.0:53\"\ngrpc:\n  tcp_bind: \"127.0.0.1:50051\"\n  unix_socket: \"\"\n  shared_secret: \"\"\nforwarders: []\ndatabase_path: \"x.db\"\nrbl:\n  enabled: true\n  refusal_cooldown_secs: 900\n  providers:\n    - zone: \"private.rbl\"\n      enabled: true\n      refusal_codes: [\"none\"]\n    - zone: \"zen.spamhaus.org\"\n      enabled: true\n      refusal_codes: [\"127.255.255.0/24\"]\n      refusal_cooldown_secs: 1800\n";
+    fn dnsbl_provider_refusal_fields_parse() {
+        let yaml = "dns:\n  bind:\n    - udp: \"0.0.0.0:53\"\ngrpc:\n  tcp_bind: \"127.0.0.1:50051\"\n  unix_socket: \"\"\n  shared_secret: \"\"\nforwarders: []\ndatabase_path: \"x.db\"\ndnsbl:\n  enabled: true\n  refusal_cooldown_secs: 900\n  providers:\n    - zone: \"private.rbl\"\n      enabled: true\n      refusal_codes: [\"none\"]\n    - zone: \"zen.spamhaus.org\"\n      enabled: true\n      refusal_codes: [\"127.255.255.0/24\"]\n      refusal_cooldown_secs: 1800\n";
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(config.rbl.refusal_cooldown_secs, 900);
+        assert_eq!(config.dnsbl.refusal_cooldown_secs, 900);
 
-        let private = config.rbl.providers[0].to_provider().unwrap();
+        let private = config.dnsbl.providers[0].to_provider().unwrap();
         assert!(
             private.refusal_codes.is_empty(),
             "'none' disables detection"
         );
 
-        let zen = config.rbl.providers[1].to_provider().unwrap();
+        let zen = config.dnsbl.providers[1].to_provider().unwrap();
         assert_eq!(zen.refusal_codes.len(), 1);
         assert_eq!(zen.cooldown, Some(std::time::Duration::from_secs(1800)));
     }
@@ -1257,16 +1233,16 @@ mod tests {
     /// A malformed code is an error, not a dropped entry: a code that silently
     /// does not apply is a refusal that reads as a listing.
     #[test]
-    fn rbl_provider_rejects_malformed_refusal_code() {
-        let provider = RblProviderConfig {
-            zone: "bad.rbl".to_string(),
+    fn dnsbl_provider_rejects_malformed_refusal_code() {
+        let provider = DnsblProviderConfig {
+            zone: "bad.example".to_string(),
             enabled: true,
             refusal_codes: vec!["127.0.0.1".to_string(), "not-an-ip".to_string()],
             refusal_cooldown_secs: None,
         };
         let err = provider.to_provider().expect_err("must not be accepted");
         assert!(
-            err.contains("bad.rbl"),
+            err.contains("bad.example"),
             "error should name the provider: {err}"
         );
         assert!(to_providers(std::slice::from_ref(&provider)).is_err());
@@ -1288,7 +1264,7 @@ mod tests {
         // Both blocklists ship empty: the server queries no external provider
         // until an operator configures one.
         let config = Config::default();
-        assert!(config.rbl.providers.is_empty());
+        assert!(config.dnsbl.providers.is_empty());
         assert!(config.dnsbl.providers.is_empty());
     }
 
@@ -1296,7 +1272,7 @@ mod tests {
     fn test_config_without_dnsbl_section_uses_default() {
         // Existing configs predating the dnsbl section must still parse, and
         // default to a disabled DNSBL with no providers.
-        let yaml = "dns:\n  bind:\n    - udp: \"0.0.0.0:53\"\ngrpc:\n  tcp_bind: \"127.0.0.1:50051\"\n  unix_socket: \"\"\n  shared_secret: \"\"\nforwarders: []\ndatabase_path: \"x.db\"\nrbl:\n  enabled: false\n  providers: []\n";
+        let yaml = "dns:\n  bind:\n    - udp: \"0.0.0.0:53\"\ngrpc:\n  tcp_bind: \"127.0.0.1:50051\"\n  unix_socket: \"\"\n  shared_secret: \"\"\nforwarders: []\ndatabase_path: \"x.db\"\ndnsbl:\n  enabled: false\n  providers: []\n";
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(!config.dnsbl.enabled);
         assert!(config.dnsbl.providers.is_empty());
@@ -1432,7 +1408,7 @@ grpc:
 forwarders:
   - "8.8.8.8:53"
 database_path: "rolodex-dns.db"
-rbl:
+dnsbl:
   enabled: false
   providers: []
 "#;
@@ -1463,7 +1439,7 @@ grpc:
 forwarders:
   - "8.8.8.8:53"
 database_path: "rolodex-dns.db"
-rbl:
+dnsbl:
   enabled: false
   providers: []
 "#;
@@ -1485,7 +1461,7 @@ grpc:
   shared_secret: ""
 forwarders: []
 database_path: "rolodex-dns.db"
-rbl:
+dnsbl:
   enabled: false
   providers: []
 "#;

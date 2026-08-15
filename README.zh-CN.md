@@ -10,7 +10,7 @@ Rolodex DNS 提供 UDP、TCP、TLS（DoT）、HTTPS（DoH）与 QUIC（DoQ）上
 
 从根服务器解析出来的答案默认会对照 IANA 信任锚点进行 **DNSSEC 验证**；伪造的数据永不提供也永不缓存。见 [DNSSEC](#dnssec)。
 
-Rolodex DNS 另外支持用于垃圾邮件／恶意软件过滤的实时黑洞列表（RBL）与域名封锁列表（DNSBL）、DNSSEC 区域签名、DANE TLSA 证书关联、内置的 ACME 证书颁发机构、DNS64 AAAA 合成、逐网络的 DNS 分隔，以及集成的 DHCPv4 服务器。
+Rolodex DNS 另外支持用于垃圾邮件／恶意软件过滤的域名封锁列表（DNSBL）、DNSSEC 区域签名、DANE TLSA 证书关联、内置的 ACME 证书颁发机构、DNS64 AAAA 合成、逐网络的 DNS 分隔，以及集成的 DHCPv4 服务器。
 
 第一次接触？请从 **[配置指南](CONFIGURATION.zh-CN.md)** 开始——那是一份任务导向的逐步说明，从最小可用配置一路走到每个子系统，并为每种部署形态附上实例。
 
@@ -37,10 +37,10 @@ Rolodex DNS 另外支持用于垃圾邮件／恶意软件过滤的实时黑洞�
 - **TTL 漂移**：固定模式（加减一段时长，支持 `"1h30m"` 这类复合格式）与实验性的对数模式（以延迟为基础）
 - **QNAME 大小写随机化**：0x20 编码会把转发查询中的 QNAME 大小写随机化，作为缓存投毒的防御
 - **gRPC 管理**：通过 gRPC 进行远程记录管理，使用共享密钥或 Unix 套接字认证
-- **RBL 支持**：具备内存缓存的实时黑洞列表检查，另有供自定义封锁条目使用的本地 RBL 数据库
+- **封锁列表支持**：具备内存缓存的 DNSBL 提供方检查，另有供自定义封锁条目使用的本地封锁列表数据库
 - **DNSBL 支持**：域名封锁列表（Spamhaus DBL、SURBL、URIBL）会在任何外部解析之前检查，因此即使此前已缓存了一个转发答案，被列入的名称仍会被拒绝
 - **封锁列表拒答处理**：DNSxL 响应“已列入”与“别再查我们”用的是同一种 `A` 记录，因此拒答码（`127.255.255.254`、`127.0.0.1` 等）会被识别为**不是**列入，而该提供方会被移出查询轮换一段冷却时间——而不是把每一个对照它检查的名称都变成 NXDOMAIN
-- **封锁列表允许列表**：一个涵盖所有列表与两道关卡的逃生口——一个条目可让某个名称及其子域名豁免于 DNSBL／本地检查，并让某个地址（以反向名称或 IP 字面量指定）豁免于 RBL 检查
+- **封锁列表允许列表**：一个涵盖所有列表与两道关卡的逃生口——一个条目可让某个名称及其子域名豁免于 DNSBL／本地检查，并让某个地址（以反向名称或 IP 字面量指定）豁免于反向查找检查
 - **递归访问控制**：`security.recursion_cidrs` 决定谁可以驱动**上游**解析，默认为从互联网不可路由的范围，因此默认的 `0.0.0.0:53` 绑定并不是一台开放递归解析器。陌生人仍然收得到这台服务器的权威答案
 - **网络范围划分**：具备逐范围记录与以 IP 为基础之访问控制的分割视域 DNS。范围强制仅限于已配置的叠加网络（WireGuard）CIDR；loopback、局域网与容器来源受到信任且永不被拒绝
 - **逐网络的专属 TLD**：由某个范围拥有的全局唯一 TLD，在叠加对等节点之间分隔且绝不转发到上游，并可选择性地为每个 TLD 设立**入口 DNS 监听器**，在该网络自己的地址上作答，并把已编程的名称改写到它的入口控制器
@@ -50,7 +50,7 @@ Rolodex DNS 另外支持用于垃圾邮件／恶意软件过滤的实时黑洞�
 - **Prometheus 指标**：一个可选、默认关闭的 `/metrics` 端点，输出 77 个具备有界标签基数的指标系列——包含逐阶段的答案归因与逐 TLD 隔离，让分割视域流水线从外面看得懂。查询名称永远不会成为标签
 - **SQLite 持久化**：DNS 记录跨重启保存
 - **TLS 热重载（部分）**：`TlsManager` 可按需从配置的 PEM 文件重建它的 `rustls::ServerConfig` 并发布给订阅者，若重建失败则保留此前的证书继续提供。**尚未接到监听器上**——DoT/DoH/DoQ/ACME 每一个都在启动时取一次配置快照，因此续期后的证书仍需重启才会被提供
-- **性能**：多线程 tokio 运行时、无锁的 RBL 与解析器状态（`AtomicBool` + `ArcSwap` + 原子操作）、范围／区域／TLD／RBL 条目的开机内存缓存、供上游转发使用的 UDP 套接字池，以及全面采用的 DashMap/DashSet 并发缓存
+- **性能**：多线程 tokio 运行时、无锁的封锁列表与解析器状态（`AtomicBool` + `ArcSwap` + 原子操作）、范围／区域／TLD／封锁条目的开机内存缓存、供上游转发使用的 UDP 套接字池，以及全面采用的 DashMap/DashSet 并发缓存
 
 ## 构建
 
@@ -83,7 +83,7 @@ make dev
    - gRPC Unix 套接字位于 `/tmp/rolodex-dns.sock`（没有 TCP gRPC 监听器）
    - SQLite 数据库位于 `/tmp/rolodex-dns-dev.db`
    - 不需要认证
-   - RBL 检查禁用
+   - 封锁列表检查禁用
    - 默认的上游转发器（`8.8.8.8:53`、`8.8.4.4:53`），作为默认 `auto` 解析链的 `local` 层级
 
 `make help` 会按段分组列出每个目标与说明（它也是默认目标，所以直接运行 `make` 就会打印它）。
@@ -363,33 +363,21 @@ grpc:
   # TCP gRPC 认证用的共享密钥（Unix 套接字不需要）
   shared_secret: your-secret-here
 
-rbl:
-  # 全局启用／禁用 RBL 检查（默认：false）
+# 域名封锁列表（按名称检查，在任何外部解析之前）
+dnsbl:
+  # 全局启用／禁用封锁列表检查（默认：false）
   enabled: false
   # 拒绝我们查询的提供方被移出轮换的秒数
   refusal_cooldown_secs: 3600
-  # RBL 提供方
   providers:
-    - zone: zen.spamhaus.org
+    - zone: dbl.spamhaus.org
       enabled: true
       # 代表“查询被拒绝”而非“已列入”的码。省略即使用内置集合；
       # 单一条目 "none" 会为此提供方禁用拒答检测。
       refusal_codes: []
       # 逐提供方覆盖移出轮换的时长（省略则沿用上层）
       refusal_cooldown_secs: 3600
-    - zone: bl.spamcop.net
-      enabled: true
-    - zone: b.barracudacentral.org
-      enabled: true
-    - zone: dbl.spamhaus.org
-      enabled: true
-
-# 域名封锁列表（按名称检查，在任何外部解析之前）
-dnsbl:
-  enabled: false
-  refusal_cooldown_secs: 3600   # 与 RBL 的默认值互相独立
-  providers:
-    - zone: dbl.spamhaus.org
+    - zone: multi.surbl.org
       enabled: true
 
 # 集成的 DHCPv4 服务器（省略此段即禁用）
@@ -501,18 +489,12 @@ metrics:
 | `grpc.tcp_bind` | `"127.0.0.1:50051"` | TCP gRPC 监听器；支持 interface:port（空值代表禁用） |
 | `grpc.unix_socket` | `"/var/run/rolodex-dns.sock"` | Unix 套接字路径（空值代表禁用） |
 | `grpc.shared_secret` | `""` | TCP gRPC 认证用的共享密钥（空值 = 不做认证） |
-| `rbl.enabled` | `false` | 全局启用以 IP 为基础的 RBL 检查 |
-| `rbl.providers[].zone` | -- | 要查询的 RBL 区域（反转后的 IP 会前置于它） |
-| `rbl.providers[].enabled` | `true` | 启用／禁用单个提供方 |
-| `rbl.providers[].refusal_codes` | `[]`（内置集合） | 代表“查询被拒绝”而非“已列入”的答案。每一项是一个 IPv4 地址或 `address/prefix`。空值代表内置集合；单一条目 `none` 会为该提供方禁用检测。明确列出的列表是取代默认值而非扩充，而无法解析的码会在启动时被拒绝（见[拒答码与提供方轮换](#拒答码与提供方轮换)） |
-| `rbl.providers[].refusal_cooldown_secs` | （沿用列表默认） | 拒答后逐提供方的移出轮换时长 |
-| `rbl.refusal_cooldown_secs` | `3600` | 对于未自行设置的提供方，一个拒答中的 RBL 提供方被移出轮换的秒数。`0` 代表“使用默认值”，而非“不冷却” |
 | `dnsbl.enabled` | `false` | 全局启用域名封锁列表（DNSBL）检查 |
 | `dnsbl.providers[].zone` | -- | 要查询的 DNSBL 区域（被查询的名称会前置于它） |
 | `dnsbl.providers[].enabled` | `true` | 启用／禁用单个 DNSBL 提供方 |
-| `dnsbl.providers[].refusal_codes` | `[]`（内置集合） | 同 `rbl.providers[].refusal_codes` |
-| `dnsbl.providers[].refusal_cooldown_secs` | （沿用列表默认） | 同 `rbl.providers[].refusal_cooldown_secs` |
-| `dnsbl.refusal_cooldown_secs` | `3600` | DNSBL 的移出轮换默认值，与 RBL 的互相独立 |
+| `dnsbl.providers[].refusal_codes` | `[]`（内置集合） | 代表“查询被拒绝”而非“已列入”的答案。每一项是一个 IPv4 地址或 `address/prefix`。空值代表内置集合；单一条目 `none` 会为该提供方禁用检测。明确列出的列表是取代默认值而非扩充，而无法解析的码会在启动时被拒绝（见[拒答码与提供方轮换](#拒答码与提供方轮换)） |
+| `dnsbl.providers[].refusal_cooldown_secs` | （沿用列表默认） | 拒答后逐提供方的移出轮换时长 |
+| `dnsbl.refusal_cooldown_secs` | `3600` | 对于未自行设置的提供方，一个拒答中的提供方被移出轮换的秒数。`0` 代表“使用默认值”，而非“不冷却” |
 | `dhcp.bind` | `"0.0.0.0:67"` | DHCP 监听器（段不存在 = DHCP 禁用） |
 | `dhcp.tld` | -- | 启用 DHCP 时必填：主机名会注册为 `<host>.lan.<tld>.` |
 | `dhcp.default_lease_duration` | `3600` | 默认租约时长（秒） |
@@ -585,15 +567,13 @@ rolodex-dns-cli [OPTIONS] <COMMAND>
 | `list-records` | 列出 DNS 记录，可加筛选条件 |
 | **转发器** | |
 | `set-forwarders` | 在运行期设置上游 DNS 转发器 |
-| **RBL / DNSBL** | |
-| `set-rbl-config` | 在运行期配置以 IP 为基础的 RBL |
-| `get-rbl-config` | 获取当前的 RBL 配置 |
+| **封锁列表** | |
 | `set-dnsbl-config` | 在运行期配置域名封锁列表（DNSBL） |
 | `get-dnsbl-config` | 获取当前的 DNSBL 配置 |
-| `flush-cache` | 清空 RBL/DNSBL 的结果缓存 |
-| `add-local-rbl` | 新增一条本地 RBL 封锁条目 |
-| `remove-local-rbl` | 移除一条本地 RBL 封锁条目 |
-| `list-local-rbl` | 列出所有本地 RBL 封锁条目 |
+| `flush-cache` | 清空封锁列表的结果缓存 |
+| `add-local-blocklist` | 新增一条本地封锁条目 |
+| `remove-local-blocklist` | 移除一条本地封锁条目 |
+| `list-local-blocklist` | 列出所有本地封锁条目 |
 | `add-dnsbl-allow` | 让某个名称（及其子域名）豁免于封锁列表检查 |
 | `remove-dnsbl-allow` | 移除一条 DNSBL 允许列表条目 |
 | `list-dnsbl-allow` | 列出所有 DNSBL 允许列表条目 |
@@ -615,10 +595,6 @@ rolodex-dns-cli [OPTIONS] <COMMAND>
 | `set-scope-tld-forwarders` | 设置某个范围之 TLD 的对等转发器 |
 | `list-scope-tld-forwarders` | 列出某个范围之 TLD 的对等转发器 |
 | `list-scope-tld-listeners` | 列出绑定到某个范围各 TLD 的入口 DNS 监听器 |
-| **逐范围 RBL** | |
-| `add-scope-rbl` | 为某个范围新增一个额外的 RBL 提供方 |
-| `remove-scope-rbl` | 移除某个范围专属的 RBL 提供方 |
-| `list-scope-rbl` | 列出某个范围的 RBL 提供方 |
 | **权威区域** | |
 | `add-auth-zone` | 声明某个区域为权威 |
 | `remove-auth-zone` | 从权威列表中移除某个区域 |
@@ -778,82 +754,9 @@ rolodex-dns-cli set-forwarders -f 9.9.9.9:53
 rolodex-dns-cli set-forwarders -f ""
 ```
 
-##### `set-rbl-config`
-
-在运行期配置 RBL（实时黑洞列表）。会取代整份 RBL 配置。
-**gRPC 路径：** `/rolodex_dns.RolodexDnsService/SetRblConfig`
-
-```
-rolodex-dns-cli set-rbl-config [OPTIONS]
-```
-
-| 选项 | 默认值 | 说明 |
-|------|--------|------|
-| `-e, --enabled` | `false` | 全局启用 RBL 检查。未带此标志时 RBL 为禁用 |
-| `-p, --providers <SPEC>...` | -- | RBL 提供方规格，格式为 `"zone:enabled"`（例如 `"zen.spamhaus.org:true"`） |
-| `--refusal-codes <ZONE=CODE,...>` | 内置集合 | 逐提供方的拒答码（可重复）。`none` 会为该区域禁用拒答检测 |
-| `--provider-cooldown <ZONE=SECS>` | 列表默认 | 拒答后逐提供方的移出轮换时长（可重复） |
-| `--refusal-cooldown <SECS>` | `3600` | 全列表的移出轮换时长 |
-
-若某个 `zone=` 条目指名的区域不在 `--providers` 中，那是错误，而不是被默默丢弃的标志。
-
-示例：
-```bash
-# 启用 RBL 并使用 Spamhaus
-rolodex-dns-cli set-rbl-config -e -p "zen.spamhaus.org:true"
-
-# 启用 RBL 并配置多个提供方（部分禁用）
-rolodex-dns-cli set-rbl-config -e \
-  -p "zen.spamhaus.org:true" \
-  -p "bl.spamcop.net:false" \
-  -p "b.barracudacentral.org:true"
-
-# 缩小某个提供方的拒答码，并在拒答时退避 15 分钟
-rolodex-dns-cli set-rbl-config -e \
-  -p "zen.spamhaus.org:true" \
-  --refusal-codes "zen.spamhaus.org=127.255.255.0/24" \
-  --provider-cooldown "zen.spamhaus.org=900"
-
-# 一个真实列入值与某个默认拒答码相撞的私有封锁列表
-rolodex-dns-cli set-rbl-config -e \
-  -p "rbl.internal.example:true" \
-  --refusal-codes "rbl.internal.example=none"
-
-# 完全禁用 RBL
-rolodex-dns-cli set-rbl-config
-```
-
-##### `get-rbl-config`
-
-获取当前的 RBL 配置。
-**gRPC 路径：** `/rolodex_dns.RolodexDnsService/GetRblConfig`
-
-```
-rolodex-dns-cli get-rbl-config
-```
-
-输出示例：
-```
-RBL enabled: true
-Refusal rotate-out: 3600s (default for providers with no value)
-
-Providers:
-ZONE                             ENABLED  COOLDOWN   REFUSAL CODES
-------------------------------------------------------------------------------------------
-zen.spamhaus.org                 true     default    127.255.255.0/24, 127.0.1.255, ...
-bl.spamcop.net                   false    900s       127.0.0.1
-
-Rotated out (refused our queries):
-ZONE                             REFUSAL CODE       REMAINING
---------------------------------------------------------------
-zen.spamhaus.org                 127.255.255.254    3241s
-```
-
-拒答码是以**实际生效的状态**报告的：一个未配置任何码的提供方会读回内置集合，而不是读回空值，因此打印出来的就是实际在跑的内容。`Rotated out` 块只在确实有提供方正处于退避状态时才会打印——那正是“封锁列表很干净”与“封锁列表不再回答我们”之间的差别，而这两者从外面看原本一模一样。
-
 ##### `flush-cache`
 
-清空 RBL 结果缓存。强制后续的反向 DNS 查询重新查找。
+清空封锁列表结果缓存。强制后续查询重新查找。
 **gRPC 路径：** `/rolodex_dns.RolodexDnsService/FlushCache`
 
 ```
@@ -1100,41 +1003,11 @@ rolodex-dns-cli get-search-domains -i <IP>
 - `success`（bool）：操作是否成功
 - `message`（string）：`success` 为 false 时的错误信息
 
-#### `SetRblConfig`
-
-**路径：** `/rolodex_dns.RolodexDnsService/SetRblConfig`
-
-在运行期配置实时黑洞列表。
-
-**参数：**
-- `enabled`（bool）：是否全局启用 RBL 检查。默认：false
-- `providers`（repeated RblConfig）：RBL 提供方列表
-  - `zone`（string）：要查询的 DNSBL 区域（例如 `"zen.spamhaus.org"`）
-  - `enabled`（bool）：此提供方是否启用。默认：true
-- `auth_token`（string）：认证用的共享密钥
-
-**响应：**
-- `success`（bool）：操作是否成功
-- `message`（string）：`success` 为 false 时的错误信息
-
-#### `GetRblConfig`
-
-**路径：** `/rolodex_dns.RolodexDnsService/GetRblConfig`
-
-获取当前的 RBL 配置。
-
-**参数：**
-- `auth_token`（string）：认证用的共享密钥
-
-**响应：**
-- `enabled`（bool）：是否全局启用 RBL 检查
-- `providers`（repeated RblConfig）：当前的 RBL 提供方
-
 #### `FlushCache`
 
 **路径：** `/rolodex_dns.RolodexDnsService/FlushCache`
 
-清空 RBL 查找缓存。
+清空封锁列表查找缓存。
 
 **参数：**
 - `auth_token`（string）：认证用的共享密钥
@@ -1307,14 +1180,13 @@ rolodex-dns-cli get-search-domains -i <IP>
 | `SetTtlDriftConfig` | 配置 TTL 漂移调整（固定或对数模式） |
 | `GetTtlDriftConfig` | 获取 TTL 漂移配置 |
 | `GetQueryLatencyStats` | 获取逐服务器的上游查询延迟统计 |
-| `AddLocalRblEntry` | 新增一条本地 RBL 封锁条目 |
-| `RemoveLocalRblEntry` | 移除一条本地 RBL 封锁条目 |
-| `ListLocalRblEntries` | 列出所有本地 RBL 封锁条目 |
+| `AddLocalBlocklistEntry` | 新增一条本地封锁条目 |
+| `RemoveLocalBlocklistEntry` | 移除一条本地封锁条目 |
+| `ListLocalBlocklistEntries` | 列出所有本地封锁条目 |
 | `SetDnsblConfig` / `GetDnsblConfig` | 配置／获取域名封锁列表（DNSBL）设置 |
 | `AddDnsblAllowlistEntry` | 让某个名称（及其子域名）豁免于封锁列表检查 |
 | `RemoveDnsblAllowlistEntry` | 移除一条 DNSBL 允许列表条目 |
 | `ListDnsblAllowlistEntries` | 列出所有 DNSBL 允许列表条目 |
-| `AddScopeRblProvider` / `RemoveScopeRblProvider` / `ListScopeRblProviders` | 管理某个范围的额外 RBL 提供方 |
 | `AddScopeTld` | 为某个范围注册一个全局唯一的专属 TLD；可选的 `listen_ip` 会同时启动一个入口 DNS 监听器 |
 | `RemoveScopeTld` | 移除一个专属 TLD（以及在无人使用后移除其入口监听器） |
 | `ListScopeTlds` | 列出某个范围所拥有的 TLD |
@@ -1589,7 +1461,7 @@ metrics:
 
 输出 77 个指标系列，全部以 `rolodex_dns_` 为前缀，涵盖查询、响应缓存、封锁列表（包含拒答与被移出轮换的提供方）、上游层级、迭代解析器、DNSSEC 判定、分割视域状态、DHCP、ACME 与 gRPC。
 
-其中最值得认识的是 `rolodex_dns_answers_total{source}`，它报告解析顺序中的哪个阶段产生了每个答案——`cache`、`local`、`scoped`、`scope_fallback`、`tld_peer`、`blocklist`、`rbl`、`dns64`、`upstream`、`authoritative_nxdomain`、`refused`、`error`。它的总数等于查询总数，而这正是让分割视域流水线从外面看得懂的关键：
+其中最值得认识的是 `rolodex_dns_answers_total{source}`，它报告解析顺序中的哪个阶段产生了每个答案——`cache`、`local`、`scoped`、`scope_fallback`、`tld_peer`、`blocklist`、`reverse_blocklist`、`dns64`、`upstream`、`authoritative_nxdomain`、`refused`、`error`。它的总数等于查询总数，而这正是让分割视域流水线从外面看得懂的关键：
 
 ```
 curl -s http://127.0.0.1:9153/metrics | grep answers_total
@@ -1747,92 +1619,39 @@ rolodex_dns_address_family_reachable{family="ipv6"} == 0
 
 上面每一条查询都有测试涵盖，会把它的指标名称与标签匹配条件对照实际输出解析，因此文档中的查询不可能引用到不存在的系列。
 
-## RBL（实时黑洞列表）
+## 封锁列表
 
-启用 RBL 时，Rolodex DNS 会把反向 DNS 查询中找到的 IP 地址对照已配置的 RBL 提供方检查。若某个 IP 被任何已启用的提供方列入，该查询就会收到 `NXDOMAIN` 响应。RBL **默认为禁用且提供方列表为空**——在运维人员通过 `rbl` 配置段或 `SetRblConfig` 加入提供方之前，不会查询任何外部资源。
+Rolodex DNS 以两种方式封锁名称，被封锁的查询都会得到 `NXDOMAIN`：
 
-### 本地 RBL 数据库
+- **DNSBL 提供方** —— 以名称查询的第三方区域，见下文 [DNSBL（域名封锁列表）](#dnsbl域名封锁列表)。
+- **本地列表** —— 一份由运维人员手工封锁的名称与地址，存放在数据库中。
 
-除了外部 RBL 提供方之外，Rolodex DNS 也支持本地管理的封锁条目。本地条目会与外部提供方一并检查，同时作用于反向 DNS 的 IP 查找与正向域名，并通过 `AddLocalRblEntry`、`RemoveLocalRblEntry` 与 `ListLocalRblEntries` 管理。
+两者默认均为禁用／为空：在加入提供方之前，不会发出任何外部查询，也不会把任何名称交给封锁列表运营方。
+
+### 本地封锁列表数据库
+
+本地条目是运维人员自己的列表，会在询问任何提供方之前先行检查，并通过 `AddLocalBlocklistEntry`、`RemoveLocalBlocklistEntry` 与 `ListLocalBlocklistEntries` 管理。
+
+一条条目可以命名一个**域名**（在正向名称这一道关卡匹配），也可以命名一个**地址**（在反向查找时匹配）。地址两种写法皆可——IP 字面量，或 `dig -x` 打印出的 `in-addr.arpa`／`ip6.arpa` 名称——两种写法都会封锁。地址永远只由这份列表封锁：提供方被问及的是正在解析的那个名称，而在反向查找中，那是一个没有人会为其发布信誉数据的名称。
 
 ```bash
 # 以一个理由封锁特定 IP
-rolodex-dns-cli add-local-rbl --name 10.0.0.5 --reason "known spam source"
+rolodex-dns-cli add-local-blocklist --name 10.0.0.5 --reason "known spam source"
 
 # 列出本地条目
-rolodex-dns-cli list-local-rbl
+rolodex-dns-cli list-local-blocklist
 
 # 移除一条条目
-rolodex-dns-cli remove-local-rbl --name 10.0.0.5
+rolodex-dns-cli remove-local-blocklist --name 10.0.0.5
 ```
-
-### 常用提供方
-
-提供方列表出厂时是空的；以下是运维人员通常会加入的标准区域（也就是 unbound 与其他解析器所用的那些）：
-
-| 区域 | 说明 |
-|------|------|
-| `zen.spamhaus.org` | Spamhaus 综合封锁列表（SBL + XBL + PBL + CSS） |
-| `bl.spamcop.net` | SpamCop 封锁列表 |
-| `b.barracudacentral.org` | Barracuda 信誉封锁列表 |
-| `dbl.spamhaus.org` | Spamhaus 域名封锁列表 |
-
-### RBL 如何运作
-
-1. 一个反向 DNS 查询抵达（例如 `100.1.168.192.in-addr.arpa.`）
-2. 从查询名称中提取出 IP（`192.168.1.100`）
-3. 先检查本地 RBL 条目
-4. 对每个已启用的 RBL 提供方，Rolodex DNS 构造出一个查询：`<reversed-ip>.<rbl-zone>`
-5. 若任一 RBL 以 A 记录响应，该 IP 就被视为已列入
-6. 结果会按 RBL 返回的 TTL 缓存在内存中
-7. 已列入的 IP 会让原始查询收到 `NXDOMAIN`
 
 ### 缓存
 
-- 正面结果（IP 已列入）按 RBL 提供方返回的 TTL 缓存
-- 负面结果（IP 未列入）缓存 5 分钟
+- 正面结果（名称已列入）按提供方返回的 TTL 缓存
+- 负面结果（未列入）缓存 5 分钟
 - 查找错误不缓存，并被视为未列入，以避免误判
 - 拒答同样不缓存，并会把该提供方移出轮换——见下文
 - 缓存可通过 `FlushCache` gRPC 方法清空，该方法同时会把每一个被移出轮换的提供方放回轮换
-
-### 拒答码与提供方轮换
-
-一份 DNSxL 响应“已列入”与抱怨**你**用的是同一种方式：`127.0.0.0/8` 之下的一条 `A` 记录。`zen.spamhaus.org` 用 `127.0.0.2` 说“已列入”，用 `127.255.255.254` 说“你正通过公共解析器发问”，而**唯一能区分两者的就是地址本身**。把任何 `A` 记录都读成“已列入”，就等于在封锁列表决定不再回答你的那一刻，把**每一个**对照该提供方检查过的名称都变成 NXDOMAIN——而这会在你的查询量越过该提供方阈值时开始发生，可能是一次看起来一切正常的部署之后好几小时或好几周。Spamhaus 讲得很直接：那些码“不应被解读为任何形式的信誉评价”。
-
-因此每个提供方都带有一组拒答码。符合的答案是 **`Refused`**：不是列入、不是否定、什么都不缓存——对被查询的名称什么都没学到。同一个响应中，任何位置的拒答都胜过同一个响应中的列入，因为一个正在抱怨的提供方不会同时在报告信誉，而往这个方向犯错会**失效放行**，反过来的顺序则会在每一个名称上失效阻断。
-
-提供方未自行配置时所使用的内置集合：
-
-| 码 | 含义 |
-| -- | ---- |
-| `127.255.255.0/24` | Spamhaus 错误范围：`.252` 区域名称打错、`.254` 通过公共／开放解析器查询、`.255` 查询过量。之所以取整个范围而不是那三个码，是因为 Spamhaus 保留了它并会往里面新增 |
-| `127.0.1.255` | Spamhaus DBL 响应一个 IP 查询——“不支持 IP 查询” |
-| `127.0.2.255` | Spamhaus ZRD 响应一个 IP 查询——同上 |
-| `127.0.0.1` | URIBL/SURBL 的“查询已被封锁”。RFC 5782 §5 同时禁止 DNSxL 列入 `127.0.0.1`，因此它绝不可能是一个正当的列入 |
-| `127.0.0.255` | URIBL 的“查询已被封锁”（超出配额） |
-
-每一项是一个 IPv4 地址或 `address/prefix`。**空值代表内置集合**——它不可能代表“没有任何码”，因为在这项功能存在之前写的每一份配置都是空的。单一条目 `none` 可为那些真实列入值恰好与上述之一相撞的私有封锁列表禁用检测。明确列出的列表就只是那份列表；默认值不会被合并进来，所以把它写出来的运维人员也可以借此缩小范围。无法解析的码会被拒绝——在启动时，或由 RPC 回以 `InvalidArgument`——而不是被跳过，因为一个悄悄失效的码，就是一个会被读成“已列入”的拒答。
-
-**轮换。** 一次拒答会把该提供方移出查询轮换 `refusal_cooldown_secs`（默认 3600 秒，可逐提供方覆盖），因此一份刚刚叫你别再问的封锁列表会被退避，而不是每次请求都再去问一遍。轮换：
-
-- 只跳过**新的查找**——已缓存的判定仍然算数，因为“这个提供方不会回答新问题”不等于“它此前给的答案是错的”；
-- 会**自行失效**，因此短暂的超额配额期不需要运维人员动手就会自愈；
-- 会被 `flush-cache` 以及任何 `set-rbl-config`／`set-dnsbl-config` **清除**——重新配置往往正是那次拒答的修正动作（区域名称打错既是 `127.255.255.252` 的成因，也正是被修正的那个东西）；
-- 会被 `get-rbl-config`／`get-dnsbl-config` 以及 `rolodex_dns_blocklist_refusals_total{kind}` / `rolodex_dns_blocklist_rotated_out` **报告出来**。
-
-把冷却设为 `0` 代表“使用默认值”，而不是“不冷却”——零冷却等于去重问那个刚刚叫你别问了的提供方，而那正是轮换存在要防止的行为。
-
-### 逐范围提供方
-
-一个网络范围可以在全局列表之外额外选用 RBL 提供方，对关联到该范围的 IP 进行检查。任一边的命中都是同一种 NXDOMAIN，而允许列表对两边都能豁免。通过 `add-scope-rbl`、`remove-scope-rbl` 与 `list-scope-rbl` 管理；每个提供方都带有自己的拒答码与冷却时间。
-
-由于范围是逐行选用的，逐范围提供方**不**受全局 `rbl.enabled` 标志把关——一个范围可以运行一份整台机器并未采用的封锁列表。当对外的明文 `:53` 不可达时，它们会被跳过，因为那个标志不是策略开关：它说的是这次查找只可能超时。
-
-```bash
-# --enabled 接受一个值；省略时默认为 true
-rolodex-dns-cli add-scope-rbl -s office --zone zen.spamhaus.org --enabled true
-rolodex-dns-cli list-scope-rbl -s office
-```
 
 ## DNSBL（域名封锁列表）
 
@@ -1849,7 +1668,7 @@ rolodex-dns-cli get-dnsbl-config
 
 ### 为某台主机加入允许列表
 
-允许列表是运维人员面对误判时的逃生口，而且它涵盖**所有列表与两道关卡**：正向名称检查（DNSBL 提供方与本地封锁列表）**以及**反向 DNS／IP 检查（全局 RBL 提供方、某个范围自己的提供方，以及指名某个地址的本地条目）。一个被错误列入的 IP 会让一台运作正常的主机 `dig -x` 失败，所以一个只够得到名称的逃生口根本称不上逃生口。
+允许列表是运维人员面对误判时的逃生口，而且它涵盖**所有列表与两道关卡**：正向名称检查（DNSBL 提供方与本地封锁列表）**以及**反向 DNS／IP 检查（指名某个地址的本地条目）。一个被错误列入的 IP 会让一台运作正常的主机 `dig -x` 失败，所以一个只够得到名称的逃生口根本称不上逃生口。
 
 - **名称是后缀匹配的。** 一个条目涵盖该名称以及它底下的每一个名称，因此把 `example.com` 加进允许列表也会豁免 `www.example.com`；匹配是在标签边界上进行的，所以 `notexample.com` 不会被豁免。
 - **一个地址可以用两种写法指名。** 一个反向查询会被指名 `in-addr.arpa`／`ip6.arpa` 名称**或**它所编码之 IP 字面量的条目所豁免，因此没有人需要手动反转八位组。反向**名称**像任何 DNS 名称一样以后缀匹配（把 `1.168.192.in-addr.arpa` 加进允许列表会解除整个 /24 的封锁）；而 IP **字面量**是**精确**匹配，因为地址是最高位八位组在前——`1.100` 不是 `192.168.1.100` 的父节点，把它当成父节点会豁免掉没有人指名过的地址。
@@ -1948,7 +1767,7 @@ rolodex-dns-cli list-scope-tld-listeners -s office
 ### 解析顺序（含范围）
 
 1. 解析 EDNS OPT 记录（载荷大小协商、供 DNSSEC 用的 DO 位）
-2. 检查 RBL（针对反向 DNS 查询，若已启用）——包含本地 RBL 条目
+2. 检查本地封锁列表（针对反向 DNS 查询）
 3. 检查 DNS 响应缓存
 4. 检查客户端所属范围的范围内记录
 5. 检查范围内的 CNAME 记录
@@ -2046,20 +1865,17 @@ defer client.Close()
 |------|------|
 | `SetForwarders(ctx, forwarders) error` | 设置上游 DNS 转发器 |
 
-#### RBL
+#### 封锁列表
 
 | 方法 | 说明 |
 |------|------|
-| `SetRblConfig(ctx, enabled, providers) error` | 配置 RBL |
-| `SetRblConfigWithRefusalCooldown(ctx, enabled, providers, secs) error` | 同上，并附带对拒答提供方的全列表移出轮换时长 |
-| `GetRblConfig(ctx) (*RblStatus, error)` | 获取当前的 RBL 配置、解析后的拒答码，以及被移出轮换的提供方 |
 | `SetDnsblConfig(ctx, enabled, providers) error` | 配置 DNSBL（域名封锁列表） |
 | `SetDnsblConfigWithRefusalCooldown(ctx, enabled, providers, secs) error` | 同上，并附带 DNSBL 的移出轮换时长 |
 | `GetDnsblConfig(ctx) (*DnsblStatus, error)` | 获取当前的 DNSBL 配置 |
-| `FlushCache(ctx) error` | 清空 RBL/DNSBL 缓存，并把每一个被移出轮换的提供方放回轮换 |
-| `AddLocalRblEntry(ctx, entry) error` | 新增一条本地 RBL 封锁条目 |
-| `RemoveLocalRblEntry(ctx, name) error` | 移除一条本地 RBL 封锁条目 |
-| `ListLocalRblEntries(ctx) ([]*LocalRblEntry, error)` | 列出本地 RBL 条目 |
+| `FlushCache(ctx) error` | 清空封锁列表缓存，并把每一个被移出轮换的提供方放回轮换 |
+| `AddLocalBlocklistEntry(ctx, entry) error` | 新增一条本地封锁条目 |
+| `RemoveLocalBlocklistEntry(ctx, name) error` | 移除一条本地封锁条目 |
+| `ListLocalBlocklistEntries(ctx) ([]*LocalBlocklistEntry, error)` | 列出本地封锁条目 |
 | `AddDnsblAllowlistEntry(ctx, entry) error` | 让某个名称（及其子域名）豁免于封锁列表检查 |
 | `RemoveDnsblAllowlistEntry(ctx, name) error` | 移除一条 DNSBL 允许列表条目 |
 | `ListDnsblAllowlistEntries(ctx) ([]*DnsblAllowlistEntry, error)` | 列出 DNSBL 允许列表条目 |
@@ -2085,10 +1901,6 @@ defer client.Close()
 | `SetScopeTldForwarders(ctx, scope, tld, forwarders) error` | 设置某个 TLD 的对等转发器 |
 | `ListScopeTldForwarders(ctx, scope, tld) ([]string, error)` | 列出某个 TLD 的对等转发器 |
 | `ListScopeTldListeners(ctx, scope) ([]*TldListener, error)` | 列出某个范围的入口 DNS 监听器 |
-| `AddScopeRblProvider(ctx, scope, zone, enabled) error` | 新增一个逐范围的 RBL 提供方 |
-| `AddScopeRblProviderWithRefusal(ctx, scope, zone, enabled, codes, secs) error` | 同上，并附带该提供方的拒答码与移出轮换时长 |
-| `RemoveScopeRblProvider(ctx, scope, zone) error` | 移除一个逐范围的 RBL 提供方 |
-| `ListScopeRblProviders(ctx, scope) ([]*ScopeRblProvider, error)` | 列出逐范围的 RBL 提供方 |
 
 #### DHCP
 
@@ -2225,7 +2037,7 @@ defer client.Close()
 | RFC 4398 | CERT DNS 记录 | 完整（存储、查找、PKIX 证书链分发） |
 | RFC 4592 | DNS 中的通配符 | 完整（单一标签替换、精确匹配优先） |
 | RFC 5155 | DNSSEC 哈希式认证否定（NSEC3） | 仅验证（最近封闭者、opt-out、按 RFC 9276 的迭代次数上限）；绝不生成 |
-| RFC 5782 | DNSBL（RBL） | 完整（反转 IP 的查询格式、本地 + 外部提供方、`127.0.0.1` 绝不被读成列入） |
+| RFC 5782 | DNSBL | 完整（以名称为基础的查询格式、本地 + 外部提供方、`127.0.0.1` 绝不被读成列入） |
 | RFC 6147 | DNS64 | 完整（从 A 记录合成 AAAA、前缀可配置） |
 | RFC 6605 / 8080 | DNSSEC 的 ECDSA 与 Ed25519 | 完整（签名与验证；`ring` 不支持 Ed448） |
 | RFC 6672 | DNAME | 完整（子树改写，不作用于所有者名称本身） |
@@ -2270,7 +2082,7 @@ defer client.Close()
        ┌────────────┼────────────┬───────────────┐
        │            │            │               │
  ┌─────▼────┐ ┌────▼────┐ ┌────▼──────────┐ ┌──▼───────┐
- │ Local DB  │ │RBL/DNSBL│ │   Upstream     │ │  DNSSEC  │
+ │ Local DB  │ │ DNSBL   │ │   Upstream     │ │  DNSSEC  │
  │ (SQLite)  │ │ Checker │ │   Resolution   │ │ Signing  │
  └──────────┘ └─────────┘ └────┬──────────┘ └──────────┘
        │                        │
@@ -2295,7 +2107,7 @@ defer client.Close()
 
 解析顺序（未配置任何网络范围时）：
 1. 解析 EDNS OPT 记录（载荷大小、DO 位）
-2. 检查 RBL（针对反向 DNS 查询，若已启用）——包含本地 RBL 条目
+2. 检查本地封锁列表（针对反向 DNS 查询）
 3. 检查 DNS 响应缓存
 4. 检查本地数据库（分割视域，一律优先）
 5. 检查本地数据库中的 CNAME 记录

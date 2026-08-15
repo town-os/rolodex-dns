@@ -42,7 +42,7 @@ use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
 use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use rolodex_dns::db::{Database, DnsRecord, RecordKind};
 use rolodex_dns::dns_server::{DnsServer, ResolutionMode};
-use rolodex_dns::rbl::RblChecker;
+use rolodex_dns::dnsbl::DnsblChecker;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
@@ -155,7 +155,7 @@ async fn start_doq_server(alpn: &[u8]) -> DoqServer {
     })
     .expect("add local record");
 
-    let rbl = Arc::new(RblChecker::new(false, vec![]));
+    let rbl = Arc::new(DnsblChecker::new());
     let server = Arc::new(DnsServer::new(db, rbl, vec![]));
     // No upstream: every answer in this suite comes from the local database, so
     // a failure is about the transport and never about resolution.

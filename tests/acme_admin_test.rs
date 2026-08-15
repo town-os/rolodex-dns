@@ -28,9 +28,9 @@
 
 use rolodex_dns::db::{AcmeAccount, Database};
 use rolodex_dns::dns_server::DnsServer;
+use rolodex_dns::dnsbl::{DnsblChecker, DnsblResolver};
 use rolodex_dns::grpc_service::proto;
 use rolodex_dns::grpc_service::proto::rolodex_dns_service_server::RolodexDnsService;
-use rolodex_dns::rbl::{RblChecker, RblResolver};
 use std::sync::Arc;
 
 const ZONE: &str = "example.com.";
@@ -40,11 +40,11 @@ const DIRECTORY_URL: &str = "https://acme.example.com/acme";
 struct NeverListedResolver;
 
 #[async_trait::async_trait]
-impl RblResolver for NeverListedResolver {
-    async fn lookup_rbl(
+impl DnsblResolver for NeverListedResolver {
+    async fn lookup(
         &self,
         _query: &str,
-    ) -> Result<Option<rolodex_dns::rbl::RblAnswer>, anyhow::Error> {
+    ) -> Result<Option<rolodex_dns::dnsbl::DnsblAnswer>, anyhow::Error> {
         Ok(None)
     }
 }
@@ -56,16 +56,12 @@ impl RblResolver for NeverListedResolver {
 /// `tests/security_auth_hardening_test.rs`.
 fn make_service() -> (rolodex_dns::grpc_service::RolodexDnsGrpcService, Database) {
     let db = Database::open_memory().expect("open memory db");
-    let rbl = Arc::new(RblChecker::with_resolver(
-        false,
-        vec![],
-        Arc::new(NeverListedResolver),
-    ));
-    let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
+    let dnsbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
+    let dns_server = Arc::new(DnsServer::new(db.clone(), dnsbl.clone(), vec![]));
     let service = rolodex_dns::grpc_service::RolodexDnsGrpcService::new(
         db.clone(),
         dns_server,
-        rbl,
+        dnsbl,
         String::new(),
         true,
     )

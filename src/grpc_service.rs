@@ -4,8 +4,8 @@
 // `ends_with` that puts `notexample.com.` inside `example.com.` — which during
 // signing means signing another zone's records with this zone's key.
 use crate::db::{Database, DnsRecord, NetworkAssociation, NetworkScope, RecordKind, name_in_zone};
-use crate::dns_server::DnsServer;
-use crate::rbl::{RblChecker, RblProvider};
+use crate::dns_server::{DnsServer, ResolutionMode};
+use crate::dnsbl::{DnsblChecker, DnsblProvider};
 use crate::ttl_drift::{TtlDriftConfig as TtlDriftCfg, TtlDriftMode};
 use dashmap::DashMap;
 use std::collections::{HashMap, HashSet};
@@ -48,7 +48,7 @@ const UNKNOWN_PEER: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 const DNSKEY_TTL: u32 = 3600;
 
 /// Builds a runtime blocklist provider from the wire representation shared by
-/// `RblConfig` and `DnsblConfig`, resolving the refusal codes.
+/// `DnsblConfig`, resolving the refusal codes.
 ///
 /// A bad code is rejected outright (`InvalidArgument`) rather than dropped:
 /// a code that silently does not apply turns the provider's "stop querying me"
@@ -59,10 +59,10 @@ fn build_rbl_provider(
     enabled: bool,
     refusal_codes: &[String],
     refusal_cooldown_secs: u32,
-) -> Result<RblProvider, String> {
-    let codes = crate::rbl::resolve_refusal_codes(refusal_codes)
+) -> Result<DnsblProvider, String> {
+    let codes = crate::dnsbl::resolve_refusal_codes(refusal_codes)
         .map_err(|e| format!("blocklist provider '{zone}': {e}"))?;
-    Ok(RblProvider {
+    Ok(DnsblProvider {
         zone: zone.to_string(),
         enabled,
         refusal_codes: codes.into(),
@@ -78,7 +78,7 @@ fn cooldown_secs(cooldown: Option<std::time::Duration>) -> u32 {
 }
 
 /// The currently rotated-out providers, for a `Get*ConfigResponse`.
-fn rotated_out_proto(rbl: &RblChecker) -> Vec<proto::RotatedProvider> {
+fn rotated_out_proto(rbl: &DnsblChecker) -> Vec<proto::RotatedProvider> {
     rbl.rotated_out()
         .into_iter()
         .map(|r| proto::RotatedProvider {
@@ -106,7 +106,7 @@ struct AuthFailures {
 pub struct RolodexDnsGrpcService {
     db: Database,
     dns_server: Arc<DnsServer>,
-    rbl: Arc<RblChecker>,
+    dnsbl: Arc<DnsblChecker>,
     /// The shared secret for TCP authentication. Empty means no auth required.
     shared_secret: String,
     /// Whether this connection is over a Unix socket (bypasses auth).
@@ -127,14 +127,14 @@ impl RolodexDnsGrpcService {
     pub fn new(
         db: Database,
         dns_server: Arc<DnsServer>,
-        rbl: Arc<RblChecker>,
+        dnsbl: Arc<DnsblChecker>,
         shared_secret: String,
         is_unix: bool,
     ) -> Self {
         Self {
             db,
             dns_server,
-            rbl,
+            dnsbl,
             shared_secret,
             is_unix,
             acme_directory_url: String::new(),
@@ -522,66 +522,76 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         }))
     }
 
-    async fn set_rbl_config(
+    async fn set_resolution_mode(
         &self,
-        request: Request<SetRblConfigRequest>,
-    ) -> Result<Response<SetRblConfigResponse>, Status> {
+        request: Request<SetResolutionModeRequest>,
+    ) -> Result<Response<SetResolutionModeResponse>, Status> {
         let peer = request.remote_addr();
         let req = request.into_inner();
         self.check_auth(peer, &req.auth_token)?;
-        self.count_rpc("set_rbl_config");
+        self.count_rpc("set_resolution_mode");
 
-        let providers = req
-            .providers
-            .iter()
-            .map(|p| {
-                build_rbl_provider(
-                    &p.zone,
-                    p.enabled,
-                    &p.refusal_codes,
-                    p.refusal_cooldown_secs,
-                )
-            })
-            .collect::<Result<Vec<RblProvider>, String>>()
-            .map_err(Status::invalid_argument)?;
+        // Rejected rather than defaulted, unlike the config-file path which
+        // warns and falls back to auto. A file is read once at startup by an
+        // operator who can read the warning; an RPC has a caller waiting on an
+        // answer, and telling it "success" while resolving in a mode it did not
+        // ask for is how a box ends up in `recursive` on a network that filters
+        // :53 with nothing in the logs to say why every name fails.
+        let mode = match req.mode.to_ascii_lowercase().as_str() {
+            "auto" => ResolutionMode::Auto,
+            "recursive" => ResolutionMode::Recursive,
+            "forward" => ResolutionMode::Forward,
+            other => {
+                return Err(Status::invalid_argument(format!(
+                    "invalid resolution mode '{}': expected auto, recursive or forward",
+                    other
+                )));
+            }
+        };
 
-        self.rbl
-            .set_refusal_cooldown(u64::from(req.refusal_cooldown_secs));
-        self.rbl.set_config(req.enabled, providers).await;
-        info!("Updated RBL config: enabled={}", req.enabled);
+        let previous = self.dns_server.get_resolution_mode();
+        self.dns_server.set_resolution_mode(mode);
+        info!("Resolution mode set to {:?} (was {:?})", mode, previous);
 
-        Ok(Response::new(SetRblConfigResponse {
+        // Switching INTO auto needs the same warm-up the startup path does.
+        // The tier chain is discovered lazily on the query path, so without
+        // this the first client queries after the switch pay the cold-tier
+        // cost — on a :53-filtered network that is several dead root attempts
+        // and a TLS handshake before an answer. The recovery probe loop runs
+        // unconditionally (it no-ops outside auto), so it needs nothing here.
+        if mode == ResolutionMode::Auto && previous != ResolutionMode::Auto {
+            let warm_server = Arc::clone(&self.dns_server);
+            tokio::spawn(async move {
+                warm_server.prewarm_auto().await;
+            });
+        }
+
+        Ok(Response::new(SetResolutionModeResponse {
             success: true,
             message: String::new(),
         }))
     }
 
-    async fn get_rbl_config(
+    async fn get_resolution_mode(
         &self,
-        request: Request<GetRblConfigRequest>,
-    ) -> Result<Response<GetRblConfigResponse>, Status> {
+        request: Request<GetResolutionModeRequest>,
+    ) -> Result<Response<GetResolutionModeResponse>, Status> {
         let peer = request.remote_addr();
         let req = request.into_inner();
         self.check_auth(peer, &req.auth_token)?;
-        self.count_rpc("get_rbl_config");
+        self.count_rpc("get_resolution_mode");
 
-        let (enabled, providers) = self.rbl.get_config().await;
-        let default_cooldown = self.rbl.refusal_cooldown();
-        let proto_providers = providers
-            .iter()
-            .map(|p| proto::RblConfig {
-                zone: p.zone.clone(),
-                enabled: p.enabled,
-                refusal_codes: p.refusal_code_strings(),
-                refusal_cooldown_secs: cooldown_secs(p.cooldown),
-            })
-            .collect();
+        // The mode in effect, not the one the config file names: they differ
+        // after a SetResolutionMode call, and the caller asking is asking about
+        // the running server.
+        let mode = match self.dns_server.get_resolution_mode() {
+            ResolutionMode::Auto => "auto",
+            ResolutionMode::Recursive => "recursive",
+            ResolutionMode::Forward => "forward",
+        };
 
-        Ok(Response::new(GetRblConfigResponse {
-            enabled,
-            providers: proto_providers,
-            refusal_cooldown_secs: default_cooldown.as_secs() as u32,
-            rotated_out: rotated_out_proto(&self.rbl),
+        Ok(Response::new(GetResolutionModeResponse {
+            mode: mode.to_string(),
         }))
     }
 
@@ -605,12 +615,12 @@ impl RolodexDnsService for RolodexDnsGrpcService {
                     p.refusal_cooldown_secs,
                 )
             })
-            .collect::<Result<Vec<RblProvider>, String>>()
+            .collect::<Result<Vec<DnsblProvider>, String>>()
             .map_err(Status::invalid_argument)?;
 
-        self.rbl
-            .set_dnsbl_refusal_cooldown(u64::from(req.refusal_cooldown_secs));
-        self.rbl.set_dnsbl_config(req.enabled, providers).await;
+        self.dnsbl
+            .set_refusal_cooldown(u64::from(req.refusal_cooldown_secs));
+        self.dnsbl.set_config(req.enabled, providers).await;
         // Blocking a domain changes what should/shouldn't be served from the
         // DNS response cache, so flush it to avoid serving a stale answer.
         self.dns_server.flush_cache();
@@ -631,8 +641,8 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("get_dnsbl_config");
 
-        let (enabled, providers) = self.rbl.get_dnsbl_config().await;
-        let default_cooldown = self.rbl.dnsbl_refusal_cooldown();
+        let (enabled, providers) = self.dnsbl.get_config().await;
+        let default_cooldown = self.dnsbl.refusal_cooldown();
         let proto_providers = providers
             .iter()
             .map(|p| proto::DnsblConfig {
@@ -647,7 +657,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
             enabled,
             providers: proto_providers,
             refusal_cooldown_secs: default_cooldown.as_secs() as u32,
-            rotated_out: rotated_out_proto(&self.rbl),
+            rotated_out: rotated_out_proto(&self.dnsbl),
         }))
     }
 
@@ -660,7 +670,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("flush_cache");
 
-        self.rbl.flush_cache().await;
+        self.dnsbl.flush_cache().await;
         info!("Flushed caches");
 
         Ok(Response::new(FlushCacheResponse {
@@ -1398,14 +1408,14 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     // Local RBL Management
     // ================================================================
 
-    async fn add_local_rbl_entry(
+    async fn add_local_blocklist_entry(
         &self,
-        request: Request<AddLocalRblEntryRequest>,
-    ) -> Result<Response<AddLocalRblEntryResponse>, Status> {
+        request: Request<AddLocalBlocklistEntryRequest>,
+    ) -> Result<Response<AddLocalBlocklistEntryResponse>, Status> {
         let peer = request.remote_addr();
         let req = request.into_inner();
         self.check_auth(peer, &req.auth_token)?;
-        self.count_rpc("add_local_rbl_entry");
+        self.count_rpc("add_local_blocklist_entry");
 
         let entry = req
             .entry
@@ -1415,72 +1425,75 @@ impl RolodexDnsService for RolodexDnsGrpcService {
             return Err(Status::invalid_argument("entry name is required"));
         }
 
-        match self.db.add_local_rbl_entry(&entry.name, &entry.reason) {
+        match self
+            .db
+            .add_local_blocklist_entry(&entry.name, &entry.reason)
+        {
             Ok(_) => {
                 info!("Added local RBL entry: {}", entry.name);
-                Ok(Response::new(AddLocalRblEntryResponse {
+                Ok(Response::new(AddLocalBlocklistEntryResponse {
                     success: true,
                     message: String::new(),
                 }))
             }
-            Err(e) => Ok(Response::new(AddLocalRblEntryResponse {
+            Err(e) => Ok(Response::new(AddLocalBlocklistEntryResponse {
                 success: false,
                 message: format!("failed to add local RBL entry: {}", e),
             })),
         }
     }
 
-    async fn remove_local_rbl_entry(
+    async fn remove_local_blocklist_entry(
         &self,
-        request: Request<RemoveLocalRblEntryRequest>,
-    ) -> Result<Response<RemoveLocalRblEntryResponse>, Status> {
+        request: Request<RemoveLocalBlocklistEntryRequest>,
+    ) -> Result<Response<RemoveLocalBlocklistEntryResponse>, Status> {
         let peer = request.remote_addr();
         let req = request.into_inner();
         self.check_auth(peer, &req.auth_token)?;
-        self.count_rpc("remove_local_rbl_entry");
+        self.count_rpc("remove_local_blocklist_entry");
 
         if req.name.is_empty() {
             return Err(Status::invalid_argument("name is required"));
         }
 
-        match self.db.remove_local_rbl_entry(&req.name) {
+        match self.db.remove_local_blocklist_entry(&req.name) {
             Ok(true) => {
                 info!("Removed local RBL entry: {}", req.name);
-                Ok(Response::new(RemoveLocalRblEntryResponse {
+                Ok(Response::new(RemoveLocalBlocklistEntryResponse {
                     success: true,
                     message: String::new(),
                 }))
             }
-            Ok(false) => Ok(Response::new(RemoveLocalRblEntryResponse {
+            Ok(false) => Ok(Response::new(RemoveLocalBlocklistEntryResponse {
                 success: false,
                 message: format!("entry '{}' not found", req.name),
             })),
-            Err(e) => Ok(Response::new(RemoveLocalRblEntryResponse {
+            Err(e) => Ok(Response::new(RemoveLocalBlocklistEntryResponse {
                 success: false,
                 message: format!("failed to remove local RBL entry: {}", e),
             })),
         }
     }
 
-    async fn list_local_rbl_entries(
+    async fn list_local_blocklist_entries(
         &self,
-        request: Request<ListLocalRblEntriesRequest>,
-    ) -> Result<Response<ListLocalRblEntriesResponse>, Status> {
+        request: Request<ListLocalBlocklistEntriesRequest>,
+    ) -> Result<Response<ListLocalBlocklistEntriesResponse>, Status> {
         let peer = request.remote_addr();
         let req = request.into_inner();
         self.check_auth(peer, &req.auth_token)?;
-        self.count_rpc("list_local_rbl_entries");
+        self.count_rpc("list_local_blocklist_entries");
 
-        match self.db.list_local_rbl_entries() {
+        match self.db.list_local_blocklist_entries() {
             Ok(entries) => {
                 let proto_entries = entries
                     .iter()
-                    .map(|(name, reason)| LocalRblEntry {
+                    .map(|(name, reason)| LocalBlocklistEntry {
                         name: name.clone(),
                         reason: reason.clone(),
                     })
                     .collect();
-                Ok(Response::new(ListLocalRblEntriesResponse {
+                Ok(Response::new(ListLocalBlocklistEntriesResponse {
                     entries: proto_entries,
                 }))
             }
@@ -2539,109 +2552,6 @@ impl RolodexDnsService for RolodexDnsGrpcService {
     // Per-Scope RBL Providers
     // ================================================================
 
-    async fn add_scope_rbl_provider(
-        &self,
-        request: Request<AddScopeRblProviderRequest>,
-    ) -> Result<Response<AddScopeRblProviderResponse>, Status> {
-        let peer = request.remote_addr();
-        let req = request.into_inner();
-        self.check_auth(peer, &req.auth_token)?;
-        self.count_rpc("add_scope_rbl_provider");
-        let provider = req
-            .provider
-            .ok_or_else(|| Status::invalid_argument("provider is required"))?;
-        // Validate the codes here rather than at read time: a scope provider is
-        // stored and re-read much later, and a code that only fails to parse on
-        // the query path would fail silently, on a path where the consequence is
-        // reading a refusal as a listing.
-        crate::rbl::resolve_refusal_codes(&provider.refusal_codes)
-            .map_err(Status::invalid_argument)?;
-        let db_provider = crate::db::ScopeRblProvider {
-            scope_name: provider.scope_name,
-            zone: provider.zone,
-            enabled: provider.enabled,
-            refusal_codes: provider.refusal_codes,
-            refusal_cooldown_secs: u64::from(provider.refusal_cooldown_secs),
-        };
-        match self.db.add_scope_rbl_provider(&db_provider) {
-            Ok(()) => {
-                info!(
-                    "Added scope RBL provider {} for scope {}",
-                    db_provider.zone, db_provider.scope_name
-                );
-                Ok(Response::new(AddScopeRblProviderResponse {
-                    success: true,
-                    message: String::new(),
-                }))
-            }
-            Err(e) => Ok(Response::new(AddScopeRblProviderResponse {
-                success: false,
-                message: e.to_string(),
-            })),
-        }
-    }
-
-    async fn remove_scope_rbl_provider(
-        &self,
-        request: Request<RemoveScopeRblProviderRequest>,
-    ) -> Result<Response<RemoveScopeRblProviderResponse>, Status> {
-        let peer = request.remote_addr();
-        let req = request.into_inner();
-        self.check_auth(peer, &req.auth_token)?;
-        self.count_rpc("remove_scope_rbl_provider");
-        match self
-            .db
-            .remove_scope_rbl_provider(&req.scope_name, &req.zone)
-        {
-            Ok(true) => {
-                info!(
-                    "Removed scope RBL provider {} from scope {}",
-                    req.zone, req.scope_name
-                );
-                Ok(Response::new(RemoveScopeRblProviderResponse {
-                    success: true,
-                    message: String::new(),
-                }))
-            }
-            Ok(false) => Ok(Response::new(RemoveScopeRblProviderResponse {
-                success: false,
-                message: "provider not found".to_string(),
-            })),
-            Err(e) => Ok(Response::new(RemoveScopeRblProviderResponse {
-                success: false,
-                message: e.to_string(),
-            })),
-        }
-    }
-
-    async fn list_scope_rbl_providers(
-        &self,
-        request: Request<ListScopeRblProvidersRequest>,
-    ) -> Result<Response<ListScopeRblProvidersResponse>, Status> {
-        let peer = request.remote_addr();
-        let req = request.into_inner();
-        self.check_auth(peer, &req.auth_token)?;
-        self.count_rpc("list_scope_rbl_providers");
-        match self.db.list_scope_rbl_providers(&req.scope_name) {
-            Ok(providers) => {
-                let proto_providers = providers
-                    .into_iter()
-                    .map(|p| proto::ScopeRblProvider {
-                        scope_name: p.scope_name,
-                        zone: p.zone,
-                        enabled: p.enabled,
-                        refusal_codes: p.refusal_codes,
-                        refusal_cooldown_secs: p.refusal_cooldown_secs as u32,
-                    })
-                    .collect();
-                Ok(Response::new(ListScopeRblProvidersResponse {
-                    providers: proto_providers,
-                }))
-            }
-            Err(e) => Err(Status::internal(e.to_string())),
-        }
-    }
-
     // ================================================================
     // Scope TLDs (per-network owned zones, partitioned across networks)
     // ================================================================
@@ -3121,35 +3031,27 @@ fn generate_eab() -> Result<(String, Vec<u8>), Status> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rbl::{RblAnswer, RblResolver};
+    use crate::dnsbl::{DnsblAnswer, DnsblResolver};
 
     struct NeverListedResolver;
 
     #[async_trait::async_trait]
-    impl RblResolver for NeverListedResolver {
-        async fn lookup_rbl(&self, _query: &str) -> Result<Option<RblAnswer>, anyhow::Error> {
+    impl DnsblResolver for NeverListedResolver {
+        async fn lookup(&self, _query: &str) -> Result<Option<DnsblAnswer>, anyhow::Error> {
             Ok(None)
         }
     }
 
     fn make_test_service() -> RolodexDnsGrpcService {
         let db = Database::open_memory().unwrap();
-        let rbl = Arc::new(RblChecker::with_resolver(
-            false,
-            vec![],
-            Arc::new(NeverListedResolver),
-        ));
+        let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
         let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
         RolodexDnsGrpcService::new(db, dns_server, rbl, "secret123".to_string(), false)
     }
 
     fn make_unix_service() -> RolodexDnsGrpcService {
         let db = Database::open_memory().unwrap();
-        let rbl = Arc::new(RblChecker::with_resolver(
-            false,
-            vec![],
-            Arc::new(NeverListedResolver),
-        ));
+        let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
         let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
         RolodexDnsGrpcService::new(db, dns_server, rbl, "secret123".to_string(), true)
     }
@@ -3181,11 +3083,7 @@ mod tests {
     #[test]
     fn test_auth_empty_secret_allows_all() {
         let db = Database::open_memory().unwrap();
-        let rbl = Arc::new(RblChecker::with_resolver(
-            false,
-            vec![],
-            Arc::new(NeverListedResolver),
-        ));
+        let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
         let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
         let service = RolodexDnsGrpcService::new(db, dns_server, rbl, String::new(), false);
         assert!(service.check_auth(peer("127.0.0.1"), "anything").is_ok());
@@ -3408,35 +3306,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_rbl_config() {
-        let service = make_test_service();
-
-        // Set config
-        let set_req = Request::new(SetRblConfigRequest {
-            enabled: true,
-            providers: vec![proto::RblConfig {
-                zone: "test.rbl".to_string(),
-                enabled: true,
-                ..Default::default()
-            }],
-            auth_token: "secret123".to_string(),
-            ..Default::default()
-        });
-        let response = service.set_rbl_config(set_req).await.unwrap();
-        assert!(response.into_inner().success);
-
-        // Get config
-        let get_req = Request::new(GetRblConfigRequest {
-            auth_token: "secret123".to_string(),
-        });
-        let response = service.get_rbl_config(get_req).await.unwrap();
-        let config = response.into_inner();
-        assert!(config.enabled);
-        assert_eq!(config.providers.len(), 1);
-        assert_eq!(config.providers[0].zone, "test.rbl");
-    }
-
-    #[tokio::test]
     async fn test_dnsbl_config() {
         let service = make_test_service();
 
@@ -3494,16 +3363,6 @@ mod tests {
         assert!(config.providers[0].enabled);
         assert_eq!(config.providers[1].zone, "multi.surbl.org");
         assert!(!config.providers[1].enabled);
-
-        // Setting DNSBL must not disturb the independent RBL config.
-        let rbl = service
-            .get_rbl_config(Request::new(GetRblConfigRequest {
-                auth_token: "secret123".to_string(),
-            }))
-            .await
-            .unwrap()
-            .into_inner();
-        assert!(!rbl.enabled);
     }
 
     #[tokio::test]

@@ -23,8 +23,8 @@ const (
 	RolodexDnsService_RemoveRecord_FullMethodName              = "/rolodex_dns.RolodexDnsService/RemoveRecord"
 	RolodexDnsService_ListRecords_FullMethodName               = "/rolodex_dns.RolodexDnsService/ListRecords"
 	RolodexDnsService_SetForwarders_FullMethodName             = "/rolodex_dns.RolodexDnsService/SetForwarders"
-	RolodexDnsService_SetRblConfig_FullMethodName              = "/rolodex_dns.RolodexDnsService/SetRblConfig"
-	RolodexDnsService_GetRblConfig_FullMethodName              = "/rolodex_dns.RolodexDnsService/GetRblConfig"
+	RolodexDnsService_SetResolutionMode_FullMethodName         = "/rolodex_dns.RolodexDnsService/SetResolutionMode"
+	RolodexDnsService_GetResolutionMode_FullMethodName         = "/rolodex_dns.RolodexDnsService/GetResolutionMode"
 	RolodexDnsService_SetDnsblConfig_FullMethodName            = "/rolodex_dns.RolodexDnsService/SetDnsblConfig"
 	RolodexDnsService_GetDnsblConfig_FullMethodName            = "/rolodex_dns.RolodexDnsService/GetDnsblConfig"
 	RolodexDnsService_FlushCache_FullMethodName                = "/rolodex_dns.RolodexDnsService/FlushCache"
@@ -48,9 +48,9 @@ const (
 	RolodexDnsService_SetTtlDriftConfig_FullMethodName         = "/rolodex_dns.RolodexDnsService/SetTtlDriftConfig"
 	RolodexDnsService_GetTtlDriftConfig_FullMethodName         = "/rolodex_dns.RolodexDnsService/GetTtlDriftConfig"
 	RolodexDnsService_GetQueryLatencyStats_FullMethodName      = "/rolodex_dns.RolodexDnsService/GetQueryLatencyStats"
-	RolodexDnsService_AddLocalRblEntry_FullMethodName          = "/rolodex_dns.RolodexDnsService/AddLocalRblEntry"
-	RolodexDnsService_RemoveLocalRblEntry_FullMethodName       = "/rolodex_dns.RolodexDnsService/RemoveLocalRblEntry"
-	RolodexDnsService_ListLocalRblEntries_FullMethodName       = "/rolodex_dns.RolodexDnsService/ListLocalRblEntries"
+	RolodexDnsService_AddLocalBlocklistEntry_FullMethodName    = "/rolodex_dns.RolodexDnsService/AddLocalBlocklistEntry"
+	RolodexDnsService_RemoveLocalBlocklistEntry_FullMethodName = "/rolodex_dns.RolodexDnsService/RemoveLocalBlocklistEntry"
+	RolodexDnsService_ListLocalBlocklistEntries_FullMethodName = "/rolodex_dns.RolodexDnsService/ListLocalBlocklistEntries"
 	RolodexDnsService_AddDnsblAllowlistEntry_FullMethodName    = "/rolodex_dns.RolodexDnsService/AddDnsblAllowlistEntry"
 	RolodexDnsService_RemoveDnsblAllowlistEntry_FullMethodName = "/rolodex_dns.RolodexDnsService/RemoveDnsblAllowlistEntry"
 	RolodexDnsService_ListDnsblAllowlistEntries_FullMethodName = "/rolodex_dns.RolodexDnsService/ListDnsblAllowlistEntries"
@@ -79,9 +79,6 @@ const (
 	RolodexDnsService_ListDhcpPools_FullMethodName             = "/rolodex_dns.RolodexDnsService/ListDhcpPools"
 	RolodexDnsService_ListDhcpLeases_FullMethodName            = "/rolodex_dns.RolodexDnsService/ListDhcpLeases"
 	RolodexDnsService_DeleteDhcpLease_FullMethodName           = "/rolodex_dns.RolodexDnsService/DeleteDhcpLease"
-	RolodexDnsService_AddScopeRblProvider_FullMethodName       = "/rolodex_dns.RolodexDnsService/AddScopeRblProvider"
-	RolodexDnsService_RemoveScopeRblProvider_FullMethodName    = "/rolodex_dns.RolodexDnsService/RemoveScopeRblProvider"
-	RolodexDnsService_ListScopeRblProviders_FullMethodName     = "/rolodex_dns.RolodexDnsService/ListScopeRblProviders"
 	RolodexDnsService_AddScopeTld_FullMethodName               = "/rolodex_dns.RolodexDnsService/AddScopeTld"
 	RolodexDnsService_RemoveScopeTld_FullMethodName            = "/rolodex_dns.RolodexDnsService/RemoveScopeTld"
 	RolodexDnsService_ListScopeTlds_FullMethodName             = "/rolodex_dns.RolodexDnsService/ListScopeTlds"
@@ -119,19 +116,19 @@ type RolodexDnsServiceClient interface {
 	// SetForwarders configures the upstream DNS forwarders.
 	// Path: /rolodex_dns.RolodexDnsService/SetForwarders
 	SetForwarders(ctx context.Context, in *SetForwarderRequest, opts ...grpc.CallOption) (*SetForwarderResponse, error)
-	// SetRblConfig configures RBL (Realtime Blackhole List) settings.
-	// Path: /rolodex_dns.RolodexDnsService/SetRblConfig
-	SetRblConfig(ctx context.Context, in *SetRblConfigRequest, opts ...grpc.CallOption) (*SetRblConfigResponse, error)
-	// GetRblConfig retrieves the current RBL configuration.
-	// Path: /rolodex_dns.RolodexDnsService/GetRblConfig
-	GetRblConfig(ctx context.Context, in *GetRblConfigRequest, opts ...grpc.CallOption) (*GetRblConfigResponse, error)
+	// SetResolutionMode changes the upstream resolution mode at runtime.
+	// Path: /rolodex_dns.RolodexDnsService/SetResolutionMode
+	SetResolutionMode(ctx context.Context, in *SetResolutionModeRequest, opts ...grpc.CallOption) (*SetResolutionModeResponse, error)
+	// GetResolutionMode returns the resolution mode currently in effect.
+	// Path: /rolodex_dns.RolodexDnsService/GetResolutionMode
+	GetResolutionMode(ctx context.Context, in *GetResolutionModeRequest, opts ...grpc.CallOption) (*GetResolutionModeResponse, error)
 	// SetDnsblConfig configures DNSBL (domain blocklist) settings.
 	// Path: /rolodex_dns.RolodexDnsService/SetDnsblConfig
 	SetDnsblConfig(ctx context.Context, in *SetDnsblConfigRequest, opts ...grpc.CallOption) (*SetDnsblConfigResponse, error)
 	// GetDnsblConfig retrieves the current DNSBL configuration.
 	// Path: /rolodex_dns.RolodexDnsService/GetDnsblConfig
 	GetDnsblConfig(ctx context.Context, in *GetDnsblConfigRequest, opts ...grpc.CallOption) (*GetDnsblConfigResponse, error)
-	// FlushCache clears DNS and RBL caches.
+	// FlushCache clears the DNS and blocklist caches.
 	// Path: /rolodex_dns.RolodexDnsService/FlushCache
 	FlushCache(ctx context.Context, in *FlushCacheRequest, opts ...grpc.CallOption) (*FlushCacheResponse, error)
 	// CreateNetworkScope creates a new network scope with a reserved .home domain.
@@ -195,15 +192,15 @@ type RolodexDnsServiceClient interface {
 	// GetQueryLatencyStats retrieves upstream query latency statistics.
 	// Path: /rolodex_dns.RolodexDnsService/GetQueryLatencyStats
 	GetQueryLatencyStats(ctx context.Context, in *GetQueryLatencyStatsRequest, opts ...grpc.CallOption) (*GetQueryLatencyStatsResponse, error)
-	// AddLocalRblEntry adds a local RBL entry.
-	// Path: /rolodex_dns.RolodexDnsService/AddLocalRblEntry
-	AddLocalRblEntry(ctx context.Context, in *AddLocalRblEntryRequest, opts ...grpc.CallOption) (*AddLocalRblEntryResponse, error)
-	// RemoveLocalRblEntry removes a local RBL entry.
-	// Path: /rolodex_dns.RolodexDnsService/RemoveLocalRblEntry
-	RemoveLocalRblEntry(ctx context.Context, in *RemoveLocalRblEntryRequest, opts ...grpc.CallOption) (*RemoveLocalRblEntryResponse, error)
-	// ListLocalRblEntries retrieves all local RBL entries.
-	// Path: /rolodex_dns.RolodexDnsService/ListLocalRblEntries
-	ListLocalRblEntries(ctx context.Context, in *ListLocalRblEntriesRequest, opts ...grpc.CallOption) (*ListLocalRblEntriesResponse, error)
+	// AddLocalBlocklistEntry adds a local blocklist entry.
+	// Path: /rolodex_dns.RolodexDnsService/AddLocalBlocklistEntry
+	AddLocalBlocklistEntry(ctx context.Context, in *AddLocalBlocklistEntryRequest, opts ...grpc.CallOption) (*AddLocalBlocklistEntryResponse, error)
+	// RemoveLocalBlocklistEntry removes a local blocklist entry.
+	// Path: /rolodex_dns.RolodexDnsService/RemoveLocalBlocklistEntry
+	RemoveLocalBlocklistEntry(ctx context.Context, in *RemoveLocalBlocklistEntryRequest, opts ...grpc.CallOption) (*RemoveLocalBlocklistEntryResponse, error)
+	// ListLocalBlocklistEntries retrieves all local blocklist entries.
+	// Path: /rolodex_dns.RolodexDnsService/ListLocalBlocklistEntries
+	ListLocalBlocklistEntries(ctx context.Context, in *ListLocalBlocklistEntriesRequest, opts ...grpc.CallOption) (*ListLocalBlocklistEntriesResponse, error)
 	// AddDnsblAllowlistEntry exempts a name (and its subdomains) from the
 	// name-based blocklist check.
 	// Path: /rolodex_dns.RolodexDnsService/AddDnsblAllowlistEntry
@@ -284,12 +281,6 @@ type RolodexDnsServiceClient interface {
 	ListDhcpLeases(ctx context.Context, in *ListDhcpLeasesRequest, opts ...grpc.CallOption) (*ListDhcpLeasesResponse, error)
 	// DeleteDhcpLease deletes a DHCP lease by MAC address.
 	DeleteDhcpLease(ctx context.Context, in *DeleteDhcpLeaseRequest, opts ...grpc.CallOption) (*DeleteDhcpLeaseResponse, error)
-	// AddScopeRblProvider adds an additional RBL provider for a specific scope.
-	AddScopeRblProvider(ctx context.Context, in *AddScopeRblProviderRequest, opts ...grpc.CallOption) (*AddScopeRblProviderResponse, error)
-	// RemoveScopeRblProvider removes a scope-specific RBL provider.
-	RemoveScopeRblProvider(ctx context.Context, in *RemoveScopeRblProviderRequest, opts ...grpc.CallOption) (*RemoveScopeRblProviderResponse, error)
-	// ListScopeRblProviders lists RBL providers for a specific scope.
-	ListScopeRblProviders(ctx context.Context, in *ListScopeRblProvidersRequest, opts ...grpc.CallOption) (*ListScopeRblProvidersResponse, error)
 	// AddScopeTld registers a globally-unique TLD as owned by a scope.
 	AddScopeTld(ctx context.Context, in *AddScopeTldRequest, opts ...grpc.CallOption) (*AddScopeTldResponse, error)
 	// RemoveScopeTld removes a TLD ownership from a scope.
@@ -370,20 +361,20 @@ func (c *rolodexDnsServiceClient) SetForwarders(ctx context.Context, in *SetForw
 	return out, nil
 }
 
-func (c *rolodexDnsServiceClient) SetRblConfig(ctx context.Context, in *SetRblConfigRequest, opts ...grpc.CallOption) (*SetRblConfigResponse, error) {
+func (c *rolodexDnsServiceClient) SetResolutionMode(ctx context.Context, in *SetResolutionModeRequest, opts ...grpc.CallOption) (*SetResolutionModeResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SetRblConfigResponse)
-	err := c.cc.Invoke(ctx, RolodexDnsService_SetRblConfig_FullMethodName, in, out, cOpts...)
+	out := new(SetResolutionModeResponse)
+	err := c.cc.Invoke(ctx, RolodexDnsService_SetResolutionMode_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *rolodexDnsServiceClient) GetRblConfig(ctx context.Context, in *GetRblConfigRequest, opts ...grpc.CallOption) (*GetRblConfigResponse, error) {
+func (c *rolodexDnsServiceClient) GetResolutionMode(ctx context.Context, in *GetResolutionModeRequest, opts ...grpc.CallOption) (*GetResolutionModeResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetRblConfigResponse)
-	err := c.cc.Invoke(ctx, RolodexDnsService_GetRblConfig_FullMethodName, in, out, cOpts...)
+	out := new(GetResolutionModeResponse)
+	err := c.cc.Invoke(ctx, RolodexDnsService_GetResolutionMode_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -620,30 +611,30 @@ func (c *rolodexDnsServiceClient) GetQueryLatencyStats(ctx context.Context, in *
 	return out, nil
 }
 
-func (c *rolodexDnsServiceClient) AddLocalRblEntry(ctx context.Context, in *AddLocalRblEntryRequest, opts ...grpc.CallOption) (*AddLocalRblEntryResponse, error) {
+func (c *rolodexDnsServiceClient) AddLocalBlocklistEntry(ctx context.Context, in *AddLocalBlocklistEntryRequest, opts ...grpc.CallOption) (*AddLocalBlocklistEntryResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(AddLocalRblEntryResponse)
-	err := c.cc.Invoke(ctx, RolodexDnsService_AddLocalRblEntry_FullMethodName, in, out, cOpts...)
+	out := new(AddLocalBlocklistEntryResponse)
+	err := c.cc.Invoke(ctx, RolodexDnsService_AddLocalBlocklistEntry_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *rolodexDnsServiceClient) RemoveLocalRblEntry(ctx context.Context, in *RemoveLocalRblEntryRequest, opts ...grpc.CallOption) (*RemoveLocalRblEntryResponse, error) {
+func (c *rolodexDnsServiceClient) RemoveLocalBlocklistEntry(ctx context.Context, in *RemoveLocalBlocklistEntryRequest, opts ...grpc.CallOption) (*RemoveLocalBlocklistEntryResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RemoveLocalRblEntryResponse)
-	err := c.cc.Invoke(ctx, RolodexDnsService_RemoveLocalRblEntry_FullMethodName, in, out, cOpts...)
+	out := new(RemoveLocalBlocklistEntryResponse)
+	err := c.cc.Invoke(ctx, RolodexDnsService_RemoveLocalBlocklistEntry_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *rolodexDnsServiceClient) ListLocalRblEntries(ctx context.Context, in *ListLocalRblEntriesRequest, opts ...grpc.CallOption) (*ListLocalRblEntriesResponse, error) {
+func (c *rolodexDnsServiceClient) ListLocalBlocklistEntries(ctx context.Context, in *ListLocalBlocklistEntriesRequest, opts ...grpc.CallOption) (*ListLocalBlocklistEntriesResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ListLocalRblEntriesResponse)
-	err := c.cc.Invoke(ctx, RolodexDnsService_ListLocalRblEntries_FullMethodName, in, out, cOpts...)
+	out := new(ListLocalBlocklistEntriesResponse)
+	err := c.cc.Invoke(ctx, RolodexDnsService_ListLocalBlocklistEntries_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -930,36 +921,6 @@ func (c *rolodexDnsServiceClient) DeleteDhcpLease(ctx context.Context, in *Delet
 	return out, nil
 }
 
-func (c *rolodexDnsServiceClient) AddScopeRblProvider(ctx context.Context, in *AddScopeRblProviderRequest, opts ...grpc.CallOption) (*AddScopeRblProviderResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(AddScopeRblProviderResponse)
-	err := c.cc.Invoke(ctx, RolodexDnsService_AddScopeRblProvider_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *rolodexDnsServiceClient) RemoveScopeRblProvider(ctx context.Context, in *RemoveScopeRblProviderRequest, opts ...grpc.CallOption) (*RemoveScopeRblProviderResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RemoveScopeRblProviderResponse)
-	err := c.cc.Invoke(ctx, RolodexDnsService_RemoveScopeRblProvider_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *rolodexDnsServiceClient) ListScopeRblProviders(ctx context.Context, in *ListScopeRblProvidersRequest, opts ...grpc.CallOption) (*ListScopeRblProvidersResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ListScopeRblProvidersResponse)
-	err := c.cc.Invoke(ctx, RolodexDnsService_ListScopeRblProviders_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *rolodexDnsServiceClient) AddScopeTld(ctx context.Context, in *AddScopeTldRequest, opts ...grpc.CallOption) (*AddScopeTldResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(AddScopeTldResponse)
@@ -1121,19 +1082,19 @@ type RolodexDnsServiceServer interface {
 	// SetForwarders configures the upstream DNS forwarders.
 	// Path: /rolodex_dns.RolodexDnsService/SetForwarders
 	SetForwarders(context.Context, *SetForwarderRequest) (*SetForwarderResponse, error)
-	// SetRblConfig configures RBL (Realtime Blackhole List) settings.
-	// Path: /rolodex_dns.RolodexDnsService/SetRblConfig
-	SetRblConfig(context.Context, *SetRblConfigRequest) (*SetRblConfigResponse, error)
-	// GetRblConfig retrieves the current RBL configuration.
-	// Path: /rolodex_dns.RolodexDnsService/GetRblConfig
-	GetRblConfig(context.Context, *GetRblConfigRequest) (*GetRblConfigResponse, error)
+	// SetResolutionMode changes the upstream resolution mode at runtime.
+	// Path: /rolodex_dns.RolodexDnsService/SetResolutionMode
+	SetResolutionMode(context.Context, *SetResolutionModeRequest) (*SetResolutionModeResponse, error)
+	// GetResolutionMode returns the resolution mode currently in effect.
+	// Path: /rolodex_dns.RolodexDnsService/GetResolutionMode
+	GetResolutionMode(context.Context, *GetResolutionModeRequest) (*GetResolutionModeResponse, error)
 	// SetDnsblConfig configures DNSBL (domain blocklist) settings.
 	// Path: /rolodex_dns.RolodexDnsService/SetDnsblConfig
 	SetDnsblConfig(context.Context, *SetDnsblConfigRequest) (*SetDnsblConfigResponse, error)
 	// GetDnsblConfig retrieves the current DNSBL configuration.
 	// Path: /rolodex_dns.RolodexDnsService/GetDnsblConfig
 	GetDnsblConfig(context.Context, *GetDnsblConfigRequest) (*GetDnsblConfigResponse, error)
-	// FlushCache clears DNS and RBL caches.
+	// FlushCache clears the DNS and blocklist caches.
 	// Path: /rolodex_dns.RolodexDnsService/FlushCache
 	FlushCache(context.Context, *FlushCacheRequest) (*FlushCacheResponse, error)
 	// CreateNetworkScope creates a new network scope with a reserved .home domain.
@@ -1197,15 +1158,15 @@ type RolodexDnsServiceServer interface {
 	// GetQueryLatencyStats retrieves upstream query latency statistics.
 	// Path: /rolodex_dns.RolodexDnsService/GetQueryLatencyStats
 	GetQueryLatencyStats(context.Context, *GetQueryLatencyStatsRequest) (*GetQueryLatencyStatsResponse, error)
-	// AddLocalRblEntry adds a local RBL entry.
-	// Path: /rolodex_dns.RolodexDnsService/AddLocalRblEntry
-	AddLocalRblEntry(context.Context, *AddLocalRblEntryRequest) (*AddLocalRblEntryResponse, error)
-	// RemoveLocalRblEntry removes a local RBL entry.
-	// Path: /rolodex_dns.RolodexDnsService/RemoveLocalRblEntry
-	RemoveLocalRblEntry(context.Context, *RemoveLocalRblEntryRequest) (*RemoveLocalRblEntryResponse, error)
-	// ListLocalRblEntries retrieves all local RBL entries.
-	// Path: /rolodex_dns.RolodexDnsService/ListLocalRblEntries
-	ListLocalRblEntries(context.Context, *ListLocalRblEntriesRequest) (*ListLocalRblEntriesResponse, error)
+	// AddLocalBlocklistEntry adds a local blocklist entry.
+	// Path: /rolodex_dns.RolodexDnsService/AddLocalBlocklistEntry
+	AddLocalBlocklistEntry(context.Context, *AddLocalBlocklistEntryRequest) (*AddLocalBlocklistEntryResponse, error)
+	// RemoveLocalBlocklistEntry removes a local blocklist entry.
+	// Path: /rolodex_dns.RolodexDnsService/RemoveLocalBlocklistEntry
+	RemoveLocalBlocklistEntry(context.Context, *RemoveLocalBlocklistEntryRequest) (*RemoveLocalBlocklistEntryResponse, error)
+	// ListLocalBlocklistEntries retrieves all local blocklist entries.
+	// Path: /rolodex_dns.RolodexDnsService/ListLocalBlocklistEntries
+	ListLocalBlocklistEntries(context.Context, *ListLocalBlocklistEntriesRequest) (*ListLocalBlocklistEntriesResponse, error)
 	// AddDnsblAllowlistEntry exempts a name (and its subdomains) from the
 	// name-based blocklist check.
 	// Path: /rolodex_dns.RolodexDnsService/AddDnsblAllowlistEntry
@@ -1286,12 +1247,6 @@ type RolodexDnsServiceServer interface {
 	ListDhcpLeases(context.Context, *ListDhcpLeasesRequest) (*ListDhcpLeasesResponse, error)
 	// DeleteDhcpLease deletes a DHCP lease by MAC address.
 	DeleteDhcpLease(context.Context, *DeleteDhcpLeaseRequest) (*DeleteDhcpLeaseResponse, error)
-	// AddScopeRblProvider adds an additional RBL provider for a specific scope.
-	AddScopeRblProvider(context.Context, *AddScopeRblProviderRequest) (*AddScopeRblProviderResponse, error)
-	// RemoveScopeRblProvider removes a scope-specific RBL provider.
-	RemoveScopeRblProvider(context.Context, *RemoveScopeRblProviderRequest) (*RemoveScopeRblProviderResponse, error)
-	// ListScopeRblProviders lists RBL providers for a specific scope.
-	ListScopeRblProviders(context.Context, *ListScopeRblProvidersRequest) (*ListScopeRblProvidersResponse, error)
 	// AddScopeTld registers a globally-unique TLD as owned by a scope.
 	AddScopeTld(context.Context, *AddScopeTldRequest) (*AddScopeTldResponse, error)
 	// RemoveScopeTld removes a TLD ownership from a scope.
@@ -1344,11 +1299,11 @@ func (UnimplementedRolodexDnsServiceServer) ListRecords(context.Context, *ListRe
 func (UnimplementedRolodexDnsServiceServer) SetForwarders(context.Context, *SetForwarderRequest) (*SetForwarderResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetForwarders not implemented")
 }
-func (UnimplementedRolodexDnsServiceServer) SetRblConfig(context.Context, *SetRblConfigRequest) (*SetRblConfigResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method SetRblConfig not implemented")
+func (UnimplementedRolodexDnsServiceServer) SetResolutionMode(context.Context, *SetResolutionModeRequest) (*SetResolutionModeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetResolutionMode not implemented")
 }
-func (UnimplementedRolodexDnsServiceServer) GetRblConfig(context.Context, *GetRblConfigRequest) (*GetRblConfigResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method GetRblConfig not implemented")
+func (UnimplementedRolodexDnsServiceServer) GetResolutionMode(context.Context, *GetResolutionModeRequest) (*GetResolutionModeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetResolutionMode not implemented")
 }
 func (UnimplementedRolodexDnsServiceServer) SetDnsblConfig(context.Context, *SetDnsblConfigRequest) (*SetDnsblConfigResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetDnsblConfig not implemented")
@@ -1419,14 +1374,14 @@ func (UnimplementedRolodexDnsServiceServer) GetTtlDriftConfig(context.Context, *
 func (UnimplementedRolodexDnsServiceServer) GetQueryLatencyStats(context.Context, *GetQueryLatencyStatsRequest) (*GetQueryLatencyStatsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetQueryLatencyStats not implemented")
 }
-func (UnimplementedRolodexDnsServiceServer) AddLocalRblEntry(context.Context, *AddLocalRblEntryRequest) (*AddLocalRblEntryResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method AddLocalRblEntry not implemented")
+func (UnimplementedRolodexDnsServiceServer) AddLocalBlocklistEntry(context.Context, *AddLocalBlocklistEntryRequest) (*AddLocalBlocklistEntryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AddLocalBlocklistEntry not implemented")
 }
-func (UnimplementedRolodexDnsServiceServer) RemoveLocalRblEntry(context.Context, *RemoveLocalRblEntryRequest) (*RemoveLocalRblEntryResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method RemoveLocalRblEntry not implemented")
+func (UnimplementedRolodexDnsServiceServer) RemoveLocalBlocklistEntry(context.Context, *RemoveLocalBlocklistEntryRequest) (*RemoveLocalBlocklistEntryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveLocalBlocklistEntry not implemented")
 }
-func (UnimplementedRolodexDnsServiceServer) ListLocalRblEntries(context.Context, *ListLocalRblEntriesRequest) (*ListLocalRblEntriesResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method ListLocalRblEntries not implemented")
+func (UnimplementedRolodexDnsServiceServer) ListLocalBlocklistEntries(context.Context, *ListLocalBlocklistEntriesRequest) (*ListLocalBlocklistEntriesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListLocalBlocklistEntries not implemented")
 }
 func (UnimplementedRolodexDnsServiceServer) AddDnsblAllowlistEntry(context.Context, *AddDnsblAllowlistEntryRequest) (*AddDnsblAllowlistEntryResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddDnsblAllowlistEntry not implemented")
@@ -1511,15 +1466,6 @@ func (UnimplementedRolodexDnsServiceServer) ListDhcpLeases(context.Context, *Lis
 }
 func (UnimplementedRolodexDnsServiceServer) DeleteDhcpLease(context.Context, *DeleteDhcpLeaseRequest) (*DeleteDhcpLeaseResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteDhcpLease not implemented")
-}
-func (UnimplementedRolodexDnsServiceServer) AddScopeRblProvider(context.Context, *AddScopeRblProviderRequest) (*AddScopeRblProviderResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method AddScopeRblProvider not implemented")
-}
-func (UnimplementedRolodexDnsServiceServer) RemoveScopeRblProvider(context.Context, *RemoveScopeRblProviderRequest) (*RemoveScopeRblProviderResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method RemoveScopeRblProvider not implemented")
-}
-func (UnimplementedRolodexDnsServiceServer) ListScopeRblProviders(context.Context, *ListScopeRblProvidersRequest) (*ListScopeRblProvidersResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method ListScopeRblProviders not implemented")
 }
 func (UnimplementedRolodexDnsServiceServer) AddScopeTld(context.Context, *AddScopeTldRequest) (*AddScopeTldResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddScopeTld not implemented")
@@ -1656,38 +1602,38 @@ func _RolodexDnsService_SetForwarders_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
-func _RolodexDnsService_SetRblConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SetRblConfigRequest)
+func _RolodexDnsService_SetResolutionMode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetResolutionModeRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(RolodexDnsServiceServer).SetRblConfig(ctx, in)
+		return srv.(RolodexDnsServiceServer).SetResolutionMode(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: RolodexDnsService_SetRblConfig_FullMethodName,
+		FullMethod: RolodexDnsService_SetResolutionMode_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(RolodexDnsServiceServer).SetRblConfig(ctx, req.(*SetRblConfigRequest))
+		return srv.(RolodexDnsServiceServer).SetResolutionMode(ctx, req.(*SetResolutionModeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _RolodexDnsService_GetRblConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(GetRblConfigRequest)
+func _RolodexDnsService_GetResolutionMode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetResolutionModeRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(RolodexDnsServiceServer).GetRblConfig(ctx, in)
+		return srv.(RolodexDnsServiceServer).GetResolutionMode(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: RolodexDnsService_GetRblConfig_FullMethodName,
+		FullMethod: RolodexDnsService_GetResolutionMode_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(RolodexDnsServiceServer).GetRblConfig(ctx, req.(*GetRblConfigRequest))
+		return srv.(RolodexDnsServiceServer).GetResolutionMode(ctx, req.(*GetResolutionModeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2106,56 +2052,56 @@ func _RolodexDnsService_GetQueryLatencyStats_Handler(srv interface{}, ctx contex
 	return interceptor(ctx, in, info, handler)
 }
 
-func _RolodexDnsService_AddLocalRblEntry_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(AddLocalRblEntryRequest)
+func _RolodexDnsService_AddLocalBlocklistEntry_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddLocalBlocklistEntryRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(RolodexDnsServiceServer).AddLocalRblEntry(ctx, in)
+		return srv.(RolodexDnsServiceServer).AddLocalBlocklistEntry(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: RolodexDnsService_AddLocalRblEntry_FullMethodName,
+		FullMethod: RolodexDnsService_AddLocalBlocklistEntry_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(RolodexDnsServiceServer).AddLocalRblEntry(ctx, req.(*AddLocalRblEntryRequest))
+		return srv.(RolodexDnsServiceServer).AddLocalBlocklistEntry(ctx, req.(*AddLocalBlocklistEntryRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _RolodexDnsService_RemoveLocalRblEntry_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RemoveLocalRblEntryRequest)
+func _RolodexDnsService_RemoveLocalBlocklistEntry_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveLocalBlocklistEntryRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(RolodexDnsServiceServer).RemoveLocalRblEntry(ctx, in)
+		return srv.(RolodexDnsServiceServer).RemoveLocalBlocklistEntry(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: RolodexDnsService_RemoveLocalRblEntry_FullMethodName,
+		FullMethod: RolodexDnsService_RemoveLocalBlocklistEntry_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(RolodexDnsServiceServer).RemoveLocalRblEntry(ctx, req.(*RemoveLocalRblEntryRequest))
+		return srv.(RolodexDnsServiceServer).RemoveLocalBlocklistEntry(ctx, req.(*RemoveLocalBlocklistEntryRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _RolodexDnsService_ListLocalRblEntries_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ListLocalRblEntriesRequest)
+func _RolodexDnsService_ListLocalBlocklistEntries_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListLocalBlocklistEntriesRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(RolodexDnsServiceServer).ListLocalRblEntries(ctx, in)
+		return srv.(RolodexDnsServiceServer).ListLocalBlocklistEntries(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: RolodexDnsService_ListLocalRblEntries_FullMethodName,
+		FullMethod: RolodexDnsService_ListLocalBlocklistEntries_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(RolodexDnsServiceServer).ListLocalRblEntries(ctx, req.(*ListLocalRblEntriesRequest))
+		return srv.(RolodexDnsServiceServer).ListLocalBlocklistEntries(ctx, req.(*ListLocalBlocklistEntriesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2664,60 +2610,6 @@ func _RolodexDnsService_DeleteDhcpLease_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
-func _RolodexDnsService_AddScopeRblProvider_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(AddScopeRblProviderRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(RolodexDnsServiceServer).AddScopeRblProvider(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: RolodexDnsService_AddScopeRblProvider_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(RolodexDnsServiceServer).AddScopeRblProvider(ctx, req.(*AddScopeRblProviderRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _RolodexDnsService_RemoveScopeRblProvider_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RemoveScopeRblProviderRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(RolodexDnsServiceServer).RemoveScopeRblProvider(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: RolodexDnsService_RemoveScopeRblProvider_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(RolodexDnsServiceServer).RemoveScopeRblProvider(ctx, req.(*RemoveScopeRblProviderRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _RolodexDnsService_ListScopeRblProviders_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ListScopeRblProvidersRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(RolodexDnsServiceServer).ListScopeRblProviders(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: RolodexDnsService_ListScopeRblProviders_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(RolodexDnsServiceServer).ListScopeRblProviders(ctx, req.(*ListScopeRblProvidersRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _RolodexDnsService_AddScopeTld_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(AddScopeTldRequest)
 	if err := dec(in); err != nil {
@@ -2994,12 +2886,12 @@ var RolodexDnsService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _RolodexDnsService_SetForwarders_Handler,
 		},
 		{
-			MethodName: "SetRblConfig",
-			Handler:    _RolodexDnsService_SetRblConfig_Handler,
+			MethodName: "SetResolutionMode",
+			Handler:    _RolodexDnsService_SetResolutionMode_Handler,
 		},
 		{
-			MethodName: "GetRblConfig",
-			Handler:    _RolodexDnsService_GetRblConfig_Handler,
+			MethodName: "GetResolutionMode",
+			Handler:    _RolodexDnsService_GetResolutionMode_Handler,
 		},
 		{
 			MethodName: "SetDnsblConfig",
@@ -3094,16 +2986,16 @@ var RolodexDnsService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _RolodexDnsService_GetQueryLatencyStats_Handler,
 		},
 		{
-			MethodName: "AddLocalRblEntry",
-			Handler:    _RolodexDnsService_AddLocalRblEntry_Handler,
+			MethodName: "AddLocalBlocklistEntry",
+			Handler:    _RolodexDnsService_AddLocalBlocklistEntry_Handler,
 		},
 		{
-			MethodName: "RemoveLocalRblEntry",
-			Handler:    _RolodexDnsService_RemoveLocalRblEntry_Handler,
+			MethodName: "RemoveLocalBlocklistEntry",
+			Handler:    _RolodexDnsService_RemoveLocalBlocklistEntry_Handler,
 		},
 		{
-			MethodName: "ListLocalRblEntries",
-			Handler:    _RolodexDnsService_ListLocalRblEntries_Handler,
+			MethodName: "ListLocalBlocklistEntries",
+			Handler:    _RolodexDnsService_ListLocalBlocklistEntries_Handler,
 		},
 		{
 			MethodName: "AddDnsblAllowlistEntry",
@@ -3216,18 +3108,6 @@ var RolodexDnsService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteDhcpLease",
 			Handler:    _RolodexDnsService_DeleteDhcpLease_Handler,
-		},
-		{
-			MethodName: "AddScopeRblProvider",
-			Handler:    _RolodexDnsService_AddScopeRblProvider_Handler,
-		},
-		{
-			MethodName: "RemoveScopeRblProvider",
-			Handler:    _RolodexDnsService_RemoveScopeRblProvider_Handler,
-		},
-		{
-			MethodName: "ListScopeRblProviders",
-			Handler:    _RolodexDnsService_ListScopeRblProviders_Handler,
 		},
 		{
 			MethodName: "AddScopeTld",
