@@ -31,7 +31,7 @@ categories = ["network-programming"]
 # carrying the test but not its input is a test that cannot run. CLAUDE.md is
 # the development rules; it ships because a consumer verifying the crate is
 # entitled to the same instructions the tests were written under. The
-# `.zh-TW`/`.zh-CN`/`.es-ES`/`.es-MX`/`.ja` translations of all five ship
+# `.zh-TW`/`.zh-CN`/`.es-ES`/`.es-MX`/`.ja-JP` translations of all five ship
 # alongside them — they are
 # the same documents, and a package that carried only the English would make the
 # translations repo-only for no reason. They are NOT scanned by
@@ -56,7 +56,7 @@ include = [
     "/*.zh-CN.md",
     "/*.es-ES.md",
     "/*.es-MX.md",
-    "/*.ja.md",
+    "/*.ja-JP.md",
     "/LICENSE",
 ]
 

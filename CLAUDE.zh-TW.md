@@ -4,7 +4,7 @@ Rolodex DNS 是一套分割視域（split-horizon）DNS 伺服器與遞迴／轉
 
 本檔案是開發工作的規則。它刻意保持精簡：**軟體做什麼**寫在 `DESIGN.md`，任何關於行為、架構或 API 介面的內容都不屬於這裡。
 
-> 語言：[English](CLAUDE.md) ｜ **繁體中文** ｜ [简体中文](CLAUDE.zh-CN.md) ｜ [Español (España)](CLAUDE.es-ES.md) ｜ [Español (México)](CLAUDE.es-MX.md) ｜ [日本語](CLAUDE.ja.md)
+> 語言：[English](CLAUDE.md) ｜ **繁體中文** ｜ [简体中文](CLAUDE.zh-CN.md) ｜ [Español (España)](CLAUDE.es-ES.md) ｜ [Español (México)](CLAUDE.es-MX.md) ｜ [日本語](CLAUDE.ja-JP.md)
 
 ## 文件分工
 
@@ -16,7 +16,7 @@ Rolodex DNS 是一套分割視域（split-horizon）DNS 伺服器與遞迴／轉
 | `CHANGELOG.md` | 版本歷史。 |
 | `CLAUDE.md` | 本檔案。只放開發規則。 |
 
-這五份文件每一份都各有繁體中文（`.zh-TW.md`）、簡體中文（`.zh-CN.md`）、歐洲西班牙文（`.es-ES.md`）、墨西哥西班牙文（`.es-MX.md`）與日文（`.ja.md`）譯本並列。**英文版是唯一的真實來源**：請先改英文版，並把譯本視為需要後續補上的工作，而不是第二個可以編輯的地方。沒有任何東西會驗證它們彼此一致——`tests/promql_docs_test.rs` 只讀英文的 `README.md` 與 `DESIGN.md`，因此譯本中的 PromQL 區塊或系列數量是文件，而不是一項受檢查的斷言。
+這五份文件每一份都各有繁體中文（`.zh-TW.md`）、簡體中文（`.zh-CN.md`）、歐洲西班牙文（`.es-ES.md`）、墨西哥西班牙文（`.es-MX.md`）與日文（`.ja-JP.md`）譯本並列。**英文版是唯一的真實來源**：請先改英文版，並把譯本視為需要後續補上的工作，而不是第二個可以編輯的地方。沒有任何東西會驗證它們彼此一致——`tests/promql_docs_test.rs` 只讀英文的 `README.md` 與 `DESIGN.md`，因此譯本中的 PromQL 區塊或系列數量是文件，而不是一項受檢查的斷言。
 
 ## 規則
 
@@ -40,7 +40,7 @@ Rolodex DNS 是一套分割視域（split-horizon）DNS 伺服器與遞迴／轉
 
 ## 驗證變更
 
-`make test` 是把關的關卡，且依照上述規則，它應由維運人員執行。它會依序執行：`lint`（`cargo fmt -- --check` 與 `cargo clippy --all-targets -- -D warnings`）、Go 整合測試與單元測試、`prometheus-test`、逐一列出的每個 Rust 整合測試檔、`cargo test`，以及 JavaScript 的 lint／整合／單元測試。`make test-log` 會把整輪執行寫進帶時間戳的紀錄檔，執行時間長時用它更合適。
+`make test` 是把關的關卡，且依照上述規則，它應由維運人員執行。它會依序執行：`lint`（`translation-check`、`cargo fmt -- --check` 與 `cargo clippy --all-targets -- -D warnings`）、Go 整合測試與單元測試、`prometheus-test`、逐一列出的每個 Rust 整合測試檔、`cargo test`，以及 JavaScript 的 lint／整合／單元測試。`make test-log` 會把整輪執行寫進帶時間戳的紀錄檔，執行時間長時用它更合適。
 
 更小範圍的目標也存在，列於 `DESIGN.md` 的「建置系統」一節——`make lint`、`make rust-test`、`make go-test`、`make js-test`、`make bench`。
 

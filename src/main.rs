@@ -28,6 +28,40 @@ struct Cli {
     config: String,
 }
 
+/// Builds a listener's TLS manager, starts the task that keeps its certificate
+/// current, and returns the channel the listener follows.
+///
+/// The manager is pushed onto `managers` rather than returned because it has to
+/// outlive this call by the life of the process: it owns the watch sender, and a
+/// dropped sender is a listener that can never be handed a renewed certificate.
+///
+/// The reloader is only started for a file-backed listener. Generated material
+/// has no file to renew, and re-generating on a timer would hand every client a
+/// different self-signed certificate every half-minute.
+fn start_tls(
+    label: &'static str,
+    configured: &rolodex_dns::config::TlsConfig,
+    binds: &[String],
+    alpn_protocols: Vec<Vec<u8>>,
+    managers: &mut Vec<Arc<rolodex_dns::tls::TlsManager>>,
+) -> Result<tokio::sync::watch::Receiver<Arc<rustls::ServerConfig>>> {
+    let tls_cfg = rolodex_dns::tls::TlsConfig::for_listener(configured, binds);
+    let manager = Arc::new(rolodex_dns::tls::TlsManager::new(tls_cfg, alpn_protocols)?);
+    let watch = manager.watch();
+    if manager
+        .spawn_reloader(label, rolodex_dns::tls::CERT_RELOAD_INTERVAL)
+        .is_some()
+    {
+        info!(
+            "{} certificate will be reloaded from disk within {:?} of a change",
+            label,
+            rolodex_dns::tls::CERT_RELOAD_INTERVAL
+        );
+    }
+    managers.push(manager);
+    Ok(watch)
+}
+
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     let directive = "rolodex_dns=info"
@@ -82,17 +116,14 @@ async fn main() -> Result<()> {
     // Provider lookups go out over plaintext :53. On a network that filters :53
     // they only time out and add latency, so gate them on a live :53 probe:
     // disable the resolver-backed blocklist (with a logged flag) when :53 is
-    // down, re-enable when it recovers. Only run when the blocklist is on.
-    if config.dnsbl.enabled {
-        let probe_checker = dnsbl.clone();
-        tokio::spawn(async move {
-            loop {
-                probe_checker
-                    .set_resolver_available(rolodex_dns::dnsbl::probe_public_dns53().await);
-                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-            }
-        });
-    }
+    // down, re-enable when it recovers.
+    //
+    // Spawned unconditionally, and gated inside on the checker's *runtime*
+    // enabled flag rather than on `config.dnsbl.enabled` here — a blocklist
+    // turned on later over gRPC has to get a probe too. Same shape as
+    // `recovery_probe_loop` below, which is also always spawned and no-ops when
+    // it has nothing to do. See `DnsblChecker::resolver_availability_loop`.
+    tokio::spawn(dnsbl.clone().resolver_availability_loop());
 
     // Initialize DNS cache (load_from_disk happens automatically in new())
     let dns_cache = Arc::new(DnsCache::new(db.clone()));
@@ -377,61 +408,77 @@ async fn main() -> Result<()> {
     dns_server.set_ingress_port(config.dns.ingress_listen_port);
     dns_server.sync_ingress_listeners();
 
-    // Spawn DNS-over-TLS (DoT) server if configured
+    // Every TLS listener's certificate manager, kept alive for the life of the
+    // process.
+    //
+    // This is load-bearing, not bookkeeping: the manager owns the watch sender
+    // the listeners follow and the task that re-reads the certificate files.
+    // Dropping one at the end of the block that built it — which is what used to
+    // happen — leaves its listeners holding receivers nobody will ever send on,
+    // and no amount of renewing the files reaches them.
+    let mut tls_managers: Vec<Arc<rolodex_dns::tls::TlsManager>> = Vec::new();
+
+    // Spawn DNS-over-TLS (DoT) server if configured.
+    //
+    // The bind addresses are resolved BEFORE the TLS config is built, because a
+    // generated certificate has to name them: a DoT client configured with an
+    // authentication name checks the identity it dialled, and a certificate
+    // covering only `localhost` fails that check on every LAN address the
+    // listener answers on.
     if let Some(ref dot_config) = config.dot {
-        let tls_cfg = rolodex_dns::tls::TlsConfig {
-            cert_path: dot_config.tls.cert_path.clone(),
-            key_path: dot_config.tls.key_path.clone(),
-            auto_self_signed: dot_config.tls.auto_self_signed,
-        };
-        match rolodex_dns::tls::TlsManager::new(tls_cfg, vec![]) {
-            Ok(tls_mgr) => {
-                let dot_binds = rolodex_dns::config::resolve_bind_addrs(&dot_config.bind)
-                    .context("resolving DoT bind address")?;
-                let acceptor = tokio_rustls::TlsAcceptor::from(tls_mgr.server_config());
+        let dot_binds = dot_config
+            .bind
+            .resolve()
+            .context("resolving DoT bind address")?;
+        match start_tls(
+            "DoT",
+            &dot_config.tls,
+            &dot_binds,
+            rolodex_dns::dot_server::alpn_protocols(),
+            &mut tls_managers,
+        ) {
+            Ok(tls) => {
                 for dot_bind in dot_binds {
                     let dot_dns = Arc::clone(&dns_server);
-                    let dot_acceptor = acceptor.clone();
+                    let dot_tls = tls.clone();
                     tokio::spawn(async move {
                         if let Err(e) =
-                            rolodex_dns::dot_server::serve_dot(&dot_bind, dot_dns, dot_acceptor)
-                                .await
+                            rolodex_dns::dot_server::serve_dot(&dot_bind, dot_dns, dot_tls).await
                         {
                             error!("DoT server error on {}: {}", dot_bind, e);
                         }
                     });
                 }
             }
-            Err(e) => error!("Failed to initialize DoT TLS: {}", e),
+            Err(e) => error!("Failed to initialize DoT TLS: {:#}", e),
         }
     }
 
     // Spawn DNS-over-HTTPS (DoH) server if configured
     if let Some(ref doh_config) = config.doh {
-        let tls_cfg = rolodex_dns::tls::TlsConfig {
-            cert_path: doh_config.tls.cert_path.clone(),
-            key_path: doh_config.tls.key_path.clone(),
-            auto_self_signed: doh_config.tls.auto_self_signed,
-        };
-        match rolodex_dns::tls::TlsManager::new(tls_cfg, vec![b"h2".to_vec(), b"http/1.1".to_vec()])
-        {
-            Ok(tls_mgr) => {
-                let doh_binds = rolodex_dns::config::resolve_bind_addrs(&doh_config.bind)
-                    .context("resolving DoH bind address")?;
-                let server_config = tls_mgr.server_config();
+        let doh_binds = rolodex_dns::config::resolve_bind_addrs(&doh_config.bind)
+            .context("resolving DoH bind address")?;
+        match start_tls(
+            "DoH",
+            &doh_config.tls,
+            &doh_binds,
+            vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+            &mut tls_managers,
+        ) {
+            Ok(tls) => {
                 for doh_bind in doh_binds {
                     let doh_dns = Arc::clone(&dns_server);
-                    let doh_config = server_config.clone();
+                    let doh_tls = tls.clone();
                     tokio::spawn(async move {
                         if let Err(e) =
-                            rolodex_dns::doh_server::serve_doh(&doh_bind, doh_dns, doh_config).await
+                            rolodex_dns::doh_server::serve_doh(&doh_bind, doh_dns, doh_tls).await
                         {
                             error!("DoH server error on {}: {}", doh_bind, e);
                         }
                     });
                 }
             }
-            Err(e) => error!("Failed to initialize DoH TLS: {}", e),
+            Err(e) => error!("Failed to initialize DoH TLS: {:#}", e),
         }
     }
 
@@ -441,15 +488,25 @@ async fn main() -> Result<()> {
         rolodex_dns::ca::ensure_root_ca(&db, &acme_config.root_ca_cn)
             .context("failed to initialize Rolodex root CA")?;
 
-        let tls_cfg = rolodex_dns::tls::TlsConfig {
-            cert_path: acme_config.tls.cert_path.clone(),
-            key_path: acme_config.tls.key_path.clone(),
-            auto_self_signed: acme_config.tls.auto_self_signed,
-        };
-        match rolodex_dns::tls::TlsManager::new(tls_cfg, vec![b"h2".to_vec(), b"http/1.1".to_vec()])
-        {
-            Ok(tls_mgr) => {
-                let server_config = tls_mgr.server_config();
+        // Both listeners share one certificate, so it has to name both sets of
+        // bind addresses. Resolved here purely for the SAN list — the listeners
+        // below resolve again and report their own failures, which is what keeps
+        // a bad `portal_bind` from taking the ACME listener down with it.
+        let acme_sans: Vec<String> = rolodex_dns::config::resolve_bind_addrs(&acme_config.bind)
+            .into_iter()
+            .chain(rolodex_dns::config::resolve_bind_addrs(
+                &acme_config.portal_bind,
+            ))
+            .flatten()
+            .collect();
+        match start_tls(
+            "ACME",
+            &acme_config.tls,
+            &acme_sans,
+            vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+            &mut tls_managers,
+        ) {
+            Ok(tls) => {
                 let acme_state = rolodex_dns::acme_server::AcmeState {
                     db: db.clone(),
                     dns_server: Some(Arc::clone(&dns_server)),
@@ -466,7 +523,7 @@ async fn main() -> Result<()> {
                     Ok(acme_binds) => {
                         for acme_bind in acme_binds {
                             let state = acme_state.clone();
-                            let cfg = server_config.clone();
+                            let cfg = tls.clone();
                             tokio::spawn(async move {
                                 if let Err(e) =
                                     rolodex_dns::acme_server::serve_acme(&acme_bind, state, cfg)
@@ -489,7 +546,7 @@ async fn main() -> Result<()> {
                     Ok(portal_binds) => {
                         for portal_bind in portal_binds {
                             let state = portal_state.clone();
-                            let cfg = server_config.clone();
+                            let cfg = tls.clone();
                             tokio::spawn(async move {
                                 if let Err(e) =
                                     rolodex_dns::portal::serve_portal(&portal_bind, state, cfg)
@@ -503,35 +560,37 @@ async fn main() -> Result<()> {
                     Err(e) => error!("resolving ACME portal bind address: {}", e),
                 }
             }
-            Err(e) => error!("Failed to initialize ACME TLS: {}", e),
+            Err(e) => error!("Failed to initialize ACME TLS: {:#}", e),
         }
     }
 
     // Spawn DNS-over-QUIC (DoQ) server if configured
     if let Some(ref doq_config) = config.doq {
-        let tls_cfg = rolodex_dns::tls::TlsConfig {
-            cert_path: doq_config.tls.cert_path.clone(),
-            key_path: doq_config.tls.key_path.clone(),
-            auto_self_signed: doq_config.tls.auto_self_signed,
-        };
-        match rolodex_dns::tls::TlsManager::new(tls_cfg, vec![b"doq".to_vec()]) {
-            Ok(tls_mgr) => {
-                let doq_binds = rolodex_dns::config::resolve_bind_addrs(&doq_config.bind)
-                    .context("resolving DoQ bind address")?;
-                let server_config = tls_mgr.server_config();
+        let doq_binds = doq_config
+            .bind
+            .resolve()
+            .context("resolving DoQ bind address")?;
+        match start_tls(
+            "DoQ",
+            &doq_config.tls,
+            &doq_binds,
+            vec![b"doq".to_vec()],
+            &mut tls_managers,
+        ) {
+            Ok(tls) => {
                 for doq_bind in doq_binds {
                     let doq_dns = Arc::clone(&dns_server);
-                    let doq_config = server_config.clone();
+                    let doq_tls = tls.clone();
                     tokio::spawn(async move {
                         if let Err(e) =
-                            rolodex_dns::doq_server::serve_doq(&doq_bind, doq_dns, doq_config).await
+                            rolodex_dns::doq_server::serve_doq(&doq_bind, doq_dns, doq_tls).await
                         {
                             error!("DoQ server error on {}: {}", doq_bind, e);
                         }
                     });
                 }
             }
-            Err(e) => error!("Failed to initialize DoQ TLS: {}", e),
+            Err(e) => error!("Failed to initialize DoQ TLS: {:#}", e),
         }
     }
 

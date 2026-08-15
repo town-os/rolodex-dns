@@ -1,6 +1,6 @@
 # Reglas de desarrollo de Rolodex DNS
 
-> Idiomas: [English](CLAUDE.md) | [繁體中文](CLAUDE.zh-TW.md) | [简体中文](CLAUDE.zh-CN.md) | **Español (España)** | [Español (México)](CLAUDE.es-MX.md) | [日本語](CLAUDE.ja.md)
+> Idiomas: [English](CLAUDE.md) | [繁體中文](CLAUDE.zh-TW.md) | [简体中文](CLAUDE.zh-CN.md) | **Español (España)** | [Español (México)](CLAUDE.es-MX.md) | [日本語](CLAUDE.ja-JP.md)
 
 Rolodex DNS es un servidor DNS de horizonte dividido (*split-horizon*) y un resolutor recursivo/de reenvío con gestión remota mediante gRPC, escrito en Rust y publicado bajo licencia AGPL-3.0-only.
 
@@ -16,7 +16,7 @@ Este fichero contiene las reglas para trabajar en él. Es deliberadamente breve:
 | `CHANGELOG.md` | Historial de versiones. |
 | `CLAUDE.md` | Este fichero. Solo reglas de desarrollo. |
 
-Cada uno de los cinco tiene junto a él una traducción al chino tradicional (`.zh-TW.md`), al chino simplificado (`.zh-CN.md`), al español de España (`.es-ES.md`), al español de México (`.es-MX.md`) y al japonés (`.ja.md`). **El inglés es la fuente de la verdad**: cámbialo primero y trata las traducciones como algo que hay que actualizar después, no como un segundo sitio donde editar. Nada verifica que coincidan: `tests/promql_docs_test.rs` lee únicamente el `README.md` y el `DESIGN.md` en inglés, así que un bloque de PromQL o un recuento de familias dentro de una traducción es documentación, no una aserción comprobada.
+Cada uno de los cinco tiene junto a él una traducción al chino tradicional (`.zh-TW.md`), al chino simplificado (`.zh-CN.md`), al español de España (`.es-ES.md`), al español de México (`.es-MX.md`) y al japonés (`.ja-JP.md`). **El inglés es la fuente de la verdad**: cámbialo primero y trata las traducciones como algo que hay que actualizar después, no como un segundo sitio donde editar. Nada verifica que coincidan: `tests/promql_docs_test.rs` lee únicamente el `README.md` y el `DESIGN.md` en inglés, así que un bloque de PromQL o un recuento de familias dentro de una traducción es documentación, no una aserción comprobada.
 
 ## Reglas
 
@@ -40,7 +40,7 @@ Cada uno de los cinco tiene junto a él una traducción al chino tradicional (`.
 
 ## Validar un cambio
 
-`make test` es la barrera, y le corresponde ejecutarla al operador (véanse las reglas anteriores). Ejecuta, en este orden: `lint` (`cargo fmt -- --check` y `cargo clippy --all-targets -- -D warnings`), las pruebas de integración y unitarias de Go, `prometheus-test`, cada fichero de pruebas de integración de Rust de forma explícita, `cargo test` y las pruebas de lint/integración/unitarias de JavaScript. `make test-log` captura la ejecución completa en un fichero de registro con marca temporal, que es la mejor opción cuando la ejecución es larga.
+`make test` es la barrera, y le corresponde ejecutarla al operador (véanse las reglas anteriores). Ejecuta, en este orden: `lint` (`translation-check`, `cargo fmt -- --check` y `cargo clippy --all-targets -- -D warnings`), las pruebas de integración y unitarias de Go, `prometheus-test`, cada fichero de pruebas de integración de Rust de forma explícita, `cargo test` y las pruebas de lint/integración/unitarias de JavaScript. `make test-log` captura la ejecución completa en un fichero de registro con marca temporal, que es la mejor opción cuando la ejecución es larga.
 
 Existen objetivos más acotados, listados en `DESIGN.md` bajo *Build System*: `make lint`, `make rust-test`, `make go-test`, `make js-test`, `make bench`.
 

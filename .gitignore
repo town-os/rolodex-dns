@@ -2,6 +2,7 @@
 /.cache
 /.claude
 /js/node_modules
+__pycache__/
 verify-passed.txt
 verify-failed.txt
 rolodex-dns-dev.db

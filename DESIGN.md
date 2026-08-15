@@ -1,6 +1,6 @@
 # Rolodex DNS Design & API Reference
 
-> Languages: **English** | [繁體中文](DESIGN.zh-TW.md) | [简体中文](DESIGN.zh-CN.md) | [Español (España)](DESIGN.es-ES.md) | [Español (México)](DESIGN.es-MX.md) | [日本語](DESIGN.ja.md)
+> Languages: **English** | [繁體中文](DESIGN.zh-TW.md) | [简体中文](DESIGN.zh-CN.md) | [Español (España)](DESIGN.es-ES.md) | [Español (México)](DESIGN.es-MX.md) | [日本語](DESIGN.ja-JP.md)
 
 Rolodex DNS is a split-horizon DNS server and recursive/forwarding resolver with remote management via gRPC. It resolves iteratively from the root servers by default, falling back through encrypted and plaintext upstreams. It is written in Rust and licensed under AGPL-3.0-only.
 
@@ -93,7 +93,7 @@ EDNS (RFC 6891) context is extracted from incoming queries. The server respects 
 
 ## Upstream Resolution
 
-Names not satisfied locally are resolved by the strategy in the `resolution` config section (`ResolutionMode` in `src/dns_server.rs`):
+Names not satisfied locally are resolved by the strategy in the `resolution` config section (`ResolutionMode` in `src/dns_server.rs`). The config file is only the **startup seed** — the mode is switchable at runtime over gRPC (`SetResolutionMode`/`GetResolutionMode`), because this box is often the only resolver on the network it serves, and restarting it to change one word in a file is a DNS outage for everything behind it:
 
 | Mode | Behavior |
 | ---- | -------- |
@@ -228,6 +228,8 @@ DNSBL gives blocklists **precedence over external DNS**: the check runs after lo
 
 DNSBL checking is globally togglable and **disabled by default, with an empty provider list**; providers are independently enable-able. With it disabled no provider lookup is issued at all, so queried names are not handed to the blocklist operator. The standard domain blocklists an operator typically adds are `dbl.spamhaus.org`, `multi.surbl.org`, and `multi.uribl.com`. An enabled-but-empty DNSBL is a no-op (nothing is queried and nothing is blocked). Results are held in an in-memory cache (positives for the provider TTL, negatives for 5 minutes), with refusal-code handling — `dbl.spamhaus.org` answers an IP query with `127.0.1.255`, which is an error and not a listing (see Refusal Codes and Provider Rotation). It is configured at startup via the `dnsbl` config section and at runtime via `SetDnsblConfig`/`GetDnsblConfig`.
 
+**Outbound `:53` reachability is probed on a loop, not assumed** (`DnsblChecker::resolver_availability_loop`, spawned once from `main.rs`). A provider lookup is itself a DNS query to a third-party zone, so on a network that filters outbound `:53` every one of them times out — and because a lookup error is deliberately treated as not-listed, a blocklist that times out on every name looks exactly like one that is working. A background task therefore probes real outbound `:53` reachability every 60 seconds and parks the provider path when it is gone. The task is spawned **unconditionally** and gates on the checker's *runtime* enabled flag rather than on `dnsbl.enabled` in the config file: gating the spawn on the file meant a blocklist turned on later over `SetDnsblConfig` — which is how the Town OS controller programs it, having stopped writing the config file at all — never got a probe, so the flag sat at its `true` default and every lookup timed out with nothing logged to say why. While the blocklist is off there is nothing to probe *for* (the listed check returns before consulting the flag), so the loop only re-reads the flag, and it does so every 5 seconds rather than every 60: that poll costs an atomic load rather than a UDP round trip, and it bounds how long a blocklist enabled over gRPC waits for its first probe.
+
 ### DNSBL Allowlist
 
 Specific hosts can be exempted from the blocklist check entirely. Allowlist entries are stored in the database (`dnsbl_allowlist` table) with a human-readable reason and managed via `AddDnsblAllowlistEntry`, `RemoveDnsblAllowlistEntry`, and `ListDnsblAllowlistEntries` (CLI: `add-dnsbl-allow`, `remove-dnsbl-allow`, `list-dnsbl-allow`).
@@ -243,9 +245,31 @@ Specific hosts can be exempted from the blocklist check entirely. Allowlist entr
 
 All encrypted transports are optional and require TLS configuration. If no certificate is provided, a self-signed certificate is automatically generated when `auto_self_signed` is `true` (default).
 
+A generated certificate always carries `localhost`, `127.0.0.1` and `::1`, and on top of those it carries **the listener's own bind addresses** plus anything in `<transport>.tls.self_signed_sans`. The bind addresses are folded in automatically because they are the identities clients dial by construction — a listener on `192.168.1.5:853` is reached as `192.168.1.5`, and a certificate naming only `localhost` fails the name check of every client configured with an authentication name, which is the only validation a self-signed certificate admits beyond raw public-key pinning. Wildcard binds (`0.0.0.0`, `::`) are not identities and are dropped, so a listener on the wildcard needs `self_signed_sans` to name the box explicitly. Duplicates fold together across spellings (`[::1]` and `::1`, `DNS.Home.` and `dns.home`). None of this applies when `cert_path`/`key_path` are set: that certificate carries whatever names it was issued for.
+
+#### Certificate reload
+
+**A renewed certificate is served without a restart.** Every TLS listener follows a `tokio::sync::watch` channel published by its `TlsManager` (`src/tls.rs`) rather than holding a config snapshot, and each manager polls its certificate files every `CERT_RELOAD_INTERVAL` (30s) and pushes a rebuilt config when their contents change. A connection already established finishes under the certificate it handshook with — the only thing TLS permits — and the next connection to arrive is served the new one. Nothing rebinds, so there is no window in which the port is closed.
+
+How each transport applies the swap differs, because each holds its certificate differently:
+
+| Transport | Mechanism |
+| --------- | --------- |
+| DoT | `TlsAcceptor` built per accepted connection from the channel; an acceptor is an `Arc` around the config, so this is free |
+| DoQ | `Endpoint::set_server_config`, applied in the accept loop's `select!` when the channel fires |
+| DoH, ACME, portal | `axum_server::RustlsConfig::reload_from_config`; axum-server loads that `ArcSwap` per accepted connection |
+
+Change detection is a poll of the file *contents*, hashed in the same pass that parses them, rather than an inotify watch or an mtime comparison. A renewal that arrives as a rename over the old path, or as a moved symlink into a versioned directory (certbot's `live/` layout), never writes to the inode a watch was placed on; re-reading by name catches every shape. Hashing what is parsed, rather than stat-ing afterwards, closes the window where a file could change between the load and the check and leave the manager recording a fingerprint that does not describe the certificate it is serving.
+
+A poll that fails leaves the previous certificate serving and retries on the next tick, because the fingerprint is recorded only after a *successful* load. This is what makes polling safe with no coordination with whoever writes the files: an ACME client writes two of them, and a 30-second timer will eventually land between the writes. `rustls` rejects that pair — `with_single_cert` compares the private key's `SubjectPublicKeyInfo` against the certificate's — the old pair keeps serving, and the finished pair is picked up on the next poll.
+
+Managers serving **generated** material are not polled at all: there is no file behind them, and regenerating on a timer would hand every client a different self-signed certificate twice a minute, which is indistinguishable from an attack to anything that pinned the previous one. `src/main.rs` holds every manager for the life of the process; a dropped manager is a dropped watch sender, and its listeners could never be handed anything again.
+
 ### DNS-over-TLS (DoT)
 
-RFC 7858. Listens on a configurable port (default `0.0.0.0:853`). Uses the same 2-byte length prefix framing as plain DNS TCP. Each connection spawns a new task. Configured in the `dot` section.
+RFC 7858. Listens on a configurable port (default `0.0.0.0:853`). ALPN protocol: `"dot"`. Uses the same 2-byte length prefix framing as plain DNS TCP. Each connection spawns a new task. Configured in the `dot` section.
+
+The ALPN token is advertised, not required. rustls fails a handshake only when the client offers protocols and none of them match, so a client offering `dot` gets `dot` back, a client offering only something else is refused, and a client that sends no ALPN extension at all — Android's Private DNS and systemd-resolved in opportunistic mode among them — is served with ALPN left unnegotiated. All three are pinned in `tests/dot_test.rs`; a listener that advertised nothing would satisfy the first and third while silently leaving a client unable to tell a DoT listener from any other TLS service on the port.
 
 ### DNS-over-HTTPS (DoH)
 
@@ -641,6 +665,8 @@ The management API is defined in `proto/rolodex_dns.proto` under the `RolodexDns
 | RPC                   | Description                                                                       |
 | --------------------- | --------------------------------------------------------------------------------- |
 | `SetForwarders`       | Replaces the upstream DNS forwarder list at runtime without restart.              |
+| `SetResolutionMode`   | Switches how names this server is not authoritative for are resolved — `auto`, `recursive` or `forward` — at runtime, without a restart. Case-insensitive; an unrecognized mode is refused with `InvalidArgument` rather than silently defaulted. Switching *into* `auto` kicks off the prewarm probe so the chain does not start cold. |
+| `GetResolutionMode`   | Returns the mode currently in effect, which is the mode actually resolving queries rather than the one `resolution.mode` in the config file names — they differ after a `SetResolutionMode` call. |
 | `SetDnsblConfig`      | Replaces the DNSBL (domain blocklist) configuration (global enable flag, provider list, and refusal handling) at runtime. |
 | `GetDnsblConfig`      | Returns the current DNSBL configuration, with resolved refusal codes and the rotated-out providers. |
 | `FlushCache`          | Clears the blocklist result cache and returns every rotated-out provider to rotation. |
@@ -810,7 +836,9 @@ The `rolodex-dns-cli` binary is a command-line client for the gRPC management in
 | Command            | Description                                                                                         |
 | ------------------ | --------------------------------------------------------------------------------------------------- |
 | `set-forwarders`   | Set upstream DNS forwarders. Takes `--forwarders` (one or more `host:port` addresses).              |
-| `set-dnsbl-config` | Configure DNSBL (domain blocklist) settings. Same flags as `set-rbl-config`.                        |
+| `set-resolution-mode` | Switch the upstream resolution mode at runtime. Takes `--mode` (`auto`, `recursive` or `forward`; case-insensitive). |
+| `get-resolution-mode` | Print the mode currently in effect, which is not necessarily the one `resolution.mode` names.     |
+| `set-dnsbl-config` | Configure DNSBL (domain blocklist) settings. Takes `--enabled`, `--providers` (`zone:enabled`), `--refusal-codes` (`zone=code,code`), `--provider-cooldown` (`zone=secs`) and `--refusal-cooldown`. |
 | `get-dnsbl-config` | Display current DNSBL configuration, including refusal codes and rotated-out providers.             |
 | `flush-cache`      | Clear the blocklist result cache.                                                                   |
 | `add-local-blocklist` | Add a local blocklist entry. Takes `--name` and optional `--reason`.                             |
@@ -949,7 +977,8 @@ An additional `WithGRPCDialOption` option allows passing custom `grpc.DialOption
 | Method                                  | Description                                                |
 | --------------------------------------- | ---------------------------------------------------------- |
 | `SetForwarders(ctx, forwarders)`        | Replaces the upstream forwarder list.                      |
-|@@DROP@@ctx, enabled, providers, secs)` | The same, with the list-wide rotate-out duration for refusing providers. |
+| `SetResolutionMode(ctx, mode)`          | Switches the resolution mode (`auto`, `recursive`, `forward`) at runtime. |
+| `GetResolutionMode(ctx)`                | Returns the mode currently in effect.                      |
 | `SetDnsblConfig(ctx, enabled, providers)` | Replaces the DNSBL (domain blocklist) configuration.     |
 | `SetDnsblConfigWithRefusalCooldown(ctx, enabled, providers, secs)` | The same, with the DNSBL rotate-out duration. |
 | `GetDnsblConfig(ctx)`                   | Returns a `DnsblStatus` with the current DNSBL configuration. |
@@ -1241,6 +1270,7 @@ dns:
 | `dot.tls.cert_path`                 | (none)                         | TLS certificate path                                   |
 | `dot.tls.key_path`                  | (none)                         | TLS private key path                                   |
 | `dot.tls.auto_self_signed`          | `true`                         | Auto-generate self-signed certificate                  |
+| `dot.tls.self_signed_sans`          | `[]` (empty)                   | Extra subject alternative names for a generated certificate; the loopback set and the listener's bind addresses are added automatically |
 | `doh.bind`                          | `0.0.0.0:443`                  | DoH listener; supports interface:port (section optional) |
 | `doh.tls.*`                         | (same as DoT)                  | TLS settings for DoH                                   |
 | `doh.enable_h3`                     | `false`                        | Enable HTTP/3 (QUIC) transport for DoH                 |
@@ -1292,11 +1322,12 @@ The project uses a top-level Makefile with the following targets:
 | `test`                | Run all tests: lint, Go integration tests, Go unit tests, Rust tests (`cargo test`), and JavaScript tests.                                                 |
 | `test-log`            | Same as `test`, tee'd into a timestamped log file under `/tmp/rolodex-dns/log` (override with `LOG_DIR`). The log path is printed at the end even when the run fails. |
 | `rust-test`           | Run the Rust integration test files, then `cargo test`.                                                                                                     |
-| `rust-integration-test` | Build, then run each Rust integration test file explicitly (`integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`, `promql_docs_test`, `prometheus_integration_test`, `blocklist_refusal_test`, `dnssec_signing_test`, `dnssec_validation_test`, `dnssec_hidden_cut_test`, `arpa_refusal_test`, `blocklist_nxdomain_test`, `zonemd_test`, `doq_test`, `proxy_test`, `tls_reload_test`, `acme_admin_test`, plus the `security_*` suites). |
-| `lint`                | Run `cargo fmt -- --check` and `cargo clippy --all-targets -- -D warnings`.                                                                                |
+| `rust-integration-test` | Build, then run each Rust integration test file explicitly (`integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`, `promql_docs_test`, `prometheus_integration_test`, `blocklist_refusal_test`, `dnssec_signing_test`, `dnssec_validation_test`, `dnssec_hidden_cut_test`, `arpa_refusal_test`, `blocklist_nxdomain_test`, `zonemd_test`, `dot_test`, `doq_test`, `proxy_test`, `tls_reload_test`, `acme_admin_test`, plus the `security_*` suites). |
+| `lint`                | Run `translation-check`, `cargo fmt -- --check` and `cargo clippy --all-targets -- -D warnings`.                                                           |
 | `prometheus-test`     | Execute every documented PromQL query against a containerised Prometheus (`quay.io/prometheus/prometheus`, overridable via `ROLODEX_PROMETHEUS_IMAGE`). A prerequisite of `test`. Needs podman; without it the test **skips loudly** rather than failing, so a machine with no container runtime still gets a green `make test`. `ROLODEX_PROMETHEUS_REQUIRED=1` turns that skip into a failure, which is what CI should set. |
-| `deps`                | Install build dependencies: the Rust cross-compilation toolchain (`cross-deps`) and the JavaScript dev dependencies (`npm install` in `js/`).              |
+| `deps`                | Install build dependencies: the Rust cross-compilation toolchain (`cross-deps`), the JavaScript dev dependencies (`npm install` in `js/`), and `python-deps`. |
 | `cross-deps`          | Install the Rust cross toolchain: `rustup target add` for both triples, `cargo-zigbuild`, and zig. Rootless — see Cross-Compilation.                       |
+| `python-deps`         | Verify `python3` is on PATH. A prerequisite of both `deps` and `translation-check`. It is a system interpreter, so this checks and names it rather than installing it. |
 | `js-lint`             | Run eslint on the JavaScript package (depends on `deps`).                                                                                                  |
 | `js-test`             | Run JavaScript unit tests (depends on `js-integration-test`).                                                                                              |
 | `js-integration-test` | Build the Rust binaries, lint, then run JavaScript integration tests with `ROLODEX_DNS_BINARY` pointing at the compiled server.                            |
@@ -1534,11 +1565,13 @@ DHCP integration tests in `tests/dhcp_integration_test.rs` cover end-to-end DHCP
 
 ### Transport, Proxy and TLS Tests
 
-Three suites cover surfaces that previously had only a compilation smoke test or a config-parsing unit test:
+Four suites cover surfaces that previously had only a compilation smoke test or a config-parsing unit test:
+
+- `tests/dot_test.rs` — DoT in two halves, answering different questions. In-process, a real `tokio-rustls` client against `serve_dot`: the `dot` ALPN token is negotiated, a client offering only another protocol is refused, a client offering no ALPN at all is still served and answered, a programmed name comes back with its address while an unprogrammed one comes back NXDOMAIN, and one connection carries several queries with their IDs and questions matched back (RFC 7766 reuse). Out-of-process, the real `rolodex-dns` binary against a config file with a `dot:` section: the deployed listener negotiates `dot` and answers a name programmed over the management socket, and the certificate it presents is decoded and checked to carry the address it was bound to and the configured `self_signed_sans`, but not a name that was never configured. The second half is what catches a `main.rs` that builds a listener without asking for the ALPN token or without naming its bind address — neither of which an in-process harness that builds its own `rustls::ServerConfig` can see. It binds `127.0.0.2` precisely because the loopback set is baked into every generated certificate, so only an address outside that set proves derivation. A third case rotates the certificate under a running `serve_dot` and asserts that a connection opened *before* the rotation is undisturbed, a connection opened *after* it is served the new certificate, and the listener still answers under it — the listener-side half of certificate reload, whose manager-side half is `tests/tls_reload_test.rs`. Answers come from local database records with no forwarders.
 
 - `tests/doq_test.rs` — a real `quinn` client against `serve_doq`: the `doq` ALPN token is negotiated (and a listener without it refuses a `doq`-only client), the 2-byte length prefix agrees with the body, several sequential and concurrent streams on one connection are answered independently, a truncated body is not answered, a zero-length message is rejected without taking the connection down, and a malformed message comes back FORMERR with its transaction ID echoed. Answers come from local database records with no forwarders, so a failure is about the transport and never about resolution.
 - `tests/proxy_test.rs` — mock HTTP CONNECT, SOCKS5 (RFC 1928/1929) and DoH proxies that **parse** what the server sends rather than replying with a canned response, so a malformed greeting or a wrong address type fails at the proxy. Each mode asserts both the answer and what was asked of the proxy (tunnel target, Basic credentials, the absolute-URI request line and unmodified body), that a refusing proxy is SERVFAIL rather than a fabricated answer, that the DoH connection pool reuses one socket across two queries, and — the control — that an unreachable proxy does **not** fall back to a direct connection.
-- `tests/tls_reload_test.rs` — `TlsManager::reload()` observed through real TLS handshakes: a rotated PEM pair is picked up by `reload()` and only by `reload()`, a self-signed manager mints a fresh certificate, ALPN survives the rebuild, a corrupt or missing file fails the reload while leaving the previous certificate serving (and recovers once repaired), and watchers subscribed before and after a reload both end up on the current config. Note that `src/main.rs` only snapshots `server_config()` per listener and never subscribes to `watch()`, so nothing swaps a running listener's certificate yet.
+- `tests/tls_reload_test.rs` — `TlsManager` observed through real TLS handshakes: a rotated PEM pair is picked up by `reload()` and only by `reload()`, a self-signed manager mints a fresh certificate, ALPN survives the rebuild, a corrupt or missing file fails the reload while leaving the previous certificate serving (and recovers once repaired), and watchers subscribed before and after a reload both end up on the current config. Then the polling half: an unchanged pair is not reloaded, a rotated one is detected and served, a **renewal caught mid-write fails and is retried** rather than being recorded as the new state, a self-signed manager has nothing to poll and gets no polling task, and the task itself picks up a rotation on its own. That a *listener* follows the channel is pinned separately in `tests/dot_test.rs`.
 
 ### ZONEMD Tests
 
@@ -1565,7 +1598,7 @@ The Go client has two test layers:
 - **Unit tests** — Use an in-process mock gRPC server via `bufconn` to test all client methods, authentication token propagation, transport modes, error handling, and edge cases (idempotent close, lazy dial, custom dial options).
 - **Integration tests** — Gated behind the `integration` build tag. Each test starts a real Rolodex DNS server subprocess with a unique temporary directory, random ports, and isolated database. Tests cover record CRUD, wildcard filtering, forwarder configuration, blocklist round-trip, cache flushing, Unix socket transport, authentication failure, default TTL behavior, concurrent clients (5 simultaneous), network scoping, DNS64, and TTL drift.
 
-The `make test` target runs the full test suite: lint, Go integration tests, Go unit tests, Rust integration tests (each test file explicitly: `integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`, `promql_docs_test`, `prometheus_integration_test`, `blocklist_refusal_test`, `dnssec_signing_test`, `dnssec_validation_test`, `dnssec_hidden_cut_test`, `arpa_refusal_test`, `blocklist_nxdomain_test`, `zonemd_test`, `doq_test`, `proxy_test`, `tls_reload_test`, `acme_admin_test`, and the `security_*` suites), all Rust tests via `cargo test` (which also covers the resolver suite above), and the JavaScript lint/integration/unit tests. Individual targets are available: `make go-integration-test`, `make go-test`, `make rust-integration-test`, `make rust-test`, `make js-integration-test`, `make js-test`. Use `make test-log` to capture the whole run to a timestamped log file.
+The `make test` target runs the full test suite: lint, Go integration tests, Go unit tests, Rust integration tests (each test file explicitly: `integration_test`, `new_features_test`, `cli_integration_test`, `dhcp_integration_test`, `acme_issuer_test`, `auto_resolution_test`, `metrics_test`, `promql_docs_test`, `prometheus_integration_test`, `blocklist_refusal_test`, `dnssec_signing_test`, `dnssec_validation_test`, `dnssec_hidden_cut_test`, `arpa_refusal_test`, `blocklist_nxdomain_test`, `zonemd_test`, `dot_test`, `doq_test`, `proxy_test`, `tls_reload_test`, `acme_admin_test`, and the `security_*` suites), all Rust tests via `cargo test` (which also covers the resolver suite above), and the JavaScript lint/integration/unit tests. Individual targets are available: `make go-integration-test`, `make go-test`, `make rust-integration-test`, `make rust-test`, `make js-integration-test`, `make js-test`. Use `make test-log` to capture the whole run to a timestamped log file. `make translation-check` compares each translated document against English section by section, exiting non-zero on any drift; it is a prerequisite of `lint`, so it runs as part of `make test` and fails the gate when a locale falls behind.
 
 ## Key Dependencies
 

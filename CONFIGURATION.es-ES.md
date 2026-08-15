@@ -1,6 +1,6 @@
 # Guía de configuración de Rolodex DNS
 
-> Idiomas: [English](CONFIGURATION.md) | [繁體中文](CONFIGURATION.zh-TW.md) | [简体中文](CONFIGURATION.zh-CN.md) | **Español (España)** | [Español (México)](CONFIGURATION.es-MX.md) | [日本語](CONFIGURATION.ja.md)
+> Idiomas: [English](CONFIGURATION.md) | [繁體中文](CONFIGURATION.zh-TW.md) | [简体中文](CONFIGURATION.zh-CN.md) | **Español (España)** | [Español (México)](CONFIGURATION.es-MX.md) | [日本語](CONFIGURATION.ja-JP.md)
 
 Este es un recorrido orientado a tareas: cómo conseguir un servidor que funcione y, después, cómo encender cada subsistema y por qué querrías hacerlo. Para la lista exhaustiva de campos, consulta [Opciones de configuración](README.es-ES.md#opciones-de-configuración) en el README.
 
@@ -59,6 +59,8 @@ El puerto 53 requiere privilegios. Para desarrollo usa un puerto alto —`make d
 ## Direcciones de escucha
 
 En todos los sitios donde se acepta una dirección (`dns.bind`, `dot.bind`, `doh.bind`, `doq.bind`, `grpc.tcp_bind`, `dhcp.bind`, `acme.bind`, `acme.portal_bind`, `metrics.bind`) se admiten cuatro formas:
+
+(`dns.bind` toma una lista de pares protocolo/dirección, y `dot.bind`/`doq.bind` toman **o una dirección o una lista** — una lista es como una escucha cubre ambas familias de direcciones, ya que `0.0.0.0` es solo IPv4 y un socket `[::]` choca con él en el mismo puerto. Los demás toman una sola dirección.)
 
 | Forma | Ejemplo | Resultado |
 | ----- | ------- | --------- |
@@ -242,6 +244,16 @@ resolution:
 | `recursive` | Quieres las raíces o nada: jamás se contacta con un resolutor ascendente |
 | `forward` | Quieres un reenviador simple (o, con `forwarders: []`, nada aguas arriba) |
 
+**El `mode` de aquí es la semilla de arranque, no el ajuste en vigor.** Se lee una
+vez al arrancar; a partir de ahí el modo es el que `SetResolutionMode` fijó por
+última vez, y `GetResolutionMode` informa del que de verdad está resolviendo
+consultas — así que los dos pueden discrepar, y manda el servidor en marcha.
+`rolodex-dns-cli set-resolution-mode -m <modo>` / `get-resolution-mode` son esas dos
+mismas llamadas desde la consola. Cambiar el fichero y reiniciar también funciona,
+pero reiniciar el único resolutor de una máquina es una caída de DNS para todo lo que
+hay en ella, que es justo la razón de que exista la RPC. A diferencia del fichero, la
+RPC **rechaza** un modo no reconocido en lugar de avisar y caer a `auto`.
+
 `default_ttl` es un **valor de reserva, no un suelo**. Un TTL que viene presente se respeta exactamente como se envió, incluido el TTL negativo del SOA de una zona. Si lo que buscas es acortar o alargar TTL en vivo, eso es la [deriva de TTL](#dns64-deriva-de-ttl-familia-de-direcciones), no esto.
 
 ### DNSSEC
@@ -355,10 +367,20 @@ doh:
 
 doq:
   bind: "0.0.0.0:8853"
-  tls: { auto_self_signed: true }     # aceptable en una red de confianza
+  tls:
+    auto_self_signed: true            # aceptable en una red de confianza
+    self_signed_sans:                 # los nombres por los que la LAN marca este equipo
+      - dns.home
+      - town-os.local
 ```
 
-`auto_self_signed: true` (el valor por defecto) genera un certificado al arrancar si no hay ninguno configurado, lo cual es cómodo en una red de confianza e inútil para un cliente que comprueba nombres. Ten en cuenta que la recarga de certificados **aún no está conectada a los *listeners***: cada uno toma una instantánea al arrancar, así que un certificado renovado necesita un reinicio para servirse.
+`auto_self_signed: true` (el valor por defecto) genera un certificado al arrancar si no hay ninguno configurado, lo cual es cómodo en una red de confianza.
+
+**Un certificado renovado no necesita reinicio.** Un *listener* configurado con `cert_path`/`key_path` vuelve a leer esos ficheros cada 30 segundos y empieza a servir el par nuevo dentro de esa ventana: las conexiones ya abiertas terminan bajo el certificado con el que hicieron el saludo, y la siguiente en llegar recibe el nuevo. No hay nada que señalizar ni nada que coordinar con quien escribe los ficheros: un sondeo que caiga entre las dos escrituras de un cliente ACME ve una clave que no corresponde al certificado, lo rechaza, sigue sirviendo el par antiguo y reintenta en el siguiente tic. Un certificado generado (`auto_self_signed`) no se sondea: no hay fichero detrás de él, y regenerarlo por temporizador entregaría a cada cliente un certificado distinto dos veces por minuto.
+
+**Si un cliente DoT informa de una discrepancia de nombre en el certificado, este es el ajuste.** Un certificado generado cubre `localhost`, `127.0.0.1`, `::1` y las direcciones de enlace propias del *listener*, así que uno en `192.168.1.5:853` ya funciona para un cliente que marque esa dirección, sin configurar nada. Lo que no puede cubrir es cualquier otra cosa a la que responda el equipo: su nombre de máquina, su nombre mDNS `.local`, un CNAME por el que lo conozca la LAN, o la dirección con la que lo publique un NAT. Esos van en `self_signed_sans`. Un *listener* sobre un enlace **comodín** (`0.0.0.0:853`, el valor por defecto) no deriva nada en absoluto, porque `0.0.0.0` no es una identidad que nadie marque: sobre un enlace comodín la lista es lo único que nombra al equipo.
+
+Esto es una comprobación de nombre, no una decisión de confianza, y falla antes. Al cliente todavía hay que decirle que confíe en el certificado —anclarlo, o publicarlo y comprobarlo por DANE/TLSA— porque un certificado autofirmado no tiene cadena. Un cliente que no valida nada (`kdig +tls`, systemd-resolved en modo oportunista) no se ve afectado en ningún caso.
 
 ### Gestión por gRPC
 
@@ -457,11 +479,13 @@ Buena parte de lo que parece configuración es estado en caliente en SQLite, cam
 | Cambiado en caliente (gRPC/CLI) | Requiere reinicio |
 | ---- | ---- |
 | Registros, registros con ámbito, ámbitos, asociaciones | `dns.bind` y todas las demás direcciones de escucha |
-| Zonas autoritativas, TLD propios, *listeners* de ingreso | `resolution.*` y `forwarders` (valores iniciales; `set-forwarders` los cambia en vivo) |
+| Zonas autoritativas, TLD propios, *listeners* de ingreso | `resolution.*` **salvo `mode`**, y `forwarders` (valores iniciales; `set-forwarders` los cambia en vivo) |
 | Configuración de DNSBL, entradas locales, lista de permitidos | `dnssec.*` |
 | DNS64, deriva de TTL, *proxy*, configuración de DoT/DoH/DoQ | `security.*` |
 | *Pools* DHCP, concesiones, opciones de certificado | `database_path`, `dhcp.*`, `acme.*`, `metrics.*` |
-| Claves DNSSEC y firma de zonas; CA de ACME y credenciales EAB | Ficheros de certificado TLS (aún no se intercambian en caliente en los *listeners*) |
+| Claves DNSSEC y firma de zonas; CA de ACME y credenciales EAB | `<transport>.tls.*` — las rutas y la lista de SAN, no el certificado en sí |
+| **Ficheros** de certificado TLS — reescritos en su sitio, recogidos en 30 s | — |
+| `resolution.mode` — `set-resolution-mode` lo cambia, `get-resolution-mode` lee el que está en vigor | — |
 
 Los cambios de registros y de listas de bloqueo surten efecto en la siguiente consulta; las mutaciones de registros vacían la caché de respuestas automáticamente.
 
@@ -492,7 +516,9 @@ Un **enlace que se resuelve pero falla en el sistema operativo** —el puerto es
 | Todos los nombres comprobados contra una lista de bloqueo empezaron a dar NXDOMAIN | Comportamiento previo a la gestión de rechazos. Mira `get-dnsbl-config` por proveedores rotados fuera, y la cuota de ese proveedor |
 | El nombre de host de un cliente DHCP nunca aparece en el DNS | No es una etiqueta DNS única válida: los nombres de host se rechazan, no se sanean. El aviso lo nombra |
 | `dig -x` falla para un host que está perfectamente | Una entrada de la lista local coincidió con la dirección. `add-dnsbl-allow --name <ip>` lo levanta |
-| Un certificado renovado no se está sirviendo | La recarga de certificados aún no está conectada a los *listeners*; reinicia |
+| Un certificado renovado no se está sirviendo | Dale 30 segundos. Si persiste, el registro dice por qué: una recarga que falla se registra en cada sondeo. La causa habitual es un certificado y una clave que no corresponden, que es también el aspecto de una escritura a medias; una renovación que se quede a medias para siempre nunca termina. Un *listener* con `auto_self_signed` no se sondea en absoluto: no tiene ficheros |
+| Un cliente DoT informa de discrepancia de nombre para el nombre de máquina o la dirección LAN del equipo | El certificado generado nombra solo el conjunto de loopback y las direcciones de enlace del *listener*, y un enlace comodín no aporta nada. Añade el nombre a `dot.tls.self_signed_sans` y reinicia. Esto es distinto de confiar en el certificado, que un autofirmado sigue exigiendo |
+| Un cliente DoT falla el saludo con `no_application_protocol` | Está ofreciendo un protocolo ALPN distinto de `dot`. El *listener* anuncia `dot` y rechaza a un cliente que ofrece solo otra cosa; un cliente que no ofrece ALPN alguno se sirve con normalidad |
 | Un *listener* de ingreso nunca se levantó | Su IP no existía en el arranque. Vuelve a añadir el TLD una vez levantada la interfaz |
 
 Para la referencia completa de campos, véase [Opciones de configuración](README.es-ES.md#opciones-de-configuración).

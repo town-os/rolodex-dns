@@ -16,6 +16,7 @@ use axum::{
 use base64::Engine;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::sync::watch;
 use tracing::{error, info};
 
 /// Shared state for the DoH server.
@@ -39,10 +40,14 @@ pub fn build_router(dns_server: Arc<DnsServer>) -> Router {
 }
 
 /// Serves DNS-over-HTTPS on the specified bind address.
+///
+/// `tls` is a live view of the certificate rather than a snapshot: a renewal is
+/// stored into the listener's `RustlsConfig` by the task below and picked up by
+/// the next connection, with no restart.
 pub async fn serve_doh(
     bind: &str,
     dns_server: Arc<DnsServer>,
-    server_config: Arc<rustls::ServerConfig>,
+    tls: watch::Receiver<Arc<rustls::ServerConfig>>,
 ) -> Result<()> {
     let state = DohState { dns_server };
 
@@ -50,7 +55,7 @@ pub async fn serve_doh(
         .route("/dns-query", get(handle_doh_get).post(handle_doh_post))
         .with_state(state);
 
-    let tls_config = axum_server::tls_rustls::RustlsConfig::from_config(server_config);
+    let tls_config = axum_server::tls_rustls::RustlsConfig::from_config(tls.borrow().clone());
 
     let addr: std::net::SocketAddr = bind
         .parse()
@@ -58,13 +63,18 @@ pub async fn serve_doh(
 
     info!("DoH server listening on {}", addr);
 
+    let renewals = tokio::spawn(crate::tls::drive_axum_tls(tls_config.clone(), tls));
+
     // With connect info, so the peer address reaches source classification: DoH
     // is a full resolution path, and without the peer every query would look
     // like a local one — reopening the recursion the `:53` listener closes.
-    axum_server::bind_rustls(addr, tls_config)
+    let outcome = axum_server::bind_rustls(addr, tls_config)
         .serve(app.into_make_service_with_connect_info::<SocketAddr>())
-        .await
-        .context("DoH server error")?;
+        .await;
+
+    // The listener is finished, so nothing is left to hand a certificate to.
+    renewals.abort();
+    outcome.context("DoH server error")?;
 
     Ok(())
 }

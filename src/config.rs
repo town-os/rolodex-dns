@@ -107,6 +107,93 @@ impl DnsBind {
     }
 }
 
+/// One or more bind-address specifications for a single listener.
+///
+/// Accepts a bare string or a sequence, so `bind: "0.0.0.0:853"` and
+/// `bind: ["0.0.0.0:853", "[2001:db8::1]:853"]` are both valid and every config
+/// written before the list form existed still parses. Serializes back as a bare
+/// string when there is exactly one entry, so a round trip does not churn files
+/// that never wanted a list.
+///
+/// This exists because a single string cannot cover both address families:
+/// `0.0.0.0:853` is IPv4-only, and there is no wildcard that is portably both
+/// (a `[::]` socket with `net.ipv6.bindv6only=0` takes v4-mapped traffic too and
+/// then collides with the `0.0.0.0` socket, so "just bind `[::]`" is not a fix).
+/// A list lets a v6 address be named alongside the v4 wildcard.
+///
+/// Each entry goes through [`resolve_bind_addrs`], so interface names and
+/// `primary` work per entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindList(Vec<String>);
+
+impl BindList {
+    /// Wraps a single specification.
+    pub fn one(spec: impl Into<String>) -> Self {
+        Self(vec![spec.into()])
+    }
+
+    /// The configured specifications, unresolved.
+    pub fn specs(&self) -> &[String] {
+        &self.0
+    }
+
+    /// Whether no specification was given at all. An empty list disables the
+    /// listener the same way an omitted section does.
+    pub fn is_empty(&self) -> bool {
+        self.0.iter().all(|s| s.trim().is_empty())
+    }
+
+    /// Resolves every specification and flattens the results, preserving order
+    /// and dropping duplicates.
+    ///
+    /// Duplicates are dropped rather than passed through because they are easy
+    /// to write by accident — naming an interface and one of its addresses, or
+    /// listing `primary:853` next to the literal it resolves to — and the second
+    /// bind of a pair fails with `EADDRINUSE`, which reads as a port conflict
+    /// with some other process rather than as a repeated line in one's own
+    /// config.
+    pub fn resolve(&self) -> Result<Vec<String>> {
+        let mut out: Vec<String> = Vec::new();
+        for spec in &self.0 {
+            if spec.trim().is_empty() {
+                continue;
+            }
+            for addr in resolve_bind_addrs(spec)
+                .with_context(|| format!("resolving bind address '{}'", spec))?
+            {
+                if !out.contains(&addr) {
+                    out.push(addr);
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+impl Serialize for BindList {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0.as_slice() {
+            [one] => serializer.serialize_str(one),
+            many => many.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for BindList {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum StringOrSeq {
+            One(String),
+            Many(Vec<String>),
+        }
+        Ok(match StringOrSeq::deserialize(deserializer)? {
+            StringOrSeq::One(s) => BindList(vec![s]),
+            StringOrSeq::Many(v) => BindList(v),
+        })
+    }
+}
+
 /// DNS listener configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DnsConfig {
@@ -395,6 +482,14 @@ pub struct TlsConfig {
     /// Whether to automatically generate a self-signed certificate if none is provided.
     #[serde(default = "default_true")]
     pub auto_self_signed: bool,
+    /// Extra subject alternative names for an auto-generated certificate.
+    ///
+    /// The listener's own bind addresses are added automatically, so this is for
+    /// the identities a client dials that the bind address does not name — the
+    /// box's hostname, a CNAME the LAN knows it by, or the address a NAT
+    /// publishes it on. Ignored when `cert_path`/`key_path` are set.
+    #[serde(default)]
+    pub self_signed_sans: Vec<String>,
 }
 
 impl Default for TlsConfig {
@@ -403,6 +498,7 @@ impl Default for TlsConfig {
             cert_path: None,
             key_path: None,
             auto_self_signed: true,
+            self_signed_sans: Vec::new(),
         }
     }
 }
@@ -410,9 +506,11 @@ impl Default for TlsConfig {
 /// DNS-over-TLS (DoT) listener configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DotConfig {
-    /// Address to bind the DoT listener (e.g. "0.0.0.0:853").
+    /// Address(es) to bind the DoT listener. A bare string (`"0.0.0.0:853"`) or
+    /// a list (`["0.0.0.0:853", "[2001:db8::1]:853"]`) — a list is how the
+    /// listener covers both address families, since `0.0.0.0` is IPv4-only.
     #[serde(default = "default_dot_bind")]
-    pub bind: String,
+    pub bind: BindList,
     /// TLS settings for the DoT listener.
     #[serde(default)]
     pub tls: TlsConfig,
@@ -454,9 +552,11 @@ impl Default for DohConfig {
 /// DNS-over-QUIC (DoQ) listener configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoqConfig {
-    /// Address to bind the DoQ listener (e.g. "0.0.0.0:8853").
+    /// Address(es) to bind the DoQ listener. A bare string (`"0.0.0.0:8853"`) or
+    /// a list (`["0.0.0.0:8853", "[2001:db8::1]:8853"]`) — a list is how the
+    /// listener covers both address families, since `0.0.0.0` is IPv4-only.
     #[serde(default = "default_doq_bind")]
-    pub bind: String,
+    pub bind: BindList,
     /// TLS settings for the DoQ listener.
     #[serde(default)]
     pub tls: TlsConfig,
@@ -1023,16 +1123,16 @@ fn default_recovery_probe_secs() -> u64 {
     60
 }
 
-fn default_dot_bind() -> String {
-    "0.0.0.0:853".to_string()
+fn default_dot_bind() -> BindList {
+    BindList::one("0.0.0.0:853")
 }
 
 fn default_doh_bind() -> String {
     "0.0.0.0:443".to_string()
 }
 
-fn default_doq_bind() -> String {
-    "0.0.0.0:8853".to_string()
+fn default_doq_bind() -> BindList {
+    BindList::one("0.0.0.0:8853")
 }
 
 fn default_proxy_mode() -> String {
@@ -1315,11 +1415,12 @@ mod tests {
         // Build a config with all new fields populated
         let config = Config {
             dot: Some(DotConfig {
-                bind: "0.0.0.0:853".to_string(),
+                bind: BindList::one("0.0.0.0:853"),
                 tls: TlsConfig {
                     cert_path: Some("/etc/certs/dot.pem".to_string()),
                     key_path: Some("/etc/certs/dot.key".to_string()),
                     auto_self_signed: false,
+                    self_signed_sans: vec!["dns.home".to_string()],
                 },
             }),
             doh: Some(DohConfig {
@@ -1328,7 +1429,7 @@ mod tests {
                 enable_h3: false,
             }),
             doq: Some(DoqConfig {
-                bind: "0.0.0.0:8853".to_string(),
+                bind: BindList::one("0.0.0.0:8853"),
                 tls: TlsConfig::default(),
             }),
             proxy: Some(ProxyConfig {
@@ -1359,10 +1460,11 @@ mod tests {
 
         // Verify DoT
         let dot = deserialized.dot.unwrap();
-        assert_eq!(dot.bind, "0.0.0.0:853");
+        assert_eq!(dot.bind.specs(), ["0.0.0.0:853"]);
         assert_eq!(dot.tls.cert_path.as_deref(), Some("/etc/certs/dot.pem"));
         assert_eq!(dot.tls.key_path.as_deref(), Some("/etc/certs/dot.key"));
         assert!(!dot.tls.auto_self_signed);
+        assert_eq!(dot.tls.self_signed_sans, vec!["dns.home".to_string()]);
 
         // Verify DoH
         let doh = deserialized.doh.unwrap();
@@ -1371,7 +1473,7 @@ mod tests {
 
         // Verify DoQ
         let doq = deserialized.doq.unwrap();
-        assert_eq!(doq.bind, "0.0.0.0:8853");
+        assert_eq!(doq.bind.specs(), ["0.0.0.0:8853"]);
 
         // Verify Proxy
         let proxy = deserialized.proxy.unwrap();
@@ -1482,6 +1584,98 @@ dnsbl:
         let yaml = serde_yaml_ng::to_string(&config).unwrap();
         let deserialized: Config = serde_yaml_ng::from_str(&yaml).unwrap();
         assert_eq!(config.dns.bind, deserialized.dns.bind);
+    }
+
+    // ================================================================
+    // BindList — the string-or-list bind form used by DoT and DoQ
+    // ================================================================
+
+    /// Parses `bind:` out of a one-key YAML document, the way a real config
+    /// would carry it.
+    fn parse_bind(yaml: &str) -> BindList {
+        #[derive(Deserialize)]
+        struct Holder {
+            bind: BindList,
+        }
+        serde_yaml_ng::from_str::<Holder>(yaml).unwrap().bind
+    }
+
+    #[test]
+    fn a_bare_string_bind_still_parses() {
+        // Every config written before the list form existed uses this, so it is
+        // not merely convenient — dropping it would break them on upgrade.
+        assert_eq!(parse_bind("bind: \"0.0.0.0:853\"").specs(), ["0.0.0.0:853"]);
+    }
+
+    #[test]
+    fn a_list_bind_parses_and_covers_both_families() {
+        let bind = parse_bind("bind: [\"0.0.0.0:853\", \"[2001:db8::1]:853\"]");
+        assert_eq!(bind.specs(), ["0.0.0.0:853", "[2001:db8::1]:853"]);
+        assert_eq!(
+            bind.resolve().unwrap(),
+            vec!["0.0.0.0:853", "[2001:db8::1]:853"]
+        );
+    }
+
+    #[test]
+    fn a_single_entry_bind_serializes_back_as_a_string() {
+        // A round trip must not turn every scalar `bind:` in the wild into a
+        // one-element list.
+        let yaml = serde_yaml_ng::to_string(&BindList::one("0.0.0.0:853")).unwrap();
+        assert_eq!(yaml.trim(), "0.0.0.0:853");
+        assert!(
+            !yaml.contains('-'),
+            "one entry must not serialize as a list"
+        );
+
+        // ...and a real list still round-trips as one.
+        #[derive(Serialize)]
+        struct Holder {
+            bind: BindList,
+        }
+        let many = BindList(vec!["0.0.0.0:853".into(), "[::1]:853".into()]);
+        let yaml = serde_yaml_ng::to_string(&Holder { bind: many.clone() }).unwrap();
+        assert_eq!(parse_bind(&yaml).specs(), many.specs());
+    }
+
+    #[test]
+    fn a_repeated_bind_address_is_resolved_once() {
+        // `EADDRINUSE` from a duplicated line reads as a conflict with another
+        // process, so the duplicate is dropped instead of bound twice.
+        let bind = BindList(vec![
+            "0.0.0.0:853".into(),
+            "[::1]:853".into(),
+            "0.0.0.0:853".into(),
+        ]);
+        assert_eq!(bind.resolve().unwrap(), vec!["0.0.0.0:853", "[::1]:853"]);
+    }
+
+    #[test]
+    fn an_empty_bind_entry_is_skipped_rather_than_resolved() {
+        assert!(BindList(vec![String::new()]).is_empty());
+        assert!(BindList(vec!["  ".into()]).resolve().unwrap().is_empty());
+        // A real entry alongside an empty one still resolves.
+        let bind = BindList(vec!["".into(), "127.0.0.1:853".into()]);
+        assert!(!bind.is_empty());
+        assert_eq!(bind.resolve().unwrap(), vec!["127.0.0.1:853"]);
+    }
+
+    #[test]
+    fn a_bad_bind_entry_names_itself_in_the_error() {
+        let err = BindList(vec!["0.0.0.0:853".into(), "no-port-here".into()])
+            .resolve()
+            .unwrap_err();
+        assert!(
+            format!("{:#}", err).contains("no-port-here"),
+            "the failing entry must be named, got: {:#}",
+            err
+        );
+    }
+
+    #[test]
+    fn dot_and_doq_default_to_their_documented_ports() {
+        assert_eq!(DotConfig::default().bind.specs(), ["0.0.0.0:853"]);
+        assert_eq!(DoqConfig::default().bind.specs(), ["0.0.0.0:8853"]);
     }
 
     #[test]

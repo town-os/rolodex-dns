@@ -242,6 +242,28 @@ enum Commands {
         forwarders: Vec<String>,
     },
 
+    /// Set the upstream resolution mode at runtime.
+    /// `resolution.mode` in the config file is only the startup seed; this
+    /// changes the mode actually resolving queries, without a restart — a
+    /// restart of a box's only resolver is a DNS outage for everything on it.
+    /// gRPC path: /rolodex_dns.RolodexDnsService/SetResolutionMode
+    #[command(name = "set-resolution-mode")]
+    SetResolutionMode {
+        /// "auto" (root-first fallback chain), "recursive" (iterative from the
+        /// roots only) or "forward" (configured forwarders only).
+        /// Case-insensitive. An unrecognized value is rejected rather than
+        /// silently defaulted.
+        #[arg(short, long)]
+        mode: String,
+    },
+
+    /// Get the upstream resolution mode currently in effect.
+    /// This is the mode actually resolving queries, which is not necessarily
+    /// what the config file names — the two differ after a set-resolution-mode.
+    /// gRPC path: /rolodex_dns.RolodexDnsService/GetResolutionMode
+    #[command(name = "get-resolution-mode")]
+    GetResolutionMode,
+
     /// Configure DNSBL (domain blocklist) settings.
     /// Replaces the entire DNSBL configuration including the global enable
     /// flag and all providers. DNSBL listings block forward domain names and
@@ -1102,6 +1124,35 @@ async fn main() -> Result<()> {
             } else {
                 anyhow::bail!("Failed to set forwarders: {}", resp.message);
             }
+        }
+
+        Commands::SetResolutionMode { mode } => {
+            let response = client
+                .set_resolution_mode(SetResolutionModeRequest {
+                    mode: mode.clone(),
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("set-resolution-mode RPC failed")?;
+            let resp = response.into_inner();
+            if resp.success {
+                // The server takes the mode case-insensitively and reports
+                // nothing back on success, so echo the canonical spelling
+                // rather than whatever case was typed.
+                println!("Resolution mode set to {}", mode.to_ascii_lowercase());
+            } else {
+                anyhow::bail!("Failed to set resolution mode: {}", resp.message);
+            }
+        }
+
+        Commands::GetResolutionMode => {
+            let response = client
+                .get_resolution_mode(GetResolutionModeRequest {
+                    auth_token: cli.auth_token.clone(),
+                })
+                .await
+                .context("get-resolution-mode RPC failed")?;
+            println!("Resolution mode: {}", response.into_inner().mode);
         }
 
         Commands::SetDnsblConfig {

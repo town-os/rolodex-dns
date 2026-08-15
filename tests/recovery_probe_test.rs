@@ -327,3 +327,53 @@ async fn client_queries_never_pay_for_a_recovery_probe() {
     );
     assert_eq!(server.active_tier(), TIER_LOCAL);
 }
+
+// The recovery loop is spawned UNCONDITIONALLY at startup, not only when the
+// configured mode is auto, because the mode is no longer fixed for the life of
+// the process — SetResolutionMode can switch a running server into auto, and a
+// box that got there would otherwise degrade past a dead tier and never climb
+// back, with no symptom beyond permanently slower and less private resolution.
+//
+// What makes that spawn safe is this: each pass re-reads the mode and returns
+// immediately outside auto, so the loop costs one sleeping task in the modes
+// that do not use it. Without this property the unconditional spawn would have
+// recursive- and forward-mode boxes issuing probe queries they never asked for.
+#[tokio::test]
+async fn probe_does_nothing_outside_auto() {
+    let (resolver, root, _tld) = signed_roots(Tamper::None).await;
+    let db = Database::open_memory().expect("in-memory db");
+    let dnsbl = Arc::new(DnsblChecker::new());
+    let server = Arc::new(DnsServer::new(db, dnsbl, vec![]));
+    server.set_resolver(resolver);
+
+    for mode in [ResolutionMode::Recursive, ResolutionMode::Forward] {
+        server.set_resolution_mode(mode);
+        server.recovery_probe_once().await;
+        assert_eq!(
+            root.hits(),
+            0,
+            "the probe queried in {mode:?}, a mode that has no tier chain to reclaim"
+        );
+    }
+}
+
+// And the switch itself is observed: the mode an RPC sets is the mode the
+// running server reports and the probe gates on. This is the half that makes
+// the loop start working the moment a box is switched into auto, rather than at
+// the next restart.
+#[tokio::test]
+async fn a_runtime_mode_switch_is_what_the_probe_reads() {
+    let db = Database::open_memory().expect("in-memory db");
+    let dnsbl = Arc::new(DnsblChecker::new());
+    let server = Arc::new(DnsServer::new(db, dnsbl, vec![]));
+
+    server.set_resolution_mode(ResolutionMode::Recursive);
+    assert_eq!(server.get_resolution_mode(), ResolutionMode::Recursive);
+
+    server.set_resolution_mode(ResolutionMode::Auto);
+    assert_eq!(
+        server.get_resolution_mode(),
+        ResolutionMode::Auto,
+        "a runtime switch into auto must be visible to the probe's gate"
+    );
+}

@@ -924,7 +924,64 @@ impl DnsblChecker {
     pub fn cache_entries(&self) -> usize {
         self.cache.len()
     }
+
+    /// Keeps [`resolver_available`](Self::resolver_available) in step with actual
+    /// outbound :53 reachability, forever. Spawned once at startup; never returns.
+    ///
+    /// Spawned **unconditionally**, and gated on the checker's runtime enabled
+    /// flag rather than on `dnsbl.enabled` in the config file. Gating the spawn
+    /// on the file meant a blocklist turned on later over gRPC (`SetDnsblConfig`,
+    /// which is how the Town OS controller programs it — it no longer writes the
+    /// config file at all) never got a probe: the flag stayed at its `true`
+    /// default and every provider lookup timed out on a :53-filtering network,
+    /// with nothing logged to say why.
+    ///
+    /// While the blocklist is off there is nothing to probe *for* —
+    /// [`is_name_listed`](Self::is_name_listed) returns before consulting the
+    /// flag — so the network probe is skipped and the loop only re-reads the
+    /// flag. That poll is an atomic load, so it runs far more often than the
+    /// probe, which is what keeps a runtime enable from waiting out a whole
+    /// probe interval before blocklists start working.
+    pub async fn resolver_availability_loop(self: Arc<Self>) {
+        self.run_resolver_availability_loop(
+            probe_public_dns53,
+            RESOLVER_PROBE_INTERVAL,
+            DISABLED_POLL_INTERVAL,
+        )
+        .await
+    }
+
+    /// [`resolver_availability_loop`](Self::resolver_availability_loop) with the
+    /// reachability probe and both intervals injected, so a test can drive it in
+    /// milliseconds without touching the network.
+    async fn run_resolver_availability_loop<F, Fut>(
+        self: Arc<Self>,
+        probe: F,
+        probe_interval: Duration,
+        disabled_poll: Duration,
+    ) where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = bool>,
+    {
+        loop {
+            if !self.is_enabled().await {
+                tokio::time::sleep(disabled_poll).await;
+                continue;
+            }
+            self.set_resolver_available(probe().await);
+            tokio::time::sleep(probe_interval).await;
+        }
+    }
 }
+
+/// How often outbound :53 is probed while the blocklist is enabled.
+const RESOLVER_PROBE_INTERVAL: Duration = Duration::from_secs(60);
+
+/// How often the enabled flag is re-read while the blocklist is disabled. Much
+/// shorter than [`RESOLVER_PROBE_INTERVAL`] because it costs an atomic load
+/// rather than a UDP round trip, and it bounds how long a blocklist enabled over
+/// gRPC waits for its first probe.
+const DISABLED_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Builds the per-provider lookup for a name-based (DNSBL) check. `normalized`
 /// must already have been through [`normalize_blocklist_name`].
@@ -1926,5 +1983,95 @@ mod tests {
         let name = "one.example.";
         assert!(!checker.is_name_listed(name).await);
         assert_eq!(resolver.count(), 0);
+    }
+
+    // ================================================================
+    // Resolver-availability probe loop
+    // ================================================================
+
+    /// Runs the loop with millisecond intervals and a counting probe, and hands
+    /// back the counter plus the spawned task so a test can stop it.
+    fn spawn_probe_loop(
+        checker: Arc<DnsblChecker>,
+        probed: Arc<AtomicU64>,
+        result: bool,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            checker
+                .run_resolver_availability_loop(
+                    || {
+                        let probed = probed.clone();
+                        async move {
+                            probed.fetch_add(1, Ordering::Relaxed);
+                            result
+                        }
+                    },
+                    Duration::from_millis(20),
+                    Duration::from_millis(2),
+                )
+                .await
+        })
+    }
+
+    #[tokio::test]
+    async fn the_probe_is_skipped_while_the_blocklist_is_disabled() {
+        // A disabled blocklist consults nothing, so probing on its behalf is
+        // traffic to a public resolver for no reason.
+        let checker = Arc::new(DnsblChecker::with_resolver(Arc::new(MockResolver::new(
+            false,
+        ))));
+        let probed = Arc::new(AtomicU64::new(0));
+        let task = spawn_probe_loop(checker.clone(), probed.clone(), true);
+
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(
+            probed.load(Ordering::Relaxed),
+            0,
+            "a disabled blocklist must not probe :53"
+        );
+
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn enabling_the_blocklist_over_grpc_starts_the_probe() {
+        // The regression this loop exists for: the controller programs the
+        // blocklist over SetDnsblConfig and never writes the config file, so a
+        // probe gated on the file's `dnsbl.enabled` never ran and every provider
+        // lookup timed out on a :53-filtering network with nothing logged.
+        let checker = Arc::new(DnsblChecker::with_resolver(Arc::new(MockResolver::new(
+            false,
+        ))));
+        let probed = Arc::new(AtomicU64::new(0));
+        let task = spawn_probe_loop(checker.clone(), probed.clone(), false);
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(probed.load(Ordering::Relaxed), 0);
+
+        // Exactly what SetDnsblConfig does — no config file involved.
+        checker
+            .set_config(
+                true,
+                vec![DnsblProvider {
+                    zone: "dbl.example.org".to_string(),
+                    enabled: true,
+                    ..Default::default()
+                }],
+            )
+            .await;
+
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(
+            probed.load(Ordering::Relaxed) > 0,
+            "a blocklist enabled at runtime must start getting probed"
+        );
+        // And the probe's verdict must actually reach the checker, not just be
+        // called: a probe whose answer is dropped is the same outage.
+        assert!(
+            !checker.resolver_available(),
+            "a failing probe must mark the resolver unavailable"
+        );
+
+        task.abort();
     }
 }

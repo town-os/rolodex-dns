@@ -2,7 +2,7 @@
 
 这是一份任务导向的逐步说明：先让服务器跑起来，再逐一开启各子系统，并说明你为什么会想开它。完整的字段列表请见 README 的[配置选项](README.zh-CN.md#配置选项)。
 
-> 语言：[English](CONFIGURATION.md) ｜ [繁體中文](CONFIGURATION.zh-TW.md) ｜ **简体中文** ｜ [Español (España)](CONFIGURATION.es-ES.md) ｜ [Español (México)](CONFIGURATION.es-MX.md) ｜ [日本語](CONFIGURATION.ja.md)
+> 语言：[English](CONFIGURATION.md) ｜ [繁體中文](CONFIGURATION.zh-TW.md) ｜ **简体中文** ｜ [Español (España)](CONFIGURATION.es-ES.md) ｜ [Español (México)](CONFIGURATION.es-MX.md) ｜ [日本語](CONFIGURATION.ja-JP.md)
 
 - [配置如何加载](#配置如何加载)
 - [最小可用配置](#最小可用配置)
@@ -59,6 +59,8 @@ rolodex-dns-cli -u /var/run/rolodex-dns.sock add-record \
 ## 绑定地址
 
 所有接受地址的地方（`dns.bind`、`dot.bind`、`doh.bind`、`doq.bind`、`grpc.tcp_bind`、`dhcp.bind`、`acme.bind`、`acme.portal_bind`、`metrics.bind`）都接受四种写法：
+
+（`dns.bind` 收的是一串“协议／地址”配对，而 `dot.bind`／`doq.bind` 既收**单个地址也收一个列表**——列表是一个监听器同时覆盖两个地址族的办法，因为 `0.0.0.0` 只管 IPv4，而 `[::]` 的套接字会在同一端口上与它相撞。其余的都只收单个地址。）
 
 | 写法 | 示例 | 结果 |
 | ---- | ---- | ---- |
@@ -242,6 +244,16 @@ resolution:
 | `recursive` | 要么走根服务器要么不解析——绝不接触任何上游解析器 |
 | `forward` | 你要的是单纯的转发器（或搭配 `forwarders: []`，完全不要上游） |
 
+**这里的 `mode` 是启动时的种子，而不是正在生效的那个设置。** 它只在启动时
+读一次；
+从那以后，模式就是 `SetResolutionMode` 最后一次设定的那个，而 `GetResolutionMode`
+报告的是真正在解析查询的那个——所以两者可能不一致，而以正在运行的服务器为准。
+`rolodex-dns-cli set-resolution-mode -m <mode>` /
+`get-resolution-mode` 就是这两个调用在命令行上的写法。改文件再重启当然也行，
+但重启一台机器唯一的解析器，就是让它上面的一切都断一次 DNS——这正是那个 RPC
+存在的全部理由。与文件不同，该 RPC 会**拒绝**无法识别的模式，而不是发出告警
+再退回 `auto`。
+
 `default_ttl` 是**后备值，不是下限**。存在的 TTL 一律按原样采用，包括区域 SOA 的否定 TTL。如果你想缩短或延长实际的 TTL，那是 [TTL 漂移](#dns64ttl-漂移与地址族)，不是这个。
 
 ### DNSSEC
@@ -355,10 +367,20 @@ doh:
 
 doq:
   bind: "0.0.0.0:8853"
-  tls: { auto_self_signed: true }     # 在受信任网络上没问题
+  tls:
+    auto_self_signed: true            # 在受信任网络上没问题
+    self_signed_sans:                 # 局域网客户端拨打本机时所用的名称
+      - dns.home
+      - town-os.local
 ```
 
-`auto_self_signed: true`（默认值）会在没有配置证书时于启动阶段生成一张，这在受信任网络上很方便，但对会检查名称的客户端毫无用处。请注意证书重新加载**尚未接到监听器上**：每个监听器在启动时取一次快照，因此续期后的证书需要重启才会被提供。
+`auto_self_signed: true`（默认值）会在没有配置证书时于启动阶段生成一张，这在受信任网络上很方便。
+
+**续期后的证书无需重启。** 配置了 `cert_path`/`key_path` 的监听器每 30 秒重新读取这些文件，并在该窗口内开始提供新的一对——已经打开的连接会在它握手时所用的证书下走完，而下一条到达的连接拿到新证书。没有什么信号要发，也无需与写文件的一方做任何协调：轮询若落在 ACME 客户端的两次写入之间，会看到一把与证书不匹配的私钥，从而拒绝它、继续提供旧的一对，并在下一次滴答重试。自动生成的（`auto_self_signed`）证书不会被轮询——它背后没有文件，而按定时器重新生成会每半分钟给每个客户端一张不同的证书。
+
+**如果某个 DoT 客户端报告证书名称不匹配，问题就在这个设置上。** 自动生成的证书涵盖 `localhost`、`127.0.0.1`、`::1` 以及该监听器自身的绑定地址——因此监听在 `192.168.1.5:853` 上的服务对拨打该地址的客户端已经可用，无需配置任何东西。它无法涵盖的是本机所应答的其他一切：它的主机名、它的 mDNS `.local` 名称、局域网所熟知的某个 CNAME，或者某个 NAT 对外发布它的地址。这些都写进 `self_signed_sans`。绑定**通配**地址的监听器（`0.0.0.0:853`，即默认值）根本不会推导出任何名称，因为 `0.0.0.0` 不是任何客户端所拨打的身份——在通配绑定上，这份列表就是唯一为本机署名的东西。
+
+这是名称校验，不是信任决策，而且它先失败。客户端仍然必须被告知去信任这张证书——固定它，或者通过 DANE/TLSA 发布并校验它——因为自签证书没有链可查。什么都不验证的客户端（`kdig +tls`、机会模式下的 systemd-resolved）无论如何都不受影响。
 
 ### gRPC 管理
 
@@ -457,11 +479,13 @@ address_family:
 | 可在运行期变更（gRPC/CLI） | 需要重启 |
 | ---- | ---- |
 | 记录、范围内记录、范围、关联 | `dns.bind` 以及所有其他绑定地址 |
-| 权威区域、专属 TLD、入口监听器 | `resolution.*` 与 `forwarders`（初始值；`set-forwarders` 可实时变更） |
+| 权威区域、专属 TLD、入口监听器 | `mode` **以外**的 `resolution.*`，以及 `forwarders`（初始值；`set-forwarders` 可实时变更） |
 | DNSBL 配置、本地条目、允许列表 | `dnssec.*` |
 | DNS64、TTL 漂移、代理、DoT/DoH/DoQ 配置 | `security.*` |
 | DHCP 地址池、租约、证书选项 | `database_path`、`dhcp.*`、`acme.*`、`metrics.*` |
-| DNSSEC 密钥与区域签名；ACME 证书颁发机构与 EAB 凭据 | TLS 证书文件（尚未热替换进监听器） |
+| DNSSEC 密钥与区域签名；ACME 证书颁发机构与 EAB 凭据 | `<transport>.tls.*`——路径与 SAN 列表，而不是证书本身 |
+| TLS 证书**文件**——就地重写，30 秒内被取用 | — |
+| `resolution.mode`——`set-resolution-mode` 切换它，`get-resolution-mode` 读取实际生效的那个 | — |
 
 记录与封锁列表的变更会在下一次查询时生效——记录变更会自动清空响应缓存。
 
@@ -486,10 +510,15 @@ YAML 的解析错误同样是致命的。文件不存在则不是。
 | 某个叠加网络对等节点查任何名称都得到 REFUSED | 它落在 `security.overlay_cidrs` 内却没调用 `JoinNetwork`，或其关联 TTL 已过期 |
 | 你覆盖过的域名底下，某个公开名称回 NXDOMAIN | 加了一条记录就让这台服务器对整个区域具权威。请在本地补上该名称，或把覆盖改到你自己拥有的名称上 |
 | 某个名称在别处都能解析，在这里却 SERVFAIL | DNSSEC 验证把它挡掉了。检查 `rolodex_dns_dnssec_verdicts_total{verdict="bogus"}`；再用 `dig +cd`（禁用检查）确认 |
+| **每一个**名称都 SERVFAIL，而且整条链从不降级到加密上游 | 根区域本身无法通过验证：一个这个构建不认识的信任锚点（一次 KSK 轮转）、一个错误的 `dnssec.trust_anchors`，或是 `:53` 上有什么东西拿它自己的材料在回答 DNSKEY 查询。这是刻意的——一个无法通过验证的根是一项判定，而不是一次层级失败，所以该查询会被拒绝，而不是被悄悄改问一个不做验证的上游。在你修好锚点之前，`dnssec.validate: false` 就是逃生口 |
+| `arpa.` 底下的某个名称回 REFUSED（`ipv4only.arpa`，或对一个你并未持有的地址做 `dig -x`） | 这是预期行为：在每一种解析模式下，`arpa.` 及其底下的一切要么由本地数据回答，要么就不回答。那个子树里没有任何东西会被发送到上游。请在本地补上该记录，或等待反解区域那项工作 |
+| `rolodex_dns_dnssec_blamed_roots` 不为零 | 有一台根服务器回复了对照你的锚点无法通过验证的 DNSSEC，因而被从根集合中剔除 15 分钟，每再犯一次翻倍。若**所有**的根都被剔除，该怀疑的是锚点或根区域，而不是那些服务器——日志会明确这么说。归责只存在内存中，重启即重置 |
 | 对照某个封锁列表检查的每个名称都开始 NXDOMAIN | 这是尚未做拒答处理时的行为。用 `get-dnsbl-config` 检查被移出轮换的提供方，以及该提供方的配额 |
 | 某个 DHCP 客户端的主机名始终没出现在 DNS | 它不是合法的单一 DNS 标签——主机名是被拒绝而非被清洗。警告信息会指出它 |
 | 某台明明正常的主机 `dig -x` 失败 | 有一条本地封锁条目匹配到了该地址。`add-dnsbl-allow --name <ip>` 可解除 |
-| 续期后的证书没有被提供 | 证书重新加载尚未接到监听器上；请重启 |
+| 续期后的证书没有被提供 | 请给它 30 秒。若仍然如此，日志会说明原因——失败的重载每次轮询都会被记录。常见原因是证书与私钥不匹配，而那也正是一次写到一半的样子；一次被永久留在半途的续期永远不会完成。使用 `auto_self_signed` 的监听器根本不会被轮询：它没有文件 |
+| 某个 DoT 客户端就本机的主机名或局域网地址报告证书名称不匹配 | 自动生成的证书只署名回环集合与该监听器的绑定地址，而通配绑定什么都不提供。请把该名称加入 `dot.tls.self_signed_sans` 并重启。这与是否信任该证书是两回事，自签证书仍然需要被信任 |
+| 某个 DoT 客户端以 `no_application_protocol` 握手失败 | 它提供的是 `dot` 之外的 ALPN 协议。监听器通告 `dot`，并拒绝只提供其他协议的客户端；完全不提供 ALPN 的客户端会照常获得服务 |
 | 入口监听器始终没起来 | 它的 IP 在开机时还不存在。接口起来后重新加入该 TLD 即可 |
 
 完整的字段参考请见[配置选项](README.zh-CN.md#配置选项)。

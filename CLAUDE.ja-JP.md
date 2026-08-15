@@ -16,7 +16,7 @@ Rolodex DNS は、gRPC によるリモート管理を備えたスプリットホ
 | `CHANGELOG.md` | リリース履歴。 |
 | `CLAUDE.md` | このファイル。開発ルールのみ。 |
 
-この五つそれぞれに、繁体字中国語（`.zh-TW.md`）、簡体字中国語（`.zh-CN.md`）、欧州スペイン語（`.es-ES.md`）、メキシコスペイン語（`.es-MX.md`）、日本語（`.ja.md`）の訳が並んでいます。**英語版が唯一の正典です**：まず英語版を変更し、訳文は後から追随させるべきものとして扱ってください。第二の編集場所ではありません。両者が一致していることを検証する仕組みはありません——`tests/promql_docs_test.rs` が読むのは英語版の `README.md` と `DESIGN.md` だけなので、訳文中の PromQL ブロックやファミリー数はドキュメントであって、検査されるアサーションではありません。
+この五つそれぞれに、繁体字中国語（`.zh-TW.md`）、簡体字中国語（`.zh-CN.md`）、欧州スペイン語（`.es-ES.md`）、メキシコスペイン語（`.es-MX.md`）、日本語（`.ja-JP.md`）の訳が並んでいます。**英語版が唯一の正典です**：まず英語版を変更し、訳文は後から追随させるべきものとして扱ってください。第二の編集場所ではありません。両者が一致していることを検証する仕組みはありません——`tests/promql_docs_test.rs` が読むのは英語版の `README.md` と `DESIGN.md` だけなので、訳文中の PromQL ブロックやファミリー数はドキュメントであって、検査されるアサーションではありません。
 
 ## ルール
 
@@ -40,7 +40,7 @@ Rolodex DNS は、gRPC によるリモート管理を備えたスプリットホ
 
 ## 変更を検証する
 
-`make test` がゲートであり、それを実行するのはオペレーターの役目です——上記のルールを参照。次の順で実行されます：`lint`（`cargo fmt -- --check` と `cargo clippy --all-targets -- -D warnings`）、Go の統合テストとユニットテスト、`prometheus-test`、Rust の各統合テストファイルを明示的に、`cargo test`、そして JavaScript の lint／統合／ユニットテスト。`make test-log` は実行全体をタイムスタンプ付きのログファイルに記録するので、実行が長くなるときはそちらのほうが適しています。
+`make test` がゲートであり、それを実行するのはオペレーターの役目です——上記のルールを参照。次の順で実行されます：`lint`（`translation-check`、`cargo fmt -- --check`、`cargo clippy --all-targets -- -D warnings`）、Go の統合テストとユニットテスト、`prometheus-test`、Rust の各統合テストファイルを明示的に、`cargo test`、そして JavaScript の lint／統合／ユニットテスト。`make test-log` は実行全体をタイムスタンプ付きのログファイルに記録するので、実行が長くなるときはそちらのほうが適しています。
 
 より絞り込んだターゲットも存在し、`DESIGN.md` の Build System の項に一覧があります——`make lint`、`make rust-test`、`make go-test`、`make js-test`、`make bench`。
 

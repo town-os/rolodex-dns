@@ -2,7 +2,7 @@
 
 Rolodex DNS 是一套分割视域（split-horizon）DNS 服务器与递归／转发解析器，通过 gRPC 进行远程管理。它默认从根服务器开始迭代解析，并依次退回加密与明文上游。它用 Rust 编写，许可证为 AGPL-3.0-only。
 
-> 语言：[English](DESIGN.md) ｜ [繁體中文](DESIGN.zh-TW.md) ｜ **简体中文** ｜ [Español (España)](DESIGN.es-ES.md) ｜ [Español (México)](DESIGN.es-MX.md) ｜ [日本語](DESIGN.ja.md)
+> 语言：[English](DESIGN.md) ｜ [繁體中文](DESIGN.zh-TW.md) ｜ **简体中文** ｜ [Español (España)](DESIGN.es-ES.md) ｜ [Español (México)](DESIGN.es-MX.md) ｜ [日本語](DESIGN.ja-JP.md)
 
 本文件是功能规格：架构、解析语义，以及所有管理界面（gRPC、CLI、Go 客户端、JavaScript 客户端、指标、配置）。开发规则——如何修改这份代码、如何验证一次改动——写在 `CLAUDE.zh-CN.md`。`README.zh-CN.md` 是面向用户的参考文档，`CONFIGURATION.zh-CN.md` 是任务导向的配置指南，而 `CHANGELOG.zh-CN.md` 是版本历史。
 
@@ -64,7 +64,7 @@ DNS 查询按下列顺序解析：
 
 0. **范围选择**——查询的范围是由它抵达的监听器与它的源 IP 决定的（见“来源分类与范围强制”）：抵达某个逐 TLD 入口监听器的查询，对**每一个**名称都属于该监听器的拥有范围；否则只有位于 `security.overlay_cidrs` 之内的源 IP 会被套用范围强制（未加入 ⇒ REFUSED），而其他所有来源都以不带范围的方式解析全局命名空间。
 1. **网络范围检查**——若已选出某个范围，会先检查该范围的范围内记录。
-2. **RBL 检查**——若该查询是一次反向 DNS 查找（`in-addr.arpa` 或 `ip6.arpa`），提取出的 IP 会对照已启用的 RBL 提供方（全局的，加上该查询所属范围所选用的）进行检查，并对照以 IP 字面量或反向名称两种写法之一存储的本地 RBL 条目检查。若被列入则返回 NXDOMAIN。位于 **DNSBL 允许列表**上的名称与地址会完全跳过这一步——见“DNSBL 允许列表”。
+2. **反向查找的封锁列表检查**——若该查询是一次反向 DNS 查找（`in-addr.arpa` 或 `ip6.arpa`），提取出的 IP 会对照以 IP 字面量或反向名称两种写法之一存储的本地封锁列表条目检查。若被列入则返回 NXDOMAIN。位于 **DNSBL 允许列表**上的名称与地址会完全跳过这一步——见“DNSBL 允许列表”。
 3. **本地数据库查找**——以请求的名称与类型查询本地数据库。若有记录存在，会立即返回。
 4. **CNAME 链**——若本地找不到类型完全相符的记录，会对被查询的名称尝试一次 CNAME 查找。若存在 CNAME，就返回它。
 5. **LAN → 拥有范围的后备**（仅限非范围内来源）——对一个受信任的本机来源（loopback／局域网，`scope_name == None`）而言，若其名称没有匹配到任何全局记录，而该名称位于**某个**网络范围所拥有的 TLD 之下（`db::find_tld_owner`），就会从那个拥有范围的记录中解析它，好让**每一个网络 TLD 在局域网上都看得到**。这一步在全局查找**之后**运行，因此一个双栖名称（同时有一条全局的局域网 IP 记录与一条范围内的叠加 IP 记录）仍然返回它面向局域网的全局值；只有仅存在于范围中的名称（例如某个网络的区域顶点）才会从该范围以其存储值提供。若拥有范围没有记录，接着会咨询该 TLD 的对等转发器，若仍然落空则返回一个**权威 NXDOMAIN**——一个私有拥有的 TLD 绝不会从局域网被转发到上游。（叠加对等节点不受影响：它们在步骤 1 就走了范围内路径，那条路径会把专属 TLD 分隔开来——一个加入某个网络的对等节点只看得到自己的 TLD，而对兄弟网络或另一个范围的 TLD 得到 NXDOMAIN。）
@@ -75,7 +75,7 @@ DNS 查询按下列顺序解析：
     **反向树被排除在外。** `in-addr.arpa` 与 `ip6.arpa` 正是“最后两个标签”启发式无法指出任何人所委派之区域的情况：反向区域是切在 `1.168.192.in-addr.arpa` 或更短的位置，绝不会切在两个标签处，所以那套启发式永远会推导出 `in-addr.arpa.` 本身。把它注册起来，会让一条存储的 PTR 成为**整棵全球反向树**的权威，让每一次 `in-addr.arpa` 查找都变成 NXDOMAIN——而在 `dns.auto_ptr` 开启时，单单一条 A 记录就会产生那条触发它的 PTR。所以那套启发式在那里不只是过于激进，而是根本错了，因此 `db::extract_zone_from_name` 对任何位于 `in-addr.arpa.` 或 `ip6.arpa.` 之下的名称返回 `None`——但**不**对整个 `arpa.` 这么做，因为 `home.arpa`（RFC 8375）正是为这类网络而设的特殊用途域名，而那套启发式在那里是对的（`foo.home.arpa.` 推导出 `home.arpa.`，也就是真正的区域）；把它排除掉会把落空的查询发到上游，而那正是 RFC 8375 §4 所禁止的。真正在运作反向区域的运维人员会用 `AddAuthoritativeZone` 声明它，那会对上真正的区域切点，而不是去猜。
 
     因此这份缓存在两端都保持精确：`Database::add_record` 会插入该区域，而 `Database::remove_records` 会在 `zone_has_records` 报告该区域及其之下什么都不剩时把它移除。移除是唯一会删除全局记录的路径，所以那也是唯一可能混入陈旧数据的地方——而一条陈旧的条目并非无害，它会持续为一个已经不存在的区域回答 NXDOMAIN。
-7. **DNSBL／本地封锁列表检查**——在任何外部解析之前，被查询的名称（仅正向名称；反向名称由步骤 2 处理）会对照本地 RBL 封锁列表检查，并在 DNSBL 已启用时对照已配置的 DNSBL（域名封锁列表）提供方检查。若被列入则返回 NXDOMAIN。位于 **DNSBL 允许列表**上的名称（以及它们底下的一切）会完全跳过这一步——见“DNSBL 允许列表”。由于这一步在本地／受管区域检查之后、但在上游缓存与转发器之前运行，DNSBL 会优先于任何外部解析出来的答案（转发的、迭代的，或上游缓存的），而本地记录则一律胜出。
+7. **DNSBL／本地封锁列表检查**——在任何外部解析之前，被查询的名称（仅正向名称；反向名称由步骤 2 处理）会对照本地封锁列表检查，并在 DNSBL 已启用时对照已配置的 DNSBL（域名封锁列表）提供方检查。若被列入则返回 NXDOMAIN。位于 **DNSBL 允许列表**上的名称（以及它们底下的一切）会完全跳过这一步——见“DNSBL 允许列表”。由于这一步在本地／受管区域检查之后、但在上游缓存与转发器之前运行，DNSBL 会优先于任何外部解析出来的答案（转发的、迭代的，或上游缓存的），而本地记录则一律胜出。
 8. **DNS64 合成**——若 DNS64 已启用，且该查询是 AAAA 但上游只有 A 记录，就会用配置好的 NAT64 前缀合成 AAAA 记录。
 8.5. **递归访问控制**——在任何东西离开这台服务器（上游缓存、封锁列表提供方、转发器、根服务器）之前，来源必须位于 `security.recursion_cidrs` 之内；否则该查询会被 REFUSED。步骤 1–6 不受影响，因此一个陌生人仍然会被提供这台服务器具权威的数据。见“递归访问控制”。
 9. **上游解析**——没有匹配到的查询会走由 `resolution.mode` 选出的上游路径（见“上游解析”）：默认是 `auto` 层级链，在 `recursive` 下是从根服务器迭代，在 `forward` 下则是单纯转发。若每一个层级／转发器都失败，就返回 SERVFAIL。
@@ -93,13 +93,32 @@ EDNS（RFC 6891）的上下文会从进来的查询中提取出来。服务器�
 
 ## 上游解析
 
-无法在本地满足的名称，会按 `resolution` 配置段中的策略解析（`src/dns_server.rs` 中的 `ResolutionMode`）：
+无法在本地满足的名称，会按 `resolution` 配置段中的策略解析（`src/dns_server.rs` 中的 `ResolutionMode`）。配置文件只是**启动时的种子** —— 该模式可以在运行期经由 gRPC 切换（`SetResolutionMode`/`GetResolutionMode`），因为这台机器往往是它所服务的网络上唯一的解析器，为改一个词而重启它，对它背后的一切来说就是一次 DNS 中断：
 
 | 模式 | 行为 |
 | ---- | ---- |
 | `auto`（默认） | 下面的分层后备链。 |
 | `recursive` | 只从根服务器迭代解析；绝不接触任何上游解析器。 |
 | `forward` | 只转发到已配置的 `forwarders`（旧行为）。 |
+
+### `arpa.` 子树一律不在本机之外解析
+
+**`arpa.` 及其底下的一切，只由本地数据回答，否则就不回答。** 在所有解析模式下，那个子树里没有任何名称会被发送到根服务器、转发器或加密上游。一个没有本地数据的名称会得到 **REFUSED**——我们是在拒绝为某个命名空间作答，而不是在主张那个名称不存在，而后者正是 NXDOMAIN 会宣称的。
+
+本地数据依然优先作答，因为这条规则是一道落空后才生效的规则，而不是一道封锁：一条已存的 PTR、一条带范围的记录、一个受管理或具权威的反解区域，全都与此前完全一样地解析得出来。改变的是它们落空之后会发生什么。
+
+这条规则在两个彼此独立的层次上被强制执行，而且是刻意的冗余：
+
+- **查询路径**（`src/dns_server.rs` 中的 `resolve_query`）在“这台机器持有的数据”与“它必须外出获取的数据”之间的边界上拒绝——就在开放解析器防护之后、而且在响应缓存查找**之前**，因此一个在不同策略生效期间被缓存下来的答案，现在不可能被提供出去。
+- **迭代解析器**（`src/resolver.rs` 中的 `resolve_inner`）不发送任何数据包就拒绝，因此没有任何调用者能拿它来抵达那个子树，而指向 `arpa.` 的 CNAME 目标或无粘合的 NS 主机名，也被同一项检查涵盖。
+
+`upstream_resolve`——那个唯一会把查询发出本机的函数——第三次带上同一道闸门，并且是由 `wire_question_is_arpa` 直接从线路字节读出来的，而不是去重新解析一个调用者已经解析过的消息。
+
+归属关系是以**标签边界**比对的，绝不是字符串后缀：一个名称属于该子树，当且仅当它的最后一个标签恰好是 `arpa`，因此 `notarpa.` 与 `arpa.example.com.` 都是普通名称，会正常解析。`resolver::is_arpa_subtree` 是唯一的那个判定式；线路层的孪生函数则在未解析的字节上回答同一个问题。
+
+有些后果值得直白地说出来：对于这台机器没有任何数据的地址，反向查找不再解析得出来——`dig -x 8.8.8.8` 会是 REFUSED，而不是从互联网取得答案——而 `ipv4only.arpa`（RFC 7050）会被拒绝而不是被回答，正在探索 NAT64 的客户端会把这读成“这里没有 NAT64”。用本地数据妥善地服务整棵反解树，是另一项被延后的工作。
+
+这件事没有一处是 DNSSEC 上的决定。由于该子树根本不会抵达验证器，那个曾经让 `ipv4only.arpa` 回来变成 Bogus 的、由根与 `arpa.` 共同服务的区域切分点（根服务器对 `arpa.` 与 `.` 同时具有权威，因此一次查询会跨越两个切分点，而转介的 NSEC 由 `arpa.` 签名，遍历却仍在对照根的密钥检查）现在已经完全无法抵达——至于验证器对它**确实**看得到的那些转介会怎么处理，见“上游 DNSSEC 验证”。
 
 ### `auto` 层级链
 
@@ -201,13 +220,15 @@ Rolodex DNS 在数据库中保存一份由运维人员手工封锁的名称与�
 
 ## 域名封锁列表（DNSBL）
 
-RBL 提供方是以 **IP 地址**封锁（在反向 DNS 查找时以反转的 IP 查询），而 DNSBL 提供方是以**域名**封锁。一次 DNSBL 查找会把被查询名称的标签前置到提供方的区域之前——例如 `googleadservices.com` 对照 `dbl.spamhaus.org` 会被查询成 `googleadservices.com.dbl.spamhaus.org`——与 Spamhaus DBL、SURBL、URIBL 这类域名封锁列表的运作方式相同。
+DNSBL 提供方是以**域名**封锁。一次 DNSBL 查找会把被查询名称的标签前置到提供方的区域之前——例如 `googleadservices.com` 对照 `dbl.spamhaus.org` 会被查询成 `googleadservices.com.dbl.spamhaus.org`——与 Spamhaus DBL、SURBL、URIBL 这类域名封锁列表的运作方式相同。
 
 DNSBL 让封锁列表**优先于外部 DNS**：这道检查在本地记录与受管／权威区域之后运行（因此内部数据一律胜出），但在上游响应缓存与转发器／迭代解析器**之前**。因此即使此前已缓存了一个转发答案，被列入的名称仍会回 NXDOMAIN。举例来说，在 DNSBL 启用时，`googleadservices.com` 会被拒绝，而一个本地定义的 `gitea.default.home`（例如由某个包植入的）仍然解析得到。
 
 **封锁是逐一针对被查询的名称，而非针对后缀。** 每个名称都以它自己的身份对照提供方查找，因此 `doubleclick.net` 被列入本身并不会封锁 `stats.g.doubleclick.net`——提供方必须把那个子域名也列进去，而真实的域名封锁列表确实是这么做的。这是刻意的，也是运维人员自己该做的决定：默默封锁一个被列入名称底下的每一个名称，会因为单单一台被列入的主机而弄掉整个域名。请注意它与 DNSBL **允许列表**之间的不对称，后者**是**以后缀匹配的，因为一个涵盖不到子域名的逃生口根本称不上逃生口。
 
-DNSBL 检查可全局开关，且**默认为禁用、提供方列表为空**；提供方可独立启用。禁用时完全不会发出任何提供方查找，因此被查询的名称不会被交给封锁列表运营方。运维人员通常会加入的标准域名封锁列表是 `dbl.spamhaus.org`、`multi.surbl.org` 与 `multi.uribl.com`。一个已启用但为空的 DNSBL 是空操作（什么都不查、什么都不封锁）。DNSBL 配置与以 IP 为基础的 RBL 配置彼此独立，但共用同一份内存结果缓存（正面结果按提供方 TTL 缓存、负面结果 5 分钟）与同一套拒答码处理——`dbl.spamhaus.org` 对一个 IP 查询会回 `127.0.1.255`，那是一个错误而不是列入（见“拒答码与提供方轮换”）。它在启动时通过 `dnsbl` 配置段配置，在运行期则通过 `SetDnsblConfig`／`GetDnsblConfig` 配置。
+DNSBL 检查可全局开关，且**默认为禁用、提供方列表为空**；提供方可独立启用。禁用时完全不会发出任何提供方查找，因此被查询的名称不会被交给封锁列表运营方。运维人员通常会加入的标准域名封锁列表是 `dbl.spamhaus.org`、`multi.surbl.org` 与 `multi.uribl.com`。一个已启用但为空的 DNSBL 是空操作（什么都不查、什么都不封锁）。结果保存在一份内存缓存中（正面结果按提供方 TTL、负面结果 5 分钟），并带有拒答码处理——`dbl.spamhaus.org` 对一个 IP 查询会回 `127.0.1.255`，那是一个错误而不是列入（见“拒答码与提供方轮换”）。它在启动时通过 `dnsbl` 配置段配置，在运行期则通过 `SetDnsblConfig`／`GetDnsblConfig` 配置。
+
+**外发 `:53` 的可达性是在一个循环里探测出来的，而不是假定的**（`DnsblChecker::resolver_availability_loop`，由 `main.rs` 派生一次）。提供方查找本身就是一次朝向第三方区域的 DNS 查询，因此在一个过滤外发 `:53` 的网络上，它们每一个都会超时——而由于查找出错被刻意当作"未被列入"，一份对每个名称都超时的封锁列表，看上去与一份正常工作的完全一样。于是一个后台任务每 60 秒探测一次真实的外发 `:53` 可达性，并在它消失时把提供方那条路径停住。这个任务是**无条件**派生的，并且它把关的是检查器*运行期*的启用标志，而不是配置文件里的 `dnsbl.enabled`：把派生的条件挂在文件上，意味着一份后来通过 `SetDnsblConfig` 打开的封锁列表——而那正是 Town OS 控制器的做法，它已经完全不写那个配置文件了——从来拿不到探测，于是那个标志一直停在它 `true` 的默认值上，而每一次查找都在超时，日志里对原因只字未提。在封锁列表关着的时候，没有什么*可*探测的（被列入与否的那次检查会在查阅该标志之前就返回），因此这个循环只是重新读一次那个标志，而且它每 5 秒而不是每 60 秒读一次：那次轮询的代价是一次原子读取而不是一个 UDP 往返，并且它给"一份通过 gRPC 启用的封锁列表要等多久才拿到第一次探测"划出了上界。
 
 ### DNSBL 允许列表
 
@@ -215,8 +236,8 @@ DNSBL 检查可全局开关，且**默认为禁用、提供方列表为空**；�
 
 - **后缀匹配。** 一个条目涵盖该名称本身**以及**它底下的每一个名称，因此把 `example.com` 加进允许列表也会豁免 `www.example.com`。匹配是在标签边界上进行的——`notexample.com` 不会被豁免。查找是对一个从表镜像而来（于开机时加载）的内存 `DashSet` 做 O(标签数) 的操作，与区域匹配所用的技巧相同。
 - **存储时归一化。** 条目会被转为小写并带上结尾的点，因此 `Example.COM`、`example.com` 与 `example.com.` 是同一个条目，且任何写法都能移除它。空的或根（`.`）条目会被拒绝——那会豁免整个命名空间。
-- **允许列表胜出。** 这道检查会完整短路掉步骤 7：一个被豁免的名称既不会对照已配置的 DNSBL 提供方检查，也不会对照本地 RBL 封锁列表检查，因此一条允许列表条目就是运维人员面对任一边误判时的逃生口。它在提供方查找**之前**运行，所以一个被豁免的名称根本不会发出任何封锁列表查询。
-- **每一份列表，两道关卡。** 允许列表同时守住正向名称检查（步骤 7）**与**反向 DNS／IP 检查（步骤 2），因此没有任何封锁列表命中能存活下来：全局 RBL 提供方、某个范围所选用的提供方、DNSBL 提供方，以及本地表，全都受同一份豁免所管。豁免是按“哪一道关卡触发”来计数的——`rolodex_dns_blocklist_allowlisted_total{kind}` 是 `forward_name`、`reverse_name` 或 `ip_literal`，也就是那三条**命中路径**，而不是那三份列表：这道检查在任何提供方查找被发出之前就短路了，所以在豁免发生的那一刻什么都还没问过，也就不存在可以指名的列表。针对地址的误判与针对名称的误判同样真实——一个被错误列入的 IP 会让一台运作正常的主机 `dig -x` 失败——而一个只涵盖部分列表的逃生口根本称不上逃生口。
+- **允许列表胜出。** 这道检查会完整短路掉步骤 7：一个被豁免的名称既不会对照已配置的 DNSBL 提供方检查，也不会对照本地封锁列表检查，因此一条允许列表条目就是运维人员面对任一边误判时的逃生口。它在提供方查找**之前**运行，所以一个被豁免的名称根本不会发出任何封锁列表查询。
+- **每一份列表，两道关卡。** 允许列表同时守住正向名称检查（步骤 7）**与**反向 DNS／IP 检查（步骤 2），因此没有任何封锁列表命中能存活下来：DNSBL 提供方与本地表，两者都受同一份豁免所管。豁免是按“哪一道关卡触发”来计数的——`rolodex_dns_blocklist_allowlisted_total{kind}` 是 `forward_name`、`reverse_name` 或 `ip_literal`，也就是那三条**命中路径**，而不是那三份列表：这道检查在任何提供方查找被发出之前就短路了，所以在豁免发生的那一刻什么都还没问过，也就不存在可以指名的列表。针对地址的误判与针对名称的误判同样真实——一个被错误列入的 IP 会让一台运作正常的主机 `dig -x` 失败——而一个只涵盖部分列表的逃生口根本称不上逃生口。
 - **一个地址的两种写法。** 一个反向查询会被指名 `in-addr.arpa`／`ip6.arpa` 名称或它所编码之 IP 字面量的条目所豁免，因此运维人员不需要手动反转八位组。反向**名称**像任何 DNS 名称一样以后缀匹配（把 `1.168.192.in-addr.arpa` 加进允许列表会解除整个 /24 的封锁）；而 IP **字面量**是**精确**匹配，因为地址是最高位八位组在前，所以 `1.100` 不是 `192.168.1.100` 的父节点，把它当成父节点会豁免掉没有人指名过的地址。
 - 新增或移除一个条目会在下一次查询时生效，不需要清空缓存，因为封锁列表那一步是在 DNS 响应缓存查找之前运行的。
 
@@ -224,9 +245,31 @@ DNSBL 检查可全局开关，且**默认为禁用、提供方列表为空**；�
 
 所有加密传输都是可选的，且需要 TLS 配置。若未提供证书，当 `auto_self_signed` 为 `true`（默认）时会自动生成一张自签证书。
 
+自动生成的证书始终携带 `localhost`、`127.0.0.1` 与 `::1`，并在此之上携带**该监听器自身的绑定地址**以及 `<transport>.tls.self_signed_sans` 中的任何条目。绑定地址是自动并入的，因为它们在构造上就是客户端所拨打的身份——监听在 `192.168.1.5:853` 上的服务就是以 `192.168.1.5` 被访问的，而一张只署名 `localhost` 的证书会在每一个配置了认证名称的客户端处名称校验失败，而这正是自签证书除裸公钥固定之外唯一可被验证的方式。通配绑定（`0.0.0.0`、`::`）不是身份，会被丢弃，因此绑定通配地址的监听器需要用 `self_signed_sans` 显式署名本机。不同写法的重复项会折叠（`[::1]` 与 `::1`、`DNS.Home.` 与 `dns.home`）。设置了 `cert_path`/`key_path` 时以上皆不适用：那张证书携带的是签发时所载的名称。
+
+#### 证书重载
+
+**续期后的证书无需重启即可提供服务。** 每个 TLS 监听器跟随其 `TlsManager`（`src/tls.rs`）发布的 `tokio::sync::watch` 通道，而不是持有配置快照；每个管理器每隔 `CERT_RELOAD_INTERVAL`（30 秒）轮询自己的证书文件，并在其内容发生变化时推送重建后的配置。已经建立的连接会在它握手时所用的证书下走完——这也是 TLS 唯一允许的做法——而下一条到达的连接就会拿到新证书。全过程不重新绑定，因此不存在端口关闭的窗口。
+
+各传输应用这次替换的方式不同，因为它们持有证书的方式不同：
+
+| 传输 | 机制 |
+| ---- | ---- |
+| DoT | 每条被接受的连接从通道构建一个 `TlsAcceptor`；acceptor 只是配置外面的一层 `Arc`，因此代价为零 |
+| DoQ | `Endpoint::set_server_config`，在接受循环的 `select!` 中于通道触发时应用 |
+| DoH、ACME、门户 | `axum_server::RustlsConfig::reload_from_config`；axum-server 会为每条被接受的连接加载那个 `ArcSwap` |
+
+变更检测是对文件**内容**的轮询，并在解析它们的同一遍中完成哈希，而不是 inotify 监视或 mtime 比较。以重命名覆盖旧路径的续期，或把符号链接移向某个带版本目录的续期（certbot 的 `live/` 布局），都不会写入被监视的那个 inode；按名字重新读取则能覆盖所有这些形态。对所解析的内容做哈希（而非事后 stat）关闭了这样一个窗口：文件在加载与检查之间发生变化，从而让管理器记录下一个并不描述其所提供证书的指纹。
+
+轮询失败会让先前的证书继续提供服务，并在下一次滴答重试，因为指纹只在**成功**加载之后才被记录。这正是无需与写文件的一方做任何协调即可安全轮询的原因：ACME 客户端要写两个文件，而 30 秒的定时器迟早会落在两次写入之间。`rustls` 会拒绝那样的组合——`with_single_cert` 会把私钥的 `SubjectPublicKeyInfo` 与证书中的做比对——旧的一对继续服务，写完的一对在下一次轮询时被取用。
+
+提供**自动生成**材料的管理器根本不会被轮询：它们背后没有文件，而按定时器重新生成会每半分钟给每个客户端一张不同的自签证书，这对任何固定了上一张证书的一方来说与攻击无异。`src/main.rs` 在进程的整个生命周期内持有每一个管理器；被丢弃的管理器就是被丢弃的 watch 发送端，其监听器将再也无法收到任何东西。
+
 ### DNS-over-TLS（DoT）
 
-RFC 7858。在可配置的端口上监听（默认 `0.0.0.0:853`）。使用与纯 DNS TCP 相同的 2 字节长度前缀分帧。每条连接会生成一个新任务。在 `dot` 段中配置。
+RFC 7858。在可配置的端口上监听（默认 `0.0.0.0:853`）。ALPN 协议：`"dot"`。使用与纯 DNS TCP 相同的 2 字节长度前缀分帧。每条连接会生成一个新任务。在 `dot` 段中配置。
+
+ALPN 令牌是**通告**而非强制。rustls 只有在客户端提供了协议且无一匹配时才会让握手失败，因此提供 `dot` 的客户端会拿回 `dot`，只提供其他协议的客户端会被拒绝，而完全不发送 ALPN 扩展的客户端——其中包括 Android 的 Private DNS 与机会模式下的 systemd-resolved——则在 ALPN 未协商的情况下照常获得服务。三者都固定在 `tests/dot_test.rs` 中；一个什么都不通告的监听器会满足第一与第三条，却让客户端无从分辨这是一个 DoT 监听器还是端口上碰巧存在的任何其他 TLS 服务。
 
 ### DNS-over-HTTPS（DoH）
 
@@ -337,6 +380,32 @@ RFC 4035 §5.3.1 已经给出裁断：决定适用哪一组密钥的是 RRSIG �
 走查自身的位置不受影响：下行过程建立的是用来验证**这一个**响应的东西，而 `current_zone` 继续跟踪转介——辖域（bailiwick）与委派回环检查正是针对它写的。
 
 以同样方式提供服务的**未签名**子区域则无法被解析，只能被计数。它产生的响应里根本没有任何签名，因此既没有签名者名称可追，`descend_to` 也没有任何可指向的目标；拒绝它是正确的，因为那个包同样正是“在传输途中把每一条 RRSIG 都剥掉”所产生的东西，而这两者从这里看是无法区分的。`dnssec_unsigned_responses_total{evidence}` 会记录每一次，并以仅有的那点线索作为标签：当权威段中的 SOA 指向当前区域之下的某个区域时（`soa_below`）标为 `child_apex_soa`——那正是一个未签名子区域的否定响应所携带的——否则标为 `none`。那条 SOA 和它周围的一切一样是未签名的，因而可被伪造：它适合用来告诉运维人员他们大概面对的是两种情况中的哪一种，绝不适合用来裁定任何判定，这也是为什么在指标路径之外没有任何地方读取它。若没有这个计数器，一个无法解析的未签名子区域就只是一个与其他任何 SERVFAIL 都无从区分的 SERVFAIL。
+
+### 在根服务器层级直接拒绝
+
+从根服务器解析时，无效的 DNSSEC 会被直接拒绝：绝不提供出去，也绝不悄悄地改到某个不做验证的地方重试。
+
+- `tier_roots` 会把任何扣住结果的判定（`Bogus` 或 `Indeterminate`）转成 SERVFAIL，并把它当作一个**决定性的**答案返回，于是层级循环就此短路，该查询不会落到加密层级或转发层级。`cache_from_wire` 只会缓存带有非空答案的 `NoError`，因此那个 SERVFAIL 绝不会进入响应缓存；而在解析器内部，判定会在记录缓存被碰触之前就先被检查。
+- **一趟被拒绝的遍历不留下任何状态。** 从转介学到的委派，只有在 `extend_trust` 返回一个可用的信任状态之后才会被缓存，粘合记录也一并如此。先写入的做法，意味着一个 DS／NSEC 证明失败的转介，其 NS 集合早已被写进去了——而委派缓存会持久化到磁盘，所以解析器保留并重复使用了一组它刚刚拒绝验证的 NS 集合，而且跨重启存活。
+- **一个无法通过验证的根区域是一项判定，而不是一次层级失败。** `fetch_dnskeys` 会区分 `Unreachable`（传输层）与 `Invalid`（密码学层）。在根这一层，`Invalid` 会变成一个扣住结果的 `Bogus`——SERVFAIL，信任链就此停住——而 `Unreachable` 仍然是一个错误并往下落。把这两者压平成同一件事，正是让一个能稳定破坏根 DNSKEY 获取的攻击者，在完全不产生任何 bogus 判定的情况下，把验证整个移出路径的原因：那个错误被读成“根服务器连不上”，于是查询就交给了加密上游。在根以下，两种变体仍然都是 Bogus，一如既往：一个在父区域里有 DS、却交不出密钥的区域，无论如何都是一条断掉的信任链。
+
+有两条界线是刻意不跨越的。**连不上不等于无效**——根服务器层级的超时或传输失败仍然会往下落，否则一条被拔掉的网线就会让每一次查找都硬性失败。**非安全不等于无效**——一个被证明未签名的委派会产生 `Insecure`，那会在不带 AD 的情况下被提供出去；只有一个**扣住结果的判定**才会让信任链停下来。
+
+有一个必须接受的后果，直白地说：一个这个构建不认识的信任锚点（一次 KSK 轮转）会变成一次彻底的 DNS 中断，而不是无声降级到 DoH；而且 auto 模式再也无法从一个验证坏掉的根“降级离开”，因为一个被扣住的答案算作根服务器层级的一次成功。那正是本意所在——逃生口是 `dnssec.validate: false`，也就是配置，而不是自动后备。
+
+### 归责提供无效 DNSSEC 的根服务器
+
+上面那条规则处理的是根**区域**无法通过验证。至于单一一台根**服务器**提供了坏掉的签名——健康同侪之中的某一台被劫持或坏掉的实例——则是靠把它略过来处理。
+
+- **这个信号很窄。** 归责只会附着在“对照我们本地信任锚点检查过的根 DNSKEY RRset”上。那是一台根服务器告诉我们的、唯一一件不必去问别人就能验证的事，这使得“这台根服务器在说谎”成为一句我们站得住脚的陈述，而不是从别人的错误推论出来的东西。`query_servers` 会连同消息一起返回作答的地址，好让这项主张根本上归属得了。
+- **归责是略过，并采用指数退避。** 一台被归责的根会**从候选集合中被移除**——在 `order_servers` 排序任何东西之前就先被过滤掉，因此没有任何排序规则能把它当成最后手段再找回来——初犯 15 分钟，其后翻倍，上限 24 小时。曲线是 `note_failure` 的；常数则是它自己的，因为一次超时说的是“这台服务器很忙”，而一个坏签名说的是“这台服务器告诉我一件不实的事”，后者没有道理在一条 2 秒的曲线上恢复。`with_blame_backoff` 会为测试覆盖两端。
+- **归责在传输成功之后仍然存续。** `note_success` 只清除传输层字段，而且只在健康条目里什么都不剩时才丢弃它——一台被劫持的根依其构造本来就响应迅速，所以在那里移除条目，等于让我们正不信任的那台服务器自行清空自己的记录。
+- **光靠时间绝不宽恕。** 升级计数器只会被一个**通过验证**的答案清除，除此之外什么都不行，因此一台说过三次谎、之后什么都没提供过的根，回来时是站在曲线的第四阶而不是第一阶。到期是察看性质的：那台根会自己重新被咨询，不需要运维人员动作，也没有另外的探测，而在它交出一个通得过验证的答案之前，它说的任何话都不具分量。
+- **绝不略过最后一台根。** 如果过滤会让候选集合变成空的，就不套用它。所有的根都无法通过验证，代表的不是十三台流氓服务器，而是那个区域或我们自己的信任锚点出了问题——而一个空的候选集合会产生 `NameserversUnreachable`，那会被读成**连不上**并往下落，正好重新打开那个扣住结果的判定所关上的洞。在那种状态下，归责不再是决定性的输入，改由 auto 模式主导：根区域无法通过验证、`tier_roots` 回 SERVFAIL，而 `roots_validate()` 会让第 0 层在一个 `Verdict::Secure` 的根 DNSKEY 回来之前一直无法被收复。这个转换会被大声记录下来，因为它同时是“信任锚点出问题”与“彻底被劫持”这两件事的样貌，而它本来是看不见的。
+- **仅限根服务器。** 归责并没有被普遍接进名称服务器的选择里。在根以下，验证失败几乎一定是该区域自己的签名错误：该区域的每一台服务器都会返回相同的字节，把它们略过去只会把别人的错误变成我们的中断。那些查找本来就已经按判定安全地失败了。
+- 归责**只存在内存中，不会在重启后存续**：一台重启过的机器会重新信任每一台根，直到又有一台行为不端为止。当前的数量以 `dnssec_blamed_roots` 导出——一个有界的量测值（至多十三，没有标签），因为长时间无声地把根集合的一部分排除在外，是这整套机制里唯一没有任何既有计数器会报告的部分。
+
+那个引发归责的查询，本身仍然安全地失败。归责改变的是**后续**查询会用哪些根服务器；它不会把当前这一次变成一个重试循环、不断追问各台根直到某一台交出通得过验证的答案为止——那等于递给攻击者一个可以反复磨的预言机。
 
 ### 已验证密钥缓存（`src/key_cache.rs`）
 
@@ -596,6 +665,8 @@ DHCP 的分配会通过 `JoinNetwork` 链接到网络范围划分系统，为该
 | RPC | 说明 |
 | --- | ---- |
 | `SetForwarders`       | 在运行期取代上游 DNS 转发器列表，不需重启。 |
+| `SetResolutionMode`   | 在运行期切换本服务器非权威名称的解析方式 —— `auto`、`recursive` 或 `forward` —— 不需重启。不分大小写；无法识别的模式会以 `InvalidArgument` 拒绝，而不是悄悄退回默认值。*切入* `auto` 会启动预热探测，使回退链不至于冷启动。 |
+| `GetResolutionMode`   | 返回当前生效的模式，也就是真正在解析查询的那个模式，而不是配置文件里 `resolution.mode` 所写的那个 —— 调用过 `SetResolutionMode` 之后两者就会不同。 |
 | `SetDnsblConfig`      | 在运行期取代 DNSBL（域名封锁列表）配置（全局启用标志、提供方列表与拒答处理）。 |
 | `GetDnsblConfig`      | 返回当前的 DNSBL 配置，含解析后的拒答码与被移出轮换的提供方。 |
 | `FlushCache`          | 清空封锁列表结果缓存，并把每一个被移出轮换的提供方放回轮换。 |
@@ -765,7 +836,9 @@ DHCP 的分配会通过 `JoinNetwork` 链接到网络范围划分系统，为该
 | 命令 | 说明 |
 | ---- | ---- |
 | `set-forwarders`   | 设置上游 DNS 转发器。接受 `--forwarders`（一个或多个 `host:port` 地址）。 |
-| `set-dnsbl-config` | 配置 DNSBL（域名封锁列表）。标志与 `set-rbl-config` 相同。 |
+| `set-resolution-mode` | 在运行期切换上游解析模式。接受 `--mode`（`auto`、`recursive` 或 `forward`；不区分大小写）。 |
+| `get-resolution-mode` | 打印当前实际生效的模式，它未必就是 `resolution.mode` 所写的那个。 |
+| `set-dnsbl-config` | 配置 DNSBL（域名封锁列表）。接受 `--enabled`、`--providers`（`zone:enabled`）、`--refusal-codes`（`zone=code,code`）、`--provider-cooldown`（`zone=secs`）与 `--refusal-cooldown`。 |
 | `get-dnsbl-config` | 显示当前的 DNSBL 配置，包含拒答码与被移出轮换的提供方。 |
 | `flush-cache`      | 清空封锁列表结果缓存。 |
 | `add-local-blocklist` | 新增一条本地封锁条目。接受 `--name` 与可选的 `--reason`。 |
@@ -904,6 +977,8 @@ DHCP 的分配会通过 `JoinNetwork` 链接到网络范围划分系统，为该
 | 方法 | 说明 |
 | ---- | ---- |
 | `SetForwarders(ctx, forwarders)`        | 取代上游转发器列表。 |
+| `SetResolutionMode(ctx, mode)`          | 在运行期切换解析模式（`auto`、`recursive`、`forward`）。 |
+| `GetResolutionMode(ctx)`                | 返回当前生效的模式。 |
 | `SetDnsblConfig(ctx, enabled, providers)` | 取代 DNSBL（域名封锁列表）配置。 |
 | `SetDnsblConfigWithRefusalCooldown(ctx, enabled, providers, secs)` | 同上，并附带 DNSBL 的移出轮换时长。 |
 | `GetDnsblConfig(ctx)`                   | 返回一个 `DnsblStatus`，内含当前的 DNSBL 配置。 |
@@ -1110,7 +1185,7 @@ DHCP 的分配会通过 `JoinNetwork` 链接到网络范围划分系统，为该
 
 ### 输出了什么
 
-77 个指标系列，全部以 `rolodex_dns_` 为前缀：
+80 个指标系列，全部以 `rolodex_dns_` 为前缀：
 
 | 领域 | 指标 |
 | ---- | ---- |
@@ -1120,7 +1195,7 @@ DHCP 的分配会通过 `JoinNetwork` 链接到网络范围划分系统，为该
 | 封锁列表 | `blocklist_blocks_total{kind}`（`local`/`dnsbl_provider`）、`blocklist_allowlisted_total{kind}`（`forward_name`/`reverse_name`/`ip_literal`）、`blocklist_lookups_total{kind,result}`（`listed`/`not_listed`/`error`/`refused`）、`blocklist_skipped_total`、`blocklist_cache_entries`、`blocklist_refusals_total{kind}`、`blocklist_rotated_out` |
 | 上游 | `upstream_active_tier`、`upstream_tier_attempts_total{tier}`、`_wins_total{tier}`、`_failures_total{tier}`、`upstream_tier_switches_total{direction}`、`upstream_recovery_probes_total`、`upstream_duration_seconds{tier}`、`upstream_queries_total{server}`、`upstream_exhausted_total` |
 | 解析器 | `resolver_lookups_total`、`_referrals_total`、`_cname_hops_total`、`_budget_exhausted_total`、`_tcp_retries_total`、`resolver_priming_total{result}`、`resolver_nameserver_latency_milliseconds{server}`、`delegation_cache_entries`、`record_cache_entries` |
-| DNSSEC | `dnssec_verdicts_total{verdict}`（`secure`/`insecure`/`bogus`/`indeterminate`）、`dnssec_servfail_total`、`dnssec_dnskey_lookups_total`、`dnssec_insecure_delegations_total`、`key_cache_entries` |
+| DNSSEC | `dnssec_verdicts_total{verdict}`（`secure`/`insecure`/`bogus`/`indeterminate`）、`dnssec_servfail_total`、`dnssec_dnskey_lookups_total`、`dnssec_insecure_delegations_total`、`dnssec_hidden_zone_cuts_total`、`dnssec_unsigned_responses_total{evidence}`（`child_apex_soa`/`none`）、`dnssec_blamed_roots`、`key_cache_entries` |
 | 分割视域 | `records`、`scoped_records`、`scopes`、`scope_associations`、`authoritative_zones`、`managed_zones`、`owned_tlds`、`ingress_listeners`、`address_family_reachable{family}` |
 | DHCP | `dhcp_messages_total{message_type}`、`dhcp_leases{lease_state}`、`dhcp_pools`、`dhcp_allocation_failures_total`、`dhcp_sweeps_total` |
 | ACME | `acme_accounts`、`acme_certificates`、`acme_issued_total`、`acme_validations_total{result}` |
@@ -1190,11 +1265,12 @@ dns:
 | `dnsbl.providers[].refusal_codes`   | `[]`（内置集合）               | 代表“查询被拒绝”而非“已列入”的码；`none` 会为该提供方禁用检测 |
 | `dnsbl.enabled`                     | `false`                        | 全局 DNSBL（域名封锁列表）启用标志 |
 | `dnsbl.providers`                   | `[]`（空）                     | DNSBL 提供方列表；每一项接受 `zone`、`enabled`，并可选择性地带 `refusal_codes` / `refusal_cooldown_secs` |
-| `dnsbl.refusal_cooldown_secs`       | `3600`                         | DNSBL 的移出轮换默认值，与 RBL 的互相独立 |
+| `dnsbl.refusal_cooldown_secs`       | `3600`                         | 对于未自行设置的提供方，一个做出拒答的提供方被移出轮换的秒数 |
 | `dot.bind`                          | `0.0.0.0:853`                  | DoT 监听器；支持 interface:port（段为可选） |
 | `dot.tls.cert_path`                 | （无）                         | TLS 证书路径 |
 | `dot.tls.key_path`                  | （无）                         | TLS 私钥路径 |
 | `dot.tls.auto_self_signed`          | `true`                         | 自动生成自签证书 |
+| `dot.tls.self_signed_sans`          | `[]`（空）                     | 自动生成之证书的额外主体备用名称；回环集合与该监听器的绑定地址会被自动加入 |
 | `doh.bind`                          | `0.0.0.0:443`                  | DoH 监听器；支持 interface:port（段为可选） |
 | `doh.tls.*`                         | （同 DoT）                     | DoH 的 TLS 设置 |
 | `doh.enable_h3`                     | `false`                        | 为 DoH 启用 HTTP/3（QUIC）传输 |
@@ -1246,11 +1322,12 @@ dns:
 | `test`                | 运行所有测试：lint、Go 集成测试、Go 单元测试、Rust 测试（`cargo test`），以及 JavaScript 测试。 |
 | `test-log`            | 与 `test` 相同，但 tee 进 `/tmp/rolodex-dns/log` 底下带时间戳的日志文件（可用 `LOG_DIR` 覆盖）。即使运行失败，也会在结尾打印日志文件路径。 |
 | `rust-test`           | 运行 Rust 集成测试文件，接着运行 `cargo test`。 |
-| `rust-integration-test` | 先构建，然后逐一明确运行每个 Rust 集成测试文件（`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`blocklist_nxdomain_test`、`zonemd_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`，以及各 `security_*` 套件）。 |
-| `lint`                | 运行 `cargo fmt -- --check` 与 `cargo clippy --all-targets -- -D warnings`。 |
+| `rust-integration-test` | 先构建，然后逐一明确运行每个 Rust 集成测试文件（`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`blocklist_nxdomain_test`、`zonemd_test`、`dot_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`，以及各 `security_*` 套件）。 |
+| `lint`                | 运行 `translation-check`、`cargo fmt -- --check` 与 `cargo clippy --all-targets -- -D warnings`。 |
 | `prometheus-test`     | 对一台容器化的 Prometheus（`quay.io/prometheus/prometheus`，可通过 `ROLODEX_PROMETHEUS_IMAGE` 覆盖）运行每一条文档中的 PromQL 查询。它是 `test` 的先决条件。需要 podman；没有它时测试会**大声跳过**而不是失败，因此没有容器运行环境的机器仍能得到绿色的 `make test`。`ROLODEX_PROMETHEUS_REQUIRED=1` 会把那个跳过变成失败，这正是 CI 应该设置的。 |
-| `deps`                | 安装构建依赖：Rust 的交叉编译工具链（`cross-deps`）与 JavaScript 的开发依赖（在 `js/` 中运行 `npm install`）。 |
+| `deps`                | 安装构建依赖：Rust 的交叉编译工具链（`cross-deps`）、JavaScript 的开发依赖（在 `js/` 中运行 `npm install`），以及 `python-deps`。 |
 | `cross-deps`          | 安装 Rust 交叉工具链：对两个目标三元组运行 `rustup target add`、`cargo-zigbuild` 与 zig。不需要 root——见“交叉编译”。 |
+| `python-deps`         | 确认 PATH 上有 `python3`。它同时是 `deps` 与 `translation-check` 的前置依赖。由于那是系统解释器，这一步只做检查与指名，并不安装。 |
 | `js-lint`             | 对 JavaScript 包运行 eslint（依赖 `deps`）。 |
 | `js-test`             | 运行 JavaScript 单元测试（依赖 `js-integration-test`）。 |
 | `js-integration-test` | 构建 Rust 可执行文件、运行 lint，然后在 `ROLODEX_DNS_BINARY` 指向编译出的服务器的情况下运行 JavaScript 集成测试。 |
@@ -1439,11 +1516,20 @@ Rust 测试（`cargo test`）包含单元测试与集成测试，涵盖 gRPC 操
 它的 `Tamper` 枚举才是重点。每一个变体都是一种特定的攻击，并在响应**被序列化**时施加——也就是在区域已被正确构造之后——因此每个测试都是“一个有效的部署，遭到攻击”，而不是“一个无效的部署，被拒绝”，后者能证明的东西少得多。
 
 - `tests/dnssec_validation_test.rs`——那些必须持续正常运作的路径：一条完整签名的链验证为 Secure 并带着正确的地址、RRSIG 一路存活到客户端、一个由 NSEC 证明的未签名委派解析为 Insecure、经证明的 NXDOMAIN 与 NODATA、密钥缓存让一个已预热的区域省下对根的第二次查询，以及一个不做验证的解析器报告 Insecure 而非 Secure。
-- `tests/security_dnssec_test.rs`——那些攻击，每一个都在模块注释中载明了对应的发现：被剥除的签名（DNSSEC 存在要阻止的那种降级）、一个既无 DS 也无其不存在证明的委派（委派级的降级）、已过期与尚未生效的签名、来自 DNSKEY RRset 未发布之密钥的签名、外来的签名者名称、签名后被篡改的数据、未经证明的否定响应、对不上任何根密钥的信任锚点，以及格式错误的锚点在解析时就被拒绝、而不是悄悄退回 IANA。
+- `tests/dnssec_hidden_cut_test.rs`——一个由其父区域自己的名称服务器提供服务的已签名子区域，因此那个切分点从来不会被任何转介宣告（见[无人宣告的区域切分](#无人宣告的区域切分)）。它涵盖了：那个现在必须对照子区域的密钥通过验证的答案、父区域不受该下行过程影响、来自隐藏子区域内部且经过证明的 NXDOMAIN 与 NODATA、一个 DS 对不上自己任何密钥的子区域会被拒绝、遍历的位置不随下行过程移动，以及一个不做验证的解析器不必经过下行就把那个名称解析出来。它同时涵盖了未签名的那一对——同一台名称服务器上的一个未签名子区域，它仍然被拒绝，并被计入 `dnssec_unsigned_responses_total`，有顶点 SOA 时就以它作为证据、没有时则是 `none`——外加那个对照组：一个**已签名**的隐藏子区域绝不会落进那个计数器。
+- `tests/security_dnssec_test.rs`——那些攻击，每一个都在模块注释中载明了对应的发现：被剥除的签名（DNSSEC 存在要阻止的那种降级）、一个既无 DS 也无其不存在证明的委派（委派级的降级）、已过期与尚未生效的签名、来自 DNSKEY RRset 未发布之密钥的签名、外来的签名者名称、签名后被篡改的数据、未经证明的否定响应、对不上任何根密钥的信任锚点，以及格式错误的锚点在解析时就被拒绝、而不是悄悄退回 IANA。它同时钉住上面那些拒绝规则，并通过一台在 `auto` 模式下、根服务器层级后方摆着一个**可运作**之计数转发器的真实 `DnsServer` 来驱动，因为“客户端收到 SERVFAIL”与“转发器从未被咨询”是两种不同的性质，而只有后者才是那项要求本身：一个被拒绝的根答案不会往下落；一趟被拒绝的遍历不留下任何委派（附带它的对照组：一趟被接受的遍历会被缓存）；一个无法验证的根区域回 SERVFAIL，而一个**连不上**的根区域仍然往下落；一台提供坏签名的根会被略过，而它的同侪继续被查询；那个略过会到期、在再犯时升级、并停在上限，而且只被一个通过验证的答案清除；归责活得比一次成功的交换更久，而一次普通的超时仍然会因一次成功而恢复；把每一台根都归责并不会变成一次往下落；在那种状态下 auto 模式仍然主导；以及归责绝不会伸进某个区域自己的名称服务器。
 
 两者同等重要，且理由相同：一个什么都拒绝的验证器能通过所有攻击测试，一个什么都接受的验证器能通过所有正常路径测试。只有两者成对才说明得了什么。
 
+那个文件里处理多根的那一半，需要一台模拟根在**运行期间**改变它的行为——归责谈的是一台服务器的历史，而重启一台服务器好让它停止说谎，会给它一个新的地址，因此就归责而言那是另一台服务器了。`signed_hierarchy::serve_switchable` 为此返回一个 `TamperSwitch`；另外也可以让一台根维持绑定但保持沉默、稍后再启动，“一次传输失败之后接着恢复”就是这样搭起来的。
+
 `src/dnssec_validate.rs` 中的单元测试独立于任何网络涵盖各个零件：判定合并（最差的胜出）、对照 RFC 4648 §10 向量的 base32hex 与它的顺序保留性（正是它让 NSEC3 的范围检查得以比较编码后的字符串）、RFC 1982 的序号绕回、NSEC 的覆盖范围（包含会绕回的最后一条记录，以及两端的排他性），以及每一种否定证明的拒绝情形。`src/key_cache.rs` 钉住查找是精确名称而非后缀——一次后缀匹配会把父区域的密钥交给一个被委派出去的子区域。
+
+### `arpa.` 拒答测试
+
+`tests/arpa_refusal_test.rs` 钉住那个子树在两个层次上、于每一种解析模式下都不离开本机。断言的对象是**数据包**，而不是 rcode：一个在问过某台根之后才回答 REFUSED 的解析器，会通过一次 rcode 检查，却已经做了规则所禁止的那件事，因此被断言的是模拟根的查询次数——而那套层级对其他一切都明确地是可抵达的。
+
+它的对照组才是让它有意义的东西。一个什么都拒绝的解析器会通过那些拒答测试，所以 `notarpa.`、`arpa.example.test.` 与 `arpanet.example.` 必须解析得出来**而且**验证为 Secure——也就是标签边界，并且是穿过两个层次检查的。而一条干脆把那个命名空间删掉的规则同样会通过，所以一条已存的 PTR 仍然必须由本地数据回答，并与“同一个名称在没有任何数据时被拒绝”配成一对。各模式（`recursive`、`forward`、`auto`）被穷举扫过，因为每一种的分派方式都不同——`forward` 根本不会碰到迭代解析器，因此一条只在那里强制执行的规则，会正好在会做转发的那种部署形态下漏掉。
 
 ### 封锁列表拒答测试
 
@@ -1457,7 +1543,7 @@ Rust 测试（`cargo test`）包含单元测试与集成测试，涵盖 gRPC 操
 
 ### 封锁列表测试
 
-`tests/blocklist_nxdomain_test.rs` 端到端钉住封锁列表的契约：**每一次封锁列表命中都会被回以 NXDOMAIN，而允许列表条目是唯一能压下它的东西。** 有五份列表可能产生命中——一个全局的 IP RBL 提供方、一个某范围所选用的提供方、一个 DNSBL 提供方、一条指名 IP 的本地条目，以及一条指名 DNS 名称的本地条目——经过两道关卡（反向名称走步骤 2、正向名称走步骤 7），在两条代码路径上（范围内与全局）。这套测试以运维人员的方式驱动每一项：先经由 **gRPC 控制平面**做一次变更，再通过**真实的 UDP 或 TCP 套接字**发出查询，并断言客户端实际收到的内容。那个组合正是单元测试展现不出来的——一个把某道关卡相对于响应缓存移了位置、或把某个传输方式直接接到解析器的回归，会让单元测试维持全绿。
+`tests/blocklist_nxdomain_test.rs` 端到端钉住封锁列表的契约：**每一次封锁列表命中都会被回以 NXDOMAIN，而允许列表条目是唯一能压下它的东西。** 有三份列表可能产生命中——一个 DNSBL 提供方、一条指名 IP 的本地条目，以及一条指名 DNS 名称的本地条目——经过两道关卡（反向名称走步骤 2、正向名称走步骤 7），在两条代码路径上（范围内与全局）。这套测试以运维人员的方式驱动每一项：先经由 **gRPC 控制平面**做一次变更，再通过**真实的 UDP 或 TCP 套接字**发出查询，并断言客户端实际收到的内容。那个组合正是单元测试展现不出来的——一个把某道关卡相对于响应缓存移了位置、或把某个传输方式直接接到解析器的回归，会让单元测试维持全绿。
 
 每个测试都带着它自己的对照组，因为一道什么都封锁的关卡满足契约的前半，而一道什么都不封锁的关卡满足后半。负面用例同样是承重的：IP 字面量不可以做后缀匹配（`1.100` 不是 `192.168.1.100` 的父节点）、正向名称必须在标签边界上匹配，而封锁列表绝不可以遮蔽本地记录——一个第三方的列入弄掉一个内部服务，正是那种会让运维人员直接把封锁列表关掉的故障模式。
 
@@ -1479,11 +1565,13 @@ Rust 测试（`cargo test`）包含单元测试与集成测试，涵盖 gRPC 操
 
 ### 传输、代理与 TLS 测试
 
-有三套测试涵盖了此前只有编译冒烟测试或配置解析单元测试的界面：
+有四套测试涵盖了此前只有编译冒烟测试或配置解析单元测试的界面：
+
+- `tests/dot_test.rs`——分两半的 DoT 测试，各自在回答不同的问题。进程内，一个真正的 `tokio-rustls` 客户端对上 `serve_dot`：`dot` 这个 ALPN 代号会被协商出来、只提供其他协议的客户端会被拒绝、完全不提供 ALPN 的客户端照样获得服务并被回答、一个已编程的名字会带着它的地址回来而一个未编程的名字回以 NXDOMAIN，以及同一条连接承载数个查询且它们的 ID 与问题被逐一对回（RFC 7766 的连接复用）。进程外，真正的 `rolodex-dns` 二进制对上一份带 `dot:` 段的配置文件：部署出来的监听器会协商 `dot`，并回答一个经由管理套接字编程进去的名字；它所出示的证书会被解码，并检查其携带了自己被绑定的那个地址与配置中的 `self_signed_sans`，而没有携带任何从未被配置过的名字。第二半正是能抓住这样一个 `main.rs` 的东西：它构建监听器时没有索要 ALPN 代号，或没有为自己的绑定地址署名——而这两者都是一个自建 `rustls::ServerConfig` 的进程内框架所看不见的。它绑定 `127.0.0.2`，恰恰因为回环集合被烘焙进了每一张自动生成的证书里，因此只有该集合之外的地址才能证明这是推导出来的。第三个用例会在一个运行中的 `serve_dot` 底下轮换证书，并断言在轮换**之前**打开的连接不受打扰、在轮换**之后**打开的连接拿到新证书，且监听器在其之下仍能回答——这是证书重载的监听器一侧，其管理器一侧则是 `tests/tls_reload_test.rs`。答案来自本地数据库记录且没有转发器。
 
 - `tests/doq_test.rs`——一个真正的 `quinn` 客户端对上 `serve_doq`：`doq` 这个 ALPN 代号会被协商出来（而一个不带它的监听器会拒绝只支持 `doq` 的客户端）、2 字节的长度前缀与主体相符、同一条连接上数条顺序与并发的流各自独立地被回答、一个被截断的主体不会被回答、一个长度为零的消息会被拒绝而不会把连接弄掉，以及一个格式错误的消息会回以 FORMERR 并回送它的事务 ID。答案来自本地数据库记录且没有转发器，因此失败必定与传输有关，而绝不会与解析有关。
 - `tests/proxy_test.rs`——模拟的 HTTP CONNECT、SOCKS5（RFC 1928/1929）与 DoH 代理，它们会**解析**服务器所发出的内容，而不是回以罐头响应，因此一个格式错误的问候或错误的地址类型会在代理端失败。每种模式都会同时断言答案与“向代理要求了什么”（隧道目标、Basic 凭据、绝对 URI 的请求行与未经修改的主体）、一个拒绝的代理是 SERVFAIL 而不是捏造的答案、DoH 连接池在两次查询之间重用了同一个套接字，以及——那个对照组——一个连不上的代理**不会**退回直连。
-- `tests/tls_reload_test.rs`——通过真实的 TLS 握手观察 `TlsManager::reload()`：一组被轮换过的 PEM 会被 `reload()` 取用、而且只被 `reload()` 取用；一个自签的管理器会铸造出一张新证书；ALPN 撑得过重建；一个损坏或不存在的文件会让重载失败，同时让此前的证书继续提供（并在修复后恢复）；而在重载前后订阅的观察者最终都会停在当前的配置上。请注意 `src/main.rs` 只在每个监听器上对 `server_config()` 取一次快照，且从不订阅 `watch()`，因此目前还没有任何东西会替换一个正在运行中之监听器的证书。
+- `tests/tls_reload_test.rs`——通过真实的 TLS 握手观察 `TlsManager`：一组被轮换过的 PEM 会被 `reload()` 取用、而且只被 `reload()` 取用；一个自签的管理器会铸造出一张新证书；ALPN 撑得过重建；一个损坏或不存在的文件会让重载失败，同时让此前的证书继续提供（并在修复后恢复）；而在重载前后订阅的观察者最终都会停在当前的配置上。接着是轮询的那一半：没有变化的一对不会被重载、被轮换过的一对会被侦测到并提供出去、一次**被写到一半时撞上的续期**会失败并被重试（而不是被记录成新的状态）、一个自签的管理器没有东西可轮询也不会拿到轮询任务，以及那个任务本身能自行取用一次轮换。监听器会跟随该通道这件事，则单独钉在 `tests/dot_test.rs` 中。
 
 ### ZONEMD 测试
 
@@ -1510,7 +1598,7 @@ Go 客户端有两层测试：
 - **单元测试**——通过 `bufconn` 使用一台进程内的模拟 gRPC 服务器，测试所有客户端方法、认证令牌的传递、传输模式、错误处理，以及边界情况（幂等的关闭、延迟拨号、自定义拨号选项）。
 - **集成测试**——以 `integration` 构建标签把关。每个测试都会以一个独有的临时目录、随机端口与隔离的数据库，启动一个真实的 Rolodex DNS 服务器子进程。测试涵盖记录的 CRUD、通配符筛选、转发器配置、封锁列表往返、缓存清空、Unix 套接字传输、认证失败、默认 TTL 行为、并发客户端（5 个同时）、网络范围划分、DNS64 与 TTL 漂移。
 
-`make test` 目标会运行完整的测试套件：lint、Go 集成测试、Go 单元测试、Rust 集成测试（逐一明确列出每个测试文件：`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`blocklist_nxdomain_test`、`zonemd_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`，以及各 `security_*` 套件）、通过 `cargo test` 运行的所有 Rust 测试（它也涵盖上面那套解析器测试），以及 JavaScript 的 lint／集成／单元测试。单独的目标也可以使用：`make go-integration-test`、`make go-test`、`make rust-integration-test`、`make rust-test`、`make js-integration-test`、`make js-test`。使用 `make test-log` 可把整轮运行捕获到一份带时间戳的日志文件中。
+`make test` 目标会运行完整的测试套件：lint、Go 集成测试、Go 单元测试、Rust 集成测试（逐一明确列出每个测试文件：`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`blocklist_nxdomain_test`、`zonemd_test`、`dot_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`，以及各 `security_*` 套件）、通过 `cargo test` 运行的所有 Rust 测试（它也涵盖上面那套解析器测试），以及 JavaScript 的 lint／集成／单元测试。单独的目标也可以使用：`make go-integration-test`、`make go-test`、`make rust-integration-test`、`make rust-test`、`make js-integration-test`、`make js-test`。使用 `make test-log` 可把整轮运行捕获到一份带时间戳的日志文件中。`make translation-check` 会逐节比对每份翻译文档与英文原文，只要有落差就以非零状态退出；它是 `lint` 的前置依赖，因此会随 `make test` 一并运行，并在某个语系落后时让关卡失败。
 
 ## 主要依赖
 
@@ -1563,7 +1651,7 @@ Go 客户端有两层测试：
 
 服务器运行在 tokio 的多线程异步运行时上。每个 UDP 监听地址都会**跨 `SO_REUSEPORT` 套接字分片**（`dns.udp_shards`，默认每核心一个）：单一套接字会把监听器序列化——一个任务用 `recv_from` 把它抽干，而每一个回复都在它上面竞争——这会让吞吐量远低于 CPU 饱和点，无论有多少核心闲着。每个分片运行自己的接收循环，并在自己的套接字上回复，因此内核会在两个方向上把抵达的数据报哈希分散到各核心。`SO_REUSEPORT` 只在请求超过一个分片时才设置，因此单分片的监听器在被占用的端口上仍然会大声失败（入口绑定失败的处理依赖这一点），而不是默默地共享它；而绑定到端口 `0`（临时端口）时会被强制为单一分片，因为内核否则会给每个分片一个不同的端口。分片存放在一个由 `serve_udp` future 所拥有的 `JoinSet` 中，因此中止那个驱动任务——正如 `stop_ingress_listener` 所做的——会把每一个分片都一并拆掉。在单一分片之内，每收到一个查询就生成一个任务。DNS TCP 连接每条连接生成一个新任务。DoT、DoH 与 DoQ 连接也各自每条连接生成一个新任务。gRPC 服务器（TCP 与 Unix 套接字）以独立任务运行。上游转发器配置由 `ArcSwap` 保护以取得无锁读取。封锁列表状态使用无锁原语：启用标志是一个 `AtomicBool`，而提供方列表使用 `ArcSwap` 以取得零争用的读取。封锁列表缓存与 DNS 响应缓存使用无锁的 `DashMap`。SQLite 数据库由一把 `Mutex` 保护，并以 `prepare_cached` 重用语句。
 
-开机时，内存缓存会从数据库填充：范围计数（`AtomicUsize`）、本地 RBL 条目（`DashSet`）、DNSBL 允许列表条目（`DashSet`）、权威区域（`DashSet`）、受管区域（`DashSet`）、TLD 所有权（`tld_owner_cache`）、逐 TLD 的入口 IP（`tld_ingress_cache`），以及已持久化的委派缓存。这些缓存让热路径上不必执行 SQL 查询，并在记录通过 gRPC 被新增或移除时渐进更新。
+开机时，内存缓存会从数据库填充：范围计数（`AtomicUsize`）、本地封锁列表条目（`DashSet`）、DNSBL 允许列表条目（`DashSet`）、权威区域（`DashSet`）、受管区域（`DashSet`）、TLD 所有权（`tld_owner_cache`）、逐 TLD 的入口 IP（`tld_ingress_cache`），以及已持久化的委派缓存。这些缓存让热路径上不必执行 SQL 查询，并在记录通过 gRPC 被新增或移除时渐进更新。
 
 `auto` 解析状态机完全是无锁的：当前层级、偏离连续次数、上次探测的时间戳，以及宽限／探测参数都是原子变量。恢复探测运行在单一个后台任务中而不是在查询路径上，因此它不需要 compare-exchange 的选举——永远只有一个探测者。安全上游列表、公共后备列表、解析模式与叠加 CIDR 列表使用 `ArcSwap`。答案地址族的抑制是一对由后台探测任务写入的 `AtomicBool`。入口监听器被追踪在一个 `DashMap<IpAddr, Vec<AbortHandle>>` 中；委派缓存通过一个由 `mpsc` 通道喂养的后台 SQLite 写入工作者持久化，而委派／记录缓存都是 `DashMap`。
 

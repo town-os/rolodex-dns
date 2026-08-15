@@ -73,8 +73,8 @@ LOG_DIR := /tmp/rolodex-dns/log
 export LOG_DIR
 
 .PHONY: help test test-log build clean go-test go-integration-test dev dev-release install lint bench
-.PHONY: rust-test rust-integration-test prometheus-test
-.PHONY: deps js-lint js-test js-integration-test
+.PHONY: rust-test rust-integration-test prometheus-test translation-check
+.PHONY: deps python-deps js-lint js-test js-integration-test
 .PHONY: image push push-arch push-rc push-release manifest manifest-rc manifest-release quay-login clean-containers
 .PHONY: image-amd64 push-rc-amd64 push-release-amd64 push-rc-all push-release-all cross-deps
 
@@ -86,9 +86,21 @@ help: ## Show this help
 
 ##@ Build & Test
 
-lint: ## Run cargo fmt --check and clippy -D warnings
+lint: translation-check ## Run the translation drift check, cargo fmt --check and clippy -D warnings
 	cargo fmt -- --check
 	cargo clippy --all-targets -- -D warnings
+
+# The five documents each carry five translations, and nothing in the Rust test
+# suite reads them — promql_docs_test only opens the English README.md and
+# DESIGN.md. This compares every translated section against its English
+# counterpart by line count, which is what catches a paragraph, bullet or table
+# row that landed in English and never reached a locale.
+#
+# A prerequisite of `lint`, so it runs first and as part of `make test`. Exits
+# non-zero on any drift, naming the section and its English/translation line
+# counts. Pure Python with no network and no containers; needs python3 on PATH.
+translation-check: python-deps ## Check the translated docs against English for dropped content
+	python3 translation-drift-check.py
 
 # Runs the documented PromQL through a real Prometheus, which is the only way to
 # catch a query that is malformed *as PromQL* rather than merely naming a series
@@ -135,6 +147,7 @@ rust-integration-test: build ## Run each Rust integration test file
 	cargo test --test arpa_refusal_test
 	cargo test --test blocklist_nxdomain_test
 	cargo test --test zonemd_test
+	cargo test --test dot_test
 	cargo test --test doq_test
 	cargo test --test proxy_test
 	cargo test --test tls_reload_test
@@ -165,8 +178,26 @@ go-test: go-integration-test ## Run Go unit tests (includes integration tests)
 go-integration-test: build ## Run Go integration tests against a real server
 	cd go && ROLODEX_DNS_BINARY=$(CURDIR)/target/debug/rolodex-dns go test -v -count=1 -tags=integration .
 
-deps: cross-deps ## Install build dependencies (Rust cross toolchain + JS dev deps)
+deps: cross-deps python-deps ## Install build dependencies (Rust cross toolchain + JS dev deps + python3 check)
 	cd js && npm install --no-audit --no-fund
+
+# `translation-check` -- a prerequisite of `lint`, and so part of `make test` --
+# runs a pure-standard-library Python script. Unlike everything else `deps`
+# provisions, python3 is a system interpreter and cannot be installed without
+# root, so this verifies it and names the package rather than installing it.
+# `translation-check` depends on it too, so a missing interpreter fails with
+# this message instead of a bare "python3: command not found".
+python-deps: ## Verify python3 is present (required by translation-check)
+	@command -v python3 >/dev/null 2>&1 || { \
+	  printf 'error: python3 not found on PATH\n'; \
+	  printf '  Required by `make translation-check`, which `make lint` and `make test` depend on.\n'; \
+	  printf '  It cannot be installed rootlessly here; use your package manager:\n'; \
+	  printf '    Debian/Ubuntu  apt install python3\n'; \
+	  printf '    Fedora/RHEL    dnf install python3\n'; \
+	  printf '    Arch           pacman -S python\n'; \
+	  printf '    macOS          brew install python\n'; \
+	  exit 1; }
+	@printf 'python3 present: %s\n' "$$(python3 --version 2>&1)"
 
 # The Rust cross-compilation toolchain: rustup std for both targets,
 # cargo-zigbuild, and zig as the C cross-compiler/linker. `rustup target add`

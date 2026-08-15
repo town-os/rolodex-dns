@@ -66,21 +66,26 @@ pub fn build_router(state: PortalState) -> Router {
 }
 
 /// Serves the enrollment portal over HTTPS on `bind`.
+///
+/// `tls` is a live view of the certificate rather than a snapshot, so a renewal
+/// is served by the next connection without a restart.
 pub async fn serve_portal(
     bind: &str,
     state: PortalState,
-    server_config: Arc<rustls::ServerConfig>,
+    tls: tokio::sync::watch::Receiver<Arc<rustls::ServerConfig>>,
 ) -> Result<()> {
     let app = build_router(state);
-    let tls_config = axum_server::tls_rustls::RustlsConfig::from_config(server_config);
+    let tls_config = axum_server::tls_rustls::RustlsConfig::from_config(tls.borrow().clone());
     let addr: std::net::SocketAddr = bind
         .parse()
         .context(format!("invalid ACME portal bind address: {}", bind))?;
     info!("ACME enrollment portal listening on {}", addr);
-    axum_server::bind_rustls(addr, tls_config)
+    let renewals = tokio::spawn(crate::tls::drive_axum_tls(tls_config.clone(), tls));
+    let outcome = axum_server::bind_rustls(addr, tls_config)
         .serve(app.into_make_service())
-        .await
-        .context("ACME portal error")?;
+        .await;
+    renewals.abort();
+    outcome.context("ACME portal error")?;
     Ok(())
 }
 

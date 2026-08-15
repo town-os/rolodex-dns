@@ -24,6 +24,8 @@ type mockRolodexDnsService struct {
 	removeRecordFn              func(ctx context.Context, req *pb.RemoveRecordRequest) (*pb.RemoveRecordResponse, error)
 	listRecordsFn               func(ctx context.Context, req *pb.ListRecordsRequest) (*pb.ListRecordsResponse, error)
 	setForwarderFn              func(ctx context.Context, req *pb.SetForwarderRequest) (*pb.SetForwarderResponse, error)
+	setResolutionModeFn         func(ctx context.Context, req *pb.SetResolutionModeRequest) (*pb.SetResolutionModeResponse, error)
+	getResolutionModeFn         func(ctx context.Context, req *pb.GetResolutionModeRequest) (*pb.GetResolutionModeResponse, error)
 	setDnsblConfigFn            func(ctx context.Context, req *pb.SetDnsblConfigRequest) (*pb.SetDnsblConfigResponse, error)
 	getDnsblConfigFn            func(ctx context.Context, req *pb.GetDnsblConfigRequest) (*pb.GetDnsblConfigResponse, error)
 	flushCacheFn                func(ctx context.Context, req *pb.FlushCacheRequest) (*pb.FlushCacheResponse, error)
@@ -147,6 +149,20 @@ func (m *mockRolodexDnsService) ListRecords(ctx context.Context, req *pb.ListRec
 func (m *mockRolodexDnsService) SetForwarders(ctx context.Context, req *pb.SetForwarderRequest) (*pb.SetForwarderResponse, error) {
 	if m.setForwarderFn != nil {
 		return m.setForwarderFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexDnsService) SetResolutionMode(ctx context.Context, req *pb.SetResolutionModeRequest) (*pb.SetResolutionModeResponse, error) {
+	if m.setResolutionModeFn != nil {
+		return m.setResolutionModeFn(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockRolodexDnsService) GetResolutionMode(ctx context.Context, req *pb.GetResolutionModeRequest) (*pb.GetResolutionModeResponse, error) {
+	if m.getResolutionModeFn != nil {
+		return m.getResolutionModeFn(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
@@ -813,6 +829,78 @@ func TestSetForwardersServerFailure(t *testing.T) {
 	err := client.SetForwarders(context.Background(), []string{"invalid"})
 	if err == nil {
 		t.Fatal("expected error from server failure")
+	}
+}
+
+// The resolution mode is the one upstream setting that used to require rewriting
+// the config file and restarting the server — a DNS outage for every client of
+// the box — so the client method exists to make it a live change.
+func TestSetResolutionMode(t *testing.T) {
+	var captured *pb.SetResolutionModeRequest
+	mock := &mockRolodexDnsService{
+		setResolutionModeFn: func(_ context.Context, req *pb.SetResolutionModeRequest) (*pb.SetResolutionModeResponse, error) {
+			captured = req
+			return &pb.SetResolutionModeResponse{Success: true}, nil
+		},
+	}
+	client := startMockServer(t, mock)
+
+	if err := client.SetResolutionMode(context.Background(), "forward"); err != nil {
+		t.Fatalf("SetResolutionMode returned error: %v", err)
+	}
+	if captured.GetMode() != "forward" {
+		t.Errorf("mode = %q, want %q", captured.GetMode(), "forward")
+	}
+}
+
+// A server that refuses the mode — the real one rejects anything outside
+// auto/recursive/forward rather than defaulting — must surface as an error, not
+// a silent success that leaves the caller believing the box switched.
+func TestSetResolutionModeServerFailure(t *testing.T) {
+	mock := &mockRolodexDnsService{
+		setResolutionModeFn: func(_ context.Context, _ *pb.SetResolutionModeRequest) (*pb.SetResolutionModeResponse, error) {
+			return &pb.SetResolutionModeResponse{Success: false, Message: "invalid resolution mode"}, nil
+		},
+	}
+	client := startMockServer(t, mock)
+
+	if err := client.SetResolutionMode(context.Background(), "iterative"); err == nil {
+		t.Fatal("expected error from server failure")
+	}
+}
+
+// The getter reports the mode IN EFFECT, which is what makes a reconcile a diff
+// rather than an unconditional re-push: re-asserting auto restarts tier
+// discovery and throws away a settled tier.
+func TestGetResolutionMode(t *testing.T) {
+	mock := &mockRolodexDnsService{
+		getResolutionModeFn: func(_ context.Context, _ *pb.GetResolutionModeRequest) (*pb.GetResolutionModeResponse, error) {
+			return &pb.GetResolutionModeResponse{Mode: "auto"}, nil
+		},
+	}
+	client := startMockServer(t, mock)
+
+	mode, err := client.GetResolutionMode(context.Background())
+	if err != nil {
+		t.Fatalf("GetResolutionMode returned error: %v", err)
+	}
+	if mode != "auto" {
+		t.Errorf("mode = %q, want %q", mode, "auto")
+	}
+}
+
+// A transport error must not read as a mode. An empty string with a nil error
+// would look like "the server is in no mode", and a caller diffing against it
+// would push on every pass.
+func TestGetResolutionModeTransportError(t *testing.T) {
+	client := startMockServer(t, &mockRolodexDnsService{})
+
+	mode, err := client.GetResolutionMode(context.Background())
+	if err == nil {
+		t.Fatal("expected an error when the server does not implement the call")
+	}
+	if mode != "" {
+		t.Errorf("mode = %q on error, want empty", mode)
 	}
 }
 

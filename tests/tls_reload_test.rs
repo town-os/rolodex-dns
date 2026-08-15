@@ -27,12 +27,25 @@
 //! - ALPN survives the rebuild, since it is re-applied from the manager's stored
 //!   protocols rather than carried over from the old config.
 //!
+//! ## Detecting the renewal
+//!
+//! `reload()` still has to be *called*, and nothing calls it on a schedule but
+//! `spawn_reloader`, which polls the certificate files and reloads when their
+//! contents change. The cases below pin the decision it makes rather than the
+//! timer: no reload when nothing changed (or a listener would mint a new
+//! certificate every poll), a reload when the bytes differ, and — the one that
+//! matters in production — a **retry** after a poll that caught a renewal
+//! half-written, because the fingerprint of a pair that failed to load is never
+//! recorded as the loaded one.
+//!
 //! ## Scope
 //!
-//! These test the manager. As of this writing `src/main.rs` takes a one-time
-//! `server_config()` snapshot for each listener and never subscribes to
-//! `watch()`, so no running listener swaps its certificate yet; that is a wiring
-//! gap above this layer, not a defect in what is tested here.
+//! These test the manager. That a *listener* follows it is pinned in
+//! `tests/dot_test.rs`
+//! (`the_listener_serves_a_renewed_certificate_without_a_restart`), which
+//! rotates the certificate under a running `serve_dot` and asserts the next
+//! connection is served the new one while a connection already open is
+//! undisturbed.
 //!
 //! Everything binds ephemeral loopback ports and writes only into a temporary
 //! directory; the host is untouched.
@@ -212,6 +225,7 @@ fn file_backed_manager() -> (
             cert_path: Some(cert_path.to_string_lossy().to_string()),
             key_path: Some(key_path.to_string_lossy().to_string()),
             auto_self_signed: false,
+            self_signed_sans: Vec::new(),
         },
         vec![ALPN.to_vec()],
     )
@@ -280,6 +294,7 @@ async fn reload_of_a_self_signed_manager_mints_a_new_certificate() {
             cert_path: None,
             key_path: None,
             auto_self_signed: true,
+            self_signed_sans: Vec::new(),
         },
         vec![ALPN.to_vec()],
     )
@@ -486,6 +501,7 @@ async fn a_manager_with_no_certificate_source_is_refused() {
             cert_path: None,
             key_path: None,
             auto_self_signed: false,
+            self_signed_sans: Vec::new(),
         },
         vec![ALPN.to_vec()],
     );
@@ -493,5 +509,253 @@ async fn a_manager_with_no_certificate_source_is_refused() {
     assert!(
         outcome.is_err(),
         "a manager with no certificate and no self-signed fallback was accepted"
+    );
+}
+
+// ============================================================================
+// Detecting a renewal on disk
+// ============================================================================
+
+/// `reload_if_changed` must do nothing when the files have not changed.
+///
+/// This is not an optimisation. The poller calls it every half-minute for the
+/// life of the process, so a version that reloaded unconditionally would push a
+/// new `ServerConfig` onto every listener 2,880 times a day — and on a
+/// self-signed manager (below) would mint a *different* certificate each time,
+/// which is indistinguishable from an attack to any client that pins one.
+#[tokio::test]
+async fn an_unchanged_certificate_is_not_reloaded() {
+    let (_dir, _cert_path, _key_path, manager) = file_backed_manager();
+
+    let before = presented_certificate(manager.server_config()).await;
+
+    assert!(
+        !manager
+            .reload_if_changed()
+            .expect("polling an unchanged certificate is not an error"),
+        "an unchanged certificate was reported as reloaded"
+    );
+    assert!(
+        !manager
+            .reload_if_changed()
+            .expect("polling twice is not an error"),
+        "a second poll of an unchanged certificate reported a reload"
+    );
+
+    let after = presented_certificate(manager.server_config()).await;
+    assert_eq!(
+        before, after,
+        "polling an unchanged certificate replaced the one being served"
+    );
+}
+
+/// The other half: new bytes on disk are detected and served, with no call to
+/// `reload()` anywhere. This is the whole of "a renewed certificate needs no
+/// restart" — the poller sees the change and the listeners follow the channel.
+#[tokio::test]
+async fn a_rotated_certificate_is_detected_and_served() {
+    let (_dir, cert_path, key_path, manager) = file_backed_manager();
+
+    let before = presented_certificate(manager.server_config()).await;
+
+    let renewed = generate_cert("renewed.example.com");
+    write_pem(&cert_path, &key_path, &renewed);
+
+    assert!(
+        manager
+            .reload_if_changed()
+            .expect("reloading a rotated certificate"),
+        "a rotated certificate on disk was not detected"
+    );
+
+    let after = presented_certificate(manager.server_config()).await;
+    assert_ne!(
+        before, after,
+        "the poll reported a reload but the served certificate did not change"
+    );
+    assert_eq!(
+        after, renewed.der,
+        "the certificate served after the poll is not the one written to disk"
+    );
+
+    // And it settles: the next poll has nothing to do.
+    assert!(
+        !manager
+            .reload_if_changed()
+            .expect("polling after a reload is not an error"),
+        "the poll reloaded the same certificate twice; every poll would be a rotation"
+    );
+}
+
+/// A poll that catches a renewal **mid-write** must fail, keep serving the old
+/// certificate, and then pick up the finished pair on the next poll.
+///
+/// This is the case that makes polling safe without coordinating with whoever
+/// writes the files. An ACME client writes two files, and a 30-second timer will
+/// eventually land between them: the certificate is new, the key is still the
+/// old one, and `rustls` rejects the pair because the key's `SubjectPublicKeyInfo`
+/// does not match the certificate's.
+///
+/// The retry is the assertion with teeth. A poller that recorded what it *saw*
+/// rather than what it successfully *loaded* would treat the torn state as the
+/// new normal, see no further change once the key landed, and serve the old
+/// certificate until the process restarted — the exact failure the whole
+/// mechanism exists to remove, and one that would look like it was working.
+#[tokio::test]
+async fn a_renewal_caught_mid_write_is_retried_rather_than_accepted() {
+    let (_dir, cert_path, key_path, manager) = file_backed_manager();
+
+    let original = presented_certificate(manager.server_config()).await;
+    let renewed = generate_cert("renewed.example.com");
+
+    // The torn state: the new certificate is in place, the key is not yet.
+    std::fs::write(&cert_path, &renewed.cert_pem).expect("write the renewed certificate");
+
+    let outcome = manager.reload_if_changed();
+    assert!(
+        outcome.is_err(),
+        "a certificate that does not match the key on disk was accepted"
+    );
+    assert_eq!(
+        presented_certificate(manager.server_config()).await,
+        original,
+        "a failed poll disturbed the certificate that was serving"
+    );
+
+    // The writer finishes.
+    std::fs::write(&key_path, &renewed.key_pem).expect("write the renewed key");
+
+    assert!(
+        manager
+            .reload_if_changed()
+            .expect("the completed pair reloads"),
+        "the poll never retried after the mid-write failure; the renewal would need a restart"
+    );
+    assert_eq!(
+        presented_certificate(manager.server_config()).await,
+        renewed.der,
+        "the retried poll did not serve the renewed certificate"
+    );
+}
+
+/// A self-signed manager has no files, so there is nothing to poll and
+/// `reload_if_changed` must be a no-op — distinct from `reload()`, which mints a
+/// fresh certificate on purpose.
+///
+/// Without this the poller would hand out a new self-signed certificate every
+/// interval, breaking every client that pinned the previous one; `is_file_backed`
+/// is what stops the poller being started at all, and this pins the decision
+/// underneath it.
+#[tokio::test]
+async fn a_self_signed_manager_has_nothing_to_poll() {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
+    let manager = TlsManager::new(
+        TlsConfig {
+            cert_path: None,
+            key_path: None,
+            auto_self_signed: true,
+            self_signed_sans: Vec::new(),
+        },
+        vec![ALPN.to_vec()],
+    )
+    .expect("self-signed manager");
+
+    assert!(
+        !manager.is_file_backed(),
+        "a manager with no certificate paths reported files to watch"
+    );
+
+    let before = presented_certificate(manager.server_config()).await;
+    assert!(
+        !manager
+            .reload_if_changed()
+            .expect("polling a self-signed manager is not an error"),
+        "a self-signed manager reported a reload with no file behind it"
+    );
+    assert_eq!(
+        presented_certificate(manager.server_config()).await,
+        before,
+        "polling a self-signed manager minted a new certificate"
+    );
+
+    // The control: `reload()` on the same manager *does* mint a new one, so the
+    // no-op above is `reload_if_changed` declining to act rather than the
+    // manager being unable to rebuild at all.
+    manager.reload().expect("explicit reload");
+    assert_ne!(
+        presented_certificate(manager.server_config()).await,
+        before,
+        "the manager could not rebuild at all, so the poll no-op proves nothing"
+    );
+}
+
+/// The poller itself, end to end: start it, rotate the files, and the certificate
+/// being served changes with nothing else called.
+///
+/// The interval is milliseconds rather than the production half-minute, and the
+/// wait is a poll with a deadline rather than a fixed sleep, so a slow machine is
+/// slow rather than flaky.
+#[tokio::test]
+async fn the_reloader_task_picks_up_a_rotation_on_its_own() {
+    let (_dir, cert_path, key_path, manager) = file_backed_manager();
+    let manager = Arc::new(manager);
+
+    let original = presented_certificate(manager.server_config()).await;
+
+    let task = manager
+        .spawn_reloader("test", Duration::from_millis(50))
+        .expect("a file-backed manager has a reloader");
+
+    let renewed = generate_cert("renewed.example.com");
+    write_pem(&cert_path, &key_path, &renewed);
+
+    let deadline = std::time::Instant::now() + PATIENCE;
+    let mut served = original.clone();
+    while std::time::Instant::now() < deadline {
+        served = presented_certificate(manager.server_config()).await;
+        if served != original {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    task.abort();
+
+    assert_eq!(
+        served, renewed.der,
+        "the reloader task did not pick up the rotated certificate within {PATIENCE:?}"
+    );
+}
+
+/// A manager with no files to watch does not get a reloader task at all.
+///
+/// The pair to the case above, and the reason it matters is the same: a task
+/// polling a self-signed manager would regenerate its certificate forever.
+#[tokio::test]
+async fn a_self_signed_manager_gets_no_reloader_task() {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
+    let manager = Arc::new(
+        TlsManager::new(
+            TlsConfig {
+                cert_path: None,
+                key_path: None,
+                auto_self_signed: true,
+                self_signed_sans: Vec::new(),
+            },
+            vec![ALPN.to_vec()],
+        )
+        .expect("self-signed manager"),
+    );
+
+    assert!(
+        manager
+            .spawn_reloader("test", Duration::from_millis(50))
+            .is_none(),
+        "a self-signed manager was given a certificate-polling task"
     );
 }

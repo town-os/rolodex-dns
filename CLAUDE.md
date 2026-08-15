@@ -1,6 +1,6 @@
 # Rolodex DNS Development Rules
 
-> Languages: **English** | [繁體中文](CLAUDE.zh-TW.md) | [简体中文](CLAUDE.zh-CN.md) | [Español (España)](CLAUDE.es-ES.md) | [Español (México)](CLAUDE.es-MX.md) | [日本語](CLAUDE.ja.md)
+> Languages: **English** | [繁體中文](CLAUDE.zh-TW.md) | [简体中文](CLAUDE.zh-CN.md) | [Español (España)](CLAUDE.es-ES.md) | [Español (México)](CLAUDE.es-MX.md) | [日本語](CLAUDE.ja-JP.md)
 
 Rolodex DNS is a split-horizon DNS server and recursive/forwarding resolver with remote management via gRPC, written in Rust and licensed under AGPL-3.0-only.
 
@@ -16,7 +16,7 @@ This file is the rules for working on it. It is deliberately short: **what the s
 | `CHANGELOG.md` | Release history. |
 | `CLAUDE.md` | This file. Development rules only. |
 
-Each of the five has a Traditional Chinese (`.zh-TW.md`), Simplified Chinese (`.zh-CN.md`), European Spanish (`.es-ES.md`), Mexican Spanish (`.es-MX.md`) and Japanese (`.ja.md`) translation alongside it. **English is the source of truth**: change it first, and treat the translations as needing a follow-up rather than as a second place to edit. Nothing verifies that they agree — `tests/promql_docs_test.rs` reads only the English `README.md` and `DESIGN.md`, so a PromQL block or a family count inside a translation is documentation, not a checked assertion.
+Each of the five has a Traditional Chinese (`.zh-TW.md`), Simplified Chinese (`.zh-CN.md`), European Spanish (`.es-ES.md`), Mexican Spanish (`.es-MX.md`) and Japanese (`.ja-JP.md`) translation alongside it. **English is the source of truth**: change it first, and treat the translations as needing a follow-up rather than as a second place to edit. Nothing verifies that they agree — `tests/promql_docs_test.rs` reads only the English `README.md` and `DESIGN.md`, so a PromQL block or a family count inside a translation is documentation, not a checked assertion.
 
 ## Rules
 
@@ -40,7 +40,7 @@ Each of the five has a Traditional Chinese (`.zh-TW.md`), Simplified Chinese (`.
 
 ## Validating a change
 
-`make test` is the gate, and it is the operator's to run — see the rules above. It runs, in order: `lint` (`cargo fmt -- --check` and `cargo clippy --all-targets -- -D warnings`), the Go integration and unit tests, `prometheus-test`, every Rust integration test file explicitly, `cargo test`, and the JavaScript lint/integration/unit tests. `make test-log` captures the whole run to a timestamped log file, which is the better choice when the run is long.
+`make test` is the gate, and it is the operator's to run — see the rules above. It runs, in order: `lint` (`translation-check`, `cargo fmt -- --check` and `cargo clippy --all-targets -- -D warnings`), the Go integration and unit tests, `prometheus-test`, every Rust integration test file explicitly, `cargo test`, and the JavaScript lint/integration/unit tests. `make test-log` captures the whole run to a timestamped log file, which is the better choice when the run is long.
 
 Narrower targets exist and are listed in `DESIGN.md` under Build System — `make lint`, `make rust-test`, `make go-test`, `make js-test`, `make bench`.
 

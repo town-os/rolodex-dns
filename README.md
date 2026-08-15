@@ -1,6 +1,6 @@
 # Rolodex DNS
 
-> Languages: **English** | [繁體中文](README.zh-TW.md) | [简体中文](README.zh-CN.md) | [Español (España)](README.es-ES.md) | [Español (México)](README.es-MX.md) | [日本語](README.ja.md)
+> Languages: **English** | [繁體中文](README.zh-TW.md) | [简体中文](README.zh-CN.md) | [Español (España)](README.es-ES.md) | [Español (México)](README.es-MX.md) | [日本語](README.ja-JP.md)
 
 A privacy-first, split-horizon DNS server and recursive/forwarding resolver with encrypted transports, DNSSEC, and gRPC management, written in Rust.
 
@@ -49,7 +49,7 @@ New here? Start with the **[Configuration Guide](CONFIGURATION.md)** — a task-
 - **Proxy support**: Forward DNS queries through HTTP CONNECT, SOCKS5, or DoH proxy
 - **Prometheus metrics**: an optional, off-by-default `/metrics` endpoint exposing 80 metric families with bounded label cardinality — including per-stage answer attribution and per-TLD isolation, so the split-horizon pipeline is legible from outside. Query names are never labels
 - **SQLite persistence**: DNS records persist across restarts
-- **TLS hot-reload (partial)**: `TlsManager` rebuilds its `rustls::ServerConfig` from the configured PEM files on demand and publishes it to watchers, keeping the previous certificate serving if the rebuild fails. **Not yet wired to the listeners** — each of DoT/DoH/DoQ/ACME takes a one-time config snapshot at startup, so a renewed certificate still requires a restart to be served
+- **TLS hot-reload**: certificate files are polled every 30 seconds and a renewed pair is served by DoT, DoH, DoQ, ACME and the enrollment portal within that window, with no restart and no dropped connections. A rebuild that fails — a truncated file, or a poll that landed between an ACME client's two writes — keeps the previous certificate serving and retries on the next poll
 - **Performance**: Multi-threaded tokio runtime, lock-free blocklist and resolver state (`AtomicBool` + `ArcSwap` + atomics), in-memory boot caches for scopes/zones/TLDs/blocklist entries, UDP socket pool for upstream forwarding, and DashMap/DashSet concurrent caching throughout
 
 ## Building
@@ -64,7 +64,7 @@ make build
 make test
 ```
 
-Runs lint (`cargo fmt --check` + `clippy --all-targets -D warnings`), the Go integration and unit tests, the Rust integration and unit tests, the JavaScript lint/integration/unit tests, and the documented-PromQL execution check. The Rust integration layer includes real-socket suites for DNSSEC signing and validation (against a signed mock hierarchy whose responses are tampered with at serialization time, so each test is "a valid deployment, attacked"), the blocklist NXDOMAIN contract, blocklist refusal codes, DoQ, proxying, TLS reload, ZONEMD, ACME administration, and a `security_*` suite per security finding. Use `make test-log` for the same run tee'd into a timestamped log file under `/tmp/rolodex-dns/log` (override with `LOG_DIR`), printed at the end even on failure. Individual layers: `make lint`, `make rust-test`, `make rust-integration-test`, `make go-test`, `make go-integration-test`, `make js-test`, `make js-integration-test`.
+Runs lint (the translation drift check, `cargo fmt --check` + `clippy --all-targets -D warnings`), the Go integration and unit tests, the Rust integration and unit tests, the JavaScript lint/integration/unit tests, and the documented-PromQL execution check. The Rust integration layer includes real-socket suites for DNSSEC signing and validation (against a signed mock hierarchy whose responses are tampered with at serialization time, so each test is "a valid deployment, attacked"), the blocklist NXDOMAIN contract, blocklist refusal codes, DoQ, proxying, TLS reload, ZONEMD, ACME administration, and a `security_*` suite per security finding. Use `make test-log` for the same run tee'd into a timestamped log file under `/tmp/rolodex-dns/log` (override with `LOG_DIR`), printed at the end even on failure. Individual layers: `make lint`, `make rust-test`, `make rust-integration-test`, `make go-test`, `make go-integration-test`, `make js-test`, `make js-integration-test`.
 
 `make test` also runs `make prometheus-test`, which executes every PromQL query documented in this file through a real Prometheus container scraping a live server — catching a query that is malformed *as PromQL* rather than merely naming a series that does not exist. It needs podman; without it the check **skips loudly** rather than failing, so a machine with no container runtime still gets a green run while never pretending the queries were verified. Set `ROLODEX_PROMETHEUS_REQUIRED=1` to make that skip a hard failure, and `ROLODEX_PROMETHEUS_IMAGE` to point at a mirror of the image.
 
@@ -138,10 +138,10 @@ A consumer that pulls `quay.io/town/rolodex:latest` then transparently receives 
 
 #### Cross-Compilation
 
-Both architectures are cross-compiled on whichever host runs `make`, using `cargo-zigbuild` with zig as the C cross-compiler and linker. `make deps` provisions the whole toolchain **without root**:
+Both architectures are cross-compiled on whichever host runs `make`, using `cargo-zigbuild` with zig as the C cross-compiler and linker. `make deps` provisions the whole toolchain **without root**, and checks for `python3` (needed by `make translation-check`, which it cannot install rootlessly):
 
 ```bash
-make deps        # rustup targets + cargo-zigbuild + zig, and the JS dev deps
+make deps        # rustup targets + cargo-zigbuild + zig, the JS dev deps, and a python3 check
 make cross-deps  # just the Rust cross toolchain
 ```
 
@@ -272,6 +272,24 @@ The `primary` keyword detects which IP address the OS would use to reach the pub
 
 Interface binding resolves all IPv4 and IPv6 addresses assigned to the interface and creates a separate listener for each. For example, if `eth0` has `192.168.1.5` and `fe80::1`, then `eth0:53` creates listeners on both `192.168.1.5:53` and `[fe80::1]:53`.
 
+`dot.bind` and `doq.bind` accept **either a single bind string or a list of them**:
+
+```yaml
+dot:
+  bind:
+    - "0.0.0.0:853"
+    - "[2001:db8::1]:853"
+```
+
+A list is how one listener covers both address families. `0.0.0.0` is IPv4-only,
+and `[::]` is not a portable substitute for both: with `net.ipv6.bindv6only=0`
+(the Linux default) a `[::]` socket also accepts v4-mapped traffic, so it
+collides with a `0.0.0.0` socket on the same port and whichever binds second
+fails with `EADDRINUSE`. Name the v6 addresses instead. Each entry goes through
+the four forms above independently, duplicates are dropped rather than bound
+twice, and a bare string is still accepted — every configuration written before
+the list form existed still parses.
+
 The `dns.bind` field is a list of protocol/address pairs. Each entry is a single-key map with `udp` or `tcp` as the key and a bind address as the value:
 
 ```yaml
@@ -337,6 +355,10 @@ dot:
     cert_path: /etc/rolodex-dns/cert.pem
     key_path: /etc/rolodex-dns/key.pem
     auto_self_signed: false
+    # Only used when a certificate is generated. The loopback names and the
+    # listener's own bind addresses are covered automatically; list here the
+    # other names clients dial this box by.
+    self_signed_sans: []
 
 # DNS-over-HTTPS (RFC 8484)
 doh:
@@ -459,7 +481,7 @@ metrics:
 |--------|---------|-------------|
 | `database_path` | `"rolodex-dns.db"` | Path to the SQLite database file |
 | `forwarders` | `["8.8.8.8:53", "8.8.4.4:53"]` | Upstream DNS resolver addresses (the `local` tier in `auto` mode; the only upstream in `forward` mode) |
-| `resolution.mode` | `"auto"` | Upstream strategy: `"auto"` (tier chain), `"recursive"` (roots only), `"forward"` (forwarders only) |
+| `resolution.mode` | `"auto"` | Upstream strategy: `"auto"` (tier chain), `"recursive"` (roots only), `"forward"` (forwarders only). **Startup seed only** — `SetResolutionMode` changes the mode on a running server without a restart, and `GetResolutionMode` reports what is actually in effect |
 | `resolution.root_hints` | `[]` (built-in IANA roots) | Override the root server hints used in `recursive`/`auto` mode |
 | `resolution.secure_upstreams` | Cloudflare + Google over DoH | Encrypted upstreams for the `secure` tier: `{transport, addr, hostname, path}` |
 | `resolution.public_fallback` | `["1.1.1.1:53", "8.8.8.8:53"]` | Plaintext public resolvers, tried last in `auto` mode |
@@ -473,19 +495,22 @@ metrics:
 | `dns.auto_ptr` | `false` | Maintain reverse PTR records for A/AAAA added via gRPC |
 | `dns.ingress_listen_port` | `53` | UDP/TCP port for per-TLD ingress listeners (bind IP is per-TLD) |
 | `dns.udp_shards` | `0` (one per core) | `SO_REUSEPORT` sockets bound per UDP listen address. A single socket serialises the listener — one receive loop, one socket for every reply — capping throughput well below CPU saturation. Sharding lets the kernel spread datagrams across cores. Set `1` for the old single-socket behaviour |
-| `dot.bind` | `""` (disabled) | DoT listener; supports interface:port (typically port 853) |
+| `dot.bind` | `""` (disabled) | DoT listener; supports interface:port (typically port 853). Accepts **a single address or a list** — a list is how one listener covers both address families |
 | `dot.tls.cert_path` | `""` | TLS certificate path for DoT |
 | `dot.tls.key_path` | `""` | TLS private key path for DoT |
 | `dot.tls.auto_self_signed` | `true` | Auto-generate a self-signed certificate for DoT |
+| `dot.tls.self_signed_sans` | `[]` | Extra subject alternative names for a generated DoT certificate. The loopback set and the listener's bind addresses are added automatically; a wildcard bind (`0.0.0.0`) contributes nothing, so name the box here |
 | `doh.bind` | `""` (disabled) | DoH listener; supports interface:port (typically port 443) |
 | `doh.tls.cert_path` | `""` | TLS certificate path for DoH |
 | `doh.tls.key_path` | `""` | TLS private key path for DoH |
 | `doh.tls.auto_self_signed` | `true` | Auto-generate a self-signed certificate for DoH |
+| `doh.tls.self_signed_sans` | `[]` | As `dot.tls.self_signed_sans`, for DoH |
 | `doh.enable_h3` | `false` | Enable HTTP/3 (QUIC) transport for DoH |
-| `doq.bind` | `""` (disabled) | DoQ listener; supports interface:port (typically port 8853) |
+| `doq.bind` | `""` (disabled) | DoQ listener; supports interface:port (typically port 8853). Accepts **a single address or a list**, as `dot.bind` does |
 | `doq.tls.cert_path` | `""` | TLS certificate path for DoQ |
 | `doq.tls.key_path` | `""` | TLS private key path for DoQ |
 | `doq.tls.auto_self_signed` | `true` | Auto-generate a self-signed certificate for DoQ |
+| `doq.tls.self_signed_sans` | `[]` | As `dot.tls.self_signed_sans`, for DoQ |
 | `grpc.tcp_bind` | `"127.0.0.1:50051"` | TCP gRPC listener; supports interface:port (empty to disable) |
 | `grpc.unix_socket` | `"/var/run/rolodex-dns.sock"` | Unix socket path (empty to disable) |
 | `grpc.shared_secret` | `""` | Shared secret for TCP gRPC auth (empty = no auth) |
@@ -565,8 +590,10 @@ rolodex-dns-cli [OPTIONS] <COMMAND>
 | `add-record` | Add a DNS record to the local database |
 | `remove-record` | Remove DNS record(s) from the local database |
 | `list-records` | List DNS records with optional filters |
-| **Forwarders** | |
+| **Forwarders and Resolution** | |
 | `set-forwarders` | Set upstream DNS forwarders at runtime |
+| `set-resolution-mode` | Switch the upstream resolution mode (`auto`, `recursive`, `forward`) at runtime |
+| `get-resolution-mode` | Show the resolution mode currently in effect |
 | **Blocklists** | |
 | `set-dnsbl-config` | Configure domain-blocklist (DNSBL) settings at runtime |
 | `get-dnsbl-config` | Retrieve the current DNSBL configuration |
@@ -624,6 +651,7 @@ rolodex-dns-cli [OPTIONS] <COMMAND>
 | `set-dns64` / `get-dns64` | Configure/retrieve DNS64 settings |
 | **Observability** | |
 | `latency-stats` | Show per-server upstream query latency |
+| `set-tracked-tlds` / `list-tracked-tlds` | Manage which TLDs get their own `tld` label on the per-TLD query metrics |
 
 Transport (DoT/DoH/DoQ), proxy, and a few DNSSEC/DANE operations are available over gRPC but have no CLI subcommand — see [Additional gRPC Methods](#additional-grpc-methods). For the full set of command flags, run `rolodex-dns-cli <COMMAND> --help`.
 
@@ -752,6 +780,57 @@ rolodex-dns-cli set-forwarders -f 9.9.9.9:53
 
 # Remove all forwarders (purely authoritative mode)
 rolodex-dns-cli set-forwarders -f ""
+```
+
+##### `set-resolution-mode`
+
+Switch how names this server is not authoritative for are resolved, without a
+restart. `resolution.mode` in the config file is only the startup seed — this is
+what changes the mode actually resolving queries.
+**gRPC path:** `/rolodex_dns.RolodexDnsService/SetResolutionMode`
+
+```
+rolodex-dns-cli set-resolution-mode -m <MODE>
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-m, --mode <MODE>` | -- | `auto`, `recursive` or `forward`. Case-insensitive |
+
+An unrecognized mode is rejected with `InvalidArgument` rather than silently
+defaulted to `auto` the way the config file does: a caller that mistypes a mode
+must not be told the box is in one mode while it resolves in another.
+
+Examples:
+```bash
+# Root-first fallback chain (the default)
+rolodex-dns-cli set-resolution-mode -m auto
+
+# Iterate from the roots only, with no fallback
+rolodex-dns-cli set-resolution-mode -m recursive
+
+# Configured forwarders only
+rolodex-dns-cli set-resolution-mode -m forward
+```
+
+Switching *into* `auto` re-runs the tier warm-up, so the first queries after the
+switch do not pay the cold-tier cost.
+
+##### `get-resolution-mode`
+
+Show the mode currently in effect. This is the mode actually resolving queries,
+which is not necessarily what the config file names — the two differ after a
+`set-resolution-mode`.
+**gRPC path:** `/rolodex_dns.RolodexDnsService/GetResolutionMode`
+
+```
+rolodex-dns-cli get-resolution-mode
+```
+
+Example:
+```bash
+$ rolodex-dns-cli get-resolution-mode
+Resolution mode: auto
 ```
 
 ##### `flush-cache`
@@ -934,7 +1013,7 @@ rolodex-dns-cli get-search-domains -i <IP>
 
 The management API is defined in `proto/rolodex_dns.proto`. All methods accept an `auth_token` field for shared-secret authentication when connecting over TCP. Unix socket connections bypass authentication.
 
-See the proto file for the full API reference. The service defines 77 RPC methods covering record management, network scoping, owned TLDs and ingress, blocklists, DHCP, encrypted transports, DNSSEC, DANE/ACME, caching, DNS64, metrics, and observability.
+See the proto file for the full API reference. The service defines 74 RPC methods covering record management, network scoping, owned TLDs and ingress, blocklists, DHCP, encrypted transports, DNSSEC, DANE/ACME, caching, DNS64, metrics, and observability.
 
 ### Service: `rolodex_dns.RolodexDnsService`
 
@@ -1002,6 +1081,51 @@ Configures upstream DNS forwarders at runtime.
 **Response:**
 - `success` (bool): Whether the operation succeeded
 - `message` (string): Error message if `success` is false
+
+#### `SetResolutionMode`
+
+**Path:** `/rolodex_dns.RolodexDnsService/SetResolutionMode`
+
+Changes the upstream resolution mode at runtime.
+
+`resolution.mode` in the config file is otherwise a startup-only setting, which
+made it the one piece of upstream behaviour an orchestrator could not change
+without rewriting that file and restarting the process — and a restart of a
+box's only resolver is a DNS outage for everything on it.
+
+**Parameters:**
+- `mode` (string): `"auto"` (root-first fallback chain), `"recursive"` (iterative from the roots only) or `"forward"` (configured forwarders only). Case-insensitive
+- `auth_token` (string): Shared secret for authentication
+
+**Response:**
+- `success` (bool): Whether the operation succeeded
+- `message` (string): Error message if `success` is false
+
+An unrecognized mode returns `InvalidArgument` rather than being defaulted to
+`auto` the way the config-file path is. A file is read once at startup by an
+operator who can see the warning; an RPC has a caller waiting on an answer, and
+telling it "success" while resolving in a mode it did not ask for is how a box
+ends up in `recursive` on a network that filters `:53` with nothing in the logs
+to say why every name fails.
+
+Switching **into** `auto` spawns the same tier warm-up the startup path runs, so
+the first queries after the switch do not pay the cold-tier cost. The tier
+recovery probe runs unconditionally, so a mode switched into `auto` at runtime
+can still reclaim a recovered tier.
+
+#### `GetResolutionMode`
+
+**Path:** `/rolodex_dns.RolodexDnsService/GetResolutionMode`
+
+Returns the resolution mode currently in effect — the mode actually resolving
+queries, not the one the config file names. The two differ after a
+`SetResolutionMode` call.
+
+**Parameters:**
+- `auth_token` (string): Shared secret for authentication
+
+**Response:**
+- `mode` (string): `"auto"`, `"recursive"` or `"forward"`
 
 #### `FlushCache`
 
@@ -1180,6 +1304,8 @@ The following methods are also available. See `proto/rolodex_dns.proto` for full
 | `SetTtlDriftConfig` | Configure TTL drift adjustment (fixed or logarithmic mode) |
 | `GetTtlDriftConfig` | Retrieve TTL drift configuration |
 | `GetQueryLatencyStats` | Retrieve per-server upstream query latency statistics |
+| `SetResolutionMode` / `GetResolutionMode` | Switch the upstream resolution mode at runtime, and read the mode currently in effect |
+| `SetTrackedTlds` / `ListTrackedTlds` | Replace the tracked-TLD list, and read the stored, owned and effective sets |
 | `AddLocalBlocklistEntry` | Add a local blocklist entry |
 | `RemoveLocalBlocklistEntry` | Remove a local blocklist entry |
 | `ListLocalBlocklistEntries` | List all local blocklist entries |
@@ -1266,6 +1392,15 @@ Names that are not satisfied locally are resolved according to `resolution.mode`
 | `recursive` | Iterative from the root servers only; no upstream resolver is ever contacted |
 | `forward` | Forward to the configured `forwarders` only |
 
+**The config file is only the startup seed.** `resolution.mode` is read once at
+startup; from then on the mode is whatever
+[`SetResolutionMode`](#setresolutionmode) last set, and
+[`GetResolutionMode`](#getresolutionmode) reports the one actually resolving
+queries. The two differ after a switch — a running server is never restarted to
+change modes, because restarting a box's only resolver is a DNS outage for
+everything on it. `rolodex-dns-cli set-resolution-mode` / `get-resolution-mode`
+are the same two calls from the shell.
+
 **`arpa.` is never resolved off this box.** In every mode, `arpa.` and everything under it is answered from local data — a stored PTR, a scoped record, a managed or authoritative reverse zone — or **REFUSED**. Nothing in the subtree is sent to a root server, a forwarder or an encrypted upstream. REFUSED rather than NXDOMAIN because the server is declining to answer for a namespace, not claiming the name does not exist.
 
 The rule matches on the label boundary, so `notarpa.` and `arpa.example.com` are ordinary names and resolve normally. Two consequences worth knowing before you enable this on a box people use: a reverse lookup for an address you hold no data for is refused rather than answered from the internet (`dig -x 8.8.8.8`), and `ipv4only.arpa` is refused, which a NAT64-discovering client reads as "no NAT64 here".
@@ -1317,13 +1452,13 @@ The first probe runs synchronously at startup and is decisive, so a boot onto a 
 
 Rolodex DNS supports three encrypted DNS transport protocols to prevent eavesdropping on DNS queries:
 
-**DNS-over-TLS (DoT)** -- RFC 7858, default port 853. Standard TLS-wrapped DNS over TCP. Configure with `dot` section in YAML or `SetDotConfig` via gRPC.
+**DNS-over-TLS (DoT)** -- RFC 7858, default port 853, ALPN token `dot`. Standard TLS-wrapped DNS over TCP, with the same 2-byte length prefix framing. The ALPN token is advertised rather than required: a client offering `dot` negotiates it, a client offering only some other protocol is refused, and a client that sends no ALPN extension at all is served anyway. Configure with `dot` section in YAML or `SetDotConfig` via gRPC.
 
 **DNS-over-HTTPS (DoH)** -- RFC 8484, default port 443. DNS queries over HTTPS with support for both GET (`/dns-query?dns=<base64>`) and POST (`application/dns-message`) methods. Optionally supports HTTP/3 via QUIC (`enable_h3: true`). Configure with `doh` section in YAML or `SetDohConfig` via gRPC.
 
 **DNS-over-QUIC (DoQ)** -- RFC 9250, default port 8853. DNS queries over QUIC transport for low-latency encrypted resolution. Configure with `doq` section in YAML or `SetDoqConfig` via gRPC.
 
-All three protocols require TLS certificates. You can provide your own certificate and key, or set `auto_self_signed: true` to have Rolodex DNS generate a self-signed certificate automatically.
+All three protocols require TLS certificates. You can provide your own certificate and key, or set `auto_self_signed: true` to have Rolodex DNS generate a self-signed certificate automatically. A generated certificate covers `localhost`, `127.0.0.1`, `::1` and the listener's own bind addresses; add any other name clients dial the box by — its hostname, its `.local` name, a LAN alias — to `self_signed_sans`, since a client configured with an authentication name checks it and a wildcard bind contributes no name of its own.
 
 ## DNSSEC
 
@@ -1903,6 +2038,8 @@ All methods accept a `context.Context` for cancellation and deadlines.
 | Method | Description |
 |--------|-------------|
 | `SetForwarders(ctx, forwarders) error` | Set upstream DNS forwarders |
+| `SetResolutionMode(ctx, mode) error` | Switch the resolution mode (`auto`, `recursive`, `forward`) at runtime |
+| `GetResolutionMode(ctx) (string, error)` | Get the mode currently in effect |
 
 #### Blocklists
 
@@ -2031,6 +2168,8 @@ All methods accept a `context.Context` for cancellation and deadlines.
 | Method | Description |
 |--------|-------------|
 | `GetQueryLatencyStats(ctx) ([]*QueryLatencyStats, error)` | Get per-server latency stats |
+| `SetTrackedTlds(ctx, tlds) ([]string, error)` | Replace the tracked-TLD list; returns the effective set |
+| `ListTrackedTlds(ctx) (*TrackedTlds, error)` | Get the stored, effective and owned TLD sets |
 
 #### Connection
 

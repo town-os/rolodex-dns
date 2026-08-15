@@ -1,6 +1,6 @@
 # Rolodex DNS Configuration Guide
 
-> Languages: **English** | [繁體中文](CONFIGURATION.zh-TW.md) | [简体中文](CONFIGURATION.zh-CN.md) | [Español (España)](CONFIGURATION.es-ES.md) | [Español (México)](CONFIGURATION.es-MX.md) | [日本語](CONFIGURATION.ja.md)
+> Languages: **English** | [繁體中文](CONFIGURATION.zh-TW.md) | [简体中文](CONFIGURATION.zh-CN.md) | [Español (España)](CONFIGURATION.es-ES.md) | [Español (México)](CONFIGURATION.es-MX.md) | [日本語](CONFIGURATION.ja-JP.md)
 
 This is a task-oriented walkthrough: how to get a working server, then how to turn on each subsystem and why you would. For the exhaustive field list, see [Configuration Options](README.md#configuration-options) in the README.
 
@@ -59,6 +59,8 @@ Port 53 needs privilege. For development use a high port — `make dev` runs on 
 ## Bind addresses
 
 Everywhere an address is taken (`dns.bind`, `dot.bind`, `doh.bind`, `doq.bind`, `grpc.tcp_bind`, `dhcp.bind`, `acme.bind`, `acme.portal_bind`, `metrics.bind`) four forms are accepted:
+
+(`dns.bind` takes a list of protocol/address pairs, and `dot.bind`/`doq.bind` take **either one address or a list** — a list is how one listener covers both address families, since `0.0.0.0` is IPv4-only and a `[::]` socket collides with it on the same port. The rest take a single address.)
 
 | Form | Example | Result |
 | ---- | ------- | ------ |
@@ -242,6 +244,16 @@ resolution:
 | `recursive` | You want the roots or nothing — no upstream resolver is ever contacted |
 | `forward` | You want a plain forwarder (or, with `forwarders: []`, no upstream at all) |
 
+**`mode` here is the startup seed, not the running setting.** It is read once at
+startup; after that the mode is whatever `SetResolutionMode` last set, and
+`GetResolutionMode` reports the one actually resolving queries — so the two can
+disagree, and the running server is the authority. `rolodex-dns-cli
+set-resolution-mode -m <mode>` / `get-resolution-mode` are the same two calls from
+the shell. Changing the file and restarting also works, but restarting a box's only
+resolver is a DNS outage for everything on it, which is the whole reason the RPC
+exists. Unlike the file, the RPC **rejects** an unrecognized mode rather than warning
+and falling back to `auto`.
+
 `default_ttl` is a **fallback, not a floor**. A TTL that is present is honoured exactly as sent, including a zone's SOA negative TTL. If you are trying to shorten or lengthen live TTLs, that is [TTL drift](#dns64-ttl-drift-address-family), not this.
 
 ### DNSSEC
@@ -355,10 +367,20 @@ doh:
 
 doq:
   bind: "0.0.0.0:8853"
-  tls: { auto_self_signed: true }     # fine on a trusted network
+  tls:
+    auto_self_signed: true            # fine on a trusted network
+    self_signed_sans:                 # the names LAN clients dial this box by
+      - dns.home
+      - town-os.local
 ```
 
-`auto_self_signed: true` (the default) generates a certificate at startup if none is configured, which is convenient for a trusted network and useless to a client that checks names. Note that certificate reload is **not yet wired to the listeners**: each takes a snapshot at startup, so a renewed certificate needs a restart to be served.
+`auto_self_signed: true` (the default) generates a certificate at startup if none is configured, which is convenient for a trusted network.
+
+**A renewed certificate needs no restart.** A listener configured with `cert_path`/`key_path` re-reads those files every 30 seconds and starts serving a new pair within that window — connections already open finish under the certificate they handshook with, and the next one to arrive gets the new one. There is nothing to signal and nothing to coordinate with whoever writes the files: a poll that lands between an ACME client's two writes sees a key that does not match the certificate, refuses it, keeps serving the old pair, and retries on the next tick. A generated (`auto_self_signed`) certificate is not polled — there is no file behind it, and regenerating on a timer would hand every client a different certificate twice a minute.
+
+**If a DoT client reports a certificate name mismatch, this is the setting.** A generated certificate covers `localhost`, `127.0.0.1`, `::1`, and the listener's own bind addresses — so a listener on `192.168.1.5:853` already works for a client dialling that address, and nothing has to be configured. What it cannot cover is anything else the box answers to: its hostname, its mDNS `.local` name, a CNAME the LAN knows it by, or the address a NAT publishes it on. Those go in `self_signed_sans`. A listener on a **wildcard** bind (`0.0.0.0:853`, the default) gets nothing derived at all, because `0.0.0.0` is not an identity any client dials — on a wildcard bind the list is the only thing naming the box.
+
+This is a name check, not a trust decision, and it fails first. The client still has to be told to trust the certificate — pin it, or publish and check it through DANE/TLSA — because a self-signed certificate has no chain. A client that validates nothing (`kdig +tls`, systemd-resolved in opportunistic mode) is unaffected either way.
 
 ### gRPC management
 
@@ -457,11 +479,13 @@ Much of what looks like configuration is runtime state in SQLite, changed over g
 | Changed at runtime (gRPC/CLI) | Requires a restart |
 | ---- | ---- |
 | Records, scoped records, scopes, associations | `dns.bind` and every other bind address |
-| Authoritative zones, owned TLDs, ingress listeners | `resolution.*` and `forwarders` (initial values; `set-forwarders` changes them live) |
+| Authoritative zones, owned TLDs, ingress listeners | `resolution.*` **except `mode`**, and `forwarders` (initial values; `set-forwarders` changes them live) |
 | DNSBL config, local entries, allowlist | `dnssec.*` |
 | DNS64, TTL drift, proxy, DoT/DoH/DoQ config | `security.*` |
 | DHCP pools, leases, certificate options | `database_path`, `dhcp.*`, `acme.*`, `metrics.*` |
-| DNSSEC keys and zone signing; ACME CAs and EAB credentials | TLS certificate files (not yet hot-swapped into listeners) |
+| DNSSEC keys and zone signing; ACME CAs and EAB credentials | `<transport>.tls.*` — the paths and SAN list, not the certificate itself |
+| TLS certificate **files** — rewritten in place, picked up within 30s | — |
+| `resolution.mode` — `set-resolution-mode` switches it, `get-resolution-mode` reads what is in effect | — |
 
 Records and blocklist changes take effect on the next query — record mutations flush the response cache automatically.
 
@@ -492,7 +516,9 @@ A **bind that resolves but fails at the OS** — the port is taken, or the addre
 | Every name checked against one blocklist started NXDOMAINing | Pre-refusal-handling behaviour. Check `get-dnsbl-config` for rotated-out providers, and that provider's quota |
 | A DHCP client's hostname never appears in DNS | It is not a valid single DNS label — hostnames are rejected, not sanitized. The warning names it |
 | `dig -x` fails for a host that is fine | A local blocklist entry matched the address. `add-dnsbl-allow --name <ip>` lifts it |
-| A renewed certificate is not being served | Certificate reload is not yet wired to the listeners; restart |
+| A renewed certificate is not being served | Give it 30 seconds. If it persists, the log says why — a reload that fails is logged every poll. The usual cause is a certificate and key that do not match, which is also what a half-finished write looks like; a renewal left permanently half-written never completes. A listener with `auto_self_signed` is not polled at all: it has no files |
+| A DoT client reports a certificate name mismatch for the box's hostname or LAN address | The generated certificate names the loopback set and the listener's bind addresses only, and a wildcard bind contributes nothing. Add the name to `dot.tls.self_signed_sans` and restart. This is separate from trusting the certificate at all, which self-signed still requires |
+| A DoT client fails the handshake with `no_application_protocol` | It is offering an ALPN protocol other than `dot`. The listener advertises `dot` and refuses a client that offers only something else; a client offering no ALPN at all is served normally |
 | Ingress listener never came up | Its IP did not exist at boot. Re-add the TLD once the interface is up |
 
 For the complete field reference, see [Configuration Options](README.md#configuration-options).

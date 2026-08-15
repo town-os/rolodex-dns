@@ -129,6 +129,12 @@ impl ServerCertVerifier for PinnedCert {
 struct DoqServer {
     addr: SocketAddr,
     cert: CertificateDer<'static>,
+    /// The certificate channel's sender, held so the listener's receiver stays
+    /// open for the life of the test. `serve_doq` follows a channel rather than
+    /// holding a snapshot, so that a renewed certificate reaches the endpoint
+    /// without a restart; nothing here renews one, but the sender still has to
+    /// outlive the listener.
+    _tls: tokio::sync::watch::Sender<Arc<rustls::ServerConfig>>,
 }
 
 /// Starts a DoQ listener on an ephemeral loopback port, serving one local A
@@ -177,14 +183,18 @@ async fn start_doq_server(alpn: &[u8]) -> DoqServer {
     drop(probe);
 
     let bind = addr.to_string();
+    let (tls_tx, tls_rx) = tokio::sync::watch::channel(Arc::new(server_config));
     tokio::spawn(async move {
-        let _unused =
-            rolodex_dns::doq_server::serve_doq(&bind, server, Arc::new(server_config)).await;
+        let _unused = rolodex_dns::doq_server::serve_doq(&bind, server, tls_rx).await;
     });
 
     // Let the endpoint come up before the first handshake.
     tokio::time::sleep(Duration::from_millis(200)).await;
-    DoqServer { addr, cert }
+    DoqServer {
+        addr,
+        cert,
+        _tls: tls_tx,
+    }
 }
 
 /// Builds a quinn client endpoint that pins the server's certificate and offers

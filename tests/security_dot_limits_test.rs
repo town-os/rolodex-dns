@@ -48,7 +48,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio_rustls::{TlsAcceptor, TlsConnector};
+use tokio_rustls::TlsConnector;
 
 /// The longest an idle connection may be left open before the server closes it.
 const IDLE_ALLOWANCE: Duration = Duration::from_secs(30);
@@ -125,6 +125,12 @@ impl ServerCertVerifier for PinnedCert {
 struct DotServer {
     addr: String,
     cert: CertificateDer<'static>,
+    /// The certificate channel's sender, held so the listener's receiver stays
+    /// open for the life of the test. `serve_dot` follows a channel rather than
+    /// holding an acceptor, so that a renewed certificate reaches it without a
+    /// restart; nothing here renews one, but the sender still has to outlive the
+    /// listener.
+    _tls: tokio::sync::watch::Sender<Arc<rustls::ServerConfig>>,
 }
 
 /// Starts a DoT listener on an ephemeral loopback port.
@@ -159,14 +165,18 @@ async fn start_dot_server() -> DotServer {
     drop(probe);
 
     let bind = addr.clone();
-    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+    let (tls_tx, tls_rx) = tokio::sync::watch::channel(Arc::new(server_config));
     tokio::spawn(async move {
-        let _unused = rolodex_dns::dot_server::serve_dot(&bind, server, acceptor).await;
+        let _unused = rolodex_dns::dot_server::serve_dot(&bind, server, tls_rx).await;
     });
 
     // Let the listener come up before the first connect.
     tokio::time::sleep(Duration::from_millis(200)).await;
-    DotServer { addr, cert }
+    DotServer {
+        addr,
+        cert,
+        _tls: tls_tx,
+    }
 }
 
 /// Completes a TLS handshake against the DoT listener.

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::sync::watch;
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, info, warn};
 
@@ -21,11 +22,41 @@ use tracing::{debug, info, warn};
 /// reaches it.
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The ALPN protocol identifier for DNS-over-TLS, registered by RFC 7858.
+///
+/// A DoT listener that negotiates no ALPN at all is not merely untidy: a client
+/// offering `dot` and nothing else gets `no_application_protocol` back from a
+/// server that offers a *different* protocol, and gets silence on the question
+/// from one that offers none — leaving it to guess whether it reached a DoT
+/// listener or some other TLS service that happens to sit on the port. Offering
+/// the token is what makes the answer explicit.
+pub const ALPN: &[u8] = b"dot";
+
+/// The ALPN list a DoT listener advertises.
+///
+/// This exists so `main.rs` and the tests cannot disagree about it: a constant
+/// one of them read and the other retyped is a constant that drifts. Advertising
+/// `dot` does not shut out a client that offers no ALPN — rustls only rejects a
+/// handshake when the client offers protocols and none of them match, so the
+/// clients that never send the extension (Android's Private DNS, systemd-resolved
+/// in opportunistic mode) are unaffected.
+pub fn alpn_protocols() -> Vec<Vec<u8>> {
+    vec![ALPN.to_vec()]
+}
+
 /// Serves DNS-over-TLS on the specified bind address.
+///
+/// `tls` is a live view of the certificate rather than a snapshot of it: the
+/// acceptor is built per connection from whatever the channel currently holds,
+/// so a renewed certificate is served by the next connection to arrive with no
+/// restart and nothing to coordinate. Building it there is free — a
+/// `TlsAcceptor` is an `Arc` around the config — and a connection already in
+/// progress finishes under the certificate it handshook with, which is the only
+/// thing TLS allows anyway.
 pub async fn serve_dot(
     bind: &str,
     dns_server: Arc<DnsServer>,
-    acceptor: TlsAcceptor,
+    tls: watch::Receiver<Arc<rustls::ServerConfig>>,
 ) -> Result<()> {
     let listener = TcpListener::bind(bind)
         .await
@@ -54,7 +85,7 @@ pub async fn serve_dot(
             continue;
         };
 
-        let acceptor = acceptor.clone();
+        let acceptor = TlsAcceptor::from(tls.borrow().clone());
         let dns = Arc::clone(&dns_server);
 
         tokio::spawn(async move {
@@ -131,8 +162,23 @@ async fn handle_dot_connection(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn test_dot_module_exists() {
-        // Compilation smoke test: this module builds and links.
+    fn test_alpn_token_is_rfc7858_dot() {
+        // The exact three octets that go on the wire, written out longhand
+        // rather than compared against another expression derived from the same
+        // constant: `ALPN == ALPN` proves nothing, and the ALPN extension
+        // carries bytes, not a Rust identifier.
+        assert_eq!(ALPN, &[0x64u8, 0x6f, 0x74]);
+        assert_eq!(ALPN.len(), 3);
+    }
+
+    #[test]
+    fn test_alpn_protocols_advertises_exactly_dot() {
+        // Exactly one protocol, not merely "contains dot": a listener that also
+        // offered `h2` or `doq` would let a confused client negotiate a protocol
+        // this server does not speak on the port.
+        assert_eq!(alpn_protocols(), vec![b"dot".to_vec()]);
     }
 }

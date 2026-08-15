@@ -110,21 +110,28 @@ pub fn build_router(state: AcmeState) -> Router {
 }
 
 /// Serves the ACME endpoint over HTTPS on `bind`.
+///
+/// `tls` is a live view of the certificate rather than a snapshot, so a renewal
+/// is served by the next connection without a restart. That matters more here
+/// than anywhere: this listener is how a client renews *its* certificate, and it
+/// being the one that needs an outage to renew its own would be a poor joke.
 pub async fn serve_acme(
     bind: &str,
     state: AcmeState,
-    server_config: Arc<rustls::ServerConfig>,
+    tls: tokio::sync::watch::Receiver<Arc<rustls::ServerConfig>>,
 ) -> Result<()> {
     let app = build_router(state);
-    let tls_config = axum_server::tls_rustls::RustlsConfig::from_config(server_config);
+    let tls_config = axum_server::tls_rustls::RustlsConfig::from_config(tls.borrow().clone());
     let addr: std::net::SocketAddr = bind
         .parse()
         .context(format!("invalid ACME bind address: {}", bind))?;
     info!("ACME server listening on {}", addr);
-    axum_server::bind_rustls(addr, tls_config)
+    let renewals = tokio::spawn(crate::tls::drive_axum_tls(tls_config.clone(), tls));
+    let outcome = axum_server::bind_rustls(addr, tls_config)
         .serve(app.into_make_service())
-        .await
-        .context("ACME server error")?;
+        .await;
+    renewals.abort();
+    outcome.context("ACME server error")?;
     Ok(())
 }
 

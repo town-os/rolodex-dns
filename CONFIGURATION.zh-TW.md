@@ -2,7 +2,7 @@
 
 這是一份任務導向的逐步說明：先讓伺服器跑起來，再逐一開啟各子系統，並說明你為什麼會想開它。完整的欄位清單請見 README 的[設定選項](README.zh-TW.md#設定選項)。
 
-> 語言：[English](CONFIGURATION.md) ｜ **繁體中文** ｜ [简体中文](CONFIGURATION.zh-CN.md) ｜ [Español (España)](CONFIGURATION.es-ES.md) ｜ [Español (México)](CONFIGURATION.es-MX.md) ｜ [日本語](CONFIGURATION.ja.md)
+> 語言：[English](CONFIGURATION.md) ｜ **繁體中文** ｜ [简体中文](CONFIGURATION.zh-CN.md) ｜ [Español (España)](CONFIGURATION.es-ES.md) ｜ [Español (México)](CONFIGURATION.es-MX.md) ｜ [日本語](CONFIGURATION.ja-JP.md)
 
 - [設定如何載入](#設定如何載入)
 - [最小可用設定](#最小可用設定)
@@ -59,6 +59,8 @@ rolodex-dns-cli -u /var/run/rolodex-dns.sock add-record \
 ## 綁定位址
 
 所有接受位址的地方（`dns.bind`、`dot.bind`、`doh.bind`、`doq.bind`、`grpc.tcp_bind`、`dhcp.bind`、`acme.bind`、`acme.portal_bind`、`metrics.bind`）都接受四種寫法：
+
+（`dns.bind` 收的是一串「協定／位址」配對，而 `dot.bind`／`doq.bind` 既收**單個位址也收一個清單**——清單是一個監聽器同時涵蓋兩個位址族的辦法，因為 `0.0.0.0` 只管 IPv4，而 `[::]` 的通訊端會在同一個埠上與它相撞。其餘的都只收單個位址。）
 
 | 寫法 | 範例 | 結果 |
 | ---- | ---- | ---- |
@@ -242,6 +244,16 @@ resolution:
 | `recursive` | 要嘛走根伺服器要嘛不解析——絕不接觸任何上游解析器 |
 | `forward` | 你要的是單純的轉送器（或搭配 `forwarders: []`，完全不要上游） |
 
+**這裡的 `mode` 是啟動時的種子，而不是正在生效的那個設定。** 它只在啟動時
+讀一次；
+從那以後，模式就是 `SetResolutionMode` 最後一次設定的那個，而 `GetResolutionMode`
+回報的是真正在解析查詢的那個——所以兩者可能不一致，而以正在執行的伺服器為準。
+`rolodex-dns-cli set-resolution-mode -m <mode>` /
+`get-resolution-mode` 就是這兩個呼叫在命令列上的寫法。改檔案再重啟當然也行，
+但重啟一台機器唯一的解析器，就是讓它上面的一切都斷一次 DNS——這正是那個 RPC
+存在的全部理由。與檔案不同，該 RPC 會**拒絕**無法辨識的模式，而不是發出警告
+再退回 `auto`。
+
 `default_ttl` 是**後備值，不是下限**。存在的 TTL 一律照原樣採用，包括區域 SOA 的否定 TTL。如果你想縮短或延長實際的 TTL，那是 [TTL 漂移](#dns64ttl-漂移與位址族)，不是這個。
 
 ### DNSSEC
@@ -355,10 +367,20 @@ doh:
 
 doq:
   bind: "0.0.0.0:8853"
-  tls: { auto_self_signed: true }     # 在受信任網路上沒問題
+  tls:
+    auto_self_signed: true            # 在受信任網路上沒問題
+    self_signed_sans:                 # 區網用戶端撥接這台機器所用的名稱
+      - dns.home
+      - town-os.local
 ```
 
-`auto_self_signed: true`（預設值）會在沒有設定憑證時於啟動階段產生一張，這在受信任網路上很方便，但對會檢查名稱的用戶端毫無用處。請注意憑證重新載入**尚未接到監聽器上**：每個監聽器在啟動時取一次快照，因此更新後的憑證需要重啟才會被提供。
+`auto_self_signed: true`（預設值）會在沒有設定憑證時於啟動階段產生一張，這在受信任網路上很方便。
+
+**更新後的憑證不需要重啟。** 一個以 `cert_path`／`key_path` 設定的監聽器每 30 秒重讀那些檔案，並在那個時間窗內開始提供新的一對——已經開啟的連線會在它交握時所用的憑證下走完，而下一條抵達的連線拿到新的。沒有東西要發訊號，也不需要和寫檔案的那一方協調：一次落在 ACME 用戶端兩次寫入之間的輪詢，會看到一把與憑證不相符的金鑰，拒絕它，繼續提供舊的那一對，並在下一個節拍重試。產生式（`auto_self_signed`）憑證不會被輪詢——它背後沒有檔案，而照計時器重新產生，等於每分鐘兩次遞給每個用戶端一張不同的憑證。
+
+**如果一個 DoT 用戶端回報憑證名稱不符，那就是這個設定。** 一張產生出來的憑證涵蓋 `localhost`、`127.0.0.1`、`::1`，以及該監聽器自己的綁定位址——所以一個綁在 `192.168.1.5:853` 的監聽器，對一個撥接該位址的用戶端來說本來就能用，什麼都不必設定。它涵蓋不了的是這台機器回應的其他任何身分：它的主機名稱、它的 mDNS `.local` 名稱、區網用來稱呼它的某個 CNAME，或是某個 NAT 對外公布它的位址。那些寫進 `self_signed_sans`。一個綁在**萬用位址**上的監聽器（`0.0.0.0:853`，預設值）完全推導不出任何東西，因為 `0.0.0.0` 不是任何用戶端會撥接的身分——在萬用綁定上，那份清單就是唯一指名這台機器的東西。
+
+這是一次名稱檢查，不是一個信任決定，而且它最先失敗。用戶端仍然必須被告知去信任那張憑證——把它釘選起來，或透過 DANE/TLSA 發布並檢查它——因為一張自簽憑證沒有信任鏈。一個什麼都不驗證的用戶端（`kdig +tls`、處於機會模式的 systemd-resolved）無論如何都不受影響。
 
 ### gRPC 管理
 
@@ -457,11 +479,13 @@ address_family:
 | 可在執行期變更（gRPC/CLI） | 需要重啟 |
 | ---- | ---- |
 | 記錄、範圍內記錄、範圍、關聯 | `dns.bind` 以及所有其他綁定位址 |
-| 權威區域、專屬 TLD、入口監聽器 | `resolution.*` 與 `forwarders`（初始值；`set-forwarders` 可即時變更） |
+| 權威區域、專屬 TLD、入口監聽器 | `mode` **以外**的 `resolution.*`，以及 `forwarders`（初始值；`set-forwarders` 可即時變更） |
 | DNSBL 設定、本地項目、允許清單 | `dnssec.*` |
 | DNS64、TTL 漂移、代理、DoT/DoH/DoQ 設定 | `security.*` |
 | DHCP 位址池、租約、憑證選項 | `database_path`、`dhcp.*`、`acme.*`、`metrics.*` |
-| DNSSEC 金鑰與區域簽章；ACME 憑證機構與 EAB 憑據 | TLS 憑證檔（尚未熱抽換進監聽器） |
+| DNSSEC 金鑰與區域簽章；ACME 憑證機構與 EAB 憑據 | `<transport>.tls.*`——那些路徑與 SAN 清單，而不是憑證本身 |
+| TLS 憑證**檔案**——就地覆寫，30 秒內會被撿起 | — |
+| `resolution.mode`——`set-resolution-mode` 切換它，`get-resolution-mode` 讀取實際生效的那個 | — |
 
 記錄與封鎖清單的變更會在下一次查詢時生效——記錄變更會自動清空回應快取。
 
@@ -486,10 +510,15 @@ YAML 的剖析錯誤同樣是致命的。檔案不存在則不是。
 | 某個疊加網路對等節點查任何名稱都得到 REFUSED | 它落在 `security.overlay_cidrs` 內卻沒呼叫 `JoinNetwork`，或其關聯 TTL 已過期 |
 | 你覆寫過的網域底下，某個公開名稱回 NXDOMAIN | 加了一筆記錄就讓這台伺服器對整個區域具權威。請在本地補上該名稱，或把覆寫改到你自己擁有的名稱上 |
 | 某個名稱在別處都能解析，在這裡卻 SERVFAIL | DNSSEC 驗證把它擋掉了。檢查 `rolodex_dns_dnssec_verdicts_total{verdict="bogus"}`；再用 `dig +cd`（停用檢查）確認 |
+| **每一個**名稱都 SERVFAIL，而且整條鏈從不降級到加密上游 | 根區域本身無法通過驗證：一個這個組建不認識的信任錨點（一次 KSK 輪替）、一個錯誤的 `dnssec.trust_anchors`，或是 `:53` 上有什麼東西拿它自己的材料在回答 DNSKEY 查詢。這是刻意的——一個無法通過驗證的根是一項判定，而不是一次層級失敗，所以該查詢會被拒絕，而不是被悄悄改問一個不做驗證的上游。在你修好錨點之前，`dnssec.validate: false` 就是逃生口 |
+| `arpa.` 底下的某個名稱回 REFUSED（`ipv4only.arpa`，或對一個你並未持有的位址做 `dig -x`） | 這是預期行為：在每一種解析模式下，`arpa.` 及其底下的一切要嘛由本地資料回答，要嘛就不回答。那個子樹裡沒有任何東西會被送到上游。請在本地補上該記錄，或等待反解區域那項工作 |
+| `rolodex_dns_dnssec_blamed_roots` 不為零 | 有一台根伺服器回覆了對照你的錨點無法通過驗證的 DNSSEC，因而被從根集合中剔除 15 分鐘，每再犯一次加倍。若**所有**的根都被剔除，該懷疑的是錨點或根區域，而不是那些伺服器——日誌會明確這麼說。歸責只存在記憶體中，重啟即重置 |
 | 對照某個封鎖清單檢查的每個名稱都開始 NXDOMAIN | 這是尚未做拒答處理時的行為。用 `get-dnsbl-config` 檢查被移出輪替的供應商，以及該供應商的配額 |
 | 某個 DHCP 用戶端的主機名稱始終沒出現在 DNS | 它不是合法的單一 DNS 標籤——主機名稱是被拒絕而非被清洗。警告訊息會指出它 |
 | 某台明明正常的主機 `dig -x` 失敗 | 有一條本地封鎖項目匹配到了該位址。`add-dnsbl-allow --name <ip>` 可解除 |
-| 更新後的憑證沒有被提供 | 憑證重新載入尚未接到監聽器上；請重啟 |
+| 更新後的憑證沒有被提供 | 給它 30 秒。若持續如此，日誌會說明原因——每一次失敗的重新載入都會在每次輪詢時被記錄。常見原因是憑證與金鑰對不上，而那也正是一次寫到一半的樣子；一次永久停在半途的更新永遠不會完成。一個使用 `auto_self_signed` 的監聽器根本不會被輪詢：它沒有檔案 |
+| 某個 DoT 用戶端回報這台機器的主機名稱或區網位址憑證名稱不符 | 產生出來的憑證只指名 loopback 那一組與該監聽器的綁定位址，而萬用綁定不貢獻任何東西。請把該名稱加進 `dot.tls.self_signed_sans` 並重啟。這與「是否信任那張憑證」是兩回事，而自簽憑證仍然需要後者 |
+| 某個 DoT 用戶端以 `no_application_protocol` 交握失敗 | 它提出的是 `dot` 以外的 ALPN 協定。監聽器宣告 `dot`，並拒絕一個只提出其他東西的用戶端；一個完全不提 ALPN 的用戶端會被正常服務 |
 | 入口監聽器始終沒起來 | 它的 IP 在開機時還不存在。介面起來後重新加入該 TLD 即可 |
 
 完整的欄位參考請見[設定選項](README.zh-TW.md#設定選項)。

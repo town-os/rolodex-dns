@@ -2,7 +2,7 @@
 
 一套隱私優先的分割視域（split-horizon）DNS 伺服器與遞迴／轉送解析器，具備加密傳輸、DNSSEC 與 gRPC 管理，以 Rust 撰寫。
 
-> 語言：[English](README.md) ｜ **繁體中文** ｜ [简体中文](README.zh-CN.md) ｜ [Español (España)](README.es-ES.md) ｜ [Español (México)](README.es-MX.md) ｜ [日本語](README.ja.md)
+> 語言：[English](README.md) ｜ **繁體中文** ｜ [简体中文](README.zh-CN.md) ｜ [Español (España)](README.es-ES.md) ｜ [Español (México)](README.es-MX.md) ｜ [日本語](README.ja-JP.md)
 
 Rolodex DNS 提供 UDP、TCP、TLS（DoT）、HTTPS（DoH）與 QUIC（DoQ）上的 DNS 服務，並具備一個優先於外部解析的本地記錄資料庫。記錄透過 gRPC 遠端管理（TCP 上使用共用密鑰認證，或透過 Unix socket 免認證）。它支援帶網域疊加的 TLD 層級解析，因此內部的 DNS 表述一律優先。內建的 DNS 回應快取可在某筆記錄被見過之後，防止查詢外洩到上游解析器。
 
@@ -47,9 +47,9 @@ Rolodex DNS 另外支援用於垃圾郵件／惡意程式過濾的網域封鎖�
 - **整合的 DHCPv4 伺服器**：逐範圍的位址池、黏著的 MAC 綁定、自動的 A/PTR 註冊、透過站台專用選項交付憑證，以及背景租約清掃
 - **自動反向 PTR 記錄**：可選（`dns.auto_ptr`）為透過 gRPC 新增的 A/AAAA 記錄維護對應的 `in-addr.arpa`／`ip6.arpa` PTR
 - **代理支援**：透過 HTTP CONNECT、SOCKS5 或 DoH 代理轉送 DNS 查詢
-- **Prometheus 指標**：一個選用、預設關閉的 `/metrics` 端點，輸出 77 個具備有界標籤基數的指標系列——包含逐階段的答案歸因與逐 TLD 隔離，讓分割視域管線從外面看得懂。查詢名稱永遠不會成為標籤
+- **Prometheus 指標**：一個選用、預設關閉的 `/metrics` 端點，輸出 80 個具備有界標籤基數的指標系列——包含逐階段的答案歸因與逐 TLD 隔離，讓分割視域管線從外面看得懂。查詢名稱永遠不會成為標籤
 - **SQLite 持久化**：DNS 記錄跨重啟保存
-- **TLS 熱重載（部分）**：`TlsManager` 可依需求從設定的 PEM 檔重建它的 `rustls::ServerConfig` 並發佈給訂閱者，若重建失敗則保留先前的憑證繼續提供。**尚未接到監聽器上**——DoT/DoH/DoQ/ACME 每一個都在啟動時取一次設定快照，因此更新後的憑證仍需重啟才會被提供
+- **TLS 熱重載**：憑證檔每 30 秒被輪詢一次，續期後的一對會在該窗口內由 DoT、DoH、DoQ、ACME 與登記入口網站提供出去，無需重新啟動，也不會掉連線。重建失敗——檔案被截斷，或者輪詢恰好落在 ACME 用戶端的兩次寫入之間——會讓先前的憑證繼續提供，並在下一次輪詢時重試
 - **效能**：多執行緒 tokio 執行環境、無鎖的封鎖清單與解析器狀態（`AtomicBool` + `ArcSwap` + 原子操作）、範圍／區域／TLD／封鎖項目的開機記憶體內快取、供上游轉送使用的 UDP socket 池，以及全面採用的 DashMap/DashSet 並行快取
 
 ## 建置
@@ -64,7 +64,7 @@ make build
 make test
 ```
 
-會執行 lint（`cargo fmt --check` + `clippy --all-targets -D warnings`）、Go 整合測試與單元測試、Rust 整合測試與單元測試、JavaScript 的 lint／整合／單元測試，以及文件中 PromQL 的執行檢查。Rust 整合層包含以真實 socket 進行的套件：DNSSEC 簽章與驗證（對照一套已簽章的模擬階層，其回應在序列化時才被竄改，因此每個測試都是「一個有效的部署，遭到攻擊」）、封鎖清單的 NXDOMAIN 契約、封鎖清單拒答碼、DoQ、代理、TLS 重載、ZONEMD、ACME 管理，以及逐項安全發現對應的 `security_*` 套件。使用 `make test-log` 可執行同一輪並 tee 進 `/tmp/rolodex-dns/log` 底下帶時間戳的紀錄檔（可用 `LOG_DIR` 覆寫），即使失敗也會在結尾印出路徑。個別層級：`make lint`、`make rust-test`、`make rust-integration-test`、`make go-test`、`make go-integration-test`、`make js-test`、`make js-integration-test`。
+會執行 lint（翻譯漂移檢查、`cargo fmt --check` + `clippy --all-targets -D warnings`）、Go 整合測試與單元測試、Rust 整合測試與單元測試、JavaScript 的 lint／整合／單元測試，以及文件中 PromQL 的執行檢查。Rust 整合層包含以真實 socket 進行的套件：DNSSEC 簽章與驗證（對照一套已簽章的模擬階層，其回應在序列化時才被竄改，因此每個測試都是「一個有效的部署，遭到攻擊」）、封鎖清單的 NXDOMAIN 契約、封鎖清單拒答碼、DoQ、代理、TLS 重載、ZONEMD、ACME 管理，以及逐項安全發現對應的 `security_*` 套件。使用 `make test-log` 可執行同一輪並 tee 進 `/tmp/rolodex-dns/log` 底下帶時間戳的紀錄檔（可用 `LOG_DIR` 覆寫），即使失敗也會在結尾印出路徑。個別層級：`make lint`、`make rust-test`、`make rust-integration-test`、`make go-test`、`make go-integration-test`、`make js-test`、`make js-integration-test`。
 
 `make test` 也會執行 `make prometheus-test`，它會把本檔案中記載的每一條 PromQL 查詢，透過一個抓取實際伺服器的真正 Prometheus 容器執行一遍——藉此抓到一個**作為 PromQL 就格式錯誤**的查詢，而不只是指名了不存在的系列。它需要 podman；沒有 podman 時這項檢查會**大聲跳過**而不是失敗，因此沒有容器執行環境的機器仍能得到綠燈，同時絕不會假裝那些查詢已被驗證。設定 `ROLODEX_PROMETHEUS_REQUIRED=1` 可讓那個跳過變成硬性失敗，而 `ROLODEX_PROMETHEUS_IMAGE` 可指向該映像的鏡像站。
 
@@ -138,10 +138,10 @@ Rolodex DNS 會用 `cargo-zigbuild` 在建置主機上交叉編譯它的執行�
 
 #### 交叉編譯
 
-兩種架構都在執行 `make` 的那台主機上交叉編譯，使用 `cargo-zigbuild` 並以 zig 作為 C 交叉編譯器與連結器。`make deps` 會在**不需要 root** 的情況下佈建整套工具鏈：
+兩種架構都在執行 `make` 的那台主機上交叉編譯，使用 `cargo-zigbuild` 並以 zig 作為 C 交叉編譯器與連結器。`make deps` 會在**不需要 root** 的情況下佈建整套工具鏈，並檢查 `python3`（`make translation-check` 需要它，而它無法在不需要 root 的前提下安裝）：
 
 ```bash
-make deps        # rustup targets + cargo-zigbuild + zig，以及 JS 開發依賴
+make deps        # rustup targets + cargo-zigbuild + zig、JS 開發依賴，以及 python3 檢查
 make cross-deps  # 只裝 Rust 交叉工具鏈
 ```
 
@@ -272,6 +272,24 @@ Rolodex DNS 從一個 YAML 檔讀取設定（預設 `rolodex-dns.yml`，可用 `
 
 介面綁定會解析出指派給該介面的所有 IPv4 與 IPv6 位址，並為每一個建立獨立的監聽器。舉例來說，若 `eth0` 有 `192.168.1.5` 與 `fe80::1`，那麼 `eth0:53` 會在 `192.168.1.5:53` 與 `[fe80::1]:53` 上各建立一個監聽器。
 
+`dot.bind` 與 `doq.bind` 既接受**單個綁定字串，也接受它們的一個清單**：
+
+```yaml
+dot:
+  bind:
+    - "0.0.0.0:853"
+    - "[2001:db8::1]:853"
+```
+
+清單是一個監聽器同時涵蓋兩個位址族的辦法。`0.0.0.0` 只管 IPv4，
+而 `[::]` 並不是能同時頂替兩者的可移植寫法：在
+`net.ipv6.bindv6only=0`（Linux 的預設值）之下，`[::]` 的通訊端
+也會收下 v4 映射的流量，於是它會與同一個埠上 `0.0.0.0` 的通訊端
+相撞，後綁定的那個以 `EADDRINUSE` 失敗。請改為逐個寫出 v6 位址。
+每一項都各自走上面那四種寫法，重複的位址會被丟棄而不是綁定兩次，
+而且裸字串仍然被接受——在清單寫法出現之前寫下的每一份設定都
+照樣能解析。
+
 `dns.bind` 欄位是一串「協定／位址」配對。每一項都是一個單鍵映射，鍵為 `udp` 或 `tcp`，值為綁定位址：
 
 ```yaml
@@ -337,6 +355,10 @@ dot:
     cert_path: /etc/rolodex-dns/cert.pem
     key_path: /etc/rolodex-dns/key.pem
     auto_self_signed: false
+    # 僅在憑證是自動產生時才會用到。回送名稱與
+    # 該監聽器自身的繫結位址會被自動涵蓋；此處列出
+    # 用戶端撥打本機時所用的其他名稱。
+    self_signed_sans: []
 
 # DNS-over-HTTPS（RFC 8484）
 doh:
@@ -459,7 +481,7 @@ metrics:
 |------|--------|------|
 | `database_path` | `"rolodex-dns.db"` | SQLite 資料庫檔案的路徑 |
 | `forwarders` | `["8.8.8.8:53", "8.8.4.4:53"]` | 上游 DNS 解析器位址（`auto` 模式下的 `local` 層級；`forward` 模式下唯一的上游） |
-| `resolution.mode` | `"auto"` | 上游策略：`"auto"`（層級鏈）、`"recursive"`（只走根伺服器）、`"forward"`（只走轉送器） |
+| `resolution.mode` | `"auto"` | 上游策略：`"auto"`（層級鏈）、`"recursive"`（只走根伺服器）、`"forward"`（只走轉送器）。**只是啟動時的種子**——`SetResolutionMode` 無需重啟即可改動正在執行的伺服器上的模式，`GetResolutionMode` 回報實際生效的那個 |
 | `resolution.root_hints` | `[]`（內建 IANA 根伺服器） | 覆寫 `recursive`／`auto` 模式所使用的根伺服器提示 |
 | `resolution.secure_upstreams` | 以 DoH 連 Cloudflare + Google | `secure` 層級的加密上游：`{transport, addr, hostname, path}` |
 | `resolution.public_fallback` | `["1.1.1.1:53", "8.8.8.8:53"]` | 明文的公用解析器，在 `auto` 模式下最後才嘗試 |
@@ -473,19 +495,22 @@ metrics:
 | `dns.auto_ptr` | `false` | 為透過 gRPC 新增的 A/AAAA 維護反向 PTR 記錄 |
 | `dns.ingress_listen_port` | `53` | 各 TLD 入口監聽器的 UDP/TCP 連接埠（綁定 IP 是逐 TLD 指定的） |
 | `dns.udp_shards` | `0`（每核心一個） | 每個 UDP 監聽位址所綁定的 `SO_REUSEPORT` socket 數量。單一 socket 會把監聽器序列化——一個接收迴圈、所有回覆共用一個 socket——使吞吐量遠低於 CPU 飽和點。分片讓核心得以把資料包分散到各核心。設為 `1` 可恢復舊的單一 socket 行為 |
-| `dot.bind` | `""`（停用） | DoT 監聽器；支援 interface:port（通常為 853 埠） |
+| `dot.bind` | `""`（停用） | DoT 監聽器；支援 interface:port（通常為 853 埠）。接受**單個位址或一個清單**——清單是一個監聽器同時涵蓋兩個位址族的辦法 |
 | `dot.tls.cert_path` | `""` | DoT 的 TLS 憑證路徑 |
 | `dot.tls.key_path` | `""` | DoT 的 TLS 私鑰路徑 |
 | `dot.tls.auto_self_signed` | `true` | 為 DoT 自動產生自簽憑證 |
+| `dot.tls.self_signed_sans` | `[]` | 自動產生之 DoT 憑證的額外主體別名。回送集合與該監聽器的繫結位址會被自動加入；萬用繫結（`0.0.0.0`）不提供任何名稱，因此請在此署名本機 |
 | `doh.bind` | `""`（停用） | DoH 監聽器；支援 interface:port（通常為 443 埠） |
 | `doh.tls.cert_path` | `""` | DoH 的 TLS 憑證路徑 |
 | `doh.tls.key_path` | `""` | DoH 的 TLS 私鑰路徑 |
 | `doh.tls.auto_self_signed` | `true` | 為 DoH 自動產生自簽憑證 |
+| `doh.tls.self_signed_sans` | `[]` | 同 `dot.tls.self_signed_sans`，用於 DoH |
 | `doh.enable_h3` | `false` | 為 DoH 啟用 HTTP/3（QUIC）傳輸 |
-| `doq.bind` | `""`（停用） | DoQ 監聽器；支援 interface:port（通常為 8853 埠） |
+| `doq.bind` | `""`（停用） | DoQ 監聽器；支援 interface:port（通常為 8853 埠）。與 `dot.bind` 一樣，接受**單個位址或一個清單** |
 | `doq.tls.cert_path` | `""` | DoQ 的 TLS 憑證路徑 |
 | `doq.tls.key_path` | `""` | DoQ 的 TLS 私鑰路徑 |
 | `doq.tls.auto_self_signed` | `true` | 為 DoQ 自動產生自簽憑證 |
+| `doq.tls.self_signed_sans` | `[]` | 同 `dot.tls.self_signed_sans`，用於 DoQ |
 | `grpc.tcp_bind` | `"127.0.0.1:50051"` | TCP gRPC 監聽器；支援 interface:port（空值代表停用） |
 | `grpc.unix_socket` | `"/var/run/rolodex-dns.sock"` | Unix socket 路徑（空值代表停用） |
 | `grpc.shared_secret` | `""` | TCP gRPC 認證用的共用密鑰（空值 = 不做認證） |
@@ -565,8 +590,10 @@ rolodex-dns-cli [OPTIONS] <COMMAND>
 | `add-record` | 新增一筆 DNS 記錄到本地資料庫 |
 | `remove-record` | 從本地資料庫移除 DNS 記錄 |
 | `list-records` | 列出 DNS 記錄，可加篩選條件 |
-| **轉送器** | |
+| **轉送器與解析** | |
 | `set-forwarders` | 在執行期設定上游 DNS 轉送器 |
+| `set-resolution-mode` | 在執行期切換上游解析模式（`auto`、`recursive`、`forward`）|
+| `get-resolution-mode` | 顯示當前實際生效的解析模式 |
 | **封鎖清單** | |
 | `set-dnsbl-config` | 在執行期設定網域封鎖清單（DNSBL） |
 | `get-dnsbl-config` | 取得目前的 DNSBL 設定 |
@@ -754,6 +781,58 @@ rolodex-dns-cli set-forwarders -f 9.9.9.9:53
 rolodex-dns-cli set-forwarders -f ""
 ```
 
+##### `set-resolution-mode`
+
+切換本伺服器對自己不具權威的名稱的解析方式，無需重啟。設定檔裡的
+`resolution.mode` 只是啟動時的種子——這道命令改的才是真正在解析查詢的
+那個模式。
+**gRPC 路徑：** `/rolodex_dns.RolodexDnsService/SetResolutionMode`
+
+```
+rolodex-dns-cli set-resolution-mode -m <MODE>
+```
+
+| 選項 | 預設值 | 說明 |
+|------|--------|------|
+| `-m, --mode <MODE>` | -- | `auto`、`recursive` 或 `forward`。不分大小寫 |
+
+
+無法辨識的模式會以 `InvalidArgument` 被拒絕，而不是像設定檔那樣悄悄退回
+`auto`：把模式打錯的呼叫方，絕不該被告知機器處在某個模式、而它實際卻在用
+另一個模式解析。
+
+範例：
+```bash
+# 根優先的後備鏈（預設）
+rolodex-dns-cli set-resolution-mode -m auto
+
+# 只從根迭代，沒有任何後備
+rolodex-dns-cli set-resolution-mode -m recursive
+
+# 只走已設定的轉送器
+rolodex-dns-cli set-resolution-mode -m forward
+```
+
+切換*進入* `auto` 會重新跑一遍層級預熱，因此切換之後的頭幾次查詢不必付冷層級的
+代價。
+
+##### `get-resolution-mode`
+
+顯示當前實際生效的模式。這是真正在解析查詢的那個模式，未必就是設定檔裡
+寫的那個——一次 `set-resolution-mode` 之後，兩者就會
+不同。
+**gRPC 路徑：** `/rolodex_dns.RolodexDnsService/GetResolutionMode`
+
+```
+rolodex-dns-cli get-resolution-mode
+```
+
+範例：
+```bash
+$ rolodex-dns-cli get-resolution-mode
+Resolution mode: auto
+```
+
 ##### `flush-cache`
 
 清空封鎖清單結果快取。強制後續查詢重新查找。
@@ -934,7 +1013,7 @@ rolodex-dns-cli get-search-domains -i <IP>
 
 管理 API 定義在 `proto/rolodex_dns.proto` 中。所有方法都接受一個 `auth_token` 欄位，供透過 TCP 連線時的共用密鑰認證使用。Unix socket 連線會跳過認證。
 
-完整的 API 參考請見 proto 檔。這個服務定義了 77 個 RPC 方法，涵蓋記錄管理、網路範圍劃分、專屬 TLD 與入口、封鎖清單、DHCP、加密傳輸、DNSSEC、DANE/ACME、快取、DNS64、指標與可觀測性。
+完整的 API 參考請見 proto 檔。這個服務定義了 74 個 RPC 方法，涵蓋記錄管理、網路範圍劃分、專屬 TLD 與入口、封鎖清單、DHCP、加密傳輸、DNSSEC、DANE/ACME、快取、DNS64、指標與可觀測性。
 
 ### 服務：`rolodex_dns.RolodexDnsService`
 
@@ -1002,6 +1081,51 @@ rolodex-dns-cli get-search-domains -i <IP>
 **回應：**
 - `success`（bool）：操作是否成功
 - `message`（string）：`success` 為 false 時的錯誤訊息
+
+#### `SetResolutionMode`
+
+**路徑：** `/rolodex_dns.RolodexDnsService/SetResolutionMode`
+
+在執行期更改上游解析模式。
+
+設定檔裡的 `resolution.mode` 原本是一個只在啟動時讀取的設定，這讓它成了編排方
+無法在不重寫該檔案並重啟行程的前提下改動的唯一一項上游行為——而重啟一台機器
+唯一的解析器，就是讓它上面的一切都斷一次
+DNS。
+
+**參數：**
+- `mode`（string）：`"auto"`（根優先的後備鏈）、`"recursive"`（只從根迭代）或 `"forward"`（只走已設定的轉送器）。不分大小寫
+- `auth_token`（string）：認證用的共用密鑰
+
+**回應：**
+- `success`（bool）：操作是否成功
+- `message`（string）：`success` 為 false 時的錯誤訊息
+
+無法辨識的模式會回 `InvalidArgument`，而不是像設定檔那條路徑那樣退回
+`auto`。檔案是由能看見警告的維運在啟動時讀一次的；而 RPC 那頭有個呼叫方在
+等回覆，告訴它「成功」卻在用它沒要的模式解析，正是一台機器在過濾 `:53` 的
+網路上落進 `recursive`、而日誌裡對每個名稱為何解析失敗隻字未提的
+由來。
+
+
+切換**進入** `auto` 會派生與啟動路徑相同的層級預熱，因此切換之後的頭幾次
+查詢不必付冷層級的代價。層級恢復探測是無條件執行的，所以在執行期切換進
+`auto` 的模式仍然能奪回一個已恢復的
+層級。
+
+#### `GetResolutionMode`
+
+**路徑：** `/rolodex_dns.RolodexDnsService/GetResolutionMode`
+
+回傳當前實際生效的解析模式——真正在解析查詢的那個，而不是設定檔裡寫的
+那個。一次 `SetResolutionMode` 呼叫之後，兩者就會
+不同。
+
+**參數：**
+- `auth_token`（string）：認證用的共用密鑰
+
+**回應：**
+- `mode`（string）：`"auto"`、`"recursive"` 或 `"forward"`
 
 #### `FlushCache`
 
@@ -1180,6 +1304,8 @@ rolodex-dns-cli get-search-domains -i <IP>
 | `SetTtlDriftConfig` | 設定 TTL 漂移調整（固定或對數模式） |
 | `GetTtlDriftConfig` | 取得 TTL 漂移設定 |
 | `GetQueryLatencyStats` | 取得逐伺服器的上游查詢延遲統計 |
+| `SetResolutionMode` / `GetResolutionMode` | 在執行期切換上游解析模式，並讀取當前實際生效的模式 |
+| `SetTrackedTlds` / `ListTrackedTlds` | 替換受追蹤的 TLD 清單，並讀取已存、專屬與實際生效的集合 |
 | `AddLocalBlocklistEntry` | 新增一筆本地封鎖項目 |
 | `RemoveLocalBlocklistEntry` | 移除一筆本地封鎖項目 |
 | `ListLocalBlocklistEntries` | 列出所有本地封鎖項目 |
@@ -1266,6 +1392,19 @@ Rolodex DNS 會在本地快取 DNS 回應，因此對同一個名稱的重複查
 | `recursive` | 只從根伺服器迭代解析；絕不接觸任何上游解析器 |
 | `forward` | 只轉送到已設定的 `forwarders` |
 
+**設定檔只是啟動時的種子。** `resolution.mode` 只在啟動時
+讀一次；從那以後，生效的模式就是
+[`SetResolutionMode`](#setresolutionmode) 最後一次設定的那個，而 [`GetResolutionMode`](#getresolutionmode) 回報的是真正在解析查詢的
+那個。一次切換之後兩者就會不同——為了改模式絕不重啟正在執行的伺服器，因為
+重啟一台機器唯一的解析器，就是讓它上面的一切都斷一次
+DNS。`rolodex-dns-cli set-resolution-mode` /
+`get-resolution-mode`
+就是這兩個呼叫在命令列上的寫法。
+
+**`arpa.` 一律不在這台機器之外解析。** 在每一種模式下，`arpa.` 及其底下的一切，要嘛由本地資料回答——一筆已存的 PTR、一筆帶範圍的記錄、一個受管理或具權威的反解區域——要嘛就是 **REFUSED**。那個子樹裡沒有任何東西會被送到根伺服器、轉送器或加密上游。回 REFUSED 而不是 NXDOMAIN，是因為伺服器是在拒絕為某個命名空間作答，而不是在宣稱那個名稱不存在。
+
+這條規則是在標籤邊界上比對的，因此 `notarpa.` 與 `arpa.example.com` 都是普通名稱，會正常解析。在你把這個開在一台有人在用的機器上之前，有兩個後果值得先知道：對於你沒有任何資料的位址，反向查找會被拒絕，而不是從網際網路取得答案（`dig -x 8.8.8.8`）；而 `ipv4only.arpa` 會被拒絕，正在探索 NAT64 的用戶端會把這讀成「這裡沒有 NAT64」。
+
 ### `auto` 後備鏈
 
 各層級依「最受偏好（最受信任）優先」的順序嘗試：
@@ -1313,13 +1452,13 @@ TTL 一律照發佈的原樣採用——包括區域 SOA 的否定 TTL，它從�
 
 Rolodex DNS 支援三種加密的 DNS 傳輸協定，用以防止 DNS 查詢被竊聽：
 
-**DNS-over-TLS（DoT）**——RFC 7858，預設連接埠 853。標準的、以 TLS 封裝的 TCP 上 DNS。以 YAML 中的 `dot` 區段或透過 gRPC 的 `SetDotConfig` 設定。
+**DNS-over-TLS（DoT）**——RFC 7858，預設連接埠 853，ALPN 代號 `dot`。標準的、以 TLS 封裝的 TCP 上 DNS，使用同樣的 2 位元組長度前綴框架。ALPN 代號是通告而非強制：提供 `dot` 的用戶端會協商到它，只提供其他協定的用戶端會被拒絕，而完全不傳送 ALPN 延伸的用戶端照樣獲得服務。以 YAML 中的 `dot` 區段或透過 gRPC 的 `SetDotConfig` 設定。
 
 **DNS-over-HTTPS（DoH）**——RFC 8484，預設連接埠 443。HTTPS 上的 DNS 查詢，同時支援 GET（`/dns-query?dns=<base64>`）與 POST（`application/dns-message`）兩種方法。可選擇性地透過 QUIC 支援 HTTP/3（`enable_h3: true`）。以 YAML 中的 `doh` 區段或透過 gRPC 的 `SetDohConfig` 設定。
 
 **DNS-over-QUIC（DoQ）**——RFC 9250，預設連接埠 8853。以 QUIC 傳輸進行 DNS 查詢，達成低延遲的加密解析。以 YAML 中的 `doq` 區段或透過 gRPC 的 `SetDoqConfig` 設定。
 
-這三種協定都需要 TLS 憑證。你可以提供自己的憑證與私鑰，或設定 `auto_self_signed: true` 讓 Rolodex DNS 自動產生一張自簽憑證。
+這三種協定都需要 TLS 憑證。你可以提供自己的憑證與私鑰，或設定 `auto_self_signed: true` 讓 Rolodex DNS 自動產生一張自簽憑證。自動產生的憑證涵蓋 `localhost`、`127.0.0.1`、`::1` 以及該監聽器自身的繫結位址；用戶端撥打本機時所用的任何其他名稱——它的主機名稱、它的 `.local` 名稱、某個區域網路別名——請加入 `self_signed_sans`，因為設定了認證名稱的用戶端會去檢核它，而萬用繫結本身並不提供任何名稱。
 
 ## DNSSEC
 
@@ -1388,12 +1527,15 @@ RFC 4033 §5 的四種判定被清楚區分：
 - **對沒有設定 DO 的用戶端會剝除 RRSIG/NSEC/NSEC3**（RFC 4035 §3.2.1），除非它明確按名稱要求該型別——一筆已簽章的 A 記錄體積大約會變成三倍，而「小問題換大答案」正是 `security.recursion_cidrs` 存在要堵住的那種放大形狀。
 - **不支援的演算法是非安全而非偽造**（RFC 6840 §5.11）：我們缺少某個演算法，不是那個區域的故障。RSA/SHA-1/256/512、兩種 ECDSA 曲線與 Ed25519 都可驗證。NSEC3 迭代次數超過 100 時會被視為非安全而不去計算（RFC 9276）。
 - **驗證大約會讓路徑上每個區域多花一次查詢**，因此啟用驗證時，每次查找的查詢額度會在基礎的 64 之上再加 32。
+- **一個被拒絕的答案就是被拒絕，不會再問一次。** 在根伺服器層級，一個扣住結果的判定是一次**確定性的** SERVFAIL：該查詢不會落到加密上游或某個轉送器，什麼都不會被快取，而一個驗證失敗的轉介不會留下任何委派或膠水記錄。
+- **一個無法通過驗證的根區域同樣會被拒絕。** 過去，無法為根自己的 DNSKEY 建立錨定會表現成一個錯誤，而後備鏈把它讀成「根伺服器連不上」，於是改由一個不做驗證的上游作答——所以只要破壞根 DNSKEY 的取得，就能在不產生任何一個 bogus 判定的情況下把驗證移出路徑。現在它是一項判定了。一個我們**連不上**的根仍然會往下落，這是刻意的：連不上不等於無效。這個取捨是真實存在的、也值得說明白——一個這個組建不認識的信任錨點會變成一次 DNS 中斷，而不是無聲的降級，而 `dnssec.validate: false` 就是逃生口。
+- **一台提供無效 DNSSEC 的根伺服器會被從根集合中剔除** 15 分鐘，每再犯一次加倍，上限 24 小時；依據的是那唯一一項不必問任何人就能檢查的主張：它的根 DNSKEY 對照本地錨點。這項處分不會因為該伺服器回應迅速而消失，只會被一個**通過驗證**的答案清除（絕不會靠等待清除），而且絕不會套用在最後僅存的那一台根上——所有的根同時失敗，代表問題出在區域或錨點，而不是十三台流氓伺服器。它僅適用於根伺服器；在根以下，驗證失敗通常是該區域自己的簽章錯誤，而那些本來就已經安全地失敗了。歸責只存在記憶體中，重啟後不會存續。可觀察 `rolodex_dns_dnssec_blamed_roots`。
 
 設定 `dnssec.validate: false` 的解析行為與先前完全相同：對外不設 DO 位元、不建立信任鏈、偽造資料也不會變成 SERVFAIL。
 
 **信任錨點。** `dnssec.trust_anchors` 採用 DNSKEY 呈現格式——`"<flags> <protocol> <algorithm> <base64 key>"`，也就是 `dig DNSKEY .` 印出的那四個 RDATA 欄位。覆寫是**取代**IANA 金鑰而非追加，因此一個私有根只錨定到它自己的金鑰、別無其他。每個欄位都在啟動時驗證，而格式錯誤的錨點是硬性失敗，不是悄悄退回——一個無法對上任何真實 DNSKEY 的錨點，會讓每個已簽章的區域都失敗，而且沒有任何線索指向錨點才是原因。
 
-判定可透過 Prometheus 的 `rolodex_dns_dnssec_verdicts_total{verdict}` 觀察，另有 `dnssec_servfail_total` 與 `key_cache_entries`。
+判定可透過 Prometheus 的 `rolodex_dns_dnssec_verdicts_total{verdict}` 觀察，另有 `dnssec_servfail_total`、`dnssec_blamed_roots` 與 `key_cache_entries`。
 
 ## 散佈與信任憑證機構
 
@@ -1459,7 +1601,7 @@ metrics:
 
 這個端點不做認證，且只承載彙總計數——沒有查詢名稱、沒有記錄值、沒有憑證材料。請把它綁在私有位址上；預設是 loopback。這裡刻意不提供 TLS，因為那會意味著要把一張自簽憑證發給每一個抓取端，而這個端點本來就不該對外可達。
 
-輸出 77 個指標系列，全部以 `rolodex_dns_` 為前綴，涵蓋查詢、回應快取、封鎖清單（包含拒答與被移出輪替的供應商）、上游層級、迭代解析器、DNSSEC 判定、分割視域狀態、DHCP、ACME 與 gRPC。
+輸出 80 個指標系列，全部以 `rolodex_dns_` 為前綴，涵蓋查詢、回應快取、封鎖清單（包含拒答與被移出輪替的供應商）、上游層級、迭代解析器、DNSSEC 判定、分割視域狀態、DHCP、ACME 與 gRPC。
 
 其中最值得認識的是 `rolodex_dns_answers_total{source}`，它回報解析順序中的哪個階段產生了每個答案——`cache`、`local`、`scoped`、`scope_fallback`、`tld_peer`、`blocklist`、`reverse_blocklist`、`dns64`、`upstream`、`authoritative_nxdomain`、`refused`、`error`。它的總數等於查詢總數，而這正是讓分割視域管線從外面看得懂的關鍵：
 
@@ -1587,6 +1729,11 @@ sum by (direction) (rate(rolodex_dns_upstream_tier_switches_total[5m]))
 # 這與 `indeterminate` 不同，後者是網路故障。
 sum(rate(rolodex_dns_dnssec_verdicts_total{verdict="bogus"}[5m])) > 0
 
+# 目前因為提供無法通過驗證的 DNSSEC 而被剔除的根伺服器。
+# 一個穩定的非零值代表某台根實例被劫持或壞掉了；所有的根同時
+# 出現，代表問題出在信任錨點或根區域，而不是那些伺服器。
+rolodex_dns_dnssec_blamed_roots > 0
+
 # 因為委派超出作答區域而被丟棄的轉介
 rate(rolodex_dns_resolver_out_of_bailiwick_total[5m]) > 0
 
@@ -1682,11 +1829,11 @@ rolodex-dns-cli remove-local-blocklist --name 10.0.0.5
 
 ## DNSBL（網域封鎖清單）
 
-RBL 供應商是以 **IP 位址**封鎖（在反向 DNS 查找時以反轉的 IP 查詢），而 DNSBL 供應商是以**網域名稱**封鎖：被查詢名稱的標籤會前置到供應商的區域之前，因此 `googleadservices.com` 對照 `dbl.spamhaus.org` 會被查詢成 `googleadservices.com.dbl.spamhaus.org`。Spamhaus DBL、SURBL 與 URIBL 都是這樣運作的。
+DNSBL 供應商是以**網域名稱**封鎖：被查詢名稱的標籤會前置到供應商的區域之前，因此 `googleadservices.com` 對照 `dbl.spamhaus.org` 會被查詢成 `googleadservices.com.dbl.spamhaus.org`。Spamhaus DBL、SURBL 與 URIBL 都是這樣運作的。
 
 DNSBL 讓封鎖清單**優先於外部 DNS**。這道檢查在本地記錄與受管／權威區域之後執行——因此內部資料一律勝出——但在上游回應快取與任何外部解析**之前**。因此即使先前已為某個被列入的名稱快取了一個轉送答案，它仍然會回 NXDOMAIN。
 
-與 RBL 一樣，DNSBL 預設為停用且供應商清單為空，個別供應商也可獨立啟用或停用。一個已啟用但為空的 DNSBL 是空操作。維運人員通常會加入的標準區域是 `dbl.spamhaus.org`、`multi.surbl.org` 與 `multi.uribl.com`。DNSBL 的結果與 RBL 共用同一份結果快取（正面結果依供應商 TTL，負面結果 5 分鐘）。
+DNSBL 預設為停用且供應商清單為空，個別供應商也可獨立啟用或停用。一個已啟用但為空的 DNSBL 是空操作。維運人員通常會加入的標準區域是 `dbl.spamhaus.org`、`multi.surbl.org` 與 `multi.uribl.com`。結果如上所述地快取（正面結果依供應商 TTL，負面結果 5 分鐘）。
 
 ```bash
 rolodex-dns-cli set-dnsbl-config --enabled --providers dbl.spamhaus.org:true
@@ -1891,6 +2038,8 @@ defer client.Close()
 | 方法 | 說明 |
 |------|------|
 | `SetForwarders(ctx, forwarders) error` | 設定上游 DNS 轉送器 |
+| `SetResolutionMode(ctx, mode) error` | 在執行期切換解析模式（`auto`、`recursive`、`forward`）|
+| `GetResolutionMode(ctx) (string, error)` | 取得當前實際生效的模式 |
 
 #### 封鎖清單
 
@@ -2019,6 +2168,8 @@ defer client.Close()
 | 方法 | 說明 |
 |------|------|
 | `GetQueryLatencyStats(ctx) ([]*QueryLatencyStats, error)` | 取得逐伺服器的延遲統計 |
+| `SetTrackedTlds(ctx, tlds) ([]string, error)` | 替換受追蹤的 TLD 清單；回傳實際生效的集合 |
+| `ListTrackedTlds(ctx) (*TrackedTlds, error)` | 取得已存、實際生效與專屬的 TLD 集合 |
 
 #### 連線
 
