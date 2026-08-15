@@ -60,7 +60,7 @@ El puerto 53 requiere privilegios. Para desarrollo usa un puerto alto —`make d
 
 En todos los lugares donde se acepta una dirección (`dns.bind`, `dot.bind`, `doh.bind`, `doq.bind`, `grpc.tcp_bind`, `dhcp.bind`, `acme.bind`, `acme.portal_bind`, `metrics.bind`) se admiten cuatro formas:
 
-(`dns.bind` toma una lista de pares protocolo/dirección, y `dot.bind`/`doq.bind` toman **o una dirección o una lista** — una lista es como una escucha cubre ambas familias de direcciones, ya que `0.0.0.0` es solo IPv4 y un socket `[::]` choca con él en el mismo puerto. Los demás toman una sola dirección.)
+(`dns.bind` toma una lista de pares protocolo/dirección, y `dot.bind`, `doh.bind` y `doq.bind` toman **o una dirección o una lista** — una lista es como una escucha cubre ambas familias de direcciones, ya que `0.0.0.0` es solo IPv4 y un socket `[::]` choca con él en el mismo puerto. Los demás toman una sola dirección.)
 
 | Forma | Ejemplo | Resultado |
 | ----- | ------- | --------- |
@@ -377,6 +377,10 @@ doq:
 `auto_self_signed: true` (el valor por omisión) genera un certificado al arrancar si no hay ninguno configurado, lo cual es cómodo en una red de confianza.
 
 **Un certificado renovado no necesita reinicio.** Un *listener* configurado con `cert_path`/`key_path` vuelve a leer esos archivos cada 30 segundos y empieza a servir el par nuevo dentro de esa ventana: las conexiones ya abiertas terminan bajo el certificado con el que hicieron el saludo, y la siguiente en llegar recibe el nuevo. No hay nada que señalizar ni nada que coordinar con quien escribe los archivos: un sondeo que caiga entre las dos escrituras de un cliente ACME ve una llave que no corresponde al certificado, lo rechaza, sigue sirviendo el par antiguo y reintenta en el siguiente tic. Un certificado generado (`auto_self_signed`) no se sondea: no hay archivo detrás de él, y regenerarlo por temporizador entregaría a cada cliente un certificado distinto dos veces por minuto.
+
+**Se puede nombrar un certificado que todavía no se ha emitido.** Apuntar `cert_path`/`key_path` a un archivo que no existe nada más es una falla dura cuando `auto_self_signed` está apagado. Con él prendido, la escucha arranca con material generado y el sondeo de arriba adopta el par real en cuanto aterriza. Eso es lo que permite escribir estas rutas antes de que haya corrido lo que emite el certificado — el caso corriente en una máquina cuya CA se crea después de que arranque el resolvedor, donde la alternativa es reiniciar el único resolvedor de la máquina una vez que el archivo existe.
+
+**DoT, DoH y DoQ se reconfiguran en tiempo de ejecución**, con `SetDotConfig` / `SetDohConfig` / `SetDoqConfig`. Las direcciones de ligadura, las rutas del certificado y la lista de SAN pueden cambiarse en un servidor en marcha, y `Get*Config` informa de lo que está realmente ligado. El YAML de abajo es la configuración de arranque; no es la única vía de entrada, y deja de ser la autoridad en cuanto el servidor está en pie.
 
 **Si un cliente DoT informa de una discrepancia de nombre en el certificado, este es el ajuste.** Un certificado generado cubre `localhost`, `127.0.0.1`, `::1` y las direcciones de ligadura propias del *listener*, así que uno en `192.168.1.5:853` ya funciona para un cliente que marque esa dirección, sin configurar nada. Lo que no puede cubrir es cualquier otra cosa a la que responda el equipo: su nombre de host, su nombre mDNS `.local`, un CNAME por el que lo conozca la LAN, o la dirección con la que lo publique un NAT. Esos van en `self_signed_sans`. Un *listener* sobre un enlace **comodín** (`0.0.0.0:853`, el valor por omisión) no deriva nada en absoluto, porque `0.0.0.0` no es una identidad que nadie marque: sobre una ligadura comodín la lista es lo único que nombra al equipo.
 

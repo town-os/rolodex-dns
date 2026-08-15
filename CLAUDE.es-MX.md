@@ -25,7 +25,7 @@ Cada uno de los cinco tiene junto a él una traducción al chino tradicional (`.
 - administra todo std::result::Result de forma adecuada
 - no uses unwrap
 - no uses código unsafe
-- nunca ejecutes las pruebas tú mismo
+- **nunca ejecutes las pruebas tú mismo.** Esto no va solo de `make`: `cargo test`, `go test`, `npm test` y cualquier otra invocación directa quedan igual de vetadas, estén acotadas a un solo caso o no. El operador ejecuta la batería y devuelve la bitácora. `cargo check`, `cargo clippy` y `cargo fmt` sí valen — compilan y analizan, no ejecutan nada
 - escribe pruebas para todo, incluidas pruebas de integración y pruebas reales
 - usa make test para validar cualquier cambio
 - las pruebas de integración no deben alterar el anfitrión, jamás

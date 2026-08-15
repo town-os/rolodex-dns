@@ -2989,6 +2989,8 @@ fn map_query_type_to_kind(rt: RecordType) -> Option<RecordKind> {
         RecordType::PTR => Some(RecordKind::PTR),
         RecordType::TLSA => Some(RecordKind::TLSA),
         RecordType::CERT => Some(RecordKind::CERT),
+        RecordType::SVCB => Some(RecordKind::SVCB),
+        RecordType::HTTPS => Some(RecordKind::HTTPS),
         RecordType::SSHFP => Some(RecordKind::SSHFP),
         RecordType::DNSKEY => Some(RecordKind::DNSKEY),
         RecordType::RRSIG => Some(RecordKind::RRSIG),
@@ -3230,6 +3232,17 @@ fn db_record_to_dns_record(db_rec: &crate::db::DnsRecord) -> Option<Record> {
                 ))
             } else {
                 return None;
+            }
+        }
+        RecordKind::SVCB | RecordKind::HTTPS => {
+            // RFC 9460 presentation format, parsed by the same code that
+            // validates it on the way in — so a stored record either serves or
+            // was never accepted, rather than being quietly skipped here.
+            let svcb = crate::svcb::parse(&db_rec.value).ok()?;
+            if db_rec.record_type == RecordKind::HTTPS {
+                RData::HTTPS(rdata::HTTPS(svcb))
+            } else {
+                RData::SVCB(svcb)
             }
         }
         RecordKind::DNSKEY | RecordKind::DS | RecordKind::RRSIG => opaque_rdata(db_rec)?,

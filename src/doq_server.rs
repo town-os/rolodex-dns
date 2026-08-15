@@ -40,14 +40,33 @@ pub async fn serve_doq(
     dns_server: Arc<DnsServer>,
     mut tls: watch::Receiver<Arc<rustls::ServerConfig>>,
 ) -> Result<()> {
-    let initial = quinn_config(tls.borrow_and_update().clone())?;
+    let endpoint = bind_doq(bind, tls.borrow_and_update().clone())?;
+    serve_doq_on(endpoint, dns_server, tls).await
+}
 
+/// Binds a DoQ endpoint without starting its accept loop.
+///
+/// Split from [`serve_doq`] so a caller that must report a bind failure to
+/// somebody — the transport supervisor, answering a `SetDoqConfig` RPC — can
+/// take the error synchronously instead of discovering it inside a spawned task,
+/// where the only place it could go is the log.
+pub fn bind_doq(bind: &str, server_config: Arc<rustls::ServerConfig>) -> Result<quinn::Endpoint> {
+    let initial = quinn_config(server_config)?;
     let addr: std::net::SocketAddr = bind
         .parse()
         .context(format!("invalid DoQ bind address: {}", bind))?;
+    quinn::Endpoint::server(initial, addr).context("failed to create QUIC endpoint")
+}
 
-    let endpoint =
-        quinn::Endpoint::server(initial, addr).context("failed to create QUIC endpoint")?;
+/// Serves DNS-over-QUIC on an already-bound endpoint. See [`serve_doq`].
+pub async fn serve_doq_on(
+    endpoint: quinn::Endpoint,
+    dns_server: Arc<DnsServer>,
+    mut tls: watch::Receiver<Arc<rustls::ServerConfig>>,
+) -> Result<()> {
+    let addr = endpoint
+        .local_addr()
+        .context("DoQ endpoint has no local address")?;
 
     info!("DoQ server listening on {}", addr);
 

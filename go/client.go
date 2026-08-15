@@ -82,6 +82,15 @@ const (
 	RecordTypeNSEC3PARAM RecordType = pb.RecordType_NSEC3PARAM
 	// RecordTypeCERT represents a certificate record (RFC 4398).
 	RecordTypeCERT RecordType = pb.RecordType_CERT
+	// RecordTypeSVCB represents a service binding record (RFC 9460). The value
+	// is one line of presentation format, "<priority> <target> [key=value ...]"
+	// — e.g. "1 dns.home. alpn=dot port=853". This is the type a DDR
+	// designation at _dns.resolver.arpa. is published as (RFC 9462), which is
+	// how a client discovers its own resolver's encrypted endpoints.
+	RecordTypeSVCB RecordType = pb.RecordType_SVCB
+	// RecordTypeHTTPS represents the HTTPS-specific SVCB form (RFC 9460 §9),
+	// with the same value format as RecordTypeSVCB.
+	RecordTypeHTTPS RecordType = pb.RecordType_HTTPS
 )
 
 // DnsRecord represents a DNS record managed by the Rolodex DNS server.

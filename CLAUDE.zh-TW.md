@@ -25,7 +25,7 @@ Rolodex DNS 是一套分割視域（split-horizon）DNS 伺服器與遞迴／轉
 - 以適當方式處理所有 std::result::Result
 - 不要使用 unwrap
 - 不要使用 unsafe 程式碼
-- 絕不自行執行測試
+- **絕不自行執行測試。** 這不只是在說 `make`：`cargo test`、`go test`、`npm test` 以及任何其他直接呼叫同樣都不准，無論有沒有縮小到單一案例。由維運人員執行整套測試並把記錄交回來。`cargo check`、`cargo clippy` 與 `cargo fmt` 可以——它們只做編譯與檢查，不會執行任何東西
 - 為所有東西撰寫測試，包含整合測試與真實測試
 - 使用 make test 驗證任何變更
 - 整合測試絕不可更動主機

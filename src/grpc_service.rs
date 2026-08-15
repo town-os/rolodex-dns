@@ -89,6 +89,103 @@ fn rotated_out_proto(rbl: &DnsblChecker) -> Vec<proto::RotatedProvider> {
         .collect()
 }
 
+/// Rejects a stored value the serve path could not turn into a record.
+///
+/// Only SVCB/HTTPS for now, and deliberately so: those two are parsed at serve
+/// time by [`crate::svcb::parse`], and a value it rejects is SKIPPED there —
+/// producing a record that shows up in every listing and answers nothing. That
+/// is the shape of bug this subsystem keeps producing (a configured blocklist
+/// that never blocks, a metrics listener that never binds), and the fix each
+/// time is to fail where the operator is looking rather than where nobody is.
+///
+/// The other types are validated by their own paths or stored opaquely, and
+/// widening this to all of them is a bigger change than it looks — several are
+/// accepted in more spellings than the serve path's parser knows.
+fn validate_record_value(kind: RecordKind, value: &str) -> Result<(), Status> {
+    if matches!(kind, RecordKind::SVCB | RecordKind::HTTPS) {
+        crate::svcb::parse(value).map_err(|e| {
+            Status::invalid_argument(format!("invalid {} value: {:#}", kind.as_str(), e))
+        })?;
+    }
+    Ok(())
+}
+
+/// Reads the bind addresses out of a transport config message.
+///
+/// `binds` wins when it has anything in it; `bind` is the single-string form
+/// that predates it and is what an older caller sends. Both empty is not an
+/// error — it is how a transport is turned off.
+fn binds_of(bind: &str, binds: &[String]) -> crate::config::BindList {
+    if binds.iter().any(|b| !b.trim().is_empty()) {
+        crate::config::BindList::many(binds.iter().cloned())
+    } else {
+        crate::config::BindList::one(bind.to_string())
+    }
+}
+
+/// Builds the supervisor's settings from a proto `TlsConfig`.
+///
+/// An absent `tls` message means the defaults, which generate a self-signed
+/// certificate — the same thing an omitted `tls:` block in the config file
+/// means. A caller who wants no TLS at all cannot have it: these are encrypted
+/// transports, and there is nothing to serve without a certificate.
+fn transport_settings(
+    binds: crate::config::BindList,
+    tls: Option<proto::TlsConfig>,
+) -> crate::transports::TransportSettings {
+    let tls = tls.unwrap_or_default();
+    let cert_path = (!tls.cert_path.is_empty()).then(|| tls.cert_path.clone());
+    let key_path = (!tls.key_path.is_empty()).then(|| tls.key_path.clone());
+    // A caller that names certificate files means them, whatever it left the
+    // flag at: `auto_self_signed` defaults to false on the wire (proto3 has no
+    // field presence for a bool), so honouring it literally would refuse to
+    // generate for every caller that did not think to set it.
+    let auto_self_signed = tls.auto_self_signed || (cert_path.is_none() && key_path.is_none());
+    crate::transports::TransportSettings::new(
+        binds,
+        crate::config::TlsConfig {
+            cert_path,
+            key_path,
+            auto_self_signed,
+            self_signed_sans: tls.self_signed_sans.clone(),
+        },
+    )
+}
+
+/// The inverse, for a `Get*ConfigResponse`.
+fn tls_to_proto(tls: &crate::config::TlsConfig) -> proto::TlsConfig {
+    proto::TlsConfig {
+        cert_path: tls.cert_path.clone().unwrap_or_default(),
+        key_path: tls.key_path.clone().unwrap_or_default(),
+        auto_self_signed: tls.auto_self_signed,
+        self_signed_sans: tls.self_signed_sans.clone(),
+    }
+}
+
+/// The first configured bind spec, for the legacy single-string `bind` field.
+/// A reader that understands `binds` should use that instead — this cannot
+/// represent a listener on more than one address.
+fn first_bind(settings: &crate::transports::TransportSettings) -> String {
+    settings.binds.specs().first().cloned().unwrap_or_default()
+}
+
+/// Applies a transport configuration, turning a failure into a gRPC status.
+///
+/// `Internal` rather than `InvalidArgument` even for a bad address: by the time
+/// this returns, the interesting fact is what the listener is doing now — the
+/// supervisor's error says whether the previous configuration was restored —
+/// and that is a server-state answer, not a "your request was malformed" one.
+/// The message carries the whole chain so the caller sees both halves.
+async fn apply_transport(
+    sup: &Arc<crate::transports::TransportSupervisor>,
+    kind: crate::transports::TransportKind,
+    settings: crate::transports::TransportSettings,
+) -> Result<(), Status> {
+    sup.apply(kind, settings)
+        .await
+        .map_err(|e| Status::internal(format!("{:#}", e)))
+}
+
 /// Failed-authentication state for one source address.
 struct AuthFailures {
     /// Failures accumulated since the last reset or lockout.
@@ -121,6 +218,12 @@ pub struct RolodexDnsGrpcService {
     /// Failed-authentication state per source address, for brute-force
     /// throttling. Keyed by IP so one attacker cannot lock the operator out.
     auth_failures: Arc<DashMap<IpAddr, AuthFailures>>,
+    /// Supervises the encrypted transports, so `Set<Transport>Config` opens,
+    /// moves or shuts down a real listener instead of logging and dropping the
+    /// request. `None` in the in-process test harnesses, which have no
+    /// listeners to supervise — those RPCs then report the transport as
+    /// unavailable rather than pretending to have applied anything.
+    transports: Option<Arc<crate::transports::TransportSupervisor>>,
 }
 
 impl RolodexDnsGrpcService {
@@ -141,7 +244,34 @@ impl RolodexDnsGrpcService {
             acme_root_cn: "Rolodex Root CA".to_string(),
             auto_ptr: false,
             auth_failures: Arc::new(DashMap::new()),
+            transports: None,
         }
+    }
+
+    /// Attaches the encrypted-transport supervisor, which is what makes
+    /// `SetDotConfig`/`SetDohConfig`/`SetDoqConfig` do anything.
+    pub fn with_transports(
+        mut self,
+        transports: Arc<crate::transports::TransportSupervisor>,
+    ) -> Self {
+        self.transports = Some(transports);
+        self
+    }
+
+    /// The supervisor, or a `FailedPrecondition` naming the transport when this
+    /// server was built without one. Reported rather than ignored: an
+    /// orchestrator that is told "success" by a server with no listeners to
+    /// configure has no way to find out that encrypted DNS is not running.
+    fn transports(
+        &self,
+        kind: crate::transports::TransportKind,
+    ) -> Result<&Arc<crate::transports::TransportSupervisor>, Status> {
+        self.transports.as_ref().ok_or_else(|| {
+            Status::failed_precondition(format!(
+                "{} cannot be configured: this server was started without transport supervision",
+                kind.label()
+            ))
+        })
     }
 
     /// Sets the ACME issuer parameters used by the ACME admin RPCs.
@@ -368,6 +498,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
 
         let record_type = RecordKind::from_proto_i32(record.record_type)
             .ok_or_else(|| Status::invalid_argument("invalid record type"))?;
+        validate_record_value(record_type, &record.value)?;
 
         let ttl = if record.ttl == 0 { 300 } else { record.ttl };
 
@@ -933,6 +1064,7 @@ impl RolodexDnsService for RolodexDnsGrpcService {
 
         let record_type = RecordKind::from_proto_i32(record.record_type)
             .ok_or_else(|| Status::invalid_argument("invalid record type"))?;
+        validate_record_value(record_type, &record.value)?;
 
         let ttl = if record.ttl == 0 { 300 } else { record.ttl };
 
@@ -1612,7 +1744,12 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         let req = request.into_inner();
         self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("set_dot_config");
-        info!("DoT config set: {:?}", req.config);
+
+        let kind = crate::transports::TransportKind::Dot;
+        let cfg = req.config.unwrap_or_default();
+        let settings = transport_settings(binds_of(&cfg.bind, &cfg.binds), cfg.tls);
+        apply_transport(self.transports(kind)?, kind, settings).await?;
+
         Ok(Response::new(SetDotConfigResponse {
             success: true,
             message: String::new(),
@@ -1627,7 +1764,21 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         let req = request.into_inner();
         self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("get_dot_config");
-        Ok(Response::new(GetDotConfigResponse { config: None }))
+
+        let kind = crate::transports::TransportKind::Dot;
+        let Some(sup) = self.transports.as_ref() else {
+            return Ok(Response::new(GetDotConfigResponse { config: None }));
+        };
+        let Some(settings) = sup.current(kind).await else {
+            return Ok(Response::new(GetDotConfigResponse { config: None }));
+        };
+        Ok(Response::new(GetDotConfigResponse {
+            config: Some(DotConfig {
+                bind: first_bind(&settings),
+                binds: sup.bound_addrs(kind).await,
+                tls: Some(tls_to_proto(&settings.tls)),
+            }),
+        }))
     }
 
     async fn set_doh_config(
@@ -1638,10 +1789,26 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         let req = request.into_inner();
         self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("set_doh_config");
-        info!("DoH config set: {:?}", req.config);
+
+        let kind = crate::transports::TransportKind::Doh;
+        let cfg = req.config.unwrap_or_default();
+        // `enable_h3` is accepted and has no effect: the DoH listener is
+        // HTTP/1.1 + h2 over TCP, and HTTP/3 would need a second, QUIC listener
+        // on the same port. Saying so out loud beats the silent accept this RPC
+        // used to give everything.
+        if cfg.enable_h3 {
+            warn!("DoH enable_h3 requested but HTTP/3 is not implemented; serving h2 and http/1.1");
+        }
+        let settings = transport_settings(binds_of(&cfg.bind, &cfg.binds), cfg.tls);
+        apply_transport(self.transports(kind)?, kind, settings).await?;
+
         Ok(Response::new(SetDohConfigResponse {
             success: true,
-            message: String::new(),
+            message: if cfg.enable_h3 {
+                "listener started; enable_h3 ignored (HTTP/3 is not implemented)".to_string()
+            } else {
+                String::new()
+            },
         }))
     }
 
@@ -1653,7 +1820,24 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         let req = request.into_inner();
         self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("get_doh_config");
-        Ok(Response::new(GetDohConfigResponse { config: None }))
+
+        let kind = crate::transports::TransportKind::Doh;
+        let Some(sup) = self.transports.as_ref() else {
+            return Ok(Response::new(GetDohConfigResponse { config: None }));
+        };
+        let Some(settings) = sup.current(kind).await else {
+            return Ok(Response::new(GetDohConfigResponse { config: None }));
+        };
+        Ok(Response::new(GetDohConfigResponse {
+            config: Some(DohConfig {
+                bind: first_bind(&settings),
+                binds: sup.bound_addrs(kind).await,
+                tls: Some(tls_to_proto(&settings.tls)),
+                // Reported false because that is what is running, whatever was
+                // asked for.
+                enable_h3: false,
+            }),
+        }))
     }
 
     async fn set_doq_config(
@@ -1664,7 +1848,12 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         let req = request.into_inner();
         self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("set_doq_config");
-        info!("DoQ config set: {:?}", req.config);
+
+        let kind = crate::transports::TransportKind::Doq;
+        let cfg = req.config.unwrap_or_default();
+        let settings = transport_settings(binds_of(&cfg.bind, &cfg.binds), cfg.tls);
+        apply_transport(self.transports(kind)?, kind, settings).await?;
+
         Ok(Response::new(SetDoqConfigResponse {
             success: true,
             message: String::new(),
@@ -1679,7 +1868,21 @@ impl RolodexDnsService for RolodexDnsGrpcService {
         let req = request.into_inner();
         self.check_auth(peer, &req.auth_token)?;
         self.count_rpc("get_doq_config");
-        Ok(Response::new(GetDoqConfigResponse { config: None }))
+
+        let kind = crate::transports::TransportKind::Doq;
+        let Some(sup) = self.transports.as_ref() else {
+            return Ok(Response::new(GetDoqConfigResponse { config: None }));
+        };
+        let Some(settings) = sup.current(kind).await else {
+            return Ok(Response::new(GetDoqConfigResponse { config: None }));
+        };
+        Ok(Response::new(GetDoqConfigResponse {
+            config: Some(DoqConfig {
+                bind: first_bind(&settings),
+                binds: sup.bound_addrs(kind).await,
+                tls: Some(tls_to_proto(&settings.tls)),
+            }),
+        }))
     }
 
     async fn set_proxy_config(
@@ -3049,6 +3252,19 @@ mod tests {
         RolodexDnsGrpcService::new(db, dns_server, rbl, "secret123".to_string(), false)
     }
 
+    /// A service with transport supervision attached, as the real binary builds
+    /// it. Without this the encrypted-transport RPCs have nothing to configure.
+    fn make_supervised_service() -> RolodexDnsGrpcService {
+        let db = Database::open_memory().unwrap();
+        let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
+        let dns_server = Arc::new(DnsServer::new(db.clone(), rbl.clone(), vec![]));
+        let transports = Arc::new(crate::transports::TransportSupervisor::new(Arc::clone(
+            &dns_server,
+        )));
+        RolodexDnsGrpcService::new(db, dns_server, rbl, "secret123".to_string(), true)
+            .with_transports(transports)
+    }
+
     fn make_unix_service() -> RolodexDnsGrpcService {
         let db = Database::open_memory().unwrap();
         let rbl = Arc::new(DnsblChecker::with_resolver(Arc::new(NeverListedResolver)));
@@ -3882,5 +4098,177 @@ mod tests {
         });
         let result = service.create_network_scope(req).await;
         assert!(result.is_err());
+    }
+
+    // ================================================================
+    // Encrypted transports: DoT / DoH / DoQ configuration
+    // ================================================================
+    //
+    // These RPCs used to log their request and return `success: true` having
+    // stored nothing, which an orchestrator could not tell apart from working.
+    // What matters now is that a Set opens a real listener, a Get reports what
+    // is running, and a Set that cannot be honoured says so.
+
+    #[tokio::test]
+    async fn set_dot_config_opens_a_real_listener() {
+        let service = make_supervised_service();
+        let resp = service
+            .set_dot_config(Request::new(SetDotConfigRequest {
+                config: Some(DotConfig {
+                    // Port 0 so the OS picks one and nothing collides.
+                    binds: vec!["127.0.0.1:0".to_string()],
+                    ..Default::default()
+                }),
+                auth_token: String::new(),
+            }))
+            .await
+            .expect("set_dot_config")
+            .into_inner();
+        assert!(resp.success);
+
+        // The proof is the readback: a stub could return success, but only a
+        // listener that actually bound has an address to report.
+        let got = service
+            .get_dot_config(Request::new(GetDotConfigRequest {
+                auth_token: String::new(),
+            }))
+            .await
+            .expect("get_dot_config")
+            .into_inner()
+            .config
+            .expect("DoT should be configured");
+        assert_eq!(got.binds.len(), 1);
+        assert!(got.binds[0].starts_with("127.0.0.1:"));
+        assert_ne!(
+            got.binds[0], "127.0.0.1:0",
+            "the reported address must be the one bound, not the one requested"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_transport_config_reports_nothing_when_none_is_running() {
+        let service = make_supervised_service();
+        let got = service
+            .get_doq_config(Request::new(GetDoqConfigRequest {
+                auth_token: String::new(),
+            }))
+            .await
+            .expect("get_doq_config")
+            .into_inner();
+        assert!(got.config.is_none());
+    }
+
+    #[tokio::test]
+    async fn an_empty_bind_shuts_a_transport_down() {
+        let service = make_supervised_service();
+        service
+            .set_doq_config(Request::new(SetDoqConfigRequest {
+                config: Some(DoqConfig {
+                    binds: vec!["127.0.0.1:0".to_string()],
+                    ..Default::default()
+                }),
+                auth_token: String::new(),
+            }))
+            .await
+            .expect("set_doq_config");
+        assert!(
+            service
+                .get_doq_config(Request::new(GetDoqConfigRequest {
+                    auth_token: String::new(),
+                }))
+                .await
+                .expect("get")
+                .into_inner()
+                .config
+                .is_some()
+        );
+
+        service
+            .set_doq_config(Request::new(SetDoqConfigRequest {
+                config: Some(DoqConfig::default()),
+                auth_token: String::new(),
+            }))
+            .await
+            .expect("an empty bind is a shutdown, not an error");
+
+        assert!(
+            service
+                .get_doq_config(Request::new(GetDoqConfigRequest {
+                    auth_token: String::new(),
+                }))
+                .await
+                .expect("get")
+                .into_inner()
+                .config
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bad_bind_is_reported_rather_than_accepted() {
+        // The regression that motivated all of this: the old handler returned
+        // success for anything at all.
+        let service = make_supervised_service();
+        let err = service
+            .set_dot_config(Request::new(SetDotConfigRequest {
+                config: Some(DotConfig {
+                    binds: vec!["no-port-here".to_string()],
+                    ..Default::default()
+                }),
+                auth_token: String::new(),
+            }))
+            .await
+            .expect_err("a bind address with no port must not report success");
+        assert!(
+            err.message().contains("no-port-here"),
+            "the error must name the offending entry, got: {}",
+            err.message()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_without_supervision_refuses_rather_than_pretending() {
+        // An in-process harness has no listeners. Saying "success" there is the
+        // exact lie this work removed, so it must fail instead.
+        let service = make_unix_service();
+        let err = service
+            .set_dot_config(Request::new(SetDotConfigRequest {
+                config: Some(DotConfig {
+                    binds: vec!["127.0.0.1:0".to_string()],
+                    ..Default::default()
+                }),
+                auth_token: String::new(),
+            }))
+            .await
+            .expect_err("a server with no transports must not claim to have configured one");
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    }
+
+    #[tokio::test]
+    async fn the_legacy_single_bind_field_still_works() {
+        // `binds` did not exist when this RPC shipped; a caller that only knows
+        // `bind` must keep working.
+        let service = make_supervised_service();
+        service
+            .set_dot_config(Request::new(SetDotConfigRequest {
+                config: Some(DotConfig {
+                    bind: "127.0.0.1:0".to_string(),
+                    ..Default::default()
+                }),
+                auth_token: String::new(),
+            }))
+            .await
+            .expect("the single-string bind form must still be honoured");
+
+        let got = service
+            .get_dot_config(Request::new(GetDotConfigRequest {
+                auth_token: String::new(),
+            }))
+            .await
+            .expect("get")
+            .into_inner()
+            .config
+            .expect("configured");
+        assert_eq!(got.binds.len(), 1);
     }
 }

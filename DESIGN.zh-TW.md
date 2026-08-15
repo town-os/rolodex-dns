@@ -54,7 +54,7 @@ DoT 的交握逾時是純 TCP 不需要的那道界限。`acceptor.accept()` 會
 
 **基本**：A、AAAA、CNAME、MX、TXT、NS、SOA、SRV、PTR。
 
-**延伸**：URI（RFC 7553）、SSHFP（RFC 4255）、DNAME（RFC 6672）、ANAME（查詢時才解析的別名）、ZONEMD（RFC 9156）、TLSA（RFC 6698）、CERT（RFC 4398）。
+**延伸**：URI（RFC 7553）、SSHFP（RFC 4255）、DNAME（RFC 6672）、ANAME（查詢時才解析的別名）、ZONEMD（RFC 9156）、TLSA（RFC 6698）、CERT（RFC 4398）、SVCB 與 HTTPS（RFC 9460）。
 
 **DNSSEC**：DNSKEY、DS、RRSIG、NSEC、NSEC3、NSEC3PARAM。
 
@@ -115,6 +115,8 @@ EDNS（RFC 6891）的上下文會從進來的查詢中萃取出來。伺服器�
 `upstream_resolve`——那個唯一會把查詢送出本機的函式——第三次帶上同一道閘門，並且是由 `wire_question_is_arpa` 直接從線路位元組讀出來的，而不是去重新解析一個呼叫者已經解析過的訊息。
 
 歸屬關係是以**標籤邊界**比對的，絕不是字串後綴：一個名稱屬於該子樹，若且唯若它的最後一個標籤剛好是 `arpa`，因此 `notarpa.` 與 `arpa.example.com.` 都是普通名稱，會正常解析。`resolver::is_arpa_subtree` 是唯一的那個判定式；線路層的雙生函式則在未解析的位元組上回答同一個問題。
+
+**這一條恰恰是讓 DDR 成為可能的東西，而不是擋住它的東西。** RFC 9462 讓用戶端透過向自己的解析器查詢 `_dns.resolver.arpa. SVCB` 來發現那台解析器的加密端點——而那是這個子樹裡的一個名稱。由於這道拒絕是一次落到底的穿透、坐落在每一次本地查找的*下方*，本伺服器自己持有的那份指定記錄會由它自己的記錄作答，而它沒有持有的那份則是被拒絕而不是被取回。兩半都正是 DDR 所需要的性質：為一台解析器自己的指定記錄作答的只能是那台解析器，而任何第三方都無法供給一份。一台機器透過在那個名稱上存放 SVCB 記錄來發布自己的指定記錄（Town OS 在 `RebuildDNS` 裡做這件事）；一台什麼也不發布的機器就什麼也不廣告——那是正確的答案，而不是一次故障。
 
 有些後果值得直白地說出來：對於這台機器沒有任何資料的位址，反向查找不再解析得出來——`dig -x 8.8.8.8` 會是 REFUSED，而不是從網際網路取得答案——而 `ipv4only.arpa`（RFC 7050）會被拒絕而不是被回答，正在探索 NAT64 的用戶端會把這讀成「這裡沒有 NAT64」。用本地資料好好地服務整棵反解樹，是另一項被延後的工作。
 
@@ -246,6 +248,22 @@ DNSBL 檢查可全域開關，且**預設為停用、供應商清單為空**；�
 所有加密傳輸都是選用的，且需要 TLS 設定。若未提供憑證，當 `auto_self_signed` 為 `true`（預設）時會自動產生一張自簽憑證。
 
 自動產生的憑證始終攜帶 `localhost`、`127.0.0.1` 與 `::1`，並在此之上攜帶**該監聽器自身的繫結位址**以及 `<transport>.tls.self_signed_sans` 中的任何條目。繫結位址是自動併入的，因為它們在構造上就是用戶端所撥打的身分——監聽在 `192.168.1.5:853` 上的服務就是以 `192.168.1.5` 被存取的，而一張只署名 `localhost` 的憑證會在每一個設定了認證名稱的用戶端處名稱檢核失敗，而這正是自簽憑證除裸公鑰釘選之外唯一可被驗證的方式。萬用繫結（`0.0.0.0`、`::`）不是身分，會被丟棄，因此繫結萬用位址的監聽器需要用 `self_signed_sans` 明確署名本機。不同寫法的重複項會摺疊（`[::1]` 與 `::1`、`DNS.Home.` 與 `dns.home`）。設定了 `cert_path`/`key_path` 時以上皆不適用：那張憑證攜帶的是簽發時所載的名稱。
+
+#### 執行期重新設定
+
+**每一個加密監聽器都可以在伺服器執行期間被打開、遷移、換鑰或關停。** `SetDotConfig`、`SetDohConfig` 與 `SetDoqConfig` 從前只是把請求打進日誌，然後什麼也不存就回 `success: true`，而編排方無法把這與「成功了」區分開——於是設定加密 DNS 的唯一辦法就是寫設定檔再重啟，而重啟這台機器唯一的解析器，就是讓它上面的一切都斷一次 DNS。
+
+`TransportSupervisor`（`src/transports.rs`）在整個行程生命週期裡持有這些監聽器及其 TLS 管理器，而且**啟動路徑與 RPC 是同一段程式碼**：`main.rs` 透過 RPC 所呼叫的那同一個 `apply()` 把每一種傳輸拉起來。因此一份在啟動時可用的設定，是由恰恰處理稍後到來的那份設定的同一段程式碼來套用的，兩者不可能各自漂移。這期間 `:53` 從頭到尾沒被碰過——它們是彼此獨立的監聽器。
+
+這個次序是被逼出來的：在舊監聽器讓出埠之前，新的無法啟動，所以沒有辦法在放棄舊設定之前證明新設定能綁定。
+
+1. 先做完所有**不需要埠**就能做的檢查——bind 清單可解析、TLS 材料可載入或可產生。一個打錯的位址或一份讀不出來的憑證，會在舊監聽器仍在服務時被拒絕。
+2. 然後停掉舊監聽器**並等待它們真的結束**。只 abort 而不等待，會讓新的綁定與舊通訊端的關閉賽跑，並時不時以 `EADDRINUSE` 失敗。
+3. 如果綁定仍然失敗，就把先前的設定放回去，並告訴呼叫方這個傳輸已經下線。在那裡回報成功，會留下一台自認為在提供 DoT、實則沒有的機器。
+
+空的 bind 清單是關停而不是錯誤——那本來就是省略一個設定區段的含義。`Get*Config` 回報的是**實際綁定**的位址，只要請求寫的是埠 0，它就與請求的不同。一台在建構時沒有監管器的伺服器（行程內的測試夾具）會回 `FailedPrecondition`，而不是聲稱自己設定好了一個它根本沒有的監聽器。
+
+**可以指名一份尚未簽發的憑證。** `cert_path`／`key_path` 指向一個不存在的檔案，只有在 `auto_self_signed` 關閉時才是致命的；開啟它之後，監聽器會先用產生的材料起步，而下面那次輪詢會在真正的那一對落地時把它接過去。正是這一點，讓一個監聽器可以被設定成使用一份別的東西尚未簽發的憑證——在一台 CA 是在解析器啟動之後才被建立的機器上，那本來就是常態。
 
 #### 憑證重新載入
 
@@ -1304,6 +1322,7 @@ dns:
 | `acme.root_ca_cn`                   | `Rolodex Root CA`              | 開機時建立的根憑證機構通用名稱 |
 | `acme.leaf_validity_days`           | `90`                           | 簽發出的終端憑證有效期 |
 | `acme.tlsa_port` / `acme.tlsa_proto`| `443` / `tcp`                  | 每個名稱的 DANE-TA TLSA 記錄發佈位置 |
+| `acme.tlsa_endpoints`              | `[]`                           | DANE-TA 記錄的額外 `"<port>/<proto>"` 端點。同時提供 DoT（`853/tcp`）與 DoQ（`853/udp`）的一張憑證，每個端點各需一筆記錄；格式錯誤的項目會讓啟動失敗 |
 | `acme.require_eab`                  | `true`                         | 帳號註冊時要求 External Account Binding |
 | `acme.issuance_scope`               | `managed_zones`                | `managed_zones`（區域必須有憑證機構）或 `any` |
 | `metrics.bind`                      | `127.0.0.1:9153`               | Prometheus `/metrics` HTTP 監聽器；支援 interface:port（區段為選用） |
@@ -1322,7 +1341,7 @@ dns:
 | `test`                | 執行所有測試：lint、Go 整合測試、Go 單元測試、Rust 測試（`cargo test`），以及 JavaScript 測試。 |
 | `test-log`            | 與 `test` 相同，但 tee 進 `/tmp/rolodex-dns/log` 底下帶時間戳的紀錄檔（可用 `LOG_DIR` 覆寫）。即使執行失敗，也會在結尾印出紀錄檔路徑。 |
 | `rust-test`           | 執行 Rust 整合測試檔，接著執行 `cargo test`。 |
-| `rust-integration-test` | 先建置，然後逐一明確執行每個 Rust 整合測試檔（`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`blocklist_nxdomain_test`、`zonemd_test`、`dot_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`，以及各 `security_*` 套件）。 |
+| `rust-integration-test` | 先建置，然後逐一明確執行每個 Rust 整合測試檔（`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`blocklist_nxdomain_test`、`zonemd_test`、`dot_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`、`acme_tlsa_endpoints_test`，以及各 `security_*` 套件）。 |
 | `lint`                | 執行 `translation-check`、`cargo fmt -- --check` 與 `cargo clippy --all-targets -- -D warnings`。 |
 | `prometheus-test`     | 對一台容器化的 Prometheus（`quay.io/prometheus/prometheus`，可透過 `ROLODEX_PROMETHEUS_IMAGE` 覆寫）執行每一條文件中的 PromQL 查詢。它是 `test` 的先決條件。需要 podman；沒有它時測試會**大聲跳過**而不是失敗，因此沒有容器執行環境的機器仍能得到綠色的 `make test`。`ROLODEX_PROMETHEUS_REQUIRED=1` 會把那個跳過變成失敗，這正是 CI 應該設定的。 |
 | `deps`                | 安裝建置依賴：Rust 的交叉編譯工具鏈（`cross-deps`）、JavaScript 的開發依賴（在 `js/` 中執行 `npm install`），以及 `python-deps`。 |
@@ -1581,6 +1600,8 @@ Rust 測試（`cargo test`）包含單元測試與整合測試，涵蓋 gRPC 操
 
 `tests/acme_admin_test.rs` 涵蓋那五個管理 RPC。看的是性質，而不是 `success` 旗標：`EnsureZoneCa` 是冪等的（重新鑄造會弄壞每一張已經鏈到舊中繼憑證的憑證，以及隨之而來的已發佈 DANE-TA 記錄），並在一個共用的根之下給每個區域各自的中繼憑證，同時把憑證鏈發佈進 DNS；一份被鑄造出來的 EAB 會被儲存、限定於某個區域、標記為未使用，且它回傳的 base64url 金鑰能解碼成儲存的密鑰；移除操作對「它究竟有沒有移除到東西」是誠實的，而且僅限於所指名的那份憑據；而 `ListAcmeCertificates` 是在標籤邊界上做後綴比對的，因此 `notexample.com.` 不會被列在 `example.com.` 之下。
 
+`tests/acme_tlsa_endpoints_test.rs` 在設定檔與真實執行檔相遇之處覆蓋 `acme.tlsa_endpoints`，那也是這份嚴格性唯一觀察得到的地方。格式錯誤的項目——沒有協定、協定不是 TCP 或 UDP、連接埠超出範圍、連接埠不是數字、連接埠為零——必須讓伺服器停止啟動，而不是被跳過：被跳過的項目就是一筆悄悄從未出現的 TLSA 記錄，而對一個檢查 DANE 的用戶端而言，記錄不存在與伺服器根本沒有 DANE 是分不出來的。測試會啟動五種格式錯誤的形態，各自斷言以非零狀態結束；對照組則是格式正確的 `["853/tcp", "853/udp"]` 與完全不寫這個鍵，兩者都必須順利啟動並持續執行——沒有它們，一台因任何無關原因而啟動失敗的伺服器都會讓每一項拒絕斷言通過。
+
 ### CLI 整合測試
 
 `rolodex-dns-cli` 執行檔有整合測試，它們會生成一台測試用的 gRPC 伺服器並對它執行 CLI 執行檔，涵蓋 TCP 與 Unix socket 兩種傳輸上的**每一個**子指令：認證（成功、失敗，以及 Unix socket 的跳過）、所有記錄型別、萬用字元篩選、網路成員資格與範圍內記錄、權威區域、各種快取、本地封鎖清單、TTL 漂移與 DNS64、DHCP 位址池／租約／憑證選項、DNSSEC 金鑰產生與簽章、DANE TLSA 產生，以及 ACME 管理指令。
@@ -1598,7 +1619,7 @@ Go 用戶端有兩層測試：
 - **單元測試**——透過 `bufconn` 使用一台行程內的模擬 gRPC 伺服器，測試所有用戶端方法、認證權杖的傳遞、傳輸模式、錯誤處理，以及邊界情況（冪等的關閉、延遲撥接、自訂撥接選項）。
 - **整合測試**——以 `integration` 建置標籤把關。每個測試都會以一個獨有的暫存目錄、隨機連接埠與隔離的資料庫，啟動一個真實的 Rolodex DNS 伺服器子行程。測試涵蓋記錄的 CRUD、萬用字元篩選、轉送器設定、封鎖清單往返、快取清空、Unix socket 傳輸、認證失敗、預設 TTL 行為、並行用戶端（5 個同時）、網路範圍劃分、DNS64 與 TTL 漂移。
 
-`make test` 目標會執行完整的測試套件：lint、Go 整合測試、Go 單元測試、Rust 整合測試（逐一明確列出每個測試檔：`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`blocklist_nxdomain_test`、`zonemd_test`、`dot_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`，以及各 `security_*` 套件）、透過 `cargo test` 執行的所有 Rust 測試（它也涵蓋上面那套解析器測試），以及 JavaScript 的 lint／整合／單元測試。個別目標也可以使用：`make go-integration-test`、`make go-test`、`make rust-integration-test`、`make rust-test`、`make js-integration-test`、`make js-test`。使用 `make test-log` 可把整輪執行擷取到一份帶時間戳的紀錄檔中。`make translation-check` 會逐節比對每份翻譯文件與英文原文，只要有落差就以非零狀態結束；它是 `lint` 的前置相依，因此會隨 `make test` 一併執行，並在某個語系落後時讓關卡失敗。
+`make test` 目標會執行完整的測試套件：lint、Go 整合測試、Go 單元測試、Rust 整合測試（逐一明確列出每個測試檔：`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`blocklist_nxdomain_test`、`zonemd_test`、`dot_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`、`acme_tlsa_endpoints_test`，以及各 `security_*` 套件）、透過 `cargo test` 執行的所有 Rust 測試（它也涵蓋上面那套解析器測試），以及 JavaScript 的 lint／整合／單元測試。個別目標也可以使用：`make go-integration-test`、`make go-test`、`make rust-integration-test`、`make rust-test`、`make js-integration-test`、`make js-test`。使用 `make test-log` 可把整輪執行擷取到一份帶時間戳的紀錄檔中。`make translation-check` 會逐節比對每份翻譯文件與英文原文，只要有落差就以非零狀態結束；它是 `lint` 的前置相依，因此會隨 `make test` 一併執行，並在某個語系落後時讓關卡失敗。
 
 ## 主要依賴
 

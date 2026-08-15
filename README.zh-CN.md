@@ -531,6 +531,7 @@ metrics:
 | `acme.root_ca_cn` | `"Rolodex Root CA"` | 开机时创建的根证书颁发机构通用名称 |
 | `acme.leaf_validity_days` | `90` | 签发出的叶证书有效期 |
 | `acme.tlsa_port` / `acme.tlsa_proto` | `443` / `"tcp"` | 每个名称的 DANE-TA TLSA 记录发布位置 |
+| `acme.tlsa_endpoints` | `[]` | 除了 `tlsa_port`／`tlsa_proto` 之外，额外发布 DANE-TA TLSA 记录的 `"<port>/<proto>"` 端点。TLSA 记录指的是服务端点而非证书，因此同时提供 DoT（`853/tcp`）与 DoQ（`853/udp`）的一张证书，两者各需要一条记录；格式错误的条目会在启动时被拒绝，而不是跳过 |
 | `acme.require_eab` | `true` | 账号注册时要求 External Account Binding |
 | `acme.issuance_scope` | `"managed_zones"` | `"managed_zones"`（区域必须有证书颁发机构）或 `"any"` |
 | `proxy.url` | `""`（禁用） | 转发 DNS 查询用的 HTTP 代理 URL |
@@ -1366,6 +1367,8 @@ DNS。
 | 19 | `NSEC3` | 下一个安全记录 v3（DNSSEC）。由区域签名自动管理 |
 | 20 | `NSEC3PARAM` | NSEC3 参数（DNSSEC）。由区域签名自动管理 |
 | 21 | `CERT` | 在 DNS 中存储证书（RFC 4398）。值：`"cert_type key_tag algorithm base64_cert_data"`。用于分发证书链 |
+| 22 | `SVCB` | 服务绑定（RFC 9460）。值是一行表示格式：`"<priority> <target> [key=value ...]"`——例如 `"1 dns.home. alpn=dot port=853"`。DDR 在 `_dns.resolver.arpa.` 上发布的指定记录就是这个类型（RFC 9462）|
+| 23 | `HTTPS` | HTTPS 专用的 SVCB 形式（RFC 9460 §9）。值的格式与 `SVCB` 相同 |
 
 ## 隐私优先的缓存
 
@@ -1459,6 +1462,14 @@ Rolodex DNS 支持三种加密的 DNS 传输协议，用以防止 DNS 查询被�
 **DNS-over-QUIC（DoQ）**——RFC 9250，默认端口 8853。以 QUIC 传输进行 DNS 查询，达成低延迟的加密解析。以 YAML 中的 `doq` 段或通过 gRPC 的 `SetDoqConfig` 配置。
 
 这三种协议都需要 TLS 证书。你可以提供自己的证书与私钥，或设置 `auto_self_signed: true` 让 Rolodex DNS 自动生成一张自签证书。自动生成的证书涵盖 `localhost`、`127.0.0.1`、`::1` 以及该监听器自身的绑定地址；客户端拨打本机时所用的任何其他名称——它的主机名、它的 `.local` 名称、某个局域网别名——请加入 `self_signed_sans`，因为配置了认证名称的客户端会去校验它，而通配绑定本身并不提供任何名称。
+
+**可以指名一份尚不存在的证书。** 只有在 `auto_self_signed` 关闭时，`cert_path`／`key_path` 指向一个不存在的文件才是硬性失败。开启它之后，监听器会先用生成的材料起步，而证书轮询器会在真正的那一对出现的当下把它接过去——不需要重启，也没有什么要协调。正是这一点让一个监听器可以被配置成使用一份别的东西尚未签发的证书，而在一台 CA 是在解析器启动之后才被创建的机器上，那本来就是常态。在 `auto_self_signed: false` 之下，缺失的文件仍然是致命的：那是运维在说"要么给我这份证书，要么什么都不要"。
+
+**这三者都可以在服务器运行期间重新配置。** `SetDotConfig`、`SetDohConfig` 与 `SetDoqConfig` 可以打开、迁移、换钥或关停各自的监听器，无需重启；而 `Get*Config` 报告的是**实际绑定**的地址——只要请求写的是端口 0，它就与请求的不同。启动路径走的是同一段代码，因此一份从 YAML 生效的配置，经由 gRPC 到来时行为完全一致。
+
+其中的次序值得知道，因为在旧监听器让出端口之前，新的无法启动。所有**不需要端口**就能做的检查会先做完——bind 列表可解析、TLS 材料可加载或可生成——因此一个坏地址或一份读不出来的证书会在旧监听器仍在服务时被拒绝。之后才停掉旧监听器并等待它们结束。如果绑定仍然失败，就把先前的配置放回去，并如实报告该传输已下线，而不是声称成功。空的 bind 列表是关停，不是错误。
+
+这一切从头到尾都没有碰过 `:53`。加密传输是彼此独立的监听器，重新配置其中一个，在它自身之外不付出任何代价。
 
 ## DNSSEC
 
@@ -2203,6 +2214,8 @@ defer client.Close()
 | `RecordTypeNSEC3` | 19 | DNSSEC 下一个安全记录 v3 |
 | `RecordTypeNSEC3PARAM` | 20 | DNSSEC NSEC3 参数 |
 | `RecordTypeCERT` | 21 | 在 DNS 中存储证书（RFC 4398） |
+| `RecordTypeSVCB` | 22 | 服务绑定（RFC 9460）；DDR 指定记录所用的类型 |
+| `RecordTypeHTTPS` | 23 | HTTPS 专用的 SVCB 形式（RFC 9460 §9）|
 
 ## RFC 兼容性
 

@@ -500,6 +500,11 @@ pub fn canonical_rdata(record: &DnsRecord) -> Option<Vec<u8>> {
             out.push(fields[2].parse::<u8>().ok()?);
             out.extend_from_slice(&hex::decode(fields[3]).ok()?);
         }
+        RecordKind::SVCB | RecordKind::HTTPS => {
+            // Encoded by the same code that builds the served rdata, so the
+            // bytes signed here and the bytes on the wire cannot disagree.
+            out.extend_from_slice(&crate::svcb::canonical_rdata(value)?);
+        }
         RecordKind::CERT => {
             // "cert_type key_tag algorithm base64_cert_data"
             if fields.len() < 4 {

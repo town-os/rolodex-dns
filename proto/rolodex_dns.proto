@@ -50,6 +50,14 @@ enum RecordType {
   NSEC3PARAM = 20;
   // CERT record - certificate storage in DNS (RFC 4398)
   CERT = 21;
+  // SVCB record - service binding (RFC 9460). The type DDR designations are
+  // published as: a client asks its resolver for `_dns.resolver.arpa. SVCB` to
+  // discover that resolver's encrypted endpoints (RFC 9462).
+  // Value is one line of presentation format: "<priority> <target> [key=value ...]".
+  SVCB = 22;
+  // HTTPS record - the HTTPS-specific SVCB form (RFC 9460 §9). Same value
+  // format as SVCB.
+  HTTPS = 23;
 }
 
 // DnsRecord represents a single DNS record in the database.
@@ -690,12 +698,28 @@ message TlsConfig {
   string cert_path = 1;
   string key_path = 2;
   bool auto_self_signed = 3;
+  // Extra subject alternative names baked into a GENERATED certificate, on top
+  // of the loopback set and the listener's own bind addresses (which are folded
+  // in automatically). This is what makes a generated certificate usable from
+  // the LAN: a client configured with an authentication name checks the name it
+  // dialled, and a wildcard bind like 0.0.0.0 is not a name anybody dials, so
+  // without this the certificate would name localhost and nothing else.
+  // Ignored when cert_path/key_path are set — that certificate carries whatever
+  // names it was issued for.
+  repeated string self_signed_sans = 4;
 }
 
 // DotConfig configures DNS-over-TLS.
 message DotConfig {
+  // A single bind address. Kept for callers that predate `binds`; when `binds`
+  // is non-empty this is ignored. Both empty means "shut the listener down".
   string bind = 1;
   TlsConfig tls = 2;
+  // Bind addresses. A list because one string cannot cover both address
+  // families: 0.0.0.0 is IPv4-only, and a [::] socket takes v4-mapped traffic
+  // too (net.ipv6.bindv6only=0, the Linux default) so it collides with the
+  // 0.0.0.0 socket on the same port.
+  repeated string binds = 3;
 }
 
 // SetDotConfigRequest sets the DoT configuration.
@@ -722,9 +746,12 @@ message GetDotConfigResponse {
 
 // DohConfig configures DNS-over-HTTPS.
 message DohConfig {
+  // As DotConfig.bind: superseded by `binds` when that is non-empty.
   string bind = 1;
   TlsConfig tls = 2;
   bool enable_h3 = 3;
+  // As DotConfig.binds.
+  repeated string binds = 4;
 }
 
 // SetDohConfigRequest sets the DoH configuration.
@@ -751,8 +778,11 @@ message GetDohConfigResponse {
 
 // DoqConfig configures DNS-over-QUIC.
 message DoqConfig {
+  // As DotConfig.bind: superseded by `binds` when that is non-empty.
   string bind = 1;
   TlsConfig tls = 2;
+  // As DotConfig.binds.
+  repeated string binds = 3;
 }
 
 // SetDoqConfigRequest sets the DoQ configuration.

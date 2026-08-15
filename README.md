@@ -531,6 +531,7 @@ metrics:
 | `acme.root_ca_cn` | `"Rolodex Root CA"` | Common name of the root CA created at boot |
 | `acme.leaf_validity_days` | `90` | Validity of issued leaf certificates |
 | `acme.tlsa_port` / `acme.tlsa_proto` | `443` / `"tcp"` | Where the DANE-TA TLSA record is published per name |
+| `acme.tlsa_endpoints` | `[]` | Additional `"<port>/<proto>"` endpoints to publish the DANE-TA TLSA record at, beyond `tlsa_port`/`tlsa_proto`. A TLSA record names a service endpoint, so one certificate serving DoT (`853/tcp`) and DoQ (`853/udp`) needs a record for each; a malformed entry is refused at startup rather than skipped |
 | `acme.require_eab` | `true` | Require External Account Binding for account registration |
 | `acme.issuance_scope` | `"managed_zones"` | `"managed_zones"` (zone must have a CA) or `"any"` |
 | `proxy.url` | `""` (disabled) | HTTP proxy URL for forwarded DNS queries |
@@ -1366,6 +1367,8 @@ The following methods are also available. See `proto/rolodex_dns.proto` for full
 | 19 | `NSEC3` | Next secure record v3 (DNSSEC). Managed automatically by zone signing |
 | 20 | `NSEC3PARAM` | NSEC3 parameters (DNSSEC). Managed automatically by zone signing |
 | 21 | `CERT` | Certificate storage in DNS (RFC 4398). Value: `"cert_type key_tag algorithm base64_cert_data"`. Used to distribute the CA chain |
+| 22 | `SVCB` | Service binding (RFC 9460). Value: one line of presentation format, `"<priority> <target> [key=value ...]"` — e.g. `"1 dns.home. alpn=dot port=853"`. The type a DDR designation at `_dns.resolver.arpa.` is published as (RFC 9462) |
+| 23 | `HTTPS` | The HTTPS-specific SVCB form (RFC 9460 §9). Same value format as `SVCB` |
 
 ## Privacy-First Caching
 
@@ -1459,6 +1462,14 @@ Rolodex DNS supports three encrypted DNS transport protocols to prevent eavesdro
 **DNS-over-QUIC (DoQ)** -- RFC 9250, default port 8853. DNS queries over QUIC transport for low-latency encrypted resolution. Configure with `doq` section in YAML or `SetDoqConfig` via gRPC.
 
 All three protocols require TLS certificates. You can provide your own certificate and key, or set `auto_self_signed: true` to have Rolodex DNS generate a self-signed certificate automatically. A generated certificate covers `localhost`, `127.0.0.1`, `::1` and the listener's own bind addresses; add any other name clients dial the box by — its hostname, its `.local` name, a LAN alias — to `self_signed_sans`, since a client configured with an authentication name checks it and a wildcard bind contributes no name of its own.
+
+**A certificate that does not exist yet can be named.** `cert_path`/`key_path` pointing at a file that is not there is a hard failure only when `auto_self_signed` is off. With it on, the listener starts on generated material and the certificate poller adopts the real pair the moment it appears — no restart, nothing to coordinate. This is what lets a listener be configured for a certificate something else has not issued yet, which is the ordinary case on a box whose CA is created after the resolver starts. With `auto_self_signed: false` a missing file is still fatal: that is an operator saying "serve this certificate or nothing".
+
+**All three are reconfigurable while the server runs.** `SetDotConfig`, `SetDohConfig` and `SetDoqConfig` open, move, re-key or shut down their listener without a restart, and `Get*Config` reports the addresses actually bound — which differ from the ones requested whenever the request named port 0. The startup path uses the same code, so a configuration that works from the YAML behaves identically arriving over gRPC.
+
+The ordering is worth knowing, because a listener cannot start before the old one on its port stops. Everything checkable *without* the port is checked first — the bind list resolves, the TLS material loads or generates — so a bad address or an unreadable certificate is refused with the old listener still serving. Only then are the old listeners stopped and awaited. If the bind fails anyway, the previous configuration is restored and the call reports the transport down rather than claiming success. An empty bind list is a shutdown, not an error.
+
+`:53` is never touched by any of this. The encrypted transports are independent listeners, so reconfiguring one costs nothing outside itself.
 
 ## DNSSEC
 
@@ -2203,6 +2214,8 @@ All methods accept a `context.Context` for cancellation and deadlines.
 | `RecordTypeNSEC3` | 19 | DNSSEC next secure record v3 |
 | `RecordTypeNSEC3PARAM` | 20 | DNSSEC NSEC3 parameters |
 | `RecordTypeCERT` | 21 | Certificate storage in DNS (RFC 4398) |
+| `RecordTypeSVCB` | 22 | Service binding (RFC 9460); the type DDR designations use |
+| `RecordTypeHTTPS` | 23 | HTTPS-specific SVCB form (RFC 9460 §9) |
 
 ## RFC Compliance
 

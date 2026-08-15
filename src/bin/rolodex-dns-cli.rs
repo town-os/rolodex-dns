@@ -94,6 +94,12 @@ enum RecordTypeArg {
     Nsec3param,
     /// CERT certificate (RFC 4398). Value: "cert_type key_tag algorithm base64_cert_data"
     Cert,
+    /// SVCB service binding (RFC 9460). Value: "<priority> <target> [key=value ...]",
+    /// e.g. "1 dns.home. alpn=dot port=853". This is what a DDR designation at
+    /// `_dns.resolver.arpa.` is published as (RFC 9462)
+    Svcb,
+    /// HTTPS record — the HTTPS-specific SVCB form (RFC 9460 §9). Same value format
+    Https,
 }
 
 impl RecordTypeArg {
@@ -121,6 +127,8 @@ impl RecordTypeArg {
             RecordTypeArg::Nsec3 => 19,
             RecordTypeArg::Nsec3param => 20,
             RecordTypeArg::Cert => 21,
+            RecordTypeArg::Svcb => 22,
+            RecordTypeArg::Https => 23,
         }
     }
 
@@ -148,6 +156,8 @@ impl RecordTypeArg {
             19 => "NSEC3",
             20 => "NSEC3PARAM",
             21 => "CERT",
+            22 => "SVCB",
+            23 => "HTTPS",
             _ => "UNKNOWN",
         }
     }

@@ -29,5 +29,7 @@ pub mod probe;
 pub mod record_cache;
 pub mod resolver;
 pub mod secure_client;
+pub mod svcb;
 pub mod tls;
+pub mod transports;
 pub mod ttl_drift;

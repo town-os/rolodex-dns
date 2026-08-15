@@ -58,9 +58,32 @@ pub async fn serve_dot(
     dns_server: Arc<DnsServer>,
     tls: watch::Receiver<Arc<rustls::ServerConfig>>,
 ) -> Result<()> {
-    let listener = TcpListener::bind(bind)
+    let listener = bind_dot(bind).await?;
+    serve_dot_on(listener, dns_server, tls).await
+}
+
+/// Binds a DoT listener without starting it.
+///
+/// Split from [`serve_dot`] so a caller that must report a bind failure to
+/// somebody — the transport supervisor, answering a `SetDotConfig` RPC — can
+/// take the error synchronously instead of discovering it inside a spawned task,
+/// where the only place it could go is the log.
+pub async fn bind_dot(bind: &str) -> Result<TcpListener> {
+    TcpListener::bind(bind)
         .await
-        .context(format!("failed to bind DoT listener on {}", bind))?;
+        .context(format!("failed to bind DoT listener on {}", bind))
+}
+
+/// Serves DNS-over-TLS on an already-bound listener. See [`serve_dot`].
+pub async fn serve_dot_on(
+    listener: TcpListener,
+    dns_server: Arc<DnsServer>,
+    tls: watch::Receiver<Arc<rustls::ServerConfig>>,
+) -> Result<()> {
+    let bind = listener
+        .local_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|_| "<unknown>".to_string());
     info!("DoT server listening on {}", bind);
     // Bounds concurrent connections, exactly as the plain-TCP listener does. A
     // DoT connection costs more than a TCP one — it carries TLS session state —

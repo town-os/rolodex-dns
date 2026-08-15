@@ -41,8 +41,7 @@ fn portal_state(db: &Database) -> PortalState {
         require_eab: true,
         issuance_any: false,
         leaf_validity_days: 90,
-        tlsa_port: 443,
-        tlsa_proto: "tcp".to_string(),
+        tlsa_endpoints: vec![(443, "tcp".to_string())],
     };
     PortalState {
         db: db.clone(),

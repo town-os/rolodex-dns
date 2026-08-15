@@ -54,7 +54,7 @@ DoT のハンドシェイクタイムアウトは、素の TCP には要らな�
 
 **基本**：A、AAAA、CNAME、MX、TXT、NS、SOA、SRV、PTR。
 
-**拡張**：URI（RFC 7553）、SSHFP（RFC 4255）、DNAME（RFC 6672）、ANAME（クエリ時に解決されるエイリアス）、ZONEMD（RFC 9156）、TLSA（RFC 6698）、CERT（RFC 4398）。
+**拡張**：URI（RFC 7553）、SSHFP（RFC 4255）、DNAME（RFC 6672）、ANAME（クエリ時に解決されるエイリアス）、ZONEMD（RFC 9156）、TLSA（RFC 6698）、CERT（RFC 4398）、SVCB と HTTPS（RFC 9460）。
 
 **DNSSEC**：DNSKEY、DS、RRSIG、NSEC、NSEC3、NSEC3PARAM。
 
@@ -115,6 +115,8 @@ EDNS（RFC 6891）のコンテキストは受信クエリから取り出され�
 `upstream_resolve`——クエリを機体の外へ送る唯一の関数——は同じゲートを三度目に携えており、しかもそれは呼び出し元が既に解析したメッセージを再解析するのではなく、`wire_question_is_arpa` によって線上のバイトから直接読まれます。
 
 所属は**ラベル境界**で照合され、文字列サフィックスとしてではありません：ある名前がサブツリーに属するのは、その最後のラベルがちょうど `arpa` であるとき、かつそのときに限ります。ですから `notarpa.` と `arpa.example.com.` は普通の名前として正常に解決されます。`resolver::is_arpa_subtree` が唯一の述語であり、線レベルの双子が未解析のバイトに対して同じ問いに答えます。
+
+**これは DDR を塞ぐものではなく、DDR を可能にしているものです。** RFC 9462 では、クライアントは自分のリゾルバーに `_dns.resolver.arpa. SVCB` を尋ねることで、そのリゾルバーの暗号化された接続先を見つけます —— それはこのサブツリーの中の名前です。この拒否があらゆるローカルの照会の*下*に位置する落ち抜けであるため、このサーバー自身が持つ指定は自身のレコードから答えられ、持っていない指定は取りに行かれるのではなく拒否されます。その両方が DDR の必要とする性質です。あるリゾルバー自身の指定に答えるのはそのリゾルバーだけであり、第三者がそれを供することはできません。機体は、その名前に SVCB レコードを置くことで自分の指定を公開します（Town OS は `RebuildDNS` でそれを行います）。何も公開しない機体は何も広告しません —— それは壊れているのではなく、正しい答えです。
 
 率直に述べておくべき帰結：この機体がデータを持たないアドレスの逆引きは解決されなくなります——`dig -x 8.8.8.8` はインターネットから答えられるのではなく REFUSED になります——そして `ipv4only.arpa`（RFC 7050）は答えられずに拒否され、NAT64 を探索しているクライアントはそれを「ここに NAT64 は無い」と読みます。逆引きツリー全体をローカルデータからきちんと提供することは、別の、先送りされた作業です。
 
@@ -246,6 +248,22 @@ DNSBL の確認は全体で切り替えでき、**既定では無効、プロバ
 暗号化トランスポートはすべて任意で、TLS の設定を必要とします。証明書が与えられていない場合、`auto_self_signed` が `true`（既定）なら自己署名証明書が自動生成されます。
 
 生成された証明書は常に `localhost`、`127.0.0.1`、`::1` を携え、その上に**そのリスナー自身のバインドアドレス**と `<transport>.tls.self_signed_sans` にあるものを携えます。バインドアドレスが自動的に畳み込まれるのは、それが構造上クライアントの接続先となる識別子だからです——`192.168.1.5:853` のリスナーには `192.168.1.5` として到達しますが、`localhost` しか名乗らない証明書は、認証名を設定したすべてのクライアントの名前確認で失敗します。それは、生の公開鍵ピンニングを除けば自己署名証明書に許される唯一の検証です。ワイルドカードのバインド（`0.0.0.0`、`::`）は識別子ではないので落とされ、ワイルドカード上のリスナーはこの機体を明示的に名乗るために `self_signed_sans` を必要とします。重複は綴りをまたいで畳まれます（`[::1]` と `::1`、`DNS.Home.` と `dns.home`）。`cert_path`／`key_path` が設定されている場合、これらは一切適用されません：その証明書は発行された名前をそのまま携えます。
+
+#### 実行時の再設定
+
+**暗号化されたリスナーはいずれも、サーバーを動かしたまま開き、移し、鍵を替え、あるいは停止できます。** `SetDotConfig`、`SetDohConfig`、`SetDoqConfig` は以前、要求をログに書き、何も保存しないまま `success: true` を返していました。オーケストレーターにはそれと「動いている」との区別がつかず——そのため暗号化 DNS を設定する唯一の方法は設定ファイルを書いて再起動することでした。そして機体で唯一のリゾルバーの再起動は、その上のすべてにとっての DNS の停止です。
+
+`TransportSupervisor`（`src/transports.rs`）がリスナーとその TLS マネージャをプロセスの生涯にわたって所有し、**起動の経路と RPC は同じコード**です。`main.rs` は各トランスポートを、RPC が呼ぶのと同じ `apply()` で立ち上げます。したがって起動時に働く設定は、あとから届く設定を適用するのとまったく同じコードによって適用され、両者が離れていくことはありえません。この間 `:53` は終始触れられません——互いに独立したリスナーだからです。
+
+その順序は、古いリスナーがポートを手放すまで新しいものが起動できないという事実に強いられたものです。古い設定を捨てる前に新しい設定がバインドできることを証明する手立ては、ありません。
+
+1. まずポート**なしで**確かめられることをすべて確かめます——バインド一覧が解決すること、TLS の材料が読めるか生成できること。打ち間違えたアドレスや読めない証明書は、古いリスナーがまだ提供している状態で拒否されます。
+2. 次に古いリスナーを止め、**その終了を待ちます**。待たずに abort すると、新しいバインドが古いソケットの閉鎖と競走し、ときおり `EADDRINUSE` で失敗します。
+3. それでもバインドが失敗したら、前の設定を戻し、呼び出し側にはそのトランスポートが落ちていると伝えます。そこで成功と報告すれば、DoT を提供しているつもりで提供していない機体が残ります。
+
+空のバインド一覧はエラーではなく停止です——設定の節を省くことがすでに意味しているのは、それだからです。`Get*Config` が報告するのは実際に**バインドされた**アドレスであり、要求がポート 0 を名指していれば、それは要求されたものとは異なります。監督者を持たずに組み立てられたサーバー（プロセス内のテスト用の仕掛け）は、持ってもいないリスナーを設定したと称するのではなく `FailedPrecondition` を返します。
+
+**まだ発行されていない証明書を名指せます。** `cert_path`／`key_path` が不在のファイルを指していることが致命的になるのは `auto_self_signed` が切れているときだけで、入れておけばリスナーは生成された材料で起動し、下の巡回が、本物の組が着いたときにそれを引き継ぎます。これによって、他の何かがまだ発行していない証明書に向けてリスナーを設定できます——CA がリゾルバーの起動のあとに作られる機体では、それがごく普通の場合です。
 
 #### 証明書のリロード
 
@@ -1304,6 +1322,7 @@ dns:
 | `acme.root_ca_cn`                   | `Rolodex Root CA`              | 起動時に作られるルート CA の common name |
 | `acme.leaf_validity_days`           | `90`                           | 発行されるリーフ証明書の有効期間 |
 | `acme.tlsa_port` / `acme.tlsa_proto`| `443` / `tcp`                  | 名前ごとに DANE-TA の TLSA レコードを公開する場所 |
+| `acme.tlsa_endpoints`              | `[]`                           | DANE-TA レコードの追加 `"<port>/<proto>"` エンドポイント。DoT（`853/tcp`）と DoQ（`853/udp`）を担う一枚の証明書はエンドポイントごとに一件必要です。書式の誤った項目は起動を止めます |
 | `acme.require_eab`                  | `true`                         | アカウント登録に External Account Binding を要求 |
 | `acme.issuance_scope`               | `managed_zones`                | `managed_zones`（ゾーンに CA が必要）または `any` |
 | `metrics.bind`                      | `127.0.0.1:9153`               | Prometheus の `/metrics` HTTP リスナー。interface:port に対応（セクションは任意） |
@@ -1322,7 +1341,7 @@ dns:
 | `test`                | すべてのテストを実行します：lint、Go の統合テスト、Go のユニットテスト、Rust のテスト（`cargo test`）、JavaScript のテスト。 |
 | `test-log`            | `test` と同じで、出力を `/tmp/rolodex-dns/log` 以下のタイムスタンプ付きログファイルへ tee します（`LOG_DIR` で上書き可能）。実行が失敗しても最後にログのパスが表示されます。 |
 | `rust-test`           | Rust の統合テストファイルを実行し、続いて `cargo test` を実行します。 |
-| `rust-integration-test` | ビルドしてから、Rust の統合テストファイルを一つずつ明示的に実行します（`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`arpa_refusal_test`、`blocklist_nxdomain_test`、`zonemd_test`、`dot_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`、および `security_*` の各スイート）。 |
+| `rust-integration-test` | ビルドしてから、Rust の統合テストファイルを一つずつ明示的に実行します（`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`arpa_refusal_test`、`blocklist_nxdomain_test`、`zonemd_test`、`dot_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`、`acme_tlsa_endpoints_test`、および `security_*` の各スイート）。 |
 | `lint`                | `translation-check`、`cargo fmt -- --check`、`cargo clippy --all-targets -- -D warnings` を実行します。 |
 | `prometheus-test`     | 文書化されたすべての PromQL クエリを、コンテナ化された Prometheus（`quay.io/prometheus/prometheus`、`ROLODEX_PROMETHEUS_IMAGE` で上書き可能）に対して実行します。`test` の前提条件です。podman が必要で、無ければテストは失敗ではなく**大きな声でスキップ**するので、コンテナランタイムの無いマシンでも `make test` は緑になります。`ROLODEX_PROMETHEUS_REQUIRED=1` はそのスキップを失敗に変えます。CI はこれを設定すべきです。 |
 | `deps`                | ビルドの依存物をインストールします：Rust のクロスコンパイル用ツールチェーン（`cross-deps`）、JavaScript の開発依存物（`js/` での `npm install`）、そして `python-deps`。 |
@@ -1581,6 +1600,8 @@ Rust のテスト（`cargo test`）には、gRPC の操作、DNS の解決（UDP
 
 `tests/acme_admin_test.rs` は五つの管理 RPC を覆います。`success` フラグではなく性質を見ます：`EnsureZoneCa` が冪等であること（作り直せば、古い中間に連なるすべての証明書と、公開された DANE-TA レコードまで壊れます）、そして共有された一つのルートの下で各ゾーンに自分の中間を与えつつ、チェーンを DNS へ公開すること。発行された EAB が保存され、ゾーン単位のスコープを持ち、未使用であり、返された base64url の鍵が保存されたシークレットにデコードされること。削除が「何かを削除したのか」について正直であり、名指しされた資格情報に限定されること。そして `ListAcmeCertificates` がラベル境界でサフィックス一致するので、`notexample.com.` が `example.com.` の下に列挙されないこと。
 
+`tests/acme_tlsa_endpoints_test.rs` は、設定ファイルが実際のバイナリと出会う場所で `acme.tlsa_endpoints` を覆います。その厳しさが観察できるのはそこだけだからです。書式の誤った項目——プロトコルが無い、TCP でも UDP でもないプロトコル、範囲外のポート、数字でないポート、ゼロのポート——は読み飛ばされるのではなくサーバーを止めなければなりません。読み飛ばされた項目とは、黙って決して現れない TLSA レコードのことであり、DANE を確かめるクライアントにとって、レコードが無いこととサーバーに DANE が無いことは見分けがつかないからです。書式の誤った五つの形を起動し、それぞれが非ゼロで終了することを主張します。対照は、書式の正しい `["853/tcp", "853/udp"]` と、キーそのものが無い場合で、どちらも起動して立ち続けなければなりません——それが無ければ、無関係な理由で起動に失敗したサーバーがあらゆる拒否の主張を満たしてしまいます。
+
 ### CLI の統合テスト
 
 `rolodex-dns-cli` バイナリには、テスト用の gRPC サーバーを起動してそれに対して CLI バイナリを実行する統合テストがあり、TCP と Unix ソケットの両トランスポートで**すべての**サブコマンドを覆います：認証（成功、失敗、Unix ソケットでの迂回）、すべてのレコード型、ワイルドカードの絞り込み、ネットワークへの参加とスコープ付きレコード、権威ゾーン、各種キャッシュ、ローカルブロックリスト、TTL ドリフトと DNS64、DHCP のプール／リース／証明書オプション、DNSSEC の鍵生成と署名、DANE の TLSA 生成、そして ACME 管理のコマンド。
@@ -1598,7 +1619,7 @@ Go クライアントには二層のテストがあります：
 - **ユニットテスト** — `bufconn` によるプロセス内のモック gRPC サーバーを使い、すべてのクライアントメソッド、認証トークンの伝播、トランスポートのモード、エラー処理、そして端のケース（冪等な close、遅延ダイヤル、独自のダイヤルオプション）をテストします。
 - **統合テスト** — `integration` ビルドタグで有効化されます。各テストは、一意の一時ディレクトリ、ランダムなポート、隔離されたデータベースを持つ本物の Rolodex DNS サーバーのサブプロセスを起動します。テストはレコードの CRUD、ワイルドカードの絞り込み、フォワーダーの設定、ブロックリストの往復、キャッシュのフラッシュ、Unix ソケットのトランスポート、認証の失敗、既定 TTL の挙動、同時クライアント（5 並行）、ネットワークスコープ、DNS64、TTL ドリフトを覆います。
 
-`make test` ターゲットはテストスイート全体を実行します：lint、Go の統合テスト、Go のユニットテスト、Rust の統合テスト（各テストファイルを明示的に：`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`arpa_refusal_test`、`blocklist_nxdomain_test`、`zonemd_test`、`dot_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`、および `security_*` の各スイート）、`cargo test` によるすべての Rust テスト（上記のリゾルバースイートも覆います）、そして JavaScript の lint／統合／ユニットテスト。個別のターゲットも利用できます：`make go-integration-test`、`make go-test`、`make rust-integration-test`、`make rust-test`、`make js-integration-test`、`make js-test`。実行全体をタイムスタンプ付きのログファイルに取るには `make test-log` を使ってください。`make translation-check` は翻訳された各文書を英語と節ごとに突き合わせ、ずれがあれば非ゼロで終了します。`lint` の前提条件なので `make test` の一部として走り、どれかの言語が遅れていればゲートを落とします。
+`make test` ターゲットはテストスイート全体を実行します：lint、Go の統合テスト、Go のユニットテスト、Rust の統合テスト（各テストファイルを明示的に：`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`arpa_refusal_test`、`blocklist_nxdomain_test`、`zonemd_test`、`dot_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`、`acme_tlsa_endpoints_test`、および `security_*` の各スイート）、`cargo test` によるすべての Rust テスト（上記のリゾルバースイートも覆います）、そして JavaScript の lint／統合／ユニットテスト。個別のターゲットも利用できます：`make go-integration-test`、`make go-test`、`make rust-integration-test`、`make rust-test`、`make js-integration-test`、`make js-test`。実行全体をタイムスタンプ付きのログファイルに取るには `make test-log` を使ってください。`make translation-check` は翻訳された各文書を英語と節ごとに突き合わせ、ずれがあれば非ゼロで終了します。`lint` の前提条件なので `make test` の一部として走り、どれかの言語が遅れていればゲートを落とします。
 
 ## 主要な依存物
 

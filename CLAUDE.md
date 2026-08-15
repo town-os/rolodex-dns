@@ -25,7 +25,7 @@ Each of the five has a Traditional Chinese (`.zh-TW.md`), Simplified Chinese (`.
 - handle all std::result::Result in an appropriate way
 - do not use unwrap
 - do not use unsafe code
-- never run tests yourself
+- **never run tests yourself.** This is not only about `make`: `cargo test`, `go test`, `npm test` and any other direct invocation are equally off limits, narrowly filtered to one case or not. The operator runs the suite and hands back the log. `cargo check`, `cargo clippy` and `cargo fmt` are fine — they compile and lint, they do not execute anything
 - write tests for everything, including integration and real tests
 - use make test to validate any changes
 - integration tests should not alter the host, ever

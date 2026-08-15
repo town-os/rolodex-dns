@@ -94,6 +94,8 @@ pub enum RecordKind {
     NSEC3,
     NSEC3PARAM,
     CERT,
+    SVCB,
+    HTTPS,
 }
 
 impl RecordKind {
@@ -121,6 +123,8 @@ impl RecordKind {
             RecordKind::NSEC3 => "NSEC3",
             RecordKind::NSEC3PARAM => "NSEC3PARAM",
             RecordKind::CERT => "CERT",
+            RecordKind::SVCB => "SVCB",
+            RecordKind::HTTPS => "HTTPS",
         }
     }
 
@@ -148,6 +152,8 @@ impl RecordKind {
             "NSEC3" => Some(RecordKind::NSEC3),
             "NSEC3PARAM" => Some(RecordKind::NSEC3PARAM),
             "CERT" => Some(RecordKind::CERT),
+            "SVCB" => Some(RecordKind::SVCB),
+            "HTTPS" => Some(RecordKind::HTTPS),
             _ => None,
         }
     }
@@ -181,6 +187,8 @@ impl RecordKind {
             RecordKind::NSEC3PARAM => 51,
             RecordKind::TLSA => 52,
             RecordKind::ZONEMD => 63,
+            RecordKind::SVCB => 64,
+            RecordKind::HTTPS => 65,
             RecordKind::URI => 256,
             // ANAME has no assigned code; this is the value hickory uses for the
             // draft type, matched here so the two agree.
@@ -212,6 +220,8 @@ impl RecordKind {
             RecordKind::NSEC3 => 19,
             RecordKind::NSEC3PARAM => 20,
             RecordKind::CERT => 21,
+            RecordKind::SVCB => 22,
+            RecordKind::HTTPS => 23,
         }
     }
 
@@ -239,6 +249,8 @@ impl RecordKind {
             19 => Some(RecordKind::NSEC3),
             20 => Some(RecordKind::NSEC3PARAM),
             21 => Some(RecordKind::CERT),
+            22 => Some(RecordKind::SVCB),
+            23 => Some(RecordKind::HTTPS),
             _ => None,
         }
     }

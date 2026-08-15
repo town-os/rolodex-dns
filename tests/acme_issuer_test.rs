@@ -148,8 +148,14 @@ async fn full_acme_issuance_flow() {
         require_eab: true,
         issuance_any: false,
         leaf_validity_days: 90,
-        tlsa_port: 443,
-        tlsa_proto: "tcp".to_string(),
+        // Three endpoints on one certificate: HTTPS, and the DoT/DoQ pair that
+        // shares port 853 across two protocols. Issuance has to publish a TLSA
+        // for each, which is what a single port/proto pair could not express.
+        tlsa_endpoints: vec![
+            (443, "tcp".to_string()),
+            (853, "tcp".to_string()),
+            (853, "udp".to_string()),
+        ],
     };
     let router = build_router(state);
 
@@ -273,14 +279,36 @@ async fn full_acme_issuance_flow() {
     )
     .expect("issued leaf must chain to the Rolodex root");
 
-    // --- DANE-TA record was auto-published --------------------------------
-    let tlsa = db
-        .lookup("_443._tcp.host.example.com.", Some(RecordKind::TLSA))
-        .unwrap();
-    assert_eq!(tlsa.len(), 1, "DANE-TA TLSA record should be published");
-    assert!(tlsa[0].value.starts_with("2 1 1 "));
+    // --- DANE-TA records were auto-published, one per endpoint -------------
+    //
+    // One certificate, three endpoints. Asserting only that *a* record exists
+    // would pass with the old single-pair behaviour, so each name is checked
+    // for exactly one record carrying the intermediate's own TLSA value.
     let expected_tlsa = rolodex_dns::ca::intermediate_tlsa(&db, "example.com").unwrap();
-    assert_eq!(tlsa[0].value, expected_tlsa);
+    for name in [
+        "_443._tcp.host.example.com.",
+        "_853._tcp.host.example.com.",
+        "_853._udp.host.example.com.",
+    ] {
+        let tlsa = db.lookup(name, Some(RecordKind::TLSA)).unwrap();
+        assert_eq!(tlsa.len(), 1, "exactly one DANE-TA record at {name}");
+        assert!(
+            tlsa[0].value.starts_with("2 1 1 "),
+            "{name} should be DANE-TA (usage 2, SPKI, SHA-256)"
+        );
+        assert_eq!(tlsa[0].value, expected_tlsa, "{name} value");
+    }
+
+    // The control: publication follows the configured endpoints rather than
+    // spraying every plausible port. 8853 is rolodex's own DoQ default and is
+    // deliberately NOT in the list above, so a record there would mean the
+    // endpoint set is being ignored.
+    assert!(
+        db.lookup("_8853._udp.host.example.com.", Some(RecordKind::TLSA))
+            .unwrap()
+            .is_empty(),
+        "no record should be published at an endpoint that was not configured"
+    );
 }
 
 #[tokio::test]
@@ -300,8 +328,7 @@ async fn issuance_rejected_outside_account_zone() {
         require_eab: true,
         issuance_any: false,
         leaf_validity_days: 90,
-        tlsa_port: 443,
-        tlsa_proto: "tcp".to_string(),
+        tlsa_endpoints: vec![(443, "tcp".to_string())],
     };
     let router = build_router(state);
     let nonce = initial_nonce(&router).await;
@@ -347,8 +374,7 @@ async fn reused_nonce_is_rejected() {
         require_eab: false,
         issuance_any: true,
         leaf_validity_days: 90,
-        tlsa_port: 443,
-        tlsa_proto: "tcp".to_string(),
+        tlsa_endpoints: vec![(443, "tcp".to_string())],
     };
     let router = build_router(state);
     let nonce = initial_nonce(&router).await;

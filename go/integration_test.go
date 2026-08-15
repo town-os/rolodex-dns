@@ -1141,9 +1141,21 @@ func TestIntegrationTransportConfigs(t *testing.T) {
 	client, _ := setupTestServer(t)
 	ctx := context.Background()
 
+	// Ephemeral loopback addresses, not the standard 853/443/8853 on the
+	// wildcard. These RPCs used to be accepted and discarded, so the port in the
+	// request never left the database and any value round-tripped; they now
+	// start a real listener, which makes 853 and 443 an EACCES for an unprivileged
+	// run and the wildcard a socket reachable from off the machine while the
+	// suite runs. A test must not need root and must not bind a fixed privileged
+	// port -- and the assertion here is that the setting round-trips, which the
+	// address it round-trips does not change.
+	dotBind := allocatePort(t)
+	dohBind := allocatePort(t)
+	doqBind := allocatePort(t)
+
 	// DoT config
 	err := client.SetDotConfig(ctx, &DotConfig{
-		Bind: "0.0.0.0:853",
+		Bind: dotBind,
 	})
 	if err != nil {
 		t.Fatalf("SetDotConfig: %v", err)
@@ -1152,13 +1164,13 @@ func TestIntegrationTransportConfigs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDotConfig: %v", err)
 	}
-	if dotCfg != nil && dotCfg.Bind != "0.0.0.0:853" {
-		t.Errorf("DoT bind = %q, want %q", dotCfg.Bind, "0.0.0.0:853")
+	if dotCfg != nil && dotCfg.Bind != dotBind {
+		t.Errorf("DoT bind = %q, want %q", dotCfg.Bind, dotBind)
 	}
 
 	// DoH config
 	err = client.SetDohConfig(ctx, &DohConfig{
-		Bind:     "0.0.0.0:443",
+		Bind:     dohBind,
 		EnableH3: true,
 	})
 	if err != nil {
@@ -1168,13 +1180,13 @@ func TestIntegrationTransportConfigs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDohConfig: %v", err)
 	}
-	if dohCfg != nil && dohCfg.Bind != "0.0.0.0:443" {
-		t.Errorf("DoH bind = %q, want %q", dohCfg.Bind, "0.0.0.0:443")
+	if dohCfg != nil && dohCfg.Bind != dohBind {
+		t.Errorf("DoH bind = %q, want %q", dohCfg.Bind, dohBind)
 	}
 
 	// DoQ config
 	err = client.SetDoqConfig(ctx, &DoqConfig{
-		Bind: "0.0.0.0:8853",
+		Bind: doqBind,
 	})
 	if err != nil {
 		t.Fatalf("SetDoqConfig: %v", err)
@@ -1183,8 +1195,8 @@ func TestIntegrationTransportConfigs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDoqConfig: %v", err)
 	}
-	if doqCfg != nil && doqCfg.Bind != "0.0.0.0:8853" {
-		t.Errorf("DoQ bind = %q, want %q", doqCfg.Bind, "0.0.0.0:8853")
+	if doqCfg != nil && doqCfg.Bind != doqBind {
+		t.Errorf("DoQ bind = %q, want %q", doqCfg.Bind, doqBind)
 	}
 
 	// Proxy config

@@ -132,6 +132,11 @@ impl BindList {
         Self(vec![spec.into()])
     }
 
+    /// Wraps several. Used by the gRPC layer, which receives a repeated field.
+    pub fn many(specs: impl IntoIterator<Item = String>) -> Self {
+        Self(specs.into_iter().collect())
+    }
+
     /// The configured specifications, unresolved.
     pub fn specs(&self) -> &[String] {
         &self.0
@@ -473,7 +478,11 @@ impl Default for DnsblSettings {
 }
 
 /// TLS configuration for encrypted DNS transports.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Compared for equality by the transport supervisor, which uses "is this the
+/// same configuration the listener is already running" to decide whether a
+/// `Set<Transport>Config` has anything to do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TlsConfig {
     /// Path to the TLS certificate file.
     pub cert_path: Option<String>,
@@ -528,9 +537,10 @@ impl Default for DotConfig {
 /// DNS-over-HTTPS (DoH) listener configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DohConfig {
-    /// Address to bind the DoH listener (e.g. "0.0.0.0:443").
+    /// Address(es) to bind the DoH listener. A bare string (`"0.0.0.0:443"`) or
+    /// a list, on the same terms as `dot.bind`.
     #[serde(default = "default_doh_bind")]
-    pub bind: String,
+    pub bind: BindList,
     /// TLS settings for the DoH listener.
     #[serde(default)]
     pub tls: TlsConfig,
@@ -603,6 +613,17 @@ pub struct AcmeConfig {
     /// Default protocol used to place the auto-published DANE-TA TLSA record.
     #[serde(default = "default_acme_tlsa_proto")]
     pub tlsa_proto: String,
+    /// Additional `"<port>/<proto>"` endpoints to publish the DANE-TA TLSA
+    /// record at, beyond `tlsa_port`/`tlsa_proto`.
+    ///
+    /// A TLSA record names a service endpoint, not a certificate, so one
+    /// certificate covering several endpoints needs one record per endpoint.
+    /// The scalar pair above cannot express that: encrypted DNS is DoT on
+    /// `853/tcp` **and** DoQ on `853/udp`, two names for the same certificate,
+    /// and publishing only one leaves the other failing closed for any client
+    /// that checks DANE.
+    #[serde(default)]
+    pub tlsa_endpoints: Vec<String>,
     /// Whether External Account Binding is required for account registration.
     #[serde(default = "default_true")]
     pub require_eab: bool,
@@ -623,9 +644,49 @@ impl Default for AcmeConfig {
             leaf_validity_days: default_acme_leaf_validity_days(),
             tlsa_port: default_acme_tlsa_port(),
             tlsa_proto: default_acme_tlsa_proto(),
+            tlsa_endpoints: Vec::new(),
             require_eab: true,
             issuance_scope: default_acme_issuance_scope(),
         }
+    }
+}
+
+impl AcmeConfig {
+    /// The effective set of `(port, proto)` endpoints to publish TLSA at.
+    ///
+    /// `tlsa_port`/`tlsa_proto` first, then `tlsa_endpoints` in order, with
+    /// duplicates dropped — listing an endpoint twice must not publish the same
+    /// record twice, and the scalar pair is easy to repeat in the list by
+    /// accident.
+    ///
+    /// A malformed entry is an error rather than a skip. A TLSA record that is
+    /// silently not published reads, to a DANE client, exactly like a server
+    /// that has no DANE — which is the failure this whole mechanism exists to
+    /// avoid, so it must not be reachable by a typo.
+    pub fn tlsa_endpoints(&self) -> Result<Vec<(u16, String)>, String> {
+        let mut out = vec![(self.tlsa_port, self.tlsa_proto.to_ascii_lowercase())];
+        for entry in &self.tlsa_endpoints {
+            let (port, proto) = entry.split_once('/').ok_or_else(|| {
+                format!("acme.tlsa_endpoints: expected \"<port>/<proto>\", got {entry:?}")
+            })?;
+            let port: u16 = port.parse().map_err(|_| {
+                format!("acme.tlsa_endpoints: {entry:?} has an invalid port {port:?}")
+            })?;
+            if port == 0 {
+                return Err(format!("acme.tlsa_endpoints: {entry:?} has port 0"));
+            }
+            let proto = proto.to_ascii_lowercase();
+            if proto != "tcp" && proto != "udp" {
+                return Err(format!(
+                    "acme.tlsa_endpoints: {entry:?} has protocol {proto:?}, expected tcp or udp"
+                ));
+            }
+            let pair = (port, proto);
+            if !out.contains(&pair) {
+                out.push(pair);
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -1127,8 +1188,8 @@ fn default_dot_bind() -> BindList {
     BindList::one("0.0.0.0:853")
 }
 
-fn default_doh_bind() -> String {
-    "0.0.0.0:443".to_string()
+fn default_doh_bind() -> BindList {
+    BindList::one("0.0.0.0:443")
 }
 
 fn default_doq_bind() -> BindList {
@@ -1243,6 +1304,101 @@ impl Default for Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The scalar pair alone, which is every configuration written before
+    /// `tlsa_endpoints` existed. The control for every case below: if this did
+    /// not hold, the additions could not be distinguished from a default.
+    #[test]
+    fn tlsa_endpoints_default_to_the_scalar_pair_alone() {
+        let acme = AcmeConfig::default();
+        assert_eq!(
+            acme.tlsa_endpoints().unwrap(),
+            vec![(443, "tcp".to_string())]
+        );
+    }
+
+    /// The case this exists for: one certificate serving DoT and DoQ needs a
+    /// record at `853/tcp` *and* `853/udp`. Publishing one is the silent half
+    /// failure, so the count is asserted, not just membership.
+    #[test]
+    fn tlsa_endpoints_add_to_the_scalar_pair_in_order() {
+        let acme = AcmeConfig {
+            tlsa_endpoints: vec!["853/tcp".to_string(), "853/udp".to_string()],
+            ..AcmeConfig::default()
+        };
+        assert_eq!(
+            acme.tlsa_endpoints().unwrap(),
+            vec![
+                (443, "tcp".to_string()),
+                (853, "tcp".to_string()),
+                (853, "udp".to_string()),
+            ]
+        );
+    }
+
+    /// Re-listing the scalar pair must not publish the same record twice.
+    #[test]
+    fn tlsa_endpoints_drop_duplicates_including_the_scalar_pair() {
+        let acme = AcmeConfig {
+            tlsa_endpoints: vec![
+                "443/tcp".to_string(),
+                "853/udp".to_string(),
+                "853/udp".to_string(),
+            ],
+            ..AcmeConfig::default()
+        };
+        assert_eq!(
+            acme.tlsa_endpoints().unwrap(),
+            vec![(443, "tcp".to_string()), (853, "udp".to_string())]
+        );
+    }
+
+    /// Protocol case is normalized rather than rejected: `_853._TCP.` is not a
+    /// name anything queries, so accepting the spelling and lowercasing it is
+    /// the difference between a working record and a silently unqueried one.
+    #[test]
+    fn tlsa_endpoint_protocol_case_is_normalized() {
+        let acme = AcmeConfig {
+            tlsa_proto: "TCP".to_string(),
+            tlsa_endpoints: vec!["853/UDP".to_string()],
+            ..AcmeConfig::default()
+        };
+        assert_eq!(
+            acme.tlsa_endpoints().unwrap(),
+            vec![(443, "tcp".to_string()), (853, "udp".to_string())]
+        );
+    }
+
+    /// A malformed entry must be an error, never a skip. A TLSA record that is
+    /// silently not published is indistinguishable, to a DANE client, from a
+    /// server that never had DANE — so a typo must stop the server instead.
+    #[test]
+    fn malformed_tlsa_endpoints_are_rejected_not_skipped() {
+        for bad in [
+            "853",         // no protocol
+            "853/sctp",    // not a TLSA protocol
+            "0/tcp",       // port 0 is not an endpoint
+            "70000/tcp",   // out of range for u16
+            "/tcp",        // no port
+            "eight53/tcp", // not a number
+        ] {
+            let acme = AcmeConfig {
+                tlsa_endpoints: vec![bad.to_string()],
+                ..AcmeConfig::default()
+            };
+            assert!(
+                acme.tlsa_endpoints().is_err(),
+                "{bad:?} should be rejected, not skipped"
+            );
+        }
+        // The control: a well-formed entry alongside the same defaults parses,
+        // so the rejections above are about the entries and not the harness.
+        let acme = AcmeConfig {
+            tlsa_endpoints: vec!["853/tcp".to_string()],
+            ..AcmeConfig::default()
+        };
+        assert!(acme.tlsa_endpoints().is_ok());
+    }
 
     #[test]
     fn test_default_config() {
@@ -1424,7 +1580,7 @@ mod tests {
                 },
             }),
             doh: Some(DohConfig {
-                bind: "0.0.0.0:443".to_string(),
+                bind: BindList::one("0.0.0.0:443"),
                 tls: TlsConfig::default(),
                 enable_h3: false,
             }),
@@ -1468,7 +1624,7 @@ mod tests {
 
         // Verify DoH
         let doh = deserialized.doh.unwrap();
-        assert_eq!(doh.bind, "0.0.0.0:443");
+        assert_eq!(doh.bind.specs(), ["0.0.0.0:443"]);
         assert!(doh.tls.auto_self_signed);
 
         // Verify DoQ
@@ -1675,6 +1831,7 @@ dnsbl:
     #[test]
     fn dot_and_doq_default_to_their_documented_ports() {
         assert_eq!(DotConfig::default().bind.specs(), ["0.0.0.0:853"]);
+        assert_eq!(DohConfig::default().bind.specs(), ["0.0.0.0:443"]);
         assert_eq!(DoqConfig::default().bind.specs(), ["0.0.0.0:8853"]);
     }
 

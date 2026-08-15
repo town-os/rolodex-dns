@@ -418,67 +418,55 @@ async fn main() -> Result<()> {
     // and no amount of renewing the files reaches them.
     let mut tls_managers: Vec<Arc<rolodex_dns::tls::TlsManager>> = Vec::new();
 
-    // Spawn DNS-over-TLS (DoT) server if configured.
-    //
-    // The bind addresses are resolved BEFORE the TLS config is built, because a
-    // generated certificate has to name them: a DoT client configured with an
-    // authentication name checks the identity it dialled, and a certificate
-    // covering only `localhost` fails that check on every LAN address the
-    // listener answers on.
-    if let Some(ref dot_config) = config.dot {
-        let dot_binds = dot_config
-            .bind
-            .resolve()
-            .context("resolving DoT bind address")?;
-        match start_tls(
-            "DoT",
-            &dot_config.tls,
-            &dot_binds,
-            rolodex_dns::dot_server::alpn_protocols(),
-            &mut tls_managers,
-        ) {
-            Ok(tls) => {
-                for dot_bind in dot_binds {
-                    let dot_dns = Arc::clone(&dns_server);
-                    let dot_tls = tls.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) =
-                            rolodex_dns::dot_server::serve_dot(&dot_bind, dot_dns, dot_tls).await
-                        {
-                            error!("DoT server error on {}: {}", dot_bind, e);
-                        }
-                    });
-                }
-            }
-            Err(e) => error!("Failed to initialize DoT TLS: {:#}", e),
-        }
-    }
+    // The encrypted transports' supervisor. It owns their listeners and their
+    // certificate managers for the life of the process, which is why the
+    // `tls_managers` vector above no longer needs to hold theirs — only the ACME
+    // pair, whose listeners are still spawned directly.
+    let transports = Arc::new(rolodex_dns::transports::TransportSupervisor::new(
+        Arc::clone(&dns_server),
+    ));
 
-    // Spawn DNS-over-HTTPS (DoH) server if configured
-    if let Some(ref doh_config) = config.doh {
-        let doh_binds = rolodex_dns::config::resolve_bind_addrs(&doh_config.bind)
-            .context("resolving DoH bind address")?;
-        match start_tls(
-            "DoH",
-            &doh_config.tls,
-            &doh_binds,
-            vec![b"h2".to_vec(), b"http/1.1".to_vec()],
-            &mut tls_managers,
-        ) {
-            Ok(tls) => {
-                for doh_bind in doh_binds {
-                    let doh_dns = Arc::clone(&dns_server);
-                    let doh_tls = tls.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) =
-                            rolodex_dns::doh_server::serve_doh(&doh_bind, doh_dns, doh_tls).await
-                        {
-                            error!("DoH server error on {}: {}", doh_bind, e);
-                        }
-                    });
-                }
+    // The encrypted transports (DoT, DoH, DoQ) all go up through the SUPERVISOR
+    // rather than being spawned here directly, so the startup path and the
+    // `Set<Transport>Config` RPCs are one code path. That is what makes the RPC
+    // trustworthy: a configuration that works at boot is applied by exactly the
+    // same code that applies one arriving at runtime, and neither can drift into
+    // doing something the other does not.
+    //
+    // A failure is logged and the box keeps going. Encrypted DNS not starting is
+    // bad; `:53` not starting because of it would be worse, and the transports
+    // can be brought up over gRPC once whatever was wrong is fixed — without a
+    // restart, which is the whole point.
+    for (kind, settings) in [
+        config.dot.as_ref().map(|c| {
+            (
+                rolodex_dns::transports::TransportKind::Dot,
+                rolodex_dns::transports::TransportSettings::new(c.bind.clone(), c.tls.clone()),
+            )
+        }),
+        config.doh.as_ref().map(|c| {
+            if c.enable_h3 {
+                warn!(
+                    "doh.enable_h3 is set but HTTP/3 is not implemented; serving h2 and http/1.1"
+                );
             }
-            Err(e) => error!("Failed to initialize DoH TLS: {:#}", e),
+            (
+                rolodex_dns::transports::TransportKind::Doh,
+                rolodex_dns::transports::TransportSettings::new(c.bind.clone(), c.tls.clone()),
+            )
+        }),
+        config.doq.as_ref().map(|c| {
+            (
+                rolodex_dns::transports::TransportKind::Doq,
+                rolodex_dns::transports::TransportSettings::new(c.bind.clone(), c.tls.clone()),
+            )
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Err(e) = transports.apply(kind, settings).await {
+            error!("{} not started: {:#}", kind.label(), e);
         }
     }
 
@@ -499,6 +487,16 @@ async fn main() -> Result<()> {
             ))
             .flatten()
             .collect();
+        // Resolved before any listener starts: a malformed endpoint must stop the
+        // server rather than surface later as an issuance that quietly published
+        // fewer TLSA records than the operator asked for.
+        let tlsa_endpoints = match acme_config.tlsa_endpoints() {
+            Ok(endpoints) => endpoints,
+            Err(e) => {
+                error!("{}", e);
+                std::process::exit(1);
+            }
+        };
         match start_tls(
             "ACME",
             &acme_config.tls,
@@ -514,8 +512,7 @@ async fn main() -> Result<()> {
                     require_eab: acme_config.require_eab,
                     issuance_any: acme_config.issuance_any(),
                     leaf_validity_days: acme_config.leaf_validity_days,
-                    tlsa_port: acme_config.tlsa_port,
-                    tlsa_proto: acme_config.tlsa_proto.clone(),
+                    tlsa_endpoints: tlsa_endpoints.clone(),
                 };
 
                 // Client-facing ACME HTTPS listener(s).
@@ -561,36 +558,6 @@ async fn main() -> Result<()> {
                 }
             }
             Err(e) => error!("Failed to initialize ACME TLS: {:#}", e),
-        }
-    }
-
-    // Spawn DNS-over-QUIC (DoQ) server if configured
-    if let Some(ref doq_config) = config.doq {
-        let doq_binds = doq_config
-            .bind
-            .resolve()
-            .context("resolving DoQ bind address")?;
-        match start_tls(
-            "DoQ",
-            &doq_config.tls,
-            &doq_binds,
-            vec![b"doq".to_vec()],
-            &mut tls_managers,
-        ) {
-            Ok(tls) => {
-                for doq_bind in doq_binds {
-                    let doq_dns = Arc::clone(&dns_server);
-                    let doq_tls = tls.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) =
-                            rolodex_dns::doq_server::serve_doq(&doq_bind, doq_dns, doq_tls).await
-                        {
-                            error!("DoQ server error on {}: {}", doq_bind, e);
-                        }
-                    });
-                }
-            }
-            Err(e) => error!("Failed to initialize DoQ TLS: {:#}", e),
         }
     }
 
@@ -646,7 +613,8 @@ async fn main() -> Result<()> {
                 false,
             )
             .with_acme(acme_directory_url.clone(), acme_root_cn.clone())
-            .with_auto_ptr(config.dns.auto_ptr);
+            .with_auto_ptr(config.dns.auto_ptr)
+            .with_transports(Arc::clone(&transports));
             let addr: SocketAddr = grpc_bind
                 .parse()
                 .with_context(|| format!("invalid gRPC TCP bind address: {}", grpc_bind))?;
@@ -705,7 +673,8 @@ async fn main() -> Result<()> {
             true,
         )
         .with_acme(acme_directory_url.clone(), acme_root_cn.clone())
-        .with_auto_ptr(config.dns.auto_ptr);
+        .with_auto_ptr(config.dns.auto_ptr)
+        .with_transports(Arc::clone(&transports));
         info!("gRPC Unix socket server listening on {}", socket_path);
         tokio::spawn(async move {
             if let Err(e) = Server::builder()

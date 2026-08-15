@@ -65,9 +65,14 @@ pub struct AcmeState {
     pub issuance_any: bool,
     /// Validity of issued leaf certificates, in days.
     pub leaf_validity_days: i64,
-    /// Default port/protocol used to place the DANE-TA TLSA record.
-    pub tlsa_port: u16,
-    pub tlsa_proto: String,
+    /// Every `(port, proto)` endpoint the DANE-TA TLSA record is published at.
+    ///
+    /// A list rather than one pair because a TLSA record names a service
+    /// endpoint, not a certificate: encrypted DNS on one certificate is DoT at
+    /// `853/tcp` and DoQ at `853/udp`, and publishing one without the other
+    /// leaves the unpublished half failing closed for a DANE-checking client.
+    /// Built from `acme.tlsa_port`/`tlsa_proto` plus `acme.tlsa_endpoints`.
+    pub tlsa_endpoints: Vec<(u16, String)>,
 }
 
 impl AcmeState {
@@ -960,15 +965,17 @@ async fn finalize_inner(state: &AcmeState, id: &str, body: &[u8]) -> Result<Resp
 fn publish_dane(state: &AcmeState, zone: &str, names: &[String]) -> Result<()> {
     let tlsa = ca::intermediate_tlsa(&state.db, zone)?;
     for name in names {
-        let record_name = dane::tlsa_dns_name(name, state.tlsa_port, &state.tlsa_proto);
-        state.db.add_record(&DnsRecord {
-            id: None,
-            name: record_name,
-            record_type: RecordKind::TLSA,
-            value: tlsa.clone(),
-            ttl: 3600,
-            priority: 0,
-        })?;
+        for (port, proto) in &state.tlsa_endpoints {
+            let record_name = dane::tlsa_dns_name(name, *port, proto);
+            state.db.add_record(&DnsRecord {
+                id: None,
+                name: record_name,
+                record_type: RecordKind::TLSA,
+                value: tlsa.clone(),
+                ttl: 3600,
+                priority: 0,
+            })?;
+        }
     }
     if let Some(dns) = &state.dns_server {
         dns.flush_cache();

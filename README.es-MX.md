@@ -531,6 +531,7 @@ metrics:
 | `acme.root_ca_cn` | `"Rolodex Root CA"` | Nombre común de la CA raíz creada al arrancar |
 | `acme.leaf_validity_days` | `90` | Validez de los certificados de hoja emitidos |
 | `acme.tlsa_port` / `acme.tlsa_proto` | `443` / `"tcp"` | Dónde se publica el registro TLSA DANE-TA para cada nombre |
+| `acme.tlsa_endpoints` | `[]` | Endpoints `"<puerto>/<protocolo>"` adicionales en los que publicar el registro TLSA DANE-TA, más allá de `tlsa_port`/`tlsa_proto`. Un registro TLSA nombra un endpoint de servicio, así que un certificado que sirve DoT (`853/tcp`) y DoQ (`853/udp`) necesita un registro para cada uno; una entrada malformada se rechaza al arrancar en vez de saltarse |
 | `acme.require_eab` | `true` | Exige External Account Binding para registrar una cuenta |
 | `acme.issuance_scope` | `"managed_zones"` | `"managed_zones"` (la zona debe tener una CA) o `"any"` |
 | `proxy.url` | `""` (desactivado) | URL del proxy HTTP para las consultas DNS reenviadas |
@@ -1366,6 +1367,8 @@ También están disponibles los métodos siguientes. Véase `proto/rolodex_dns.p
 | 19 | `NSEC3` | Registro «siguiente seguro» v3 (DNSSEC). Administrado automáticamente por la firma de zonas |
 | 20 | `NSEC3PARAM` | Parámetros de NSEC3 (DNSSEC). Administrados automáticamente por la firma de zonas |
 | 21 | `CERT` | Almacenamiento de certificados en el DNS (RFC 4398). Valor: `"cert_type key_tag algorithm base64_cert_data"`. Se usa para distribuir la cadena de CA |
+| 22 | `SVCB` | Vinculación de servicio (RFC 9460). El valor es una línea de formato de presentación: `"<prioridad> <destino> [llave=valor ...]"` — p. ej. `"1 dns.home. alpn=dot port=853"`. Es el tipo con el que se publica una designación DDR en `_dns.resolver.arpa.` (RFC 9462) |
+| 23 | `HTTPS` | La forma SVCB específica de HTTPS (RFC 9460 §9). Mismo formato de valor que `SVCB` |
 
 ## Cacheado con la privacidad por delante
 
@@ -1459,6 +1462,14 @@ Rolodex DNS admite tres protocolos de transporte DNS cifrado para evitar la escu
 **DNS-over-QUIC (DoQ)** — RFC 9250, puerto 8853 por omisión. Consultas DNS sobre transporte QUIC para resolución cifrada de baja latencia. Se configura con la sección `doq` en YAML o con `SetDoqConfig` por gRPC.
 
 Los tres protocolos requieren certificados TLS. Puedes aportar tu propio certificado y llave, o poner `auto_self_signed: true` para que Rolodex DNS genere un certificado autofirmado automáticamente. Un certificado generado cubre `localhost`, `127.0.0.1`, `::1` y las propias direcciones de ligadura de la escucha; agrega cualquier otro nombre por el que los clientes marquen la máquina —su nombre de host, su nombre `.local`, un alias de la LAN— a `self_signed_sans`, ya que un cliente configurado con un nombre de autenticación lo revisa y una ligadura comodín no aporta ningún nombre propio.
+
+**Se puede nombrar un certificado que todavía no existe.** Que `cert_path`/`key_path` apunten a un archivo que no está ahí nada más es una falla dura cuando `auto_self_signed` está apagado. Con él prendido, la escucha arranca con material generado y el sondeo de certificados adopta el par real en cuanto aparece — sin reinicio y sin nada que coordinar. Eso es lo que permite configurar una escucha para un certificado que otra cosa todavía no ha emitido, que es el caso corriente en una máquina cuya CA se crea después de que arranque el resolvedor. Con `auto_self_signed: false` un archivo ausente sigue siendo fatal: eso es quien opera diciendo «sirve este certificado o ninguno».
+
+**Los tres se reconfiguran con el servidor en marcha.** `SetDotConfig`, `SetDohConfig` y `SetDoqConfig` abren, mueven, recambian la llave o apagan su escucha sin reiniciar, y `Get*Config` informa de las direcciones realmente ligadas — que difieren de las pedidas siempre que la petición nombrara el puerto 0. El camino de arranque usa el mismo código, así que una configuración que funciona desde el YAML se comporta igual llegando por gRPC.
+
+El orden merece conocerse, porque una escucha no puede arrancar antes de que la anterior suelte su puerto. Primero se revisa todo lo revisable **sin** el puerto — que la lista de ligaduras resuelva, que el material TLS cargue o se genere — de modo que una dirección mala o un certificado ilegible se rechazan con la escucha anterior todavía sirviendo. Nada más después se paran las escuchas viejas y se esperan. Si aun así la ligadura falla, se restaura la configuración anterior y la llamada informa de que el transporte está caído en vez de afirmar que tuvo éxito. Una lista de ligaduras vacía es un apagado, no un error.
+
+Nada de esto toca el `:53` en ningún momento. Los transportes cifrados son escuchas independientes, así que reconfigurar una no cuesta nada fuera de sí misma.
 
 ## DNSSEC
 
@@ -2203,6 +2214,8 @@ Todos los métodos aceptan un `context.Context` para la cancelación y los plazo
 | `RecordTypeNSEC3` | 19 | Registro «siguiente seguro» v3 de DNSSEC |
 | `RecordTypeNSEC3PARAM` | 20 | Parámetros NSEC3 de DNSSEC |
 | `RecordTypeCERT` | 21 | Almacenamiento de certificados en el DNS (RFC 4398) |
+| `RecordTypeSVCB` | 22 | Vinculación de servicio (RFC 9460); el tipo que usan las designaciones DDR |
+| `RecordTypeHTTPS` | 23 | Forma SVCB específica de HTTPS (RFC 9460 §9) |
 
 ## Cumplimiento de RFC
 

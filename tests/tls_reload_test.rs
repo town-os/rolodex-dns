@@ -759,3 +759,136 @@ async fn a_self_signed_manager_gets_no_reloader_task() {
         "a self-signed manager was given a certificate-polling task"
     );
 }
+
+// ============================================================================
+// A certificate that does not exist yet
+// ============================================================================
+//
+// The ordering a Town OS box actually has: rolodex starts BEFORE the thing that
+// issues its certificate, because the systemcontroller cannot pull an image
+// until something resolves names, and the box's CA is created during that boot.
+// So the paths have to be nameable before the files exist — otherwise they can
+// only be written once the files are there, and getting there means rewriting
+// the config and restarting the box's only resolver.
+
+/// Naming a certificate that has not been issued yet must START, serving a
+/// generated one, rather than failing.
+#[tokio::test]
+async fn a_certificate_that_does_not_exist_yet_starts_self_signed() {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let cert_path = dir.path().join("cert.pem");
+    let key_path = dir.path().join("key.pem");
+    // Deliberately not written.
+
+    let manager = TlsManager::new(
+        TlsConfig {
+            cert_path: Some(cert_path.to_string_lossy().to_string()),
+            key_path: Some(key_path.to_string_lossy().to_string()),
+            auto_self_signed: true,
+            self_signed_sans: vec!["dns.home".to_string()],
+        },
+        vec![ALPN.to_vec()],
+    )
+    .expect("a listener whose certificate is not issued yet must still start");
+
+    // It serves something, so DoT is up rather than down.
+    let der = presented_certificate(manager.server_config()).await;
+    assert!(!der.is_empty());
+
+    // And it is still watching those paths, which is what lets the real pair be
+    // adopted when it lands.
+    assert!(
+        manager.is_file_backed(),
+        "the manager must keep polling the paths it was given"
+    );
+}
+
+/// ...and when the real certificate is issued, the poller adopts it with no
+/// restart. This is the whole point: the CA issues a leaf mid-boot and the
+/// resolver picks it up on its own.
+#[tokio::test]
+async fn the_real_certificate_is_adopted_once_it_is_issued() {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let cert_path = dir.path().join("cert.pem");
+    let key_path = dir.path().join("key.pem");
+
+    let manager = TlsManager::new(
+        TlsConfig {
+            cert_path: Some(cert_path.to_string_lossy().to_string()),
+            key_path: Some(key_path.to_string_lossy().to_string()),
+            auto_self_signed: true,
+            self_signed_sans: vec!["dns.home".to_string()],
+        },
+        vec![ALPN.to_vec()],
+    )
+    .expect("manager");
+
+    let generated = presented_certificate(manager.server_config()).await;
+
+    // Nothing on disk yet, so there is nothing to adopt and the poll must not
+    // claim otherwise — a manager that reported a change here would republish a
+    // freshly generated certificate on every tick.
+    assert!(
+        !manager.reload_if_changed().expect("poll with no file"),
+        "there is no file yet, so nothing changed"
+    );
+
+    // The CA issues the leaf.
+    let issued = generate_cert("dns.home");
+    write_pem(&cert_path, &key_path, &issued);
+
+    assert!(
+        manager.reload_if_changed().expect("poll after issuance"),
+        "the issued certificate must be adopted"
+    );
+
+    let served = presented_certificate(manager.server_config()).await;
+    assert_ne!(
+        served, generated,
+        "the listener must present the issued certificate, not the generated one"
+    );
+    assert_eq!(served, issued.der, "and it must be exactly what was issued");
+
+    // A second poll with nothing new must not republish.
+    assert!(
+        !manager.reload_if_changed().expect("steady-state poll"),
+        "an unchanged certificate must not be reloaded"
+    );
+}
+
+/// With generation switched OFF, a missing certificate is still a hard failure.
+/// `auto_self_signed: false` is an operator saying "serve this certificate or
+/// nothing", and quietly serving a generated one instead would be worse than
+/// refusing to start.
+#[tokio::test]
+async fn a_missing_certificate_still_fails_when_generation_is_off() {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let err = TlsManager::new(
+        TlsConfig {
+            cert_path: Some(dir.path().join("nope.pem").to_string_lossy().to_string()),
+            key_path: Some(dir.path().join("nope.key").to_string_lossy().to_string()),
+            auto_self_signed: false,
+            self_signed_sans: Vec::new(),
+        },
+        vec![ALPN.to_vec()],
+    )
+    .err()
+    .expect("a named certificate that is absent must fail when generation is off");
+    assert!(
+        format!("{:#}", err).contains("nope.pem"),
+        "the error must name the file, got: {:#}",
+        err
+    );
+}

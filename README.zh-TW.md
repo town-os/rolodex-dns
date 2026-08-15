@@ -531,6 +531,7 @@ metrics:
 | `acme.root_ca_cn` | `"Rolodex Root CA"` | 開機時建立的根憑證機構通用名稱 |
 | `acme.leaf_validity_days` | `90` | 簽發出的終端憑證有效期 |
 | `acme.tlsa_port` / `acme.tlsa_proto` | `443` / `"tcp"` | 每個名稱的 DANE-TA TLSA 記錄發佈位置 |
+| `acme.tlsa_endpoints` | `[]` | 除了 `tlsa_port`／`tlsa_proto` 之外，額外發佈 DANE-TA TLSA 記錄的 `"<port>/<proto>"` 端點。TLSA 記錄指的是服務端點而非憑證，因此同時提供 DoT（`853/tcp`）與 DoQ（`853/udp`）的一張憑證，兩者各需要一筆記錄；格式錯誤的項目會在啟動時被拒絕，而不是跳過 |
 | `acme.require_eab` | `true` | 帳號註冊時要求 External Account Binding |
 | `acme.issuance_scope` | `"managed_zones"` | `"managed_zones"`（區域必須有憑證機構）或 `"any"` |
 | `proxy.url` | `""`（停用） | 轉送 DNS 查詢用的 HTTP 代理 URL |
@@ -1366,6 +1367,8 @@ DNS。
 | 19 | `NSEC3` | 下一個安全記錄 v3（DNSSEC）。由區域簽章自動管理 |
 | 20 | `NSEC3PARAM` | NSEC3 參數（DNSSEC）。由區域簽章自動管理 |
 | 21 | `CERT` | 在 DNS 中儲存憑證（RFC 4398）。值：`"cert_type key_tag algorithm base64_cert_data"`。用於散佈憑證鏈 |
+| 22 | `SVCB` | 服務繫結（RFC 9460）。值是一行表示格式：`"<priority> <target> [key=value ...]"`——例如 `"1 dns.home. alpn=dot port=853"`。DDR 在 `_dns.resolver.arpa.` 上發布的指定記錄就是這個型別（RFC 9462）|
+| 23 | `HTTPS` | HTTPS 專用的 SVCB 形式（RFC 9460 §9）。值的格式與 `SVCB` 相同 |
 
 ## 隱私優先的快取
 
@@ -1459,6 +1462,14 @@ Rolodex DNS 支援三種加密的 DNS 傳輸協定，用以防止 DNS 查詢被�
 **DNS-over-QUIC（DoQ）**——RFC 9250，預設連接埠 8853。以 QUIC 傳輸進行 DNS 查詢，達成低延遲的加密解析。以 YAML 中的 `doq` 區段或透過 gRPC 的 `SetDoqConfig` 設定。
 
 這三種協定都需要 TLS 憑證。你可以提供自己的憑證與私鑰，或設定 `auto_self_signed: true` 讓 Rolodex DNS 自動產生一張自簽憑證。自動產生的憑證涵蓋 `localhost`、`127.0.0.1`、`::1` 以及該監聽器自身的繫結位址；用戶端撥打本機時所用的任何其他名稱——它的主機名稱、它的 `.local` 名稱、某個區域網路別名——請加入 `self_signed_sans`，因為設定了認證名稱的用戶端會去檢核它，而萬用繫結本身並不提供任何名稱。
+
+**可以指名一份尚不存在的憑證。** 只有在 `auto_self_signed` 關閉時，`cert_path`／`key_path` 指向一個不存在的檔案才是硬性失敗。開啟它之後，監聽器會先用產生的材料起步，而憑證輪詢器會在真正的那一對出現的當下把它接過去——不需要重啟，也沒有什麼要協調。正是這一點讓一個監聽器可以被設定成使用一份別的東西尚未簽發的憑證，而在一台 CA 是在解析器啟動之後才被建立的機器上，那本來就是常態。在 `auto_self_signed: false` 之下，缺失的檔案仍然是致命的：那是維運在說「要麼給我這份憑證，要麼什麼都不要」。
+
+**這三者都可以在伺服器執行期間重新設定。** `SetDotConfig`、`SetDohConfig` 與 `SetDoqConfig` 可以打開、遷移、換鑰或關停各自的監聽器，無需重啟；而 `Get*Config` 回報的是**實際綁定**的位址——只要請求寫的是埠 0，它就與請求的不同。啟動路徑走的是同一段程式碼，因此一份從 YAML 生效的設定，經由 gRPC 到來時行為完全一致。
+
+其中的次序值得知道，因為在舊監聽器讓出埠之前，新的無法啟動。所有**不需要埠**就能做的檢查會先做完——bind 清單可解析、TLS 材料可載入或可產生——因此一個壞位址或一份讀不出來的憑證會在舊監聽器仍在服務時被拒絕。之後才停掉舊監聽器並等待它們結束。如果綁定仍然失敗，就把先前的設定放回去，並如實回報該傳輸已下線，而不是聲稱成功。空的 bind 清單是關停，不是錯誤。
+
+這一切從頭到尾都沒有碰過 `:53`。加密傳輸是彼此獨立的監聽器，重新設定其中一個，在它自身之外不付出任何代價。
 
 ## DNSSEC
 
@@ -2203,6 +2214,8 @@ defer client.Close()
 | `RecordTypeNSEC3` | 19 | DNSSEC 下一個安全記錄 v3 |
 | `RecordTypeNSEC3PARAM` | 20 | DNSSEC NSEC3 參數 |
 | `RecordTypeCERT` | 21 | 在 DNS 中儲存憑證（RFC 4398） |
+| `RecordTypeSVCB` | 22 | 服務繫結（RFC 9460）；DDR 指定記錄所用的型別 |
+| `RecordTypeHTTPS` | 23 | HTTPS 專用的 SVCB 形式（RFC 9460 §9）|
 
 ## RFC 相容性
 

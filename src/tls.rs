@@ -266,6 +266,36 @@ struct Material {
 /// fingerprint as leaving it where it was.
 fn load_material(config: &TlsConfig) -> Result<Material> {
     if let (Some(cert_path), Some(key_path)) = (&config.cert_path, &config.key_path) {
+        // Named but not there YET. Fall back to generated material and keep the
+        // paths, so the poller adopts the real pair the moment it appears.
+        //
+        // This is what lets a listener be configured for a certificate that
+        // something else has not issued yet — which is the ordinary case on a
+        // box whose CA is created after the resolver starts. Without it, naming
+        // a path that does not exist is a hard startup failure, so the paths
+        // could only be written once the files existed, and the only way to get
+        // there was to rewrite the config and restart the box's only resolver.
+        //
+        // Only when generation is permitted: with `auto_self_signed: false` the
+        // operator has said "serve this certificate or nothing", and quietly
+        // serving a generated one instead would be worse than failing.
+        if config.auto_self_signed && !certs_exist(cert_path, key_path) {
+            warn!(
+                "TLS certificate {} is not present yet; serving a generated one and \
+                 watching for it",
+                cert_path
+            );
+            let (certs, key) = generate_self_signed_with(&config.self_signed_sans)?;
+            return Ok(Material {
+                certs,
+                key,
+                // No fingerprint: generated material has no file behind it, and
+                // recording one would make the poll that finds the real pair
+                // look like "unchanged". The first successful file load records
+                // the first real fingerprint, which is what triggers the swap.
+                fingerprint: None,
+            });
+        }
         let cert_data = std::fs::read(cert_path)
             .with_context(|| format!("failed to read certificate file: {}", cert_path))?;
         let key_data = std::fs::read(key_path)

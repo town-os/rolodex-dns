@@ -69,6 +69,14 @@ const (
 	RecordType_NSEC3PARAM RecordType = 20
 	// CERT record - certificate storage in DNS (RFC 4398)
 	RecordType_CERT RecordType = 21
+	// SVCB record - service binding (RFC 9460). The type DDR designations are
+	// published as: a client asks its resolver for `_dns.resolver.arpa. SVCB` to
+	// discover that resolver's encrypted endpoints (RFC 9462).
+	// Value is one line of presentation format: "<priority> <target> [key=value ...]".
+	RecordType_SVCB RecordType = 22
+	// HTTPS record - the HTTPS-specific SVCB form (RFC 9460 §9). Same value
+	// format as SVCB.
+	RecordType_HTTPS RecordType = 23
 )
 
 // Enum value maps for RecordType.
@@ -96,6 +104,8 @@ var (
 		19: "NSEC3",
 		20: "NSEC3PARAM",
 		21: "CERT",
+		22: "SVCB",
+		23: "HTTPS",
 	}
 	RecordType_value = map[string]int32{
 		"A":          0,
@@ -120,6 +130,8 @@ var (
 		"NSEC3":      19,
 		"NSEC3PARAM": 20,
 		"CERT":       21,
+		"SVCB":       22,
+		"HTTPS":      23,
 	}
 )
 
@@ -4560,6 +4572,15 @@ type TlsConfig struct {
 	CertPath       string                 `protobuf:"bytes,1,opt,name=cert_path,json=certPath,proto3" json:"cert_path,omitempty"`
 	KeyPath        string                 `protobuf:"bytes,2,opt,name=key_path,json=keyPath,proto3" json:"key_path,omitempty"`
 	AutoSelfSigned bool                   `protobuf:"varint,3,opt,name=auto_self_signed,json=autoSelfSigned,proto3" json:"auto_self_signed,omitempty"`
+	// Extra subject alternative names baked into a GENERATED certificate, on top
+	// of the loopback set and the listener's own bind addresses (which are folded
+	// in automatically). This is what makes a generated certificate usable from
+	// the LAN: a client configured with an authentication name checks the name it
+	// dialled, and a wildcard bind like 0.0.0.0 is not a name anybody dials, so
+	// without this the certificate would name localhost and nothing else.
+	// Ignored when cert_path/key_path are set — that certificate carries whatever
+	// names it was issued for.
+	SelfSignedSans []string `protobuf:"bytes,4,rep,name=self_signed_sans,json=selfSignedSans,proto3" json:"self_signed_sans,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -4615,11 +4636,25 @@ func (x *TlsConfig) GetAutoSelfSigned() bool {
 	return false
 }
 
+func (x *TlsConfig) GetSelfSignedSans() []string {
+	if x != nil {
+		return x.SelfSignedSans
+	}
+	return nil
+}
+
 // DotConfig configures DNS-over-TLS.
 type DotConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Bind          string                 `protobuf:"bytes,1,opt,name=bind,proto3" json:"bind,omitempty"`
-	Tls           *TlsConfig             `protobuf:"bytes,2,opt,name=tls,proto3" json:"tls,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// A single bind address. Kept for callers that predate `binds`; when `binds`
+	// is non-empty this is ignored. Both empty means "shut the listener down".
+	Bind string     `protobuf:"bytes,1,opt,name=bind,proto3" json:"bind,omitempty"`
+	Tls  *TlsConfig `protobuf:"bytes,2,opt,name=tls,proto3" json:"tls,omitempty"`
+	// Bind addresses. A list because one string cannot cover both address
+	// families: 0.0.0.0 is IPv4-only, and a [::] socket takes v4-mapped traffic
+	// too (net.ipv6.bindv6only=0, the Linux default) so it collides with the
+	// 0.0.0.0 socket on the same port.
+	Binds         []string `protobuf:"bytes,3,rep,name=binds,proto3" json:"binds,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4664,6 +4699,13 @@ func (x *DotConfig) GetBind() string {
 func (x *DotConfig) GetTls() *TlsConfig {
 	if x != nil {
 		return x.Tls
+	}
+	return nil
+}
+
+func (x *DotConfig) GetBinds() []string {
+	if x != nil {
+		return x.Binds
 	}
 	return nil
 }
@@ -4866,10 +4908,13 @@ func (x *GetDotConfigResponse) GetConfig() *DotConfig {
 
 // DohConfig configures DNS-over-HTTPS.
 type DohConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Bind          string                 `protobuf:"bytes,1,opt,name=bind,proto3" json:"bind,omitempty"`
-	Tls           *TlsConfig             `protobuf:"bytes,2,opt,name=tls,proto3" json:"tls,omitempty"`
-	EnableH3      bool                   `protobuf:"varint,3,opt,name=enable_h3,json=enableH3,proto3" json:"enable_h3,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// As DotConfig.bind: superseded by `binds` when that is non-empty.
+	Bind     string     `protobuf:"bytes,1,opt,name=bind,proto3" json:"bind,omitempty"`
+	Tls      *TlsConfig `protobuf:"bytes,2,opt,name=tls,proto3" json:"tls,omitempty"`
+	EnableH3 bool       `protobuf:"varint,3,opt,name=enable_h3,json=enableH3,proto3" json:"enable_h3,omitempty"`
+	// As DotConfig.binds.
+	Binds         []string `protobuf:"bytes,4,rep,name=binds,proto3" json:"binds,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4923,6 +4968,13 @@ func (x *DohConfig) GetEnableH3() bool {
 		return x.EnableH3
 	}
 	return false
+}
+
+func (x *DohConfig) GetBinds() []string {
+	if x != nil {
+		return x.Binds
+	}
+	return nil
 }
 
 // SetDohConfigRequest sets the DoH configuration.
@@ -5123,9 +5175,12 @@ func (x *GetDohConfigResponse) GetConfig() *DohConfig {
 
 // DoqConfig configures DNS-over-QUIC.
 type DoqConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Bind          string                 `protobuf:"bytes,1,opt,name=bind,proto3" json:"bind,omitempty"`
-	Tls           *TlsConfig             `protobuf:"bytes,2,opt,name=tls,proto3" json:"tls,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// As DotConfig.bind: superseded by `binds` when that is non-empty.
+	Bind string     `protobuf:"bytes,1,opt,name=bind,proto3" json:"bind,omitempty"`
+	Tls  *TlsConfig `protobuf:"bytes,2,opt,name=tls,proto3" json:"tls,omitempty"`
+	// As DotConfig.binds.
+	Binds         []string `protobuf:"bytes,3,rep,name=binds,proto3" json:"binds,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5170,6 +5225,13 @@ func (x *DoqConfig) GetBind() string {
 func (x *DoqConfig) GetTls() *TlsConfig {
 	if x != nil {
 		return x.Tls
+	}
+	return nil
+}
+
+func (x *DoqConfig) GetBinds() []string {
+	if x != nil {
+		return x.Binds
 	}
 	return nil
 }
@@ -9918,14 +9980,16 @@ const file_rolodex_dns_proto_rawDesc = "" +
 	"\n" +
 	"auth_token\x18\x01 \x01(\tR\tauthToken\"_\n" +
 	"!ListLocalBlocklistEntriesResponse\x12:\n" +
-	"\aentries\x18\x01 \x03(\v2 .rolodex_dns.LocalBlocklistEntryR\aentries\"m\n" +
+	"\aentries\x18\x01 \x03(\v2 .rolodex_dns.LocalBlocklistEntryR\aentries\"\x97\x01\n" +
 	"\tTlsConfig\x12\x1b\n" +
 	"\tcert_path\x18\x01 \x01(\tR\bcertPath\x12\x19\n" +
 	"\bkey_path\x18\x02 \x01(\tR\akeyPath\x12(\n" +
-	"\x10auto_self_signed\x18\x03 \x01(\bR\x0eautoSelfSigned\"I\n" +
+	"\x10auto_self_signed\x18\x03 \x01(\bR\x0eautoSelfSigned\x12(\n" +
+	"\x10self_signed_sans\x18\x04 \x03(\tR\x0eselfSignedSans\"_\n" +
 	"\tDotConfig\x12\x12\n" +
 	"\x04bind\x18\x01 \x01(\tR\x04bind\x12(\n" +
-	"\x03tls\x18\x02 \x01(\v2\x16.rolodex_dns.TlsConfigR\x03tls\"d\n" +
+	"\x03tls\x18\x02 \x01(\v2\x16.rolodex_dns.TlsConfigR\x03tls\x12\x14\n" +
+	"\x05binds\x18\x03 \x03(\tR\x05binds\"d\n" +
 	"\x13SetDotConfigRequest\x12.\n" +
 	"\x06config\x18\x01 \x01(\v2\x16.rolodex_dns.DotConfigR\x06config\x12\x1d\n" +
 	"\n" +
@@ -9937,11 +10001,12 @@ const file_rolodex_dns_proto_rawDesc = "" +
 	"\n" +
 	"auth_token\x18\x01 \x01(\tR\tauthToken\"F\n" +
 	"\x14GetDotConfigResponse\x12.\n" +
-	"\x06config\x18\x01 \x01(\v2\x16.rolodex_dns.DotConfigR\x06config\"f\n" +
+	"\x06config\x18\x01 \x01(\v2\x16.rolodex_dns.DotConfigR\x06config\"|\n" +
 	"\tDohConfig\x12\x12\n" +
 	"\x04bind\x18\x01 \x01(\tR\x04bind\x12(\n" +
 	"\x03tls\x18\x02 \x01(\v2\x16.rolodex_dns.TlsConfigR\x03tls\x12\x1b\n" +
-	"\tenable_h3\x18\x03 \x01(\bR\benableH3\"d\n" +
+	"\tenable_h3\x18\x03 \x01(\bR\benableH3\x12\x14\n" +
+	"\x05binds\x18\x04 \x03(\tR\x05binds\"d\n" +
 	"\x13SetDohConfigRequest\x12.\n" +
 	"\x06config\x18\x01 \x01(\v2\x16.rolodex_dns.DohConfigR\x06config\x12\x1d\n" +
 	"\n" +
@@ -9953,10 +10018,11 @@ const file_rolodex_dns_proto_rawDesc = "" +
 	"\n" +
 	"auth_token\x18\x01 \x01(\tR\tauthToken\"F\n" +
 	"\x14GetDohConfigResponse\x12.\n" +
-	"\x06config\x18\x01 \x01(\v2\x16.rolodex_dns.DohConfigR\x06config\"I\n" +
+	"\x06config\x18\x01 \x01(\v2\x16.rolodex_dns.DohConfigR\x06config\"_\n" +
 	"\tDoqConfig\x12\x12\n" +
 	"\x04bind\x18\x01 \x01(\tR\x04bind\x12(\n" +
-	"\x03tls\x18\x02 \x01(\v2\x16.rolodex_dns.TlsConfigR\x03tls\"d\n" +
+	"\x03tls\x18\x02 \x01(\v2\x16.rolodex_dns.TlsConfigR\x03tls\x12\x14\n" +
+	"\x05binds\x18\x03 \x03(\tR\x05binds\"d\n" +
 	"\x13SetDoqConfigRequest\x12.\n" +
 	"\x06config\x18\x01 \x01(\v2\x16.rolodex_dns.DoqConfigR\x06config\x12\x1d\n" +
 	"\n" +
@@ -10290,7 +10356,7 @@ const file_rolodex_dns_proto_rawDesc = "" +
 	"\n" +
 	"auth_token\x18\x02 \x01(\tR\tauthToken\"T\n" +
 	"\x1bListDhcpCertOptionsResponse\x125\n" +
-	"\aoptions\x18\x01 \x03(\v2\x1b.rolodex_dns.DhcpCertOptionR\aoptions*\xea\x01\n" +
+	"\aoptions\x18\x01 \x03(\v2\x1b.rolodex_dns.DhcpCertOptionR\aoptions*\xff\x01\n" +
 	"\n" +
 	"RecordType\x12\x05\n" +
 	"\x01A\x10\x00\x12\b\n" +
@@ -10318,7 +10384,9 @@ const file_rolodex_dns_proto_rawDesc = "" +
 	"\x05NSEC3\x10\x13\x12\x0e\n" +
 	"\n" +
 	"NSEC3PARAM\x10\x14\x12\b\n" +
-	"\x04CERT\x10\x152\x988\n" +
+	"\x04CERT\x10\x15\x12\b\n" +
+	"\x04SVCB\x10\x16\x12\t\n" +
+	"\x05HTTPS\x10\x172\x988\n" +
 	"\x11RolodexDnsService\x12J\n" +
 	"\tAddRecord\x12\x1d.rolodex_dns.AddRecordRequest\x1a\x1e.rolodex_dns.AddRecordResponse\x12S\n" +
 	"\fRemoveRecord\x12 .rolodex_dns.RemoveRecordRequest\x1a!.rolodex_dns.RemoveRecordResponse\x12P\n" +

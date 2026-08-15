@@ -55,12 +55,37 @@ pub async fn serve_doh(
         .route("/dns-query", get(handle_doh_get).post(handle_doh_post))
         .with_state(state);
 
-    let tls_config = axum_server::tls_rustls::RustlsConfig::from_config(tls.borrow().clone());
+    let listener = bind_doh(bind)?;
+    serve_doh_on(listener, app, tls).await
+}
 
+/// Binds a DoH listener without starting it.
+///
+/// Split from [`serve_doh`] so a caller that must report a bind failure to
+/// somebody — the transport supervisor, answering a `SetDohConfig` RPC — can
+/// take the error synchronously instead of discovering it inside a spawned task,
+/// where the only place it could go is the log.
+///
+/// A std listener rather than a tokio one because that is what
+/// `axum_server::from_tcp_rustls` takes; it is set non-blocking there.
+pub fn bind_doh(bind: &str) -> Result<std::net::TcpListener> {
     let addr: std::net::SocketAddr = bind
         .parse()
         .context(format!("invalid DoH bind address: {}", bind))?;
+    std::net::TcpListener::bind(addr).context(format!("failed to bind DoH listener on {}", addr))
+}
 
+/// Serves DNS-over-HTTPS on an already-bound listener. See [`serve_doh`].
+pub async fn serve_doh_on(
+    listener: std::net::TcpListener,
+    app: Router,
+    tls: watch::Receiver<Arc<rustls::ServerConfig>>,
+) -> Result<()> {
+    let tls_config = axum_server::tls_rustls::RustlsConfig::from_config(tls.borrow().clone());
+
+    let addr = listener
+        .local_addr()
+        .context("DoH listener has no local address")?;
     info!("DoH server listening on {}", addr);
 
     let renewals = tokio::spawn(crate::tls::drive_axum_tls(tls_config.clone(), tls));
@@ -68,7 +93,7 @@ pub async fn serve_doh(
     // With connect info, so the peer address reaches source classification: DoH
     // is a full resolution path, and without the peer every query would look
     // like a local one — reopening the recursion the `:53` listener closes.
-    let outcome = axum_server::bind_rustls(addr, tls_config)
+    let outcome = axum_server::from_tcp_rustls(listener, tls_config)
         .serve(app.into_make_service_with_connect_info::<SocketAddr>())
         .await;
 

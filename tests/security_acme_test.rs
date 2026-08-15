@@ -187,8 +187,7 @@ fn state_for(db: &Database, require_eab: bool, issuance_any: bool) -> AcmeState 
         require_eab,
         issuance_any,
         leaf_validity_days: 90,
-        tlsa_port: 443,
-        tlsa_proto: "tcp".to_string(),
+        tlsa_endpoints: vec![(443, "tcp".to_string())],
     }
 }
 

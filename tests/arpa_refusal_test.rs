@@ -482,6 +482,92 @@ async fn a_locally_held_ptr_is_still_answered() {
     );
 }
 
+/// The DDR designation lives under `arpa.` and must be answerable, for exactly
+/// the same reason a stored PTR is: the refusal sits below every local lookup.
+///
+/// This is what makes RFC 9462 discovery possible on a box whose policy is
+/// "`arpa.` never leaves". A client asks its own resolver for
+/// `_dns.resolver.arpa. SVCB` and gets that resolver's encrypted endpoints —
+/// and because the refusal blocks only the upstream path, the answer can *only*
+/// come from the resolver being asked, which is the property DDR needs.
+#[tokio::test]
+async fn the_ddr_designation_is_answered_from_local_data() {
+    let upstream = spawn_upstream().await;
+    let (server, db) = server_with(ResolutionMode::Auto, &upstream);
+
+    for value in rolodex_dns::svcb::designation(
+        "dns.home.",
+        Some((443, "/dns-query{?dns}")),
+        Some(853),
+        None,
+    ) {
+        db.add_record(&DnsRecord {
+            id: None,
+            name: rolodex_dns::svcb::DDR_DESIGNATION_NAME.to_string(),
+            record_type: RecordKind::SVCB,
+            value,
+            ttl: 7200,
+            priority: 0,
+        })
+        .expect("the designation is stored");
+    }
+
+    let response = ask(
+        &server,
+        rolodex_dns::svcb::DDR_DESIGNATION_NAME,
+        RecordType::SVCB,
+    )
+    .await;
+    assert_eq!(
+        response.response_code(),
+        ResponseCode::NoError,
+        "the resolver must answer for its own designation, got {:?}",
+        response.response_code()
+    );
+    assert_eq!(
+        response.answers().len(),
+        2,
+        "both designations must come back, got {:?}",
+        response.answers()
+    );
+    // The DoH one first: :443 survives the DPI that filters DoT's :853, which is
+    // the same ordering the resolver's own upstream chain prefers.
+    let priorities: Vec<u16> = response
+        .answers()
+        .iter()
+        .filter_map(|r| match r.data() {
+            RData::SVCB(svcb) => Some(svcb.svc_priority()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(priorities.len(), 2, "both answers must be SVCB rdata");
+    assert!(priorities.contains(&1) && priorities.contains(&2));
+    assert_eq!(
+        upstream.hits(),
+        0,
+        "a designation is the resolver's own to answer; nothing may leave the box"
+    );
+}
+
+/// ...and without one stored, the name is refused like any other `arpa.` name.
+/// A box that has not published a designation must not have one invented for it
+/// upstream — that would be a third party telling a client where its own
+/// resolver's encrypted endpoints are.
+#[tokio::test]
+async fn a_missing_ddr_designation_is_refused_rather_than_fetched() {
+    let upstream = spawn_upstream().await;
+    let (server, _db) = server_with(ResolutionMode::Auto, &upstream);
+
+    let response = ask(
+        &server,
+        rolodex_dns::svcb::DDR_DESIGNATION_NAME,
+        RecordType::SVCB,
+    )
+    .await;
+    assert_eq!(response.response_code(), ResponseCode::Refused);
+    assert_eq!(upstream.hits(), 0, "and nothing left the box");
+}
+
 /// And the same name without local data is refused — the pair is what shows the
 /// refusal is a fall-through rather than a blanket block.
 #[tokio::test]

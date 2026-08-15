@@ -60,7 +60,7 @@ Port 53 needs privilege. For development use a high port — `make dev` runs on 
 
 Everywhere an address is taken (`dns.bind`, `dot.bind`, `doh.bind`, `doq.bind`, `grpc.tcp_bind`, `dhcp.bind`, `acme.bind`, `acme.portal_bind`, `metrics.bind`) four forms are accepted:
 
-(`dns.bind` takes a list of protocol/address pairs, and `dot.bind`/`doq.bind` take **either one address or a list** — a list is how one listener covers both address families, since `0.0.0.0` is IPv4-only and a `[::]` socket collides with it on the same port. The rest take a single address.)
+(`dns.bind` takes a list of protocol/address pairs, and `dot.bind`, `doh.bind` and `doq.bind` take **either one address or a list** — a list is how one listener covers both address families, since `0.0.0.0` is IPv4-only and a `[::]` socket collides with it on the same port. The rest take a single address.)
 
 | Form | Example | Result |
 | ---- | ------- | ------ |
@@ -377,6 +377,10 @@ doq:
 `auto_self_signed: true` (the default) generates a certificate at startup if none is configured, which is convenient for a trusted network.
 
 **A renewed certificate needs no restart.** A listener configured with `cert_path`/`key_path` re-reads those files every 30 seconds and starts serving a new pair within that window — connections already open finish under the certificate they handshook with, and the next one to arrive gets the new one. There is nothing to signal and nothing to coordinate with whoever writes the files: a poll that lands between an ACME client's two writes sees a key that does not match the certificate, refuses it, keeps serving the old pair, and retries on the next tick. A generated (`auto_self_signed`) certificate is not polled — there is no file behind it, and regenerating on a timer would hand every client a different certificate twice a minute.
+
+**A certificate that has not been issued yet can be named.** Pointing `cert_path`/`key_path` at a file that does not exist is a hard failure only when `auto_self_signed` is off. With it on, the listener starts on generated material and the poll above adopts the real pair the moment it lands. That is what lets these paths be written before whatever issues the certificate has run — the ordinary case on a box whose CA is created after the resolver starts, where the alternative is restarting the box's only resolver once the file exists.
+
+**DoT, DoH and DoQ are reconfigurable at runtime**, over `SetDotConfig` / `SetDohConfig` / `SetDoqConfig`. The bind addresses, the certificate paths and the SAN list can all be changed on a running server, and `Get*Config` reports what is actually bound. The YAML below is the startup configuration; it is not the only way in, and it is not the authority once the server is up.
 
 **If a DoT client reports a certificate name mismatch, this is the setting.** A generated certificate covers `localhost`, `127.0.0.1`, `::1`, and the listener's own bind addresses — so a listener on `192.168.1.5:853` already works for a client dialling that address, and nothing has to be configured. What it cannot cover is anything else the box answers to: its hostname, its mDNS `.local` name, a CNAME the LAN knows it by, or the address a NAT publishes it on. Those go in `self_signed_sans`. A listener on a **wildcard** bind (`0.0.0.0:853`, the default) gets nothing derived at all, because `0.0.0.0` is not an identity any client dials — on a wildcard bind the list is the only thing naming the box.
 
