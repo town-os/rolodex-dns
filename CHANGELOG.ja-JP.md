@@ -2,7 +2,7 @@
 
 > 言語：[English](CHANGELOG.md) ｜ [繁體中文](CHANGELOG.zh-TW.md) ｜ [简体中文](CHANGELOG.zh-CN.md) ｜ [Español (España)](CHANGELOG.es-ES.md) ｜ [Español (México)](CHANGELOG.es-MX.md) ｜ **日本語**
 
-## 未リリース
+## v0.6.2（2026-08-15）
 
 ### 機能
 
@@ -23,6 +23,7 @@
 ### ドキュメント
 
 - `DESIGN.md` は DoH トランスポートの下に HTTP/3 リスナーを、テストスイートの章に二つの新しいスイートを得ます。`README.md` と `CONFIGURATION.md` は二つの発見機構を得ます。そして `acme.tlsa_endpoints` は、何を公開しないのか、なぜなのかを述べるようになりました。六つのロケールは足並みをそろえて更新されています。
+
 ## v0.6.1（2026-08-15）
 
 ### 機能

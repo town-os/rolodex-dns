@@ -2,7 +2,7 @@
 
 > 語言：[English](CHANGELOG.md) ｜ **繁體中文** ｜ [简体中文](CHANGELOG.zh-CN.md) ｜ [Español (España)](CHANGELOG.es-ES.md) ｜ [Español (México)](CHANGELOG.es-MX.md) ｜ [日本語](CHANGELOG.ja-JP.md)
 
-## 未發布
+## v0.6.2（2026-08-15）
 
 ### 功能
 
@@ -23,6 +23,7 @@
 ### 文件
 
 - `DESIGN.md` 在 DoH 傳輸之下新增 HTTP/3 監聽器，並在測試套件章節下新增這兩個新套件；`README.md` 與 `CONFIGURATION.md` 新增這兩種探索機制；而 `acme.tlsa_endpoints` 現在會說明它拒絕發佈什麼以及為什麼。六個語系同步更新。
+
 ## v0.6.1（2026-08-15）
 
 ### 功能

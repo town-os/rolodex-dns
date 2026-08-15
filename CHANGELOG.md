@@ -2,7 +2,7 @@
 
 > Languages: **English** | [繁體中文](CHANGELOG.zh-TW.md) | [简体中文](CHANGELOG.zh-CN.md) | [Español (España)](CHANGELOG.es-ES.md) | [Español (México)](CHANGELOG.es-MX.md) | [日本語](CHANGELOG.ja-JP.md)
 
-## Unreleased
+## v0.6.2 (2026-08-15)
 
 ### Features
 
@@ -23,6 +23,7 @@
 ### Documentation
 
 - `DESIGN.md` gains the HTTP/3 listener under the DoH transport and both new suites under its test-suite chapter; `README.md` and `CONFIGURATION.md` gain the two discovery mechanisms; and `acme.tlsa_endpoints` now says what it refuses to publish and why. All six locales are updated in step.
+
 ## v0.6.1 (2026-08-15)
 
 ### Features

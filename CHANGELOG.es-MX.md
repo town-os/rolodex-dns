@@ -2,7 +2,7 @@
 
 > Idiomas: [English](CHANGELOG.md) | [繁體中文](CHANGELOG.zh-TW.md) | [简体中文](CHANGELOG.zh-CN.md) | [Español (España)](CHANGELOG.es-ES.md) | **Español (México)** | [日本語](CHANGELOG.ja-JP.md)
 
-## Sin publicar
+## v0.6.2 (2026-08-15)
 
 ### Funcionalidades
 
@@ -23,6 +23,7 @@
 ### Documentación
 
 - `DESIGN.md` gana el listener HTTP/3 bajo el transporte DoH y las dos suites nuevas en su capítulo de pruebas; `README.md` y `CONFIGURATION.md` ganan los dos mecanismos de descubrimiento; y `acme.tlsa_endpoints` dice ahora qué se niega a publicar y por qué. Los seis idiomas se actualizan a la par.
+
 ## v0.6.1 (2026-08-15)
 
 ### Funcionalidades
