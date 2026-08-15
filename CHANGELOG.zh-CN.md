@@ -2,7 +2,7 @@
 
 > 语言：[English](CHANGELOG.md) ｜ [繁體中文](CHANGELOG.zh-TW.md) ｜ **简体中文** ｜ [Español (España)](CHANGELOG.es-ES.md) ｜ [Español (México)](CHANGELOG.es-MX.md) ｜ [日本語](CHANGELOG.ja-JP.md)
 
-## 未发布
+## v0.6.0（2026-08-15）
 
 ### 破坏性变更
 

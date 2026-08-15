@@ -2,7 +2,7 @@
 
 > Languages: **English** | [繁體中文](CHANGELOG.zh-TW.md) | [简体中文](CHANGELOG.zh-CN.md) | [Español (España)](CHANGELOG.es-ES.md) | [Español (México)](CHANGELOG.es-MX.md) | [日本語](CHANGELOG.ja-JP.md)
 
-## Unreleased
+## v0.6.0 (2026-08-15)
 
 ### Breaking changes
 
