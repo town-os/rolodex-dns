@@ -150,6 +150,8 @@ rust-integration-test: build ## Run each Rust integration test file
 	cargo test --test zonemd_test
 	cargo test --test dot_test
 	cargo test --test doq_test
+	cargo test --test doh_h3_test
+	cargo test --test ddr_follow_test
 	cargo test --test proxy_test
 	cargo test --test tls_reload_test
 	cargo test --test acme_admin_test

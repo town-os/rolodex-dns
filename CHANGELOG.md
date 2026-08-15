@@ -2,6 +2,27 @@
 
 > Languages: **English** | [繁體中文](CHANGELOG.zh-TW.md) | [简体中文](CHANGELOG.zh-CN.md) | [Español (España)](CHANGELOG.es-ES.md) | [Español (México)](CHANGELOG.es-MX.md) | [日本語](CHANGELOG.ja-JP.md)
 
+## Unreleased
+
+### Features
+
+- **DoH speaks HTTP/3, and `doh.enable_h3` stops being a flag that did nothing.** The key parsed, `SetDohConfig` returned `success: true`, and the box served h2 over TCP and nothing else — an accepted setting is indistinguishable from an implemented one, which is why this one lasted as long as it did. It now opens a second listener (`doh_h3_server.rs`): same address, same port, same certificate, QUIC instead of TCP. What a client gets for it is head-of-line blocking gone — over TCP one lost segment stalls every query multiplexed on the connection, over QUIC it stalls one — and a zero-round-trip resume for a client that has spoken to the box before. `GetDohConfig` reports what is running rather than a hardcoded `false`, and a QUIC bind that fails takes the whole apply down with it instead of quietly leaving h2 up under a name that promised more.
+
+  The certificate is not loaded twice: the QUIC config is derived from the TCP listener's own, with the ALPN list replaced by `h3`. Two managers over one pair of files would drift for as long as it took a poll to notice a renewal, and over generated material they would never agree at all — each would mint its own self-signed certificate, so one name would be served by two different keys depending on which transport a client chose.
+
+- **Clients are told the HTTP/3 endpoint is there, two ways.** A client already holding an h2 connection learns from an `Alt-Svc` header on every DoH response; a client that has not connected at all learns from the DDR designation, which now publishes `alpn=h2,h3` for the DoH endpoint. Neither reaches the other's clients, which is why both exist — and with HTTP/3 off neither says anything, because advertising an endpoint nothing answers on costs every client that believes it a full timeout before it falls back.
+
+- **ACME no longer publishes a DANE record at an endpoint some other certificate serves.** `acme.tlsa_endpoints` exists so one certificate covering several endpoints gets a record at each — but those listeners do not have to be serving the ACME certificate, and on a Town OS box DoT and DoQ read a leaf issued by the box's own CA. The ACME association then pins a certificate the endpoint never presents, and RFC 7671 has a client that finds TLSA records and matches none REFUSE the connection; with no record at all the same client falls back to PKIX and keeps working. Such an endpoint is now dropped at startup — loudly, naming the listener, the certificate it actually serves, and the two ways to fix it — rather than published or silently skipped.
+
+### Testing
+
+- **`tests/doh_h3_test.rs`** (new, and named in the Makefile's `rust-integration-test` recipe) drives a real HTTP/3 client against a real listener: the ALPN token is negotiated from a config seeded with `h2`/`http/1.1`, so the replacement is what is under test; both RFC 8484 request forms are answered from one stored record; the `Cache-Control` carries the answer's own TTL, an unusual number chosen so that a hardcoded default cannot pass for it; every refusal finishes its stream, because one that sends headers and never closes reads at the client as a hung resolver rather than a rejected request; and four requests in flight together are answered without crossing, which a sequential test cannot tell apart from a server that serialized them.
+
+- **`tests/ddr_follow_test.rs`** (new, likewise) is the end-to-end nobody had written: it asks a running resolver over a real UDP socket where its encrypted endpoints are, parses the SVCB answer, and builds a DoH request out of nothing but what the record said — target, port, ALPN token, URI template — then resolves a name there and checks the address. Every part of DDR was covered separately and the chain could still have been broken by a template nothing serves or a port naming no listener. The control asks at a path the designation did not name and requires a 404; without it, following the template proves nothing.
+
+### Documentation
+
+- `DESIGN.md` gains the HTTP/3 listener under the DoH transport and both new suites under its test-suite chapter; `README.md` and `CONFIGURATION.md` gain the two discovery mechanisms; and `acme.tlsa_endpoints` now says what it refuses to publish and why. All six locales are updated in step.
 ## v0.6.1 (2026-08-15)
 
 ### Features

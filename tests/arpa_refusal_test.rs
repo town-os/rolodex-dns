@@ -497,7 +497,7 @@ async fn the_ddr_designation_is_answered_from_local_data() {
 
     for value in rolodex_dns::svcb::designation(
         "dns.home.",
-        Some((443, "/dns-query{?dns}")),
+        Some((443, "/dns-query{?dns}", true)),
         Some(853),
         None,
     ) {

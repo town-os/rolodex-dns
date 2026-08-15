@@ -531,7 +531,7 @@ metrics:
 | `acme.root_ca_cn` | `"Rolodex Root CA"` | Common name of the root CA created at boot |
 | `acme.leaf_validity_days` | `90` | Validity of issued leaf certificates |
 | `acme.tlsa_port` / `acme.tlsa_proto` | `443` / `"tcp"` | Where the DANE-TA TLSA record is published per name |
-| `acme.tlsa_endpoints` | `[]` | Additional `"<port>/<proto>"` endpoints to publish the DANE-TA TLSA record at, beyond `tlsa_port`/`tlsa_proto`. A TLSA record names a service endpoint, so one certificate serving DoT (`853/tcp`) and DoQ (`853/udp`) needs a record for each; a malformed entry is refused at startup rather than skipped |
+| `acme.tlsa_endpoints` | `[]` | Additional `"<port>/<proto>"` endpoints to publish the DANE-TA TLSA record at, beyond `tlsa_port`/`tlsa_proto`. A TLSA record names a service endpoint, so one certificate serving DoT (`853/tcp`) and DoQ (`853/udp`) needs a record for each; a malformed entry is refused at startup rather than skipped. An endpoint that a listener serves with its own certificate files is dropped at startup rather than published, and says so: the ACME association would pin a certificate that endpoint never presents, and a DANE client that matches no record refuses the connection |
 | `acme.require_eab` | `true` | Require External Account Binding for account registration |
 | `acme.issuance_scope` | `"managed_zones"` | `"managed_zones"` (zone must have a CA) or `"any"` |
 | `proxy.url` | `""` (disabled) | HTTP proxy URL for forwarded DNS queries |
@@ -1457,7 +1457,7 @@ Rolodex DNS supports three encrypted DNS transport protocols to prevent eavesdro
 
 **DNS-over-TLS (DoT)** -- RFC 7858, default port 853, ALPN token `dot`. Standard TLS-wrapped DNS over TCP, with the same 2-byte length prefix framing. The ALPN token is advertised rather than required: a client offering `dot` negotiates it, a client offering only some other protocol is refused, and a client that sends no ALPN extension at all is served anyway. Configure with `dot` section in YAML or `SetDotConfig` via gRPC.
 
-**DNS-over-HTTPS (DoH)** -- RFC 8484, default port 443. DNS queries over HTTPS with support for both GET (`/dns-query?dns=<base64>`) and POST (`application/dns-message`) methods. Optionally supports HTTP/3 via QUIC (`enable_h3: true`). Configure with `doh` section in YAML or `SetDohConfig` via gRPC.
+**DNS-over-HTTPS (DoH)** -- RFC 8484, default port 443. DNS queries over HTTPS with support for both GET (`/dns-query?dns=<base64>`) and POST (`application/dns-message`) methods. Optionally serves HTTP/3 over QUIC on the same port (`enable_h3: true`), advertised to connected clients with an `Alt-Svc` header and to everyone else through the DDR designation's `alpn=h2,h3`. Configure with `doh` section in YAML or `SetDohConfig` via gRPC.
 
 **DNS-over-QUIC (DoQ)** -- RFC 9250, default port 8853. DNS queries over QUIC transport for low-latency encrypted resolution. Configure with `doq` section in YAML or `SetDoqConfig` via gRPC.
 

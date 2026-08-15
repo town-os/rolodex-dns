@@ -201,18 +201,28 @@ pub fn canonical_rdata(value: &str) -> Option<Vec<u8>> {
 /// answered from its own records and never leaves the box. That is exactly the
 /// property DDR needs: the resolver, and only the resolver, answers for its own
 /// designation.
+///
+/// `doh` is `(port, dohpath, http3)`. The last is whether that endpoint also
+/// serves HTTP/3, and it belongs in the record rather than being left to
+/// `Alt-Svc`: the header can only reach a client that has already opened a TCP
+/// connection, so a client discovering this resolver for the first time would
+/// take the h2 path and never learn there was another. The two values are
+/// published together (`alpn=h2,h3`) rather than as separate records, because
+/// they are one endpoint — same name, same port, same certificate — and RFC 9460
+/// §7.1.1 makes `alpn` a list for exactly this.
 pub fn designation(
     name: &str,
-    doh: Option<(u16, &str)>,
+    doh: Option<(u16, &str, bool)>,
     dot: Option<u16>,
     doq: Option<u16>,
 ) -> Vec<String> {
     let mut out = Vec::new();
     let mut priority = 1u16;
-    if let Some((port, path)) = doh {
+    if let Some((port, path, http3)) = doh {
+        let alpn = if http3 { "h2,h3" } else { "h2" };
         out.push(format!(
-            "{} {} alpn=h2 port={} dohpath={}",
-            priority, name, port, path
+            "{} {} alpn={} port={} dohpath={}",
+            priority, name, alpn, port, path
         ));
         priority += 1;
     }
@@ -347,7 +357,7 @@ mod tests {
         // the same ordering the resolver's own upstream chain uses.
         let recs = designation(
             "dns.home.",
-            Some((443, "/dns-query{?dns}")),
+            Some((443, "/dns-query{?dns}", false)),
             Some(853),
             Some(853),
         );
@@ -359,6 +369,38 @@ mod tests {
         for r in &recs {
             parse(r).unwrap_or_else(|e| panic!("designation {:?} must parse: {:#}", r, e));
         }
+    }
+
+    /// With HTTP/3 running, the DoH endpoint advertises both protocols on one
+    /// record. Separate records would be two endpoints as far as a client is
+    /// concerned — same name, same port, same certificate — and it would have to
+    /// pick between them rather than negotiate.
+    #[test]
+    fn the_doh_designation_names_http3_when_it_is_served() {
+        let with_h3 = designation(
+            "dns.home.",
+            Some((443, "/dns-query{?dns}", true)),
+            None,
+            None,
+        );
+        assert_eq!(with_h3.len(), 1);
+        assert!(
+            with_h3[0].starts_with("1 dns.home. alpn=h2,h3 port=443 dohpath=/dns-query{?dns}"),
+            "{:?}",
+            with_h3[0]
+        );
+        parse(&with_h3[0]).unwrap_or_else(|e| panic!("the h3 designation must parse: {:#}", e));
+
+        // The control: with HTTP/3 off the token must be absent, or every client
+        // that believes the record spends a QUIC timeout on a dead endpoint
+        // before falling back to the h2 connection it could have had.
+        let without = designation(
+            "dns.home.",
+            Some((443, "/dns-query{?dns}", false)),
+            None,
+            None,
+        );
+        assert!(!without[0].contains("h3"), "{:?}", without[0]);
     }
 
     #[test]

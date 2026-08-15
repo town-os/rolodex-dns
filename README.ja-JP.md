@@ -531,7 +531,7 @@ metrics:
 | `acme.root_ca_cn` | `"Rolodex Root CA"` | 起動時に作られるルート CA のコモンネーム |
 | `acme.leaf_validity_days` | `90` | 発行されるリーフ証明書の有効期間 |
 | `acme.tlsa_port` / `acme.tlsa_proto` | `443` / `"tcp"` | 名前ごとに DANE-TA の TLSA レコードを公開する場所 |
-| `acme.tlsa_endpoints` | `[]` | `tlsa_port`／`tlsa_proto` に加えて DANE-TA の TLSA レコードを公開する `"<port>/<proto>"` エンドポイント。TLSA レコードは証明書ではなくサービスのエンドポイントを指すので、DoT（`853/tcp`）と DoQ（`853/udp`）を担う一枚の証明書にはそれぞれレコードが要ります。書式の誤った項目は読み飛ばさず、起動時に拒否されます |
+| `acme.tlsa_endpoints` | `[]` | `tlsa_port`／`tlsa_proto` に加えて DANE-TA の TLSA レコードを公開する `"<port>/<proto>"` エンドポイント。TLSA レコードは証明書ではなくサービスのエンドポイントを指すので、DoT（`853/tcp`）と DoQ（`853/udp`）を担う一枚の証明書にはそれぞれレコードが要ります。書式の誤った項目は読み飛ばさず、起動時に拒否されます。リスナーが自前の証明書ファイルで提供しているエンドポイントは、公開されずに起動時に落とされ、そのことを告げます：ACME の関連データはそのエンドポイントが決して提示しない証明書を固定することになり、どのレコードとも一致しない DANE クライアントは接続を拒否するからです |
 | `acme.require_eab` | `true` | アカウント登録に External Account Binding を要求します |
 | `acme.issuance_scope` | `"managed_zones"` | `"managed_zones"`（ゾーンに CA が必要）または `"any"` |
 | `proxy.url` | `""`（無効） | 転送する DNS クエリのための HTTP プロキシ URL |
@@ -1457,7 +1457,7 @@ Rolodex DNS は、DNS クエリの盗聴を防ぐために三つの暗号化 DNS
 
 **DNS-over-TLS（DoT）** —— RFC 7858、既定ポート 853、ALPN トークン `dot`。TCP 上の DNS を TLS で包んだ標準的なもので、枠取りも同じ 2 バイトの長さ接頭辞です。ALPN トークンは要求されるのではなく広告されます：`dot` を提示するクライアントはそれを折衝し、ほかのプロトコルだけを提示するクライアントは拒否され、ALPN 拡張をまったく送らないクライアントにはそのまま提供されます。YAML の `dot` 節か、gRPC の `SetDotConfig` で設定します。
 
-**DNS-over-HTTPS（DoH）** —— RFC 8484、既定ポート 443。HTTPS 上の DNS クエリで、GET（`/dns-query?dns=<base64>`）と POST（`application/dns-message`）の両方のメソッドに対応します。任意で QUIC 上の HTTP/3 にも対応します（`enable_h3: true`）。YAML の `doh` 節か、gRPC の `SetDohConfig` で設定します。
+**DNS-over-HTTPS（DoH）** —— RFC 8484、既定ポート 443。HTTPS 上の DNS クエリで、GET（`/dns-query?dns=<base64>`）と POST（`application/dns-message`）の両方のメソッドに対応します。任意で同じポートの QUIC 上に HTTP/3 を提供します（`enable_h3: true`）。すでに接続しているクライアントには `Alt-Svc` ヘッダーで、それ以外のすべてには DDR 指定レコードの `alpn=h2,h3` で広告されます。YAML の `doh` 節か、gRPC の `SetDohConfig` で設定します。
 
 **DNS-over-QUIC（DoQ）** —— RFC 9250、既定ポート 8853。低遅延の暗号化解決のための QUIC トランスポート上の DNS クエリです。YAML の `doq` 節か、gRPC の `SetDoqConfig` で設定します。
 

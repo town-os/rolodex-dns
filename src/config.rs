@@ -697,6 +697,130 @@ impl AcmeConfig {
     }
 }
 
+/// The DANE endpoints ACME may publish at, paired with the ones it must not.
+/// See [`Config::partition_tlsa_endpoints`].
+pub type TlsaPartition = (Vec<(u16, String)>, Vec<TlsaConflict>);
+
+/// An ACME DANE endpoint that names a port some listener serves with a
+/// certificate of its OWN, rather than the one ACME issues.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TlsaConflict {
+    pub port: u16,
+    pub proto: String,
+    /// Which listener holds that port: `DoT`, `DoH` or `DoQ`.
+    pub listener: &'static str,
+    /// The certificate file that listener serves instead.
+    pub cert_path: String,
+}
+
+impl TlsaConflict {
+    /// The line logged when this endpoint is dropped. Written here so the
+    /// message and the rule that produces it cannot drift apart.
+    pub fn explain(&self) -> String {
+        format!(
+            "acme: not publishing a DANE record at {}/{} — the {} listener serves {} there, \
+             which is not the certificate ACME issues. A TLSA record that pins a certificate \
+             the endpoint does not serve makes every DANE-checking client REFUSE the \
+             connection; with no record they fall back to ordinary PKIX. Remove \"{}/{}\" from \
+             acme.tlsa_endpoints, or point that listener at the ACME material, to publish one.",
+            self.port, self.proto, self.listener, self.cert_path, self.port, self.proto
+        )
+    }
+}
+
+/// The port a bind specification names, whatever form the host part took.
+///
+/// `primary:853`, `eth0:853`, `0.0.0.0:853` and `[::]:853` all end in the port,
+/// so it is read from the last colon rather than by resolving the address —
+/// which would mean asking the kernel for interfaces just to compare a number.
+fn bind_port(spec: &str) -> Option<u16> {
+    spec.trim().rsplit_once(':')?.1.trim().parse().ok()
+}
+
+impl Config {
+    /// Splits the ACME DANE endpoints into the ones it may publish at and the
+    /// ones it must not.
+    ///
+    /// # The conflict this exists to catch
+    ///
+    /// `acme.tlsa_endpoints` was added so one certificate serving several
+    /// endpoints gets a TLSA record at each — the motivating pair being DoT on
+    /// `853/tcp` and DoQ on `853/udp`. But those listeners do not have to be
+    /// serving the ACME certificate: `dot.tls.cert_path` points them at a file,
+    /// and on a Town OS box that file is a leaf from the box's own CA, written
+    /// by the system controller and reloaded here every 30 seconds. Publishing
+    /// the ACME association at `853/tcp` then pins a certificate that endpoint
+    /// never presents.
+    ///
+    /// That is not a degraded pin, it is a broken endpoint: RFC 7671 has a
+    /// client that finds TLSA records and matches none REFUSE the connection.
+    /// With no record at all the same client falls back to ordinary PKIX and
+    /// keeps working. So a conflicting endpoint is dropped rather than
+    /// published — and, because a record that silently never appears is the
+    /// other failure this mechanism exists to prevent, every drop is logged at
+    /// startup with the reason and the fix (see [`TlsaConflict::explain`]).
+    ///
+    /// A listener with no `cert_path` is generating or has been handed the ACME
+    /// material and is left alone; so is a port no encrypted listener holds.
+    pub fn partition_tlsa_endpoints(&self) -> Result<TlsaPartition, String> {
+        let Some(acme) = self.acme.as_ref() else {
+            return Ok((Vec::new(), Vec::new()));
+        };
+        let requested = acme.tlsa_endpoints()?;
+
+        // Every (port, proto) an encrypted listener holds with its own
+        // certificate. DoH is TCP, and also UDP when it serves HTTP/3 — the h3
+        // endpoint shares the port, the certificate and therefore the conflict.
+        let mut owned: Vec<(u16, &'static str, &'static str, String)> = Vec::new();
+        let mut claim =
+            |binds: &BindList, tls: &TlsConfig, label: &'static str, protos: &[&'static str]| {
+                let Some(cert_path) = tls.cert_path.as_ref() else {
+                    return;
+                };
+                for spec in binds.specs() {
+                    let Some(port) = bind_port(spec) else {
+                        continue;
+                    };
+                    for proto in protos {
+                        owned.push((port, proto, label, cert_path.clone()));
+                    }
+                }
+            };
+        if let Some(dot) = self.dot.as_ref() {
+            claim(&dot.bind, &dot.tls, "DoT", &["tcp"]);
+        }
+        if let Some(doh) = self.doh.as_ref() {
+            let protos: &[&'static str] = if doh.enable_h3 {
+                &["tcp", "udp"]
+            } else {
+                &["tcp"]
+            };
+            claim(&doh.bind, &doh.tls, "DoH", protos);
+        }
+        if let Some(doq) = self.doq.as_ref() {
+            claim(&doq.bind, &doq.tls, "DoQ", &["udp"]);
+        }
+
+        let mut publish = Vec::new();
+        let mut conflicts = Vec::new();
+        for (port, proto) in requested {
+            match owned
+                .iter()
+                .find(|(p, pr, _, _)| *p == port && *pr == proto)
+            {
+                Some((_, _, listener, cert_path)) => conflicts.push(TlsaConflict {
+                    port,
+                    proto,
+                    listener,
+                    cert_path: cert_path.clone(),
+                }),
+                None => publish.push((port, proto)),
+            }
+        }
+        Ok((publish, conflicts))
+    }
+}
+
 /// Upstream proxy configuration for forwarding DNS queries through a proxy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyConfig {
@@ -1304,6 +1428,124 @@ impl Default for Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A DANE endpoint whose port is served by a listener holding its OWN
+    /// certificate is dropped rather than published.
+    ///
+    /// This is the Town OS shape exactly: DoT and DoQ on 853 reading a leaf the
+    /// system controller writes, and an operator who read the `tlsa_endpoints`
+    /// documentation and listed both. The ACME association pins a certificate
+    /// those listeners never present, and RFC 7671 has a client that finds TLSA
+    /// records and matches none REFUSE the connection — so publishing it breaks
+    /// encrypted DNS for the clients most careful about it.
+    #[test]
+    fn a_dane_endpoint_served_by_another_certificate_is_not_published() {
+        let config = Config {
+            dot: Some(DotConfig {
+                bind: BindList::one("0.0.0.0:853"),
+                tls: TlsConfig {
+                    cert_path: Some("/data/tls/dot/cert.pem".to_string()),
+                    key_path: Some("/data/tls/dot/key.pem".to_string()),
+                    ..TlsConfig::default()
+                },
+            }),
+            doq: Some(DoqConfig {
+                bind: BindList::one("0.0.0.0:853"),
+                tls: TlsConfig {
+                    cert_path: Some("/data/tls/dot/cert.pem".to_string()),
+                    key_path: Some("/data/tls/dot/key.pem".to_string()),
+                    ..TlsConfig::default()
+                },
+            }),
+            acme: Some(AcmeConfig {
+                tlsa_endpoints: vec!["853/tcp".to_string(), "853/udp".to_string()],
+                ..AcmeConfig::default()
+            }),
+            ..Config::default()
+        };
+
+        let (publish, conflicts) = config.partition_tlsa_endpoints().expect("well-formed");
+        // The ACME listener's own 443/tcp is untouched: that endpoint really does
+        // serve the certificate being pinned.
+        assert_eq!(publish, vec![(443, "tcp".to_string())]);
+        assert_eq!(conflicts.len(), 2, "{:?}", conflicts);
+        assert_eq!(
+            conflicts.iter().map(|c| c.listener).collect::<Vec<_>>(),
+            vec!["DoT", "DoQ"]
+        );
+        for conflict in &conflicts {
+            assert!(
+                conflict.explain().contains("/data/tls/dot/cert.pem"),
+                "the reason does not name the certificate actually served: {}",
+                conflict.explain()
+            );
+        }
+    }
+
+    /// The control, and the one that keeps the rule narrow: a listener with no
+    /// `cert_path` is serving generated or ACME-supplied material, so ACME may
+    /// pin it. Dropping that endpoint too would make the feature unreachable for
+    /// the deployment it was written for.
+    #[test]
+    fn a_dane_endpoint_on_a_listener_with_no_certificate_files_is_published() {
+        let config = Config {
+            dot: Some(DotConfig {
+                bind: BindList::one("0.0.0.0:853"),
+                tls: TlsConfig::default(),
+            }),
+            acme: Some(AcmeConfig {
+                tlsa_endpoints: vec!["853/tcp".to_string()],
+                ..AcmeConfig::default()
+            }),
+            ..Config::default()
+        };
+
+        let (publish, conflicts) = config.partition_tlsa_endpoints().expect("well-formed");
+        assert_eq!(
+            publish,
+            vec![(443, "tcp".to_string()), (853, "tcp".to_string())]
+        );
+        assert!(conflicts.is_empty(), "{:?}", conflicts);
+    }
+
+    /// HTTP/3 puts the DoH certificate on the port's UDP half as well, so a DANE
+    /// endpoint at `<doh port>/udp` conflicts with it exactly as the TCP one
+    /// does. Without this the h3 listener would be the one endpoint that could
+    /// be mispinned in silence.
+    #[test]
+    fn http3_extends_the_doh_conflict_to_udp() {
+        let doh = |enable_h3| DohConfig {
+            bind: BindList::one("0.0.0.0:8443"),
+            tls: TlsConfig {
+                cert_path: Some("/data/tls/doh/cert.pem".to_string()),
+                key_path: Some("/data/tls/doh/key.pem".to_string()),
+                ..TlsConfig::default()
+            },
+            enable_h3,
+        };
+        let config = |enable_h3| Config {
+            doh: Some(doh(enable_h3)),
+            acme: Some(AcmeConfig {
+                tlsa_endpoints: vec!["8443/udp".to_string()],
+                ..AcmeConfig::default()
+            }),
+            ..Config::default()
+        };
+
+        let (_, with_h3) = config(true)
+            .partition_tlsa_endpoints()
+            .expect("well-formed");
+        assert_eq!(with_h3.len(), 1, "{:?}", with_h3);
+        assert_eq!(with_h3[0].proto, "udp");
+
+        // The control: with HTTP/3 off nothing of ours is on that UDP port, and
+        // whatever the operator is pinning there is not this listener's business.
+        let (publish, without) = config(false)
+            .partition_tlsa_endpoints()
+            .expect("well-formed");
+        assert!(without.is_empty(), "{:?}", without);
+        assert!(publish.contains(&(8443, "udp".to_string())));
+    }
 
     /// The scalar pair alone, which is every configuration written before
     /// `tlsa_endpoints` existed. The control for every case below: if this did

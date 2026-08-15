@@ -1239,7 +1239,7 @@ async fn test_doh_post_handler() {
     .unwrap();
 
     let server = make_server(db);
-    let app = rolodex_dns::doh_server::build_router(server);
+    let app = rolodex_dns::doh_server::build_router(server, None);
 
     let dns_query = build_dns_query("doh.example.com.", RecordType::A);
 
@@ -1283,7 +1283,7 @@ async fn test_doh_get_handler_base64url() {
     .unwrap();
 
     let server = make_server(db);
-    let app = rolodex_dns::doh_server::build_router(server);
+    let app = rolodex_dns::doh_server::build_router(server, None);
 
     let dns_query = build_dns_query("dohget.example.com.", RecordType::A);
     let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&dns_query);
@@ -1312,7 +1312,7 @@ async fn test_doh_get_missing_param() {
 
     let db = Database::open_memory().unwrap();
     let server = make_server(db);
-    let app = rolodex_dns::doh_server::build_router(server);
+    let app = rolodex_dns::doh_server::build_router(server, None);
 
     let request = HttpRequest::builder()
         .method("GET")
@@ -1332,7 +1332,7 @@ async fn test_doh_get_invalid_base64() {
 
     let db = Database::open_memory().unwrap();
     let server = make_server(db);
-    let app = rolodex_dns::doh_server::build_router(server);
+    let app = rolodex_dns::doh_server::build_router(server, None);
 
     let request = HttpRequest::builder()
         .method("GET")
@@ -1362,7 +1362,7 @@ async fn test_doh_cache_control_header() {
     .unwrap();
 
     let server = make_server(db);
-    let app = rolodex_dns::doh_server::build_router(server);
+    let app = rolodex_dns::doh_server::build_router(server, None);
 
     let dns_query = build_dns_query("cc.example.com.", RecordType::A);
     let request = HttpRequest::builder()

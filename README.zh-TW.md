@@ -531,7 +531,7 @@ metrics:
 | `acme.root_ca_cn` | `"Rolodex Root CA"` | 開機時建立的根憑證機構通用名稱 |
 | `acme.leaf_validity_days` | `90` | 簽發出的終端憑證有效期 |
 | `acme.tlsa_port` / `acme.tlsa_proto` | `443` / `"tcp"` | 每個名稱的 DANE-TA TLSA 記錄發佈位置 |
-| `acme.tlsa_endpoints` | `[]` | 除了 `tlsa_port`／`tlsa_proto` 之外，額外發佈 DANE-TA TLSA 記錄的 `"<port>/<proto>"` 端點。TLSA 記錄指的是服務端點而非憑證，因此同時提供 DoT（`853/tcp`）與 DoQ（`853/udp`）的一張憑證，兩者各需要一筆記錄；格式錯誤的項目會在啟動時被拒絕，而不是跳過 |
+| `acme.tlsa_endpoints` | `[]` | 除了 `tlsa_port`／`tlsa_proto` 之外，額外發佈 DANE-TA TLSA 記錄的 `"<port>/<proto>"` 端點。TLSA 記錄指的是服務端點而非憑證，因此同時提供 DoT（`853/tcp`）與 DoQ（`853/udp`）的一張憑證，兩者各需要一筆記錄；格式錯誤的項目會在啟動時被拒絕，而不是跳過。由監聽器以自有憑證檔提供服務的端點會在啟動時被剔除而非發佈，並會說明：ACME 的關聯資料會固定一張該端點從未出示過的憑證，而比對不到任何記錄的 DANE 用戶端會拒絕該連線 |
 | `acme.require_eab` | `true` | 帳號註冊時要求 External Account Binding |
 | `acme.issuance_scope` | `"managed_zones"` | `"managed_zones"`（區域必須有憑證機構）或 `"any"` |
 | `proxy.url` | `""`（停用） | 轉送 DNS 查詢用的 HTTP 代理 URL |
@@ -1457,7 +1457,7 @@ Rolodex DNS 支援三種加密的 DNS 傳輸協定，用以防止 DNS 查詢被�
 
 **DNS-over-TLS（DoT）**——RFC 7858，預設連接埠 853，ALPN 代號 `dot`。標準的、以 TLS 封裝的 TCP 上 DNS，使用同樣的 2 位元組長度前綴框架。ALPN 代號是通告而非強制：提供 `dot` 的用戶端會協商到它，只提供其他協定的用戶端會被拒絕，而完全不傳送 ALPN 延伸的用戶端照樣獲得服務。以 YAML 中的 `dot` 區段或透過 gRPC 的 `SetDotConfig` 設定。
 
-**DNS-over-HTTPS（DoH）**——RFC 8484，預設連接埠 443。HTTPS 上的 DNS 查詢，同時支援 GET（`/dns-query?dns=<base64>`）與 POST（`application/dns-message`）兩種方法。可選擇性地透過 QUIC 支援 HTTP/3（`enable_h3: true`）。以 YAML 中的 `doh` 區段或透過 gRPC 的 `SetDohConfig` 設定。
+**DNS-over-HTTPS（DoH）**——RFC 8484，預設連接埠 443。HTTPS 上的 DNS 查詢，同時支援 GET（`/dns-query?dns=<base64>`）與 POST（`application/dns-message`）兩種方法。可選擇性地在同一個連接埠上以 QUIC 提供 HTTP/3（`enable_h3: true`），對已連線的用戶端以 `Alt-Svc` 標頭宣告，對其他所有人則透過 DDR 指定記錄的 `alpn=h2,h3` 宣告。以 YAML 中的 `doh` 區段或透過 gRPC 的 `SetDohConfig` 設定。
 
 **DNS-over-QUIC（DoQ）**——RFC 9250，預設連接埠 8853。以 QUIC 傳輸進行 DNS 查詢，達成低延遲的加密解析。以 YAML 中的 `doq` 區段或透過 gRPC 的 `SetDoqConfig` 設定。
 

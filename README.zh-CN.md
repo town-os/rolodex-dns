@@ -531,7 +531,7 @@ metrics:
 | `acme.root_ca_cn` | `"Rolodex Root CA"` | 开机时创建的根证书颁发机构通用名称 |
 | `acme.leaf_validity_days` | `90` | 签发出的叶证书有效期 |
 | `acme.tlsa_port` / `acme.tlsa_proto` | `443` / `"tcp"` | 每个名称的 DANE-TA TLSA 记录发布位置 |
-| `acme.tlsa_endpoints` | `[]` | 除了 `tlsa_port`／`tlsa_proto` 之外，额外发布 DANE-TA TLSA 记录的 `"<port>/<proto>"` 端点。TLSA 记录指的是服务端点而非证书，因此同时提供 DoT（`853/tcp`）与 DoQ（`853/udp`）的一张证书，两者各需要一条记录；格式错误的条目会在启动时被拒绝，而不是跳过 |
+| `acme.tlsa_endpoints` | `[]` | 除了 `tlsa_port`／`tlsa_proto` 之外，额外发布 DANE-TA TLSA 记录的 `"<port>/<proto>"` 端点。TLSA 记录指的是服务端点而非证书，因此同时提供 DoT（`853/tcp`）与 DoQ（`853/udp`）的一张证书，两者各需要一条记录；格式错误的条目会在启动时被拒绝，而不是跳过。由监听器以自有证书文件提供服务的端点会在启动时被剔除而非发布，并会说明：ACME 的关联数据会固定一张该端点从未出示过的证书，而匹配不到任何记录的 DANE 客户端会拒绝该连接 |
 | `acme.require_eab` | `true` | 账号注册时要求 External Account Binding |
 | `acme.issuance_scope` | `"managed_zones"` | `"managed_zones"`（区域必须有证书颁发机构）或 `"any"` |
 | `proxy.url` | `""`（禁用） | 转发 DNS 查询用的 HTTP 代理 URL |
@@ -1457,7 +1457,7 @@ Rolodex DNS 支持三种加密的 DNS 传输协议，用以防止 DNS 查询被�
 
 **DNS-over-TLS（DoT）**——RFC 7858，默认端口 853，ALPN 代号 `dot`。标准的、以 TLS 封装的 TCP 上 DNS，使用同样的 2 字节长度前缀分帧。ALPN 代号是通告而非强制：提供 `dot` 的客户端会协商到它，只提供其他协议的客户端会被拒绝，而完全不发送 ALPN 扩展的客户端照样获得服务。以 YAML 中的 `dot` 段或通过 gRPC 的 `SetDotConfig` 配置。
 
-**DNS-over-HTTPS（DoH）**——RFC 8484，默认端口 443。HTTPS 上的 DNS 查询，同时支持 GET（`/dns-query?dns=<base64>`）与 POST（`application/dns-message`）两种方法。可选择性地通过 QUIC 支持 HTTP/3（`enable_h3: true`）。以 YAML 中的 `doh` 段或通过 gRPC 的 `SetDohConfig` 配置。
+**DNS-over-HTTPS（DoH）**——RFC 8484，默认端口 443。HTTPS 上的 DNS 查询，同时支持 GET（`/dns-query?dns=<base64>`）与 POST（`application/dns-message`）两种方法。可选择性地在同一个端口上以 QUIC 提供 HTTP/3（`enable_h3: true`），对已连接的客户端以 `Alt-Svc` 标头宣告，对其他所有人则通过 DDR 指定记录的 `alpn=h2,h3` 宣告。以 YAML 中的 `doh` 段或通过 gRPC 的 `SetDohConfig` 配置。
 
 **DNS-over-QUIC（DoQ）**——RFC 9250，默认端口 8853。以 QUIC 传输进行 DNS 查询，达成低延迟的加密解析。以 YAML 中的 `doq` 段或通过 gRPC 的 `SetDoqConfig` 配置。
 

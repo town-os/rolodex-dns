@@ -32,11 +32,58 @@ struct DnsQueryParams {
 }
 
 /// Builds the DoH axum Router (for testing without TLS).
-pub fn build_router(dns_server: Arc<DnsServer>) -> Router {
+///
+/// `h3_port` is the UDP port the HTTP/3 listener took, when one is running. It
+/// is not decoration: a client that reached this listener over TCP has no other
+/// way to learn the box speaks HTTP/3. RFC 7838's `Alt-Svc` header is the
+/// in-band announcement, and without it the QUIC endpoint is reachable only by a
+/// client that was told about it out of band — through the DDR designation, or
+/// by hand. `None` when HTTP/3 is off, which must advertise nothing at all: an
+/// `Alt-Svc` for a port nothing answers on sends a client to a dead endpoint and
+/// makes it wait out its own timeout before falling back.
+pub fn build_router(dns_server: Arc<DnsServer>, h3_port: Option<u16>) -> Router {
     let state = DohState { dns_server };
-    Router::new()
+    let router = Router::new()
         .route("/dns-query", get(handle_doh_get).post(handle_doh_post))
-        .with_state(state)
+        .with_state(state);
+    match h3_port {
+        Some(port) => router.layer(axum::middleware::from_fn(move |req, next| {
+            add_alt_svc(port, req, next)
+        })),
+        None => router,
+    }
+}
+
+/// How long a client may remember the `Alt-Svc` advertisement, in seconds.
+///
+/// A day. The alternative endpoint is the same box on the same port, so it
+/// stops being true only when HTTP/3 is turned off — and a client holding a
+/// stale advertisement falls back to TCP on the first failed attempt rather
+/// than losing resolution. A short lifetime would buy nothing and re-advertise
+/// on every query.
+const ALT_SVC_MAX_AGE: u32 = 86400;
+
+/// Adds the `Alt-Svc` header advertising this box's HTTP/3 endpoint.
+///
+/// The value names the port only (`h3=":443"`), which RFC 7838 §3 reads as "the
+/// same host". That is what makes the advertisement correct on a box whose name
+/// this listener does not know: it is reached as whatever the client dialled.
+async fn add_alt_svc(
+    port: u16,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let mut response = next.run(request).await;
+    match http::HeaderValue::from_str(&format!("h3=\":{}\"; ma={}", port, ALT_SVC_MAX_AGE)) {
+        Ok(value) => {
+            response.headers_mut().insert("alt-svc", value);
+        }
+        // A port always formats into a valid header value, so this cannot
+        // happen — and if it somehow did, the response is still a correct DNS
+        // answer and is worth more than the advertisement.
+        Err(e) => error!("DoH Alt-Svc header not added: {}", e),
+    }
+    response
 }
 
 /// Serves DNS-over-HTTPS on the specified bind address.
@@ -44,19 +91,17 @@ pub fn build_router(dns_server: Arc<DnsServer>) -> Router {
 /// `tls` is a live view of the certificate rather than a snapshot: a renewal is
 /// stored into the listener's `RustlsConfig` by the task below and picked up by
 /// the next connection, with no restart.
+///
+/// This serves TCP alone and advertises no HTTP/3: pairing the two listeners is
+/// the supervisor's job, because only it knows which port the QUIC endpoint
+/// actually took (see `transports::TransportSupervisor::start`).
 pub async fn serve_doh(
     bind: &str,
     dns_server: Arc<DnsServer>,
     tls: watch::Receiver<Arc<rustls::ServerConfig>>,
 ) -> Result<()> {
-    let state = DohState { dns_server };
-
-    let app = Router::new()
-        .route("/dns-query", get(handle_doh_get).post(handle_doh_post))
-        .with_state(state);
-
     let listener = bind_doh(bind)?;
-    serve_doh_on(listener, app, tls).await
+    serve_doh_on(listener, build_router(dns_server, None), tls).await
 }
 
 /// Binds a DoH listener without starting it.
@@ -196,7 +241,11 @@ async fn handle_doh_get(
 }
 
 /// Extracts the minimum TTL from a DNS response for Cache-Control header.
-fn extract_min_ttl(response_bytes: &[u8]) -> u32 {
+///
+/// Visible to the crate because the HTTP/3 listener answers the same requests
+/// with the same caching rule, and a second implementation of it is a second
+/// place for the two to disagree about how long an answer may be held.
+pub(crate) fn extract_min_ttl(response_bytes: &[u8]) -> u32 {
     use hickory_proto::op::Message;
     use hickory_proto::serialize::binary::BinDecodable;
 

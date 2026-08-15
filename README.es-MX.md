@@ -531,7 +531,7 @@ metrics:
 | `acme.root_ca_cn` | `"Rolodex Root CA"` | Nombre común de la CA raíz creada al arrancar |
 | `acme.leaf_validity_days` | `90` | Validez de los certificados de hoja emitidos |
 | `acme.tlsa_port` / `acme.tlsa_proto` | `443` / `"tcp"` | Dónde se publica el registro TLSA DANE-TA para cada nombre |
-| `acme.tlsa_endpoints` | `[]` | Endpoints `"<puerto>/<protocolo>"` adicionales en los que publicar el registro TLSA DANE-TA, más allá de `tlsa_port`/`tlsa_proto`. Un registro TLSA nombra un endpoint de servicio, así que un certificado que sirve DoT (`853/tcp`) y DoQ (`853/udp`) necesita un registro para cada uno; una entrada malformada se rechaza al arrancar en vez de saltarse |
+| `acme.tlsa_endpoints` | `[]` | Endpoints `"<puerto>/<protocolo>"` adicionales en los que publicar el registro TLSA DANE-TA, más allá de `tlsa_port`/`tlsa_proto`. Un registro TLSA nombra un endpoint de servicio, así que un certificado que sirve DoT (`853/tcp`) y DoQ (`853/udp`) necesita un registro para cada uno; una entrada malformada se rechaza al arrancar en vez de saltarse. Un endpoint que un escucha sirve con sus propios archivos de certificado se descarta al arrancar en vez de publicarse, y lo dice: la asociación de ACME fijaría un certificado que ese endpoint nunca presenta, y un cliente DANE que no coincide con ningún registro rechaza la conexión |
 | `acme.require_eab` | `true` | Exige External Account Binding para registrar una cuenta |
 | `acme.issuance_scope` | `"managed_zones"` | `"managed_zones"` (la zona debe tener una CA) o `"any"` |
 | `proxy.url` | `""` (desactivado) | URL del proxy HTTP para las consultas DNS reenviadas |
@@ -1457,7 +1457,7 @@ Rolodex DNS admite tres protocolos de transporte DNS cifrado para evitar la escu
 
 **DNS-over-TLS (DoT)** — RFC 7858, puerto 853 por omisión, testigo ALPN `dot`. DNS estándar envuelto en TLS sobre TCP, con el mismo encuadre de prefijo de longitud de 2 bytes. El testigo ALPN se anuncia, no se exige: un cliente que ofrece `dot` lo negocia, un cliente que solo ofrece algún otro protocolo se rechaza, y a un cliente que no manda extensión ALPN alguna se le sirve igualmente. Se configura con la sección `dot` en YAML o con `SetDotConfig` por gRPC.
 
-**DNS-over-HTTPS (DoH)** — RFC 8484, puerto 443 por omisión. Consultas DNS sobre HTTPS con soporte de los métodos GET (`/dns-query?dns=<base64>`) y POST (`application/dns-message`). Opcionalmente admite HTTP/3 por QUIC (`enable_h3: true`). Se configura con la sección `doh` en YAML o con `SetDohConfig` por gRPC.
+**DNS-over-HTTPS (DoH)** — RFC 8484, puerto 443 por omisión. Consultas DNS sobre HTTPS con soporte de los métodos GET (`/dns-query?dns=<base64>`) y POST (`application/dns-message`). Opcionalmente sirve HTTP/3 sobre QUIC en el mismo puerto (`enable_h3: true`), anunciado a los clientes ya conectados con un encabezado `Alt-Svc` y a todos los demás mediante el `alpn=h2,h3` de la designación DDR. Se configura con la sección `doh` en YAML o con `SetDohConfig` por gRPC.
 
 **DNS-over-QUIC (DoQ)** — RFC 9250, puerto 8853 por omisión. Consultas DNS sobre transporte QUIC para resolución cifrada de baja latencia. Se configura con la sección `doq` en YAML o con `SetDoqConfig` por gRPC.
 

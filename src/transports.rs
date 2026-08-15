@@ -90,11 +90,29 @@ pub struct TransportSettings {
     pub binds: BindList,
     /// Certificate material, exactly as the config file's `tls:` section.
     pub tls: crate::config::TlsConfig,
+    /// Whether DoH also serves HTTP/3 on the same address over UDP.
+    ///
+    /// Meaningful only for [`TransportKind::Doh`]; the other transports carry it
+    /// as `false` and ignore it. It is part of the settings rather than a
+    /// separate switch because the supervisor decides whether to restart a
+    /// transport by comparing these values, and a flag kept outside them is one
+    /// that can be changed with nothing noticing.
+    pub enable_h3: bool,
 }
 
 impl TransportSettings {
     pub fn new(binds: BindList, tls: crate::config::TlsConfig) -> Self {
-        Self { binds, tls }
+        Self {
+            binds,
+            tls,
+            enable_h3: false,
+        }
+    }
+
+    /// Turns HTTP/3 on or off for a DoH transport. See [`Self::enable_h3`].
+    pub fn with_h3(mut self, enable_h3: bool) -> Self {
+        self.enable_h3 = enable_h3;
+        self
     }
 }
 
@@ -278,6 +296,10 @@ impl TransportSupervisor {
             let dns = Arc::clone(&self.dns_server);
             let label = kind.label();
             let addr_owned = addr.clone();
+            // Each arm yields every task it started, because one of them starts
+            // two: DoH with HTTP/3 is a TCP listener and a QUIC endpoint on the
+            // same address, and a supervisor holding only one handle would stop
+            // half a transport and report it down.
 
             // Each arm reports the address the socket ACTUALLY took, not the one
             // that was asked for. They differ whenever the request named port 0
@@ -292,7 +314,7 @@ impl TransportSupervisor {
                             let actual = listener.local_addr()?.to_string();
                             Ok((
                                 actual,
-                                tokio::spawn(async move {
+                                vec![tokio::spawn(async move {
                                     if let Err(e) =
                                         crate::dot_server::serve_dot_on(listener, dns, watch).await
                                     {
@@ -301,43 +323,78 @@ impl TransportSupervisor {
                                             label, addr_owned, e
                                         );
                                     }
-                                }),
+                                })],
                             ))
                         })
                 }
                 TransportKind::Doh => crate::doh_server::bind_doh(addr).and_then(|listener| {
-                    let actual = listener.local_addr()?.to_string();
-                    let app = crate::doh_server::build_router(dns);
-                    Ok((
-                        actual,
-                        tokio::spawn(async move {
-                            if let Err(e) =
-                                crate::doh_server::serve_doh_on(listener, app, watch).await
-                            {
-                                warn!("{} listener on {} exited: {:#}", label, addr_owned, e);
-                            }
-                        }),
-                    ))
+                    let bound_addr = listener.local_addr()?;
+                    let actual = bound_addr.to_string();
+
+                    // HTTP/3 is bound BEFORE the router is built, and on the
+                    // address the TCP listener actually took rather than the one
+                    // that was asked for. Both matter when the request named
+                    // port 0: the QUIC endpoint has to land on the same port for
+                    // the `Alt-Svc` advertisement to name anything real, and the
+                    // router cannot advertise a port that has not been chosen.
+                    let h3 = if settings.enable_h3 {
+                        let endpoint =
+                            crate::doh_h3_server::bind_doh_h3(&actual, manager.server_config())?;
+                        let h3_addr = endpoint.local_addr()?;
+                        let h3_dns = Arc::clone(&self.dns_server);
+                        let h3_watch = manager.watch();
+                        Some((
+                            h3_addr.port(),
+                            tokio::spawn(async move {
+                                if let Err(e) = crate::doh_h3_server::serve_doh_h3_on(
+                                    endpoint, h3_dns, h3_watch,
+                                )
+                                .await
+                                {
+                                    warn!(
+                                        "{} HTTP/3 listener on {} exited: {:#}",
+                                        label, h3_addr, e
+                                    );
+                                }
+                            }),
+                        ))
+                    } else {
+                        None
+                    };
+
+                    let (h3_port, h3_task) = match h3 {
+                        Some((port, task)) => (Some(port), Some(task)),
+                        None => (None, None),
+                    };
+                    let app = crate::doh_server::build_router(dns, h3_port);
+                    let mut started = vec![tokio::spawn(async move {
+                        if let Err(e) = crate::doh_server::serve_doh_on(listener, app, watch).await
+                        {
+                            warn!("{} listener on {} exited: {:#}", label, addr_owned, e);
+                        }
+                    })];
+                    started.extend(h3_task);
+                    Ok((actual, started))
                 }),
                 TransportKind::Doq => crate::doq_server::bind_doq(addr, manager.server_config())
                     .and_then(|endpoint| {
                         let actual = endpoint.local_addr()?.to_string();
                         Ok((
                             actual,
-                            tokio::spawn(async move {
+                            vec![tokio::spawn(async move {
                                 if let Err(e) =
                                     crate::doq_server::serve_doq_on(endpoint, dns, watch).await
                                 {
                                     warn!("{} listener on {} exited: {:#}", label, addr_owned, e);
                                 }
-                            }),
+                            })],
                         ))
                     }),
             };
 
             match spawn_result {
-                Ok((actual, task)) => {
-                    tasks.push(task);
+                Ok((actual, started)) => {
+                    tasks.extend(started);
                     bound.push(actual);
                 }
                 Err(e) => {

@@ -456,14 +456,10 @@ async fn main() -> Result<()> {
             )
         }),
         config.doh.as_ref().map(|c| {
-            if c.enable_h3 {
-                warn!(
-                    "doh.enable_h3 is set but HTTP/3 is not implemented; serving h2 and http/1.1"
-                );
-            }
             (
                 rolodex_dns::transports::TransportKind::Doh,
-                rolodex_dns::transports::TransportSettings::new(c.bind.clone(), c.tls.clone()),
+                rolodex_dns::transports::TransportSettings::new(c.bind.clone(), c.tls.clone())
+                    .with_h3(c.enable_h3),
             )
         }),
         config.doq.as_ref().map(|c| {
@@ -501,8 +497,19 @@ async fn main() -> Result<()> {
         // Resolved before any listener starts: a malformed endpoint must stop the
         // server rather than surface later as an issuance that quietly published
         // fewer TLSA records than the operator asked for.
-        let tlsa_endpoints = match acme_config.tlsa_endpoints() {
-            Ok(endpoints) => endpoints,
+        //
+        // An endpoint served by a listener holding its OWN certificate is
+        // dropped here rather than published: the ACME association would pin a
+        // certificate that endpoint never presents, which makes a DANE-checking
+        // client refuse the connection outright. Each drop says so, with the
+        // fix — see Config::partition_tlsa_endpoints.
+        let tlsa_endpoints = match config.partition_tlsa_endpoints() {
+            Ok((endpoints, conflicts)) => {
+                for conflict in conflicts {
+                    warn!("{}", conflict.explain());
+                }
+                endpoints
+            }
             Err(e) => {
                 error!("{}", e);
                 std::process::exit(1);

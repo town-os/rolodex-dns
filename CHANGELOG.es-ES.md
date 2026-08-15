@@ -2,6 +2,27 @@
 
 > Idiomas: [English](CHANGELOG.md) | [繁體中文](CHANGELOG.zh-TW.md) | [简体中文](CHANGELOG.zh-CN.md) | **Español (España)** | [Español (México)](CHANGELOG.es-MX.md) | [日本語](CHANGELOG.ja-JP.md)
 
+## Sin publicar
+
+### Funcionalidades
+
+- **DoH habla HTTP/3, y `doh.enable_h3` deja de ser una opción que no hacía nada.** La clave se analizaba, `SetDohConfig` devolvía `success: true` y la máquina servía h2 sobre TCP y nada más: un ajuste aceptado es indistinguible de uno implementado, y por eso este duró lo que duró. Ahora abre un segundo listener (`doh_h3_server.rs`): misma dirección, mismo puerto, mismo certificado, QUIC en lugar de TCP. Lo que gana un cliente es el fin del bloqueo de cabecera de línea —sobre TCP un segmento perdido detiene todas las consultas multiplexadas en la conexión, sobre QUIC detiene una— y una reanudación sin round trips para un cliente que ya ha hablado con la máquina. `GetDohConfig` informa de lo que está corriendo en vez de un `false` fijo, y un bind QUIC que falla tumba la aplicación entera en lugar de dejar h2 en pie bajo un nombre que prometía más.
+
+  El certificado no se carga dos veces: la configuración QUIC se deriva de la del propio listener TCP, con la lista ALPN sustituida por `h3`. Dos gestores sobre el mismo par de ficheros se desviarían durante todo el tiempo que tardase un sondeo en notar una renovación, y sobre material generado no coincidirían jamás: cada uno acuñaría su propio certificado autofirmado, de modo que un mismo nombre se serviría con dos claves distintas según el transporte que eligiera el cliente.
+
+- **A los clientes se les anuncia el endpoint HTTP/3 por dos vías.** Un cliente que ya tiene una conexión h2 se entera por la cabecera `Alt-Svc` de cada respuesta DoH; un cliente que aún no se ha conectado se entera por la designación DDR, que ahora publica `alpn=h2,h3` para el endpoint DoH. Ninguna alcanza a los clientes de la otra, y por eso existen las dos; y con HTTP/3 apagado ninguna dice nada, porque anunciar un endpoint que no responde le cuesta a todo cliente que se lo crea un tiempo de espera completo antes de volver atrás.
+
+- **ACME ya no publica un registro DANE en un endpoint que sirve otro certificado.** `acme.tlsa_endpoints` existe para que un certificado que cubre varios endpoints tenga un registro en cada uno, pero esos listeners no tienen por qué estar sirviendo el certificado de ACME: en una máquina Town OS, DoT y DoQ leen una hoja emitida por la CA de la propia máquina. La asociación de ACME fija entonces un certificado que ese endpoint nunca presenta, y RFC 7671 obliga a un cliente que encuentra registros TLSA y no casa ninguno a RECHAZAR la conexión; sin ningún registro, ese mismo cliente vuelve a PKIX y sigue funcionando. Un endpoint así ahora se descarta al arrancar —en voz alta, nombrando el listener, el certificado que sirve de verdad y las dos formas de arreglarlo— en vez de publicarse o saltarse en silencio.
+
+### Pruebas
+
+- **`tests/doh_h3_test.rs`** (nuevo, y nombrado en la receta `rust-integration-test` del Makefile) lanza un cliente HTTP/3 real contra un listener real: el token ALPN se negocia desde una configuración sembrada con `h2`/`http/1.1`, así que lo que se prueba es la sustitución; las dos formas de petición de RFC 8484 se responden desde un mismo registro almacenado; el `Cache-Control` lleva el TTL propio de la respuesta, un número poco redondo elegido para que ningún valor por defecto fijo pueda pasar por él; cada rechazo termina su stream, porque uno que envía cabeceras y no cierra se lee en el cliente como un resolutor colgado y no como una petición rechazada; y cuatro peticiones en vuelo a la vez se responden sin cruzarse, algo que una prueba secuencial no distingue de un servidor que las serializó.
+
+- **`tests/ddr_follow_test.rs`** (nuevo también) es el extremo a extremo que nadie había escrito: pregunta a un resolutor en marcha, por un socket UDP real, dónde están sus endpoints cifrados, analiza la respuesta SVCB y construye una petición DoH con nada más que lo que dijo el registro —destino, puerto, token ALPN, plantilla de URI—, resuelve allí un nombre y comprueba la dirección. Cada parte de DDR estaba cubierta por separado y la cadena aún podía romperse por una plantilla que nadie sirve o un puerto que no nombra ningún listener. El control pregunta en una ruta que la designación no nombró y exige un 404; sin él, seguir la plantilla no demuestra nada.
+
+### Documentación
+
+- `DESIGN.md` gana el listener HTTP/3 bajo el transporte DoH y las dos suites nuevas en su capítulo de pruebas; `README.md` y `CONFIGURATION.md` ganan los dos mecanismos de descubrimiento; y `acme.tlsa_endpoints` dice ahora qué se niega a publicar y por qué. Los seis idiomas se actualizan a la vez.
 ## v0.6.1 (2026-08-15)
 
 ### Funcionalidades

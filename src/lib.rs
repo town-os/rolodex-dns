@@ -16,6 +16,7 @@ pub mod dns_server;
 pub mod dnsbl;
 pub mod dnssec;
 pub mod dnssec_validate;
+pub mod doh_h3_server;
 pub mod doh_proxy;
 pub mod doh_server;
 pub mod doq_server;

@@ -140,6 +140,9 @@ subtle = "2"
 
 # DHCP
 dhcproto = "0.14"
+h3 = "0.0.8"
+h3-quinn = "0.0.10"
+http = "1"
 
 [build-dependencies]
 tonic-build = "0.14"

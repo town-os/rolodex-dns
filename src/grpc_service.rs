@@ -1792,23 +1792,19 @@ impl RolodexDnsService for RolodexDnsGrpcService {
 
         let kind = crate::transports::TransportKind::Doh;
         let cfg = req.config.unwrap_or_default();
-        // `enable_h3` is accepted and has no effect: the DoH listener is
-        // HTTP/1.1 + h2 over TCP, and HTTP/3 would need a second, QUIC listener
-        // on the same port. Saying so out loud beats the silent accept this RPC
-        // used to give everything.
-        if cfg.enable_h3 {
-            warn!("DoH enable_h3 requested but HTTP/3 is not implemented; serving h2 and http/1.1");
-        }
-        let settings = transport_settings(binds_of(&cfg.bind, &cfg.binds), cfg.tls);
+        // `enable_h3` opens a QUIC endpoint on the DoH port alongside the TCP
+        // listener. It is applied here rather than reported as unimplemented:
+        // a caller that asks for HTTP/3 and is answered `success: true` has to
+        // be able to read that as "it is running", so a bind failure on the
+        // QUIC half fails the whole apply below rather than degrading quietly
+        // to h2.
+        let settings =
+            transport_settings(binds_of(&cfg.bind, &cfg.binds), cfg.tls).with_h3(cfg.enable_h3);
         apply_transport(self.transports(kind)?, kind, settings).await?;
 
         Ok(Response::new(SetDohConfigResponse {
             success: true,
-            message: if cfg.enable_h3 {
-                "listener started; enable_h3 ignored (HTTP/3 is not implemented)".to_string()
-            } else {
-                String::new()
-            },
+            message: String::new(),
         }))
     }
 
@@ -1833,9 +1829,10 @@ impl RolodexDnsService for RolodexDnsGrpcService {
                 bind: first_bind(&settings),
                 binds: sup.bound_addrs(kind).await,
                 tls: Some(tls_to_proto(&settings.tls)),
-                // Reported false because that is what is running, whatever was
-                // asked for.
-                enable_h3: false,
+                // What is RUNNING, which is now the same thing that was asked
+                // for: the apply above fails rather than starting a listener
+                // without the HTTP/3 half it was told to have.
+                enable_h3: settings.enable_h3,
             }),
         }))
     }
