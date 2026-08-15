@@ -375,6 +375,26 @@ pub fn verify_rrset(
     zone: &Name,
     now: u32,
 ) -> Result<SignatureFacts, String> {
+    // Timed here rather than at the four call sites in the resolver, and around
+    // the whole function rather than around each `verify_one`: what costs the
+    // worker thread is the *set* of candidates tried, and a key-tag collision or
+    // a rollover means several RSA-2048 verifications for one RRset. An RRset
+    // that fails every candidate is the expensive case, and it is the one that
+    // returns through the error path at the bottom.
+    crate::metrics::time_blocking(crate::metrics::BLOCK_SITE_DNSSEC_VERIFY, || {
+        verify_rrset_inner(owner, rtype, rrset, sigs, keys, zone, now)
+    })
+}
+
+fn verify_rrset_inner(
+    owner: &Name,
+    rtype: RecordType,
+    rrset: &[Record],
+    sigs: &[Record],
+    keys: &[DNSKEY],
+    zone: &Name,
+    now: u32,
+) -> Result<SignatureFacts, String> {
     if rrset.is_empty() {
         return Err(format!("nothing to verify for {owner} {rtype}"));
     }

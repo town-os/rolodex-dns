@@ -733,7 +733,19 @@ pub struct RrsetToSign<'a> {
 
 /// Signs one RRset — all records sharing an owner name and type — returning the
 /// RRSIG in stored-value form.
+///
+/// Timed against
+/// [`BLOCK_SITE_DNSSEC_SIGN`](crate::metrics::BLOCK_SITE_DNSSEC_SIGN). Signing
+/// is not on the query path — it happens when a zone is signed or resigned —
+/// but it is reached from the gRPC handlers, which are `async`, and re-signing a
+/// zone is a loop of these on one worker thread.
 pub fn sign_rrset(key: &SigningKey, set: &RrsetToSign<'_>) -> Result<String> {
+    crate::metrics::time_blocking(crate::metrics::BLOCK_SITE_DNSSEC_SIGN, || {
+        sign_rrset_inner(key, set)
+    })
+}
+
+fn sign_rrset_inner(key: &SigningKey, set: &RrsetToSign<'_>) -> Result<String> {
     if set.rrset.is_empty() {
         bail!("cannot sign an empty RRset");
     }

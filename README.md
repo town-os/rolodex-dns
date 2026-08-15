@@ -47,7 +47,7 @@ New here? Start with the **[Configuration Guide](CONFIGURATION.md)** — a task-
 - **Integrated DHCPv4 server**: Per-scope address pools with sticky MAC bindings, automatic A/PTR registration, certificate delivery via site-specific options, and a background lease sweep
 - **Automatic reverse PTR records**: Optional (`dns.auto_ptr`) maintenance of matching `in-addr.arpa`/`ip6.arpa` PTRs for A/AAAA records added through gRPC
 - **Proxy support**: Forward DNS queries through HTTP CONNECT, SOCKS5, or DoH proxy
-- **Prometheus metrics**: an optional, off-by-default `/metrics` endpoint exposing 80 metric families with bounded label cardinality — including per-stage answer attribution and per-TLD isolation, so the split-horizon pipeline is legible from outside. Query names are never labels
+- **Prometheus metrics**: an optional, off-by-default `/metrics` endpoint exposing 82 metric families with bounded label cardinality — including per-stage answer attribution and per-TLD isolation, so the split-horizon pipeline is legible from outside. Query names are never labels
 - **SQLite persistence**: DNS records persist across restarts
 - **TLS hot-reload**: certificate files are polled every 30 seconds and a renewed pair is served by DoT, DoH, DoQ, ACME and the enrollment portal within that window, with no restart and no dropped connections. A rebuild that fails — a truncated file, or a poll that landed between an ACME client's two writes — keeps the previous certificate serving and retries on the next poll
 - **Performance**: Multi-threaded tokio runtime, lock-free blocklist and resolver state (`AtomicBool` + `ArcSwap` + atomics), in-memory boot caches for scopes/zones/TLDs/blocklist entries, UDP socket pool for upstream forwarding, and DashMap/DashSet concurrent caching throughout
@@ -1612,7 +1612,7 @@ metrics:
 
 The endpoint is unauthenticated and carries only aggregate counts — no query names, no record values, no certificate material. Bind it to a private address; the default is loopback. TLS is deliberately not offered here, since it would mean shipping a self-signed certificate to every scraper for an endpoint that should not be publicly reachable in the first place.
 
-80 metric families are exposed, all prefixed `rolodex_dns_`, covering queries, the response cache, blocklists (including refusals and rotated-out providers), upstream tiers, the iterative resolver, DNSSEC verdicts, split-horizon state, DHCP, ACME, and gRPC.
+82 metric families are exposed, all prefixed `rolodex_dns_`, covering queries, the response cache, blocklists (including refusals and rotated-out providers), upstream tiers, the iterative resolver, DNSSEC verdicts, split-horizon state, DHCP, ACME, gRPC, and the runtime's own blocking work.
 
 The one worth knowing about is `rolodex_dns_answers_total{source}`, which reports which stage of the resolution order produced each answer — `cache`, `local`, `scoped`, `scope_fallback`, `tld_peer`, `blocklist`, `reverse_blocklist`, `dns64`, `upstream`, `authoritative_nxdomain`, `refused`, `error`. Its total equals the query total, which is what makes the split-horizon pipeline legible from outside:
 
@@ -1773,6 +1773,32 @@ rate(rolodex_dns_grpc_auth_failures_total[5m]) > 0
 
 # An address family the host cannot route, so its records are being suppressed
 rolodex_dns_address_family_reachable{family="ipv6"} == 0
+```
+
+Runtime blocking — where synchronous work is occupying threads that should be serving queries. `db_lock_wait` and `db_locked` are the two halves of the single SQLite connection: wait time is what other callers cost you, held time is what you cost them.
+
+```promql
+# How much of each second every worker collectively spends blocked, by site.
+# The single SQLite connection is the usual answer; `db_lock_wait` rising while
+# `db_locked` stays flat means contention, the reverse means slow statements.
+sum by (site) (rate(rolodex_dns_blocking_duration_seconds_sum[5m]))
+
+# 99th-percentile time queued behind the one database connection
+histogram_quantile(0.99, sum by (le) (rate(rolodex_dns_blocking_duration_seconds_bucket{site="db_lock_wait"}[5m])))
+
+# Blocking regions that held a thread for 10ms or longer. On a worker site
+# (db_locked, db_lock_wait, dnssec_verify, metrics_collect) these are queries
+# that were not being polled.
+sum by (site) (rate(rolodex_dns_blocking_stalls_total[5m]))
+
+# Scrape cost as a fraction of the scrape interval: /metrics competing with the
+# query path for the same connection. Above a few percent, widen the interval.
+rate(rolodex_dns_blocking_duration_seconds_sum{site="metrics_collect"}[5m])
+  / rate(rolodex_dns_metrics_scrapes_total[5m])
+
+# Mean time to verify one RRset's signatures, over the whole candidate key set
+rate(rolodex_dns_blocking_duration_seconds_sum{site="dnssec_verify"}[5m])
+  / rate(rolodex_dns_blocking_duration_seconds_count{site="dnssec_verify"}[5m])
 ```
 
 Every query above is covered by a test that resolves its metric names and label matchers against the live exposition output, so a documented query cannot reference a series that does not exist.

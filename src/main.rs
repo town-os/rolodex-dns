@@ -73,13 +73,24 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let config = if std::path::Path::new(&cli.config).exists() {
-        let content = std::fs::read_to_string(&cli.config).context("failed to read config file")?;
-        serde_yaml_ng::from_str(&content).context("failed to parse config file")?
-    } else {
-        info!("No config file found, using defaults");
-        Config::default()
-    };
+    // Read and parsed inside `#[tokio::main]`, so it is a blocking region like
+    // any other and is measured like one. It runs once, before any listener
+    // exists, and the series is here so the claim "config loading is free" stays
+    // a measurement rather than an assumption — a config on a slow or remote
+    // filesystem is the case that stops being free.
+    let config = rolodex_dns::metrics::time_blocking(
+        rolodex_dns::metrics::BLOCK_SITE_CONFIG_LOAD,
+        || -> Result<Config> {
+            if std::path::Path::new(&cli.config).exists() {
+                let content =
+                    std::fs::read_to_string(&cli.config).context("failed to read config file")?;
+                serde_yaml_ng::from_str(&content).context("failed to parse config file")
+            } else {
+                info!("No config file found, using defaults");
+                Ok(Config::default())
+            }
+        },
+    )?;
 
     let db = Database::open(&config.database_path).context("failed to open database")?;
 

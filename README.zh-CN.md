@@ -47,7 +47,7 @@ Rolodex DNS 另外支持用于垃圾邮件／恶意软件过滤的域名封锁�
 - **集成的 DHCPv4 服务器**：逐范围的地址池、粘滞的 MAC 绑定、自动的 A/PTR 注册、通过站点专用选项交付证书，以及后台租约清扫
 - **自动反向 PTR 记录**：可选（`dns.auto_ptr`）为通过 gRPC 新增的 A/AAAA 记录维护对应的 `in-addr.arpa`／`ip6.arpa` PTR
 - **代理支持**：通过 HTTP CONNECT、SOCKS5 或 DoH 代理转发 DNS 查询
-- **Prometheus 指标**：一个可选、默认关闭的 `/metrics` 端点，输出 80 个具备有界标签基数的指标系列——包含逐阶段的答案归因与逐 TLD 隔离，让分割视域流水线从外面看得懂。查询名称永远不会成为标签
+- **Prometheus 指标**：一个可选、默认关闭的 `/metrics` 端点，输出 82 个具备有界标签基数的指标系列——包含逐阶段的答案归因与逐 TLD 隔离，让分割视域流水线从外面看得懂。查询名称永远不会成为标签
 - **SQLite 持久化**：DNS 记录跨重启保存
 - **TLS 热重载**：证书文件每 30 秒被轮询一次，续期后的一对会在该窗口内由 DoT、DoH、DoQ、ACME 与登记门户提供出去，无需重启，也不会掉连接。重建失败——文件被截断，或者轮询恰好落在 ACME 客户端的两次写入之间——会让此前的证书继续提供，并在下一次轮询时重试
 - **性能**：多线程 tokio 运行时、无锁的封锁列表与解析器状态（`AtomicBool` + `ArcSwap` + 原子操作）、范围／区域／TLD／封锁条目的开机内存缓存、供上游转发使用的 UDP 套接字池，以及全面采用的 DashMap/DashSet 并发缓存
@@ -1612,7 +1612,7 @@ metrics:
 
 这个端点不做认证，且只承载汇总计数——没有查询名称、没有记录值、没有证书材料。请把它绑在私有地址上；默认是 loopback。这里刻意不提供 TLS，因为那会意味着要把一张自签证书发给每一个抓取端，而这个端点本来就不该对外可达。
 
-输出 80 个指标系列，全部以 `rolodex_dns_` 为前缀，涵盖查询、响应缓存、封锁列表（包含拒答与被移出轮换的提供方）、上游层级、迭代解析器、DNSSEC 判定、分割视域状态、DHCP、ACME 与 gRPC。
+输出 82 个指标系列，全部以 `rolodex_dns_` 为前缀，涵盖查询、响应缓存、封锁列表（包含拒答与被移出轮换的提供方）、上游层级、迭代解析器、DNSSEC 判定、分割视域状态、DHCP、ACME、gRPC 与运行期本身的阻塞工作。
 
 其中最值得认识的是 `rolodex_dns_answers_total{source}`，它报告解析顺序中的哪个阶段产生了每个答案——`cache`、`local`、`scoped`、`scope_fallback`、`tld_peer`、`blocklist`、`reverse_blocklist`、`dns64`、`upstream`、`authoritative_nxdomain`、`refused`、`error`。它的总数等于查询总数，而这正是让分割视域流水线从外面看得懂的关键：
 
@@ -1773,6 +1773,32 @@ rate(rolodex_dns_grpc_auth_failures_total[5m]) > 0
 
 # 一个主机无法路由的地址族，因此它的记录正在被抑制
 rolodex_dns_address_family_reachable{family="ipv6"} == 0
+```
+
+运行期阻塞——同步工作正占用着本该在服务查询的线程的地方。`db_lock_wait` 与 `db_locked` 是那条唯一 SQLite 连接的两半：等待时间是别的调用者让你付出的代价，持有时间是你让他们付出的代价。
+
+```promql
+# 每一秒里，所有工作线程合计花在被阻塞上的时间有多少，按 site 分。
+# 通常的答案是那条唯一的 SQLite 连接；`db_lock_wait` 上升而 `db_locked` 持平
+# 表示争用，反过来则表示语句本身变慢了。
+sum by (site) (rate(rolodex_dns_blocking_duration_seconds_sum[5m]))
+
+# 排在那条唯一数据库连接后面的第 99 百分位等待时间
+histogram_quantile(0.99, sum by (le) (rate(rolodex_dns_blocking_duration_seconds_bucket{site="db_lock_wait"}[5m])))
+
+# 把一条线程占住 10ms 以上的阻塞区段。在工作线程位置上
+# （db_locked、db_lock_wait、dnssec_verify、metrics_collect），这些就是
+# 没有被轮询到的查询。
+sum by (site) (rate(rolodex_dns_blocking_stalls_total[5m]))
+
+# 抓取成本占抓取间隔的比例：/metrics 正在跟查询路径争同一条连接。
+# 超过几个百分点，就把间隔拉长。
+rate(rolodex_dns_blocking_duration_seconds_sum{site="metrics_collect"}[5m])
+  / rate(rolodex_dns_metrics_scrapes_total[5m])
+
+# 验证一个 RRset 的签名、含整组候选密钥的平均时间
+rate(rolodex_dns_blocking_duration_seconds_sum{site="dnssec_verify"}[5m])
+  / rate(rolodex_dns_blocking_duration_seconds_count{site="dnssec_verify"}[5m])
 ```
 
 上面每一条查询都有测试涵盖，会把它的指标名称与标签匹配条件对照实际输出解析，因此文档中的查询不可能引用到不存在的系列。

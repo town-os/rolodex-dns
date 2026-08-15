@@ -47,7 +47,7 @@ Rolodex DNS はさらに、スパム／マルウェアを濾すためのドメ�
 - **統合 DHCPv4 サーバー**：スコープ単位のアドレスプール、粘着する MAC 束縛、A/PTR の自動登録、サイト固有オプションによる証明書配布、背景でのリース掃除
 - **自動の逆引き PTR レコード**：gRPC 経由で追加された A/AAAA レコードに対応する `in-addr.arpa`／`ip6.arpa` の PTR を任意で維持します（`dns.auto_ptr`）
 - **プロキシ対応**：HTTP CONNECT、SOCKS5、または DoH プロキシ経由で DNS クエリを転送します
-- **Prometheus メトリクス**：任意の、既定では無効な `/metrics` エンドポイント。ラベルの濃度が有界な 80 のメトリクスファミリを公開します —— 段階ごとの応答帰属や TLD ごとの分離を含むので、スプリットホライズンの流れが外から読み取れます。クエリ名がラベルになることはありません
+- **Prometheus メトリクス**：任意の、既定では無効な `/metrics` エンドポイント。ラベルの濃度が有界な 82 のメトリクスファミリを公開します —— 段階ごとの応答帰属や TLD ごとの分離を含むので、スプリットホライズンの流れが外から読み取れます。クエリ名がラベルになることはありません
 - **SQLite による永続化**：DNS レコードは再起動をまたいで残ります
 - **TLS のホットリロード**：証明書ファイルは 30 秒ごとに監視され、更新された組は DoT、DoH、DoQ、ACME、登録ポータルによってその窓の内に提供されます。再起動も接続の切断もありません。再構築が失敗した場合 —— 切り詰められたファイルや、ACME クライアントの二回の書き込みの間に落ちた監視 —— は、以前の証明書を提供し続け、次の監視で再試行します
 - **性能**：マルチスレッドの tokio ランタイム、ロックフリーなブロックリストとリゾルバーの状態（`AtomicBool` ＋ `ArcSwap` ＋アトミック）、スコープ／ゾーン／TLD／ブロックリスト項目のためのメモリ内起動キャッシュ、上流転送のための UDP ソケットプール、そして全体にわたる DashMap/DashSet による並行キャッシュ
@@ -1612,7 +1612,7 @@ metrics:
 
 このエンドポイントは認証されておらず、集計された数だけを載せます —— クエリ名も、レコードの値も、証明書の素材もありません。私的なアドレスにバインドしてください。既定はループバックです。ここで TLS を提供しないのは意図的です。そもそも公開の場から届くべきでないエンドポイントのために、収集する側すべてへ自己署名証明書を配ることになるからです。
 
-80 のメトリクスファミリが公開されます。いずれも `rolodex_dns_` の接頭辞を持ち、クエリ、応答キャッシュ、ブロックリスト（拒否とローテーションから外れたプロバイダーを含む）、上流の階層、反復リゾルバー、DNSSEC の判定、スプリットホライズンの状態、DHCP、ACME、gRPC を覆います。
+82 のメトリクスファミリが公開されます。いずれも `rolodex_dns_` の接頭辞を持ち、クエリ、応答キャッシュ、ブロックリスト（拒否とローテーションから外れたプロバイダーを含む）、上流の階層、反復リゾルバー、DNSSEC の判定、スプリットホライズンの状態、DHCP、ACME、gRPC、そしてランタイム自身のブロッキング処理を覆います。
 
 知っておく価値があるのは `rolodex_dns_answers_total{source}` です。これは、解決順序のどの段階が各応答を生んだかを報告します —— `cache`、`local`、`scoped`、`scope_fallback`、`tld_peer`、`blocklist`、`reverse_blocklist`、`dns64`、`upstream`、`authoritative_nxdomain`、`refused`、`error`。その合計はクエリの合計に等しく、それがスプリットホライズンの流れを外から読めるものにしています：
 
@@ -1773,6 +1773,32 @@ rate(rolodex_dns_grpc_auth_failures_total[5m]) > 0
 
 # ホストが経路を持たないアドレスファミリ。そのレコードは抑制されています
 rolodex_dns_address_family_reachable{family="ipv6"} == 0
+```
+
+ランタイムのブロッキング——クエリを処理しているべきスレッドを同期的な作業が占有している場所です。`db_lock_wait` と `db_locked` は唯一の SQLite 接続の両面です：待ち時間は他の呼び出し元があなたに負わせたコスト、保持時間はあなたが彼らに負わせたコストです。
+
+```promql
+# 毎秒のうち、全ワーカーが合計でブロックされて過ごす時間を site 別に。
+# 通常の答えは唯一の SQLite 接続です。`db_locked` が横ばいのまま
+# `db_lock_wait` が上がれば競合、逆ならステートメントが遅いということです。
+sum by (site) (rate(rolodex_dns_blocking_duration_seconds_sum[5m]))
+
+# 唯一のデータベース接続の後ろで待たされた時間の 99 パーセンタイル
+histogram_quantile(0.99, sum by (le) (rate(rolodex_dns_blocking_duration_seconds_bucket{site="db_lock_wait"}[5m])))
+
+# スレッドを 10ms 以上保持したブロッキング区間。ワーカーのサイト
+# （db_locked、db_lock_wait、dnssec_verify、metrics_collect）では、これらは
+# ポーリングされていなかったクエリです。
+sum by (site) (rate(rolodex_dns_blocking_stalls_total[5m]))
+
+# スクレイプ間隔に対するスクレイプのコスト：/metrics がクエリ経路と
+# 同じ接続を奪い合っています。数パーセントを超えるなら間隔を広げてください。
+rate(rolodex_dns_blocking_duration_seconds_sum{site="metrics_collect"}[5m])
+  / rate(rolodex_dns_metrics_scrapes_total[5m])
+
+# 1 つの RRset の署名を候補鍵すべてについて検証する平均時間
+rate(rolodex_dns_blocking_duration_seconds_sum{site="dnssec_verify"}[5m])
+  / rate(rolodex_dns_blocking_duration_seconds_count{site="dnssec_verify"}[5m])
 ```
 
 上のクエリはいずれも、そのメトリクス名とラベルの照合子を生きた公開出力に対して解決するテストに覆われています。そのため、文書化されたクエリが存在しない系列を指すことはありません。

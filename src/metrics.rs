@@ -564,6 +564,22 @@ impl HistogramVec {
         }
     }
 
+    /// Total number of observations recorded against label index `idx`.
+    pub fn count(&self, idx: usize) -> u64 {
+        self.totals
+            .get(idx)
+            .map(|t| t.load(Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
+    /// Sum of the observations against label index `idx`, in the native unit.
+    pub fn sum(&self, idx: usize) -> u64 {
+        self.sums
+            .get(idx)
+            .map(|s| s.load(Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
     /// Records one observation against label index `idx`, in the native unit.
     pub fn observe(&self, idx: usize, v: u64) {
         if idx >= self.values.len() {
@@ -915,6 +931,68 @@ pub const DHCP_MESSAGES: &[&str] = &[
 /// Lease states reported by the lease gauge.
 pub const LEASE_STATES: &[&str] = &["active", "expired", "released", "reclaimable"];
 
+/// The places the server runs synchronous work reached from `async` code.
+///
+/// This is the one dimension in the registry that is about the *runtime* rather
+/// than about DNS. Every value names a region that occupies the thread it runs
+/// on for its whole duration — SQLite behind a `std::sync::Mutex`, certificate
+/// files read off disk, signature arithmetic — and on a Tokio worker a thread
+/// occupied here is a thread not polling anything else. The histogram says how
+/// long each region takes; [`BLOCKING_STALL_NANOS`] says where "long" starts.
+///
+/// Two of the values are deliberately not on a worker thread — `tls_reload`
+/// runs on the blocking pool, and `config_load`/`db_open` run before the
+/// listeners exist. They are here because "this is fast enough not to matter"
+/// is a claim worth having a series for rather than a comment asserting it.
+///
+/// Fixed and append-only like every other label enum here: the `BLOCK_SITE_*`
+/// constants below are positions in a pre-allocated array, so inserting a value
+/// silently relabels every sample already recorded against the ones after it.
+pub const BLOCKING_SITES: &[&str] = &[
+    "db_lock_wait",
+    "db_locked",
+    "db_open",
+    "metrics_collect",
+    "tls_reload",
+    "dnssec_sign",
+    "dnssec_verify",
+    "config_load",
+];
+
+/// Waiting to acquire the SQLite connection mutex. There is exactly one
+/// connection, so this is the contention signal: it rises when *other* callers
+/// are slow, not when this one is.
+pub const BLOCK_SITE_DB_LOCK_WAIT: usize = 0;
+/// Holding the SQLite connection mutex — the statement itself, plus row
+/// decoding. This is the cost every other caller waits behind.
+pub const BLOCK_SITE_DB_LOCKED: usize = 1;
+/// Opening the database at boot: schema migration plus the full load of the
+/// in-memory caches. Once per process, before anything is being served.
+pub const BLOCK_SITE_DB_OPEN: usize = 2;
+/// Sampling the pull-based gauges for one scrape, which is several aggregate
+/// queries against the same single connection the query path uses.
+pub const BLOCK_SITE_METRICS_COLLECT: usize = 3;
+/// Re-reading and re-parsing the TLS certificate pair. Runs on the blocking
+/// pool, not a worker.
+pub const BLOCK_SITE_TLS_RELOAD: usize = 4;
+/// Generating one RRSIG.
+pub const BLOCK_SITE_DNSSEC_SIGN: usize = 5;
+/// Verifying the RRSIGs over one RRset, including every candidate key tried.
+pub const BLOCK_SITE_DNSSEC_VERIFY: usize = 6;
+/// Reading and parsing the configuration file at boot.
+pub const BLOCK_SITE_CONFIG_LOAD: usize = 7;
+
+/// The line above which a blocking region is also counted as a *stall*.
+///
+/// 10ms is not a threshold of correctness, it is a threshold of visibility: the
+/// histogram already carries the whole distribution, and the counter exists so
+/// an alert can be written against "how often does this happen" without the
+/// alert having to restate a bucket boundary. It sits an order of magnitude
+/// above a warm local answer and an order of magnitude below the per-nameserver
+/// upstream timeout, which is the range in which a blocked worker starts costing
+/// queries that had nothing to do with the work being done.
+pub const BLOCKING_STALL_NANOS: u64 = 10_000_000;
+
 /// The catch-all `tld` label value: every name not under a tracked TLD.
 ///
 /// This is what bounds the dimension. The queried name is chosen by the client,
@@ -959,6 +1037,34 @@ const DURATION_BOUNDS_NANOS: &[u64] = &[
     500_000_000,   // 500ms
     1_000_000_000, // 1s
     2_500_000_000, // 2.5s — past the 1.5s per-nameserver timeout
+    5_000_000_000, // 5s
+];
+
+/// Duration buckets in **nanoseconds** for blocking regions.
+///
+/// Separate from [`DURATION_BOUNDS_NANOS`], which starts at 50µs because that is
+/// the floor of a served query. An uncontended mutex acquisition is tens of
+/// nanoseconds, and a histogram whose first bucket already contains every
+/// healthy sample cannot show the day it stops being healthy — the bottom three
+/// bounds exist so `db_lock_wait` has somewhere to move *from*. The top matches
+/// the query histogram so the two can be read against each other.
+const BLOCKING_BOUNDS_NANOS: &[u64] = &[
+    100,           // 100ns — an uncontended mutex acquisition
+    1_000,         // 1µs
+    10_000,        // 10µs
+    100_000,       // 100µs — a cached SQLite statement over a small table
+    250_000,       // 250µs
+    500_000,       // 500µs
+    1_000_000,     // 1ms
+    2_500_000,     // 2.5ms
+    5_000_000,     // 5ms
+    10_000_000,    // 10ms — BLOCKING_STALL_NANOS
+    25_000_000,    // 25ms
+    50_000_000,    // 50ms
+    100_000_000,   // 100ms
+    250_000_000,   // 250ms
+    500_000_000,   // 500ms
+    1_000_000_000, // 1s
     5_000_000_000, // 5s
 ];
 
@@ -1203,6 +1309,12 @@ pub struct Metrics {
     pub grpc_requests: DynCounterVec,
     /// gRPC calls rejected for a bad or missing shared secret.
     pub grpc_auth_failures: Counter,
+
+    // --- runtime blocking ---
+    /// Time spent inside synchronous regions reached from async code, by site.
+    pub blocking_duration: HistogramVec,
+    /// Those regions that ran long enough to cost the runtime a worker, by site.
+    pub blocking_stalls: CounterVec,
 
     // --- registry state, not itself exported ---
     /// The TLDs that get their own `tld` label value. Everything else folds into
@@ -1604,6 +1716,21 @@ impl Metrics {
                 "gRPC calls rejected for a missing or incorrect shared secret.",
             ),
 
+            blocking_duration: HistogramVec::new(
+                "rolodex_dns_blocking_duration_seconds",
+                "Time spent in synchronous work reached from async code, by site.",
+                "site",
+                BLOCKING_SITES,
+                BLOCKING_BOUNDS_NANOS,
+                NANOS_PER_SEC,
+            ),
+            blocking_stalls: CounterVec::new(
+                "rolodex_dns_blocking_stalls_total",
+                "Blocking regions that held their thread for 10ms or longer, by site.",
+                "site",
+                BLOCKING_SITES,
+            ),
+
             tracked_tlds: dashmap::DashSet::new(),
         }
     }
@@ -1852,6 +1979,9 @@ impl Metrics {
         self.grpc_requests.encode(&mut out);
         self.grpc_auth_failures.encode(&mut out);
 
+        self.blocking_duration.encode(&mut out);
+        self.blocking_stalls.encode(&mut out);
+
         out
     }
 
@@ -1878,6 +2008,21 @@ impl Metrics {
         self.records_served.add(obs.answer_records as u64);
         if obs.truncated {
             self.responses_truncated.inc();
+        }
+    }
+
+    /// Records one completed blocking region against this registry.
+    ///
+    /// The free [`observe_blocking`] delegates here rather than the other way
+    /// around, so the threshold rule — histogram always, counter only at or above
+    /// [`BLOCKING_STALL_NANOS`] — is exercisable against a private registry
+    /// instead of only against the process-wide one, which every other test in
+    /// the binary is also writing to.
+    pub fn observe_blocking(&self, site: usize, elapsed: Duration) {
+        let nanos = elapsed.as_nanos().min(u64::MAX as u128) as u64;
+        self.blocking_duration.observe(site, nanos);
+        if nanos >= BLOCKING_STALL_NANOS {
+            self.blocking_stalls.inc(site);
         }
     }
 }
@@ -1912,6 +2057,52 @@ pub struct QueryObservation<'a> {
     pub truncated: bool,
     /// End-to-end handling time.
     pub elapsed: Duration,
+}
+
+// ---------------------------------------------------------------------------
+// Runtime blocking
+// ---------------------------------------------------------------------------
+
+/// Records one completed blocking region against [`BLOCKING_SITES`]`[site]`.
+///
+/// Free functions rather than methods on [`Metrics`] because the callers are
+/// places that have no business holding a registry handle — the SQLite lock
+/// helper, a signature verifier, a certificate poll. They reach the global
+/// registry the same way the rest of the server does.
+///
+/// Both the histogram and the stall counter are fed from here, so the two can
+/// never disagree about where the threshold is.
+pub fn observe_blocking(site: usize, elapsed: Duration) {
+    metrics().observe_blocking(site, elapsed);
+}
+
+/// Runs `f` and records how long it occupied the calling thread against `site`.
+///
+/// The timer covers the closure whether it returns, returns an error, or
+/// unwinds partway: a region that took 200ms and then failed still took 200ms
+/// out of the thread, and instrumenting only the success path would hide
+/// precisely the case worth seeing.
+pub fn time_blocking<T, F: FnOnce() -> T>(site: usize, f: F) -> T {
+    // Bound to a name, not to `_`: the guard has to live until the closure
+    // returns, and `let _ =` would drop it on this line and time nothing.
+    let _region = BlockingRegion {
+        site,
+        started: Instant::now(),
+    };
+    f()
+}
+
+/// Drop guard behind [`time_blocking`], so an unwind through the closure still
+/// records the time it consumed.
+struct BlockingRegion {
+    site: usize,
+    started: Instant,
+}
+
+impl Drop for BlockingRegion {
+    fn drop(&mut self) {
+        observe_blocking(self.site, self.started.elapsed());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1988,6 +2179,16 @@ pub struct MetricsState {
 /// returns 500 because SQLite was briefly locked would page someone about the
 /// wrong thing.
 pub fn collect(state: &MetricsState) {
+    // Timed as one region rather than per-query: this runs on the axum handler's
+    // worker thread and takes the same single SQLite connection the DNS path
+    // needs, so what an operator wants to see is the whole scrape's cost, not
+    // its parts. The observation lands before `render`, which means the sample
+    // exported by *this* scrape is the previous one's — the usual and correct
+    // behaviour for a self-timing collector.
+    time_blocking(BLOCK_SITE_METRICS_COLLECT, || collect_inner(state))
+}
+
+fn collect_inner(state: &MetricsState) {
     let m = metrics();
 
     // Backstop for the incremental refreshes done at the mutation sites: if one

@@ -135,6 +135,7 @@ rust-integration-test: build ## Run each Rust integration test file
 	cargo test --test acme_issuer_test
 	cargo test --test auto_resolution_test
 	cargo test --test metrics_test
+	cargo test --test blocking_metrics_test
 	cargo test --test promql_docs_test
 	# Compiles the file and runs its ungated half. The containerised half needs
 	# ROLODEX_PROMETHEUS_TEST=1 and runs from the `prometheus-test` target, which

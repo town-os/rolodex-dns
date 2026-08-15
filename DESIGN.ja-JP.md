@@ -1203,7 +1203,7 @@ DANE プロトコルの取得を、DNS の線形式の上に直接実装して�
 
 ### 何が公開されるか
 
-80 のメトリクスファミリー、すべて `rolodex_dns_` 接頭辞付き：
+82 のメトリクスファミリー、すべて `rolodex_dns_` 接頭辞付き：
 
 | 領域 | メトリクス |
 | ---- | ---------- |
@@ -1218,8 +1218,32 @@ DANE プロトコルの取得を、DNS の線形式の上に直接実装して�
 | DHCP | `dhcp_messages_total{message_type}`、`dhcp_leases{lease_state}`、`dhcp_pools`、`dhcp_allocation_failures_total`、`dhcp_sweeps_total` |
 | ACME | `acme_accounts`、`acme_certificates`、`acme_issued_total`、`acme_validations_total{result}` |
 | gRPC | `grpc_requests_total{method}`、`grpc_auth_failures_total` |
+| ランタイムのブロッキング | `blocking_duration_seconds{site}`（ヒストグラム）、`blocking_stalls_total{site}` |
 
 `dhcp_messages_total` に `nak` ラベルが無いのは意図的です：サーバーは NAK を送らないので、永遠にゼロで固定された系列は、実際には未実装の分岐にすぎないのに信号のように読めてしまいます。そのラベルは `message_type` であり、`dhcp_leases` は `lease_state` を使います。汎用の `type`／`state` ではありません——上記「サブシステムの分離」を参照。
+
+#### ランタイムのブロッキング
+
+DNS ではなくプロセスそのものについての、唯一の系列の組です。サーバーは全体が `async` ですが、やらなければならないことのうちいくつかは同期的です：SQLite は単一の `std::sync::Mutex<Connection>` の後ろにあり、証明書ファイルはディスクから読み出され、署名の計算は計算です。そのそれぞれが、実行している間じゅうそのスレッドを占有します。Tokio のワーカースレッド上では、それは他の何もポーリングしていないスレッドだということです——遅いクエリは自分の呼び出し元を待たせるだけでなく、そのワーカーが多重化していたすべてのクエリも待たせます。この結合は `query_duration_seconds` では見えません。症状を無関係な名前のあいだにばらまくだけで、原因に帰属させる手立てを与えないからです。
+
+`site` は固定の列挙で、末尾に追加するだけで決して挿入しません。値が事前確保された配列の位置そのものだからです：
+
+| `site` | 領域 | スレッド |
+| ------ | ---- | -------- |
+| `db_lock_wait` | SQLite 接続ミューテックスの取得待ち | ワーカー |
+| `db_locked` | 保持中：ステートメント本体と行のデコード | ワーカー |
+| `db_open` | 起動時のオープン、マイグレーション、キャッシュ読み込み | リスナー以前 |
+| `metrics_collect` | 1 回のスクレイプ分のプル型ゲージ採取 | ワーカー |
+| `tls_reload` | 証明書の再読み込み、ハッシュ、PEM 解析 | ブロッキングプール |
+| `dnssec_sign` | RRSIG を 1 本生成する | ワーカー |
+| `dnssec_verify` | 1 つの RRset の RRSIG を、候補鍵すべてについて検証する | ワーカー |
+| `config_load` | 設定ファイルの読み込みと解析 | リスナー以前 |
+
+`db_lock_wait` と `db_locked` を分けてあるのは、両者の意味が正反対だからです：待ち時間は*他の*呼び出し元があなたに負わせたコストで、保持時間はあなたが他に負わせたコストです。接続はちょうど 1 本しかないので、この 2 つで競合の全体像になります。そしてどちらも `Database::lock` から記録されます——SQLite に触れるすべてのメソッドが通る唯一のチョークポイントであり、あとから追加されたメソッドが、誰も計測を覚えていなくても計測される理由でもあります。保持時間はガードの `Drop` で取るので、早期にエラーで戻った経路も、実際に接続を保持していた時間だけ計上されます。
+
+`blocking_stalls_total` は 10ms 以上の観測値を数えます（`metrics::BLOCKING_STALL_NANOS`）。ヒストグラムはすでに分布全体を持っています。このカウンターがあるのは、アラートがバケット境界を書き直さずに「どれくらいの頻度で起きるか」と言えるようにするためです。10ms は、温まったローカル応答より 1 桁上、ネームサーバーごとの上流タイムアウトより 1 桁下——ブロックされたワーカーが、その作業とは何の関係もないクエリを犠牲にし始める範囲です。
+
+3 つのサイトは意図的にワーカースレッド上にありません：`tls_reload` はブロッキングプールで動き（データディレクトリはリムーバブルメディアでありうるため）、`db_open` と `config_load` はリスナーが 1 つも束縛される前に動きます。それでも計測します。「これは十分速いので問題にならない」は、そう断言するコメントよりも、系列を 1 本持つに値する主張だからです。
 
 ### よく使う PromQL
 
@@ -1341,7 +1365,7 @@ dns:
 | `test`                | すべてのテストを実行します：lint、Go の統合テスト、Go のユニットテスト、Rust のテスト（`cargo test`）、JavaScript のテスト。 |
 | `test-log`            | `test` と同じで、出力を `/tmp/rolodex-dns/log` 以下のタイムスタンプ付きログファイルへ tee します（`LOG_DIR` で上書き可能）。実行が失敗しても最後にログのパスが表示されます。 |
 | `rust-test`           | Rust の統合テストファイルを実行し、続いて `cargo test` を実行します。 |
-| `rust-integration-test` | ビルドしてから、Rust の統合テストファイルを一つずつ明示的に実行します（`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`arpa_refusal_test`、`blocklist_nxdomain_test`、`zonemd_test`、`dot_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`、`acme_tlsa_endpoints_test`、および `security_*` の各スイート）。 |
+| `rust-integration-test` | ビルドしてから、Rust の統合テストファイルを一つずつ明示的に実行します（`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`blocking_metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`arpa_refusal_test`、`blocklist_nxdomain_test`、`zonemd_test`、`dot_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`、`acme_tlsa_endpoints_test`、および `security_*` の各スイート）。 |
 | `lint`                | `translation-check`、`cargo fmt -- --check`、`cargo clippy --all-targets -- -D warnings` を実行します。 |
 | `prometheus-test`     | 文書化されたすべての PromQL クエリを、コンテナ化された Prometheus（`quay.io/prometheus/prometheus`、`ROLODEX_PROMETHEUS_IMAGE` で上書き可能）に対して実行します。`test` の前提条件です。podman が必要で、無ければテストは失敗ではなく**大きな声でスキップ**するので、コンテナランタイムの無いマシンでも `make test` は緑になります。`ROLODEX_PROMETHEUS_REQUIRED=1` はそのスキップを失敗に変えます。CI はこれを設定すべきです。 |
 | `deps`                | ビルドの依存物をインストールします：Rust のクロスコンパイル用ツールチェーン（`cross-deps`）、JavaScript の開発依存物（`js/` での `npm install`）、そして `python-deps`。 |
@@ -1501,6 +1525,7 @@ Rust のテスト（`cargo test`）には、gRPC の操作、DNS の解決（UDP
 - **ドキュメントのテスト**（`tests/promql_docs_test.rs`）：`README.md` と `DESIGN.md` のすべての ```promql ブロックが解析され、メトリクス名とラベルマッチャーが抽出され、それぞれが生の公開出力に対して解決されます。ドキュメントは、メトリクスの変更のうち他に検証するものが何も無い唯一の部分です——`{type}` を `{message_type}` に改名すると、コードはコンパイルでき他のすべてのテストは緑のまま、文書化された各ダッシュボードのクエリが黙ってデータを返さないものに変わり、運用者はインシデントの最中にパネルが真っ白になって気づきます。同じファイルは、文書化された**ファミリー数**を `render` の出力に対して固定し（既にずれていました。文書の 73 に対し出力は 74）、フェンス自体も守ります。` ```bash ` に付け替えられたブロックは、ファイル全体を何も確認しないものにしてしまうからです。パーサーは `regex` を持ち込まずに手書きされ、理解できない構文には意図的に寛容で、理解できる識別子には厳格です。
 - **PromQL 実行のテスト**（`tests/prometheus_integration_test.rs`）：同じ文書化されたクエリを、稼働中のサーバーをスクレイプする本物の Prometheus に通します。部分文字列のスキャナーには、整った形のクエリと `rate(sum(x)[5m])` の区別がつかないからです——後者は実在の系列しか名指ししていませんが、運用者が貼り付けたその瞬間に拒否されます。`make prometheus-test` から走り、`make test` がそれに依存するので、フル実行のたびにクエリが実行されます。ゲートは両方向でこれを正直に保ちます：`ROLODEX_PROMETHEUS_TEST=1` を設定しなければならず（ですから素の `cargo test` が背後でコンテナを起動することはありません）、podman が無ければ失敗ではなく**大きな声でスキップ**します——コンテナランタイムの無いマシンでも `make test` は緑になりますが、決して黙って緑にはなりません。スキップされた確認と通過した確認はテストの要約では見分けがつかず、読み手が想定するのは後者だからです。`ROLODEX_PROMETHEUS_REQUIRED=1` は CI 向けにそのスキップを失敗へ格上げします。二つの層は補い合います：こちらは構文について、もう一方は系列が存在するかについて権威を持ちます。
 - **エンドポイントと帰属のテスト**（`tests/metrics_test.rs`）：ルーターがエフェメラルポートで提供され、手書きの HTTP/1.1 リクエストで本物の TCP ソケット越しにスクレイプされます——ステータス、コンテンツタイプ、そしてコメント以外のすべての行が数値の値を持つ `name[{labels}] value` として解析できること。一行でも不正な形式があれば Prometheus はスクレイプ全体を拒否するからです。クエリ経路のテストは、ローカルヒット、キャッシュヒット、権威ある NXDOMAIN、不正なクエリ、未知のクエリ型がそれぞれ正しい系列に落ちること、ゲージがスクレイプ時にサンプリングされること（リスナー起動後に追加した行が現れます）、三つのキャッシュフラッシュ理由が別々のままであること、そしてブロックリストの拒否が `blocklist_refusals_total` と `refused` の検索結果を進め、**同時に `listed` を進めない**ことを主張します。レジストリはプロセスグローバルなので、各テストは共有ロックを保持して厳密な差分を主張します——`>=` に緩めるのではなく直列化することが、観測が*二度*記録されるのを捉えます。より新しいケースは、その後に加わった次元を覆います：追跡された TLD が自分の系列を得ること**と**、追跡外のものは系列を一つも鋳造しないという対照（カーディナリティの上限こそが要点であり、肯定側だけを確認するテストは上限を外しても通ってしまいます）、所有 TLD が一度も設定されずに追跡されること、トラフィックのバイト数が両方向で線上の正確な長さと一致し、提供レコード数がクエリごとに一つ数えるのではなく ANCOUNT を読むこと、そして許可リストの各ゲートが他の二つを進めずに進むこと。
+- **ブロッキング区間のテスト**（`tests/blocking_metrics_test.rs`）：計測されている経路はどれも、何も記録してはならない対照と並べて検証されます。データベースのケースは本物の `Database` を動かします——普通のメソッドで 1 回の挿入と 1 回の検索を行うのは、試されている性質が「`Database::lock` こそがチョークポイントであり、あとから追加されたメソッドは誰かが計測を覚えていようがいまいがそこを通る」ことだからです——そして、まるごとメモリ内の関連付けキャッシュから返される読み取りと組にします。後者はどちらの系列も動かしてはなりません：ロックを一度も取っていない読み取りに `db_locked` のサンプルが立つのは、誰も経験していない競合を報告することだからです。しきい値は両側から確認します。10ms より 1 ナノ秒下と、ちょうど 10ms です。`>=` と `>` の差は、まさにそのバケット境界に対して書かれたアラートが踏む場合そのものだからです。サイトのインデックスは名前と索引を 1 つずつ固定し、その横に長さのアサーションを置きます：`BLOCK_SITE_*` 定数は事前確保された配列の位置なので、挿入はそれ以降のサイトに記録済みのサンプルすべてを黙ってラベル付け直しますし、定数のないまま追加されたサイトは誰も記録できない系列です。エクスポジションのテストは、何かが記録される前の時点で全サイトがゼロ値で出ていることを要求します——非ゼロになって初めて実体化するラベル値は、再起動直後のプロセスに対する `rate()` を黙って空にし、「ここで一度もブロックしていない」と「そのサイトは存在しない」を区別できなくします——そして 100ns、10ms、`+Inf` の境界は、境界の配列から導かずに一つずつ書き下してあります。2 つのテストはプロセス全体のレジストリではなく専用の `Metrics` を組み立てます。このバイナリ内の他のすべてのテストがグローバルに書き込んでおり、そこへの絶対値のアサーションは競合状態だからです。データベースのテストはそれができない（`Database` にレジストリを渡す方法はない）ので、ホストに何も残さないメモリ内データベースに対して差分で検証します。
 
 ### リゾルバーのテスト
 
@@ -1619,7 +1644,7 @@ Go クライアントには二層のテストがあります：
 - **ユニットテスト** — `bufconn` によるプロセス内のモック gRPC サーバーを使い、すべてのクライアントメソッド、認証トークンの伝播、トランスポートのモード、エラー処理、そして端のケース（冪等な close、遅延ダイヤル、独自のダイヤルオプション）をテストします。
 - **統合テスト** — `integration` ビルドタグで有効化されます。各テストは、一意の一時ディレクトリ、ランダムなポート、隔離されたデータベースを持つ本物の Rolodex DNS サーバーのサブプロセスを起動します。テストはレコードの CRUD、ワイルドカードの絞り込み、フォワーダーの設定、ブロックリストの往復、キャッシュのフラッシュ、Unix ソケットのトランスポート、認証の失敗、既定 TTL の挙動、同時クライアント（5 並行）、ネットワークスコープ、DNS64、TTL ドリフトを覆います。
 
-`make test` ターゲットはテストスイート全体を実行します：lint、Go の統合テスト、Go のユニットテスト、Rust の統合テスト（各テストファイルを明示的に：`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`arpa_refusal_test`、`blocklist_nxdomain_test`、`zonemd_test`、`dot_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`、`acme_tlsa_endpoints_test`、および `security_*` の各スイート）、`cargo test` によるすべての Rust テスト（上記のリゾルバースイートも覆います）、そして JavaScript の lint／統合／ユニットテスト。個別のターゲットも利用できます：`make go-integration-test`、`make go-test`、`make rust-integration-test`、`make rust-test`、`make js-integration-test`、`make js-test`。実行全体をタイムスタンプ付きのログファイルに取るには `make test-log` を使ってください。`make translation-check` は翻訳された各文書を英語と節ごとに突き合わせ、ずれがあれば非ゼロで終了します。`lint` の前提条件なので `make test` の一部として走り、どれかの言語が遅れていればゲートを落とします。
+`make test` ターゲットはテストスイート全体を実行します：lint、Go の統合テスト、Go のユニットテスト、Rust の統合テスト（各テストファイルを明示的に：`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`blocking_metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`arpa_refusal_test`、`blocklist_nxdomain_test`、`zonemd_test`、`dot_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`、`acme_tlsa_endpoints_test`、および `security_*` の各スイート）、`cargo test` によるすべての Rust テスト（上記のリゾルバースイートも覆います）、そして JavaScript の lint／統合／ユニットテスト。個別のターゲットも利用できます：`make go-integration-test`、`make go-test`、`make rust-integration-test`、`make rust-test`、`make js-integration-test`、`make js-test`。実行全体をタイムスタンプ付きのログファイルに取るには `make test-log` を使ってください。`make translation-check` は翻訳された各文書を英語と節ごとに突き合わせ、ずれがあれば非ゼロで終了します。`lint` の前提条件なので `make test` の一部として走り、どれかの言語が遅れていればゲートを落とします。
 
 ## 主要な依存物
 

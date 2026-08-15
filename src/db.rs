@@ -455,10 +455,64 @@ pub struct Database {
     tld_ingress_cache: Arc<DashMap<String, IpAddr>>,
 }
 
+/// The connection guard returned by [`Database::lock`].
+///
+/// Transparently a [`Connection`] — every existing call site keeps working
+/// through `Deref`/`DerefMut`, including the two that need `&mut` to open a
+/// transaction. The only thing it adds is the [`Drop`] impl, which is what
+/// closes the measurement of how long the single connection was held.
+///
+/// The timing is taken in `Drop` rather than at each `?` and each `return`
+/// inside the ~200 methods that lock, because those are the paths that get
+/// forgotten. An early error return still held the connection for as long as it
+/// held it.
+struct DbGuard<'a> {
+    inner: std::sync::MutexGuard<'a, Connection>,
+    held_since: Instant,
+}
+
+impl std::ops::Deref for DbGuard<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        &self.inner
+    }
+}
+
+impl std::ops::DerefMut for DbGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Connection {
+        &mut self.inner
+    }
+}
+
+impl Drop for DbGuard<'_> {
+    fn drop(&mut self) {
+        crate::metrics::observe_blocking(
+            crate::metrics::BLOCK_SITE_DB_LOCKED,
+            self.held_since.elapsed(),
+        );
+    }
+}
+
 impl Database {
     /// Opens or creates the database at the given path.
     /// Uses SQLite with WAL mode for concurrent read performance.
+    ///
+    /// Timed as a whole against
+    /// [`BLOCK_SITE_DB_OPEN`](crate::metrics::BLOCK_SITE_DB_OPEN): this runs
+    /// once, from inside `#[tokio::main]`, and everything after it — including
+    /// the four cache loads that read every scoped record and association in the
+    /// file — happens before a single listener is bound. It is the one blocking
+    /// region whose cost is paid in startup latency rather than in query
+    /// latency, and the series exists so growth in it is visible instead of
+    /// being felt as "the service takes a while to come up now".
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
+        crate::metrics::time_blocking(crate::metrics::BLOCK_SITE_DB_OPEN, || {
+            Self::open_inner(path)
+        })
+    }
+
+    fn open_inner<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
         let conn = Connection::open(path).context("failed to open database")?;
         // Tighten before enabling WAL, not after. This file is the keystore —
@@ -529,10 +583,31 @@ impl Database {
     }
 
     /// Acquires the database lock.
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
-        self.conn
+    ///
+    /// This is the single choke point every one of the SQLite-touching methods
+    /// on [`Database`] passes through, and the only reason it hands back a
+    /// wrapper instead of the guard itself: there is exactly one connection, it
+    /// sits behind a `std::sync::Mutex`, and almost every caller is inside an
+    /// `async fn` on a Tokio worker. Instrumenting here rather than at the call
+    /// sites means a method added later is measured without anyone remembering
+    /// to measure it.
+    ///
+    /// Two separate observations come out of it, because they mean different
+    /// things: [`BLOCK_SITE_DB_LOCK_WAIT`](crate::metrics::BLOCK_SITE_DB_LOCK_WAIT)
+    /// is time this caller spent queued behind someone else, and
+    /// [`BLOCK_SITE_DB_LOCKED`](crate::metrics::BLOCK_SITE_DB_LOCKED) is time
+    /// this caller made everyone else queue.
+    fn lock(&self) -> Result<DbGuard<'_>> {
+        let queued = Instant::now();
+        let inner = self
+            .conn
             .lock()
-            .map_err(|e| anyhow!("database lock poisoned: {}", e))
+            .map_err(|e| anyhow!("database lock poisoned: {}", e))?;
+        crate::metrics::observe_blocking(crate::metrics::BLOCK_SITE_DB_LOCK_WAIT, queued.elapsed());
+        Ok(DbGuard {
+            inner,
+            held_since: Instant::now(),
+        })
     }
 
     fn init_tables(&self) -> Result<()> {

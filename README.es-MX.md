@@ -47,7 +47,7 @@ Rolodex DNS admite además listas de bloqueo de dominios (DNSBL) para filtrar sp
 - **Servidor DHCPv4 integrado**: conjuntos de direcciones por ámbito con vinculaciones MAC pegajosas, registro automático de A/PTR, entrega de certificados mediante opciones específicas del lugar, y un barrido de concesiones en segundo plano
 - **Registros PTR inversos automáticos**: mantenimiento opcional (`dns.auto_ptr`) de los PTR `in-addr.arpa`/`ip6.arpa` correspondientes a los registros A/AAAA agregados por gRPC
 - **Soporte de proxy**: reenvía las consultas DNS a través de un proxy HTTP CONNECT, SOCKS5 o DoH
-- **Métricas de Prometheus**: un endpoint `/metrics` opcional y apagado por omisión que expone 80 familias de métricas con cardinalidad de etiquetas acotada — incluidas la atribución de respuestas por etapa y el aislamiento por TLD, de modo que la tubería de horizonte partido es legible desde fuera. Los nombres de consulta nunca son etiquetas
+- **Métricas de Prometheus**: un endpoint `/metrics` opcional y apagado por omisión que expone 82 familias de métricas con cardinalidad de etiquetas acotada — incluidas la atribución de respuestas por etapa y el aislamiento por TLD, de modo que la tubería de horizonte partido es legible desde fuera. Los nombres de consulta nunca son etiquetas
 - **Persistencia en SQLite**: los registros DNS persisten entre reinicios
 - **Recarga en caliente de TLS**: los archivos de certificado se sondean cada 30 segundos y un par renovado lo sirven DoT, DoH, DoQ, ACME y el portal de inscripción dentro de esa ventana, sin reinicio y sin conexiones caídas. Una reconstrucción que falla —un archivo truncado, o un sondeo que cayó entre las dos escrituras de un cliente ACME— mantiene sirviendo el certificado anterior y reintenta en el siguiente sondeo
 - **Rendimiento**: runtime tokio multihilo, estado de listas de bloqueo y del resolvedor sin cerrojos (`AtomicBool` + `ArcSwap` + atómicos), cachés de arranque en memoria para ámbitos/zonas/TLD/entradas de bloqueo, pool de sockets UDP para el reenvío upstream, y cacheado concurrente con DashMap/DashSet por todas partes
@@ -1612,7 +1612,7 @@ metrics:
 
 El endpoint no está autenticado y solo lleva recuentos agregados — sin nombres de consulta, sin valores de registro, sin material de certificados. Lígalo a una dirección privada; por omisión es loopback. TLS no se ofrece aquí deliberadamente, ya que significaría enviar un certificado autofirmado a cada raspador para un endpoint que, de entrada, no debería ser alcanzable públicamente.
 
-Se exponen 80 familias de métricas, todas con el prefijo `rolodex_dns_`, que cubren las consultas, el caché de respuestas, las listas de bloqueo (incluidos los rechazos y los proveedores sacados de rotación), los niveles upstream, el resolvedor iterativo, los veredictos DNSSEC, el estado del horizonte partido, DHCP, ACME y gRPC.
+Se exponen 82 familias de métricas, todas con el prefijo `rolodex_dns_`, que cubren las consultas, el caché de respuestas, las listas de bloqueo (incluidos los rechazos y los proveedores sacados de rotación), los niveles upstream, el resolvedor iterativo, los veredictos DNSSEC, el estado del horizonte partido, DHCP, ACME, gRPC y el propio trabajo bloqueante del runtime.
 
 La que conviene conocer es `rolodex_dns_answers_total{source}`, que informa de qué etapa del orden de resolución produjo cada respuesta — `cache`, `local`, `scoped`, `scope_fallback`, `tld_peer`, `blocklist`, `reverse_blocklist`, `dns64`, `upstream`, `authoritative_nxdomain`, `refused`, `error`. Su total es igual al total de consultas, que es lo que hace legible la tubería de horizonte partido desde fuera:
 
@@ -1773,6 +1773,32 @@ rate(rolodex_dns_grpc_auth_failures_total[5m]) > 0
 
 # Una familia de direcciones que el equipo no puede enrutar, así que sus registros se suprimen
 rolodex_dns_address_family_reachable{family="ipv6"} == 0
+```
+
+Bloqueo del runtime — dónde hay trabajo síncrono ocupando hilos que deberían estar sirviendo consultas. `db_lock_wait` y `db_locked` son las dos mitades de la única conexión SQLite: el tiempo de espera es lo que te cuestan otros llamadores, el tiempo de tenencia es lo que tú les cuestas a ellos.
+
+```promql
+# Cuánto de cada segundo pasan bloqueados todos los workers en conjunto, por site.
+# La única conexión SQLite es la respuesta habitual; `db_lock_wait` subiendo
+# mientras `db_locked` sigue plano es contención, al revés son sentencias lentas.
+sum by (site) (rate(rolodex_dns_blocking_duration_seconds_sum[5m]))
+
+# Percentil 99 del tiempo en cola detrás de la única conexión a la base de datos
+histogram_quantile(0.99, sum by (le) (rate(rolodex_dns_blocking_duration_seconds_bucket{site="db_lock_wait"}[5m])))
+
+# Regiones de bloqueo que retuvieron un hilo 10ms o más. En un site de worker
+# (db_locked, db_lock_wait, dnssec_verify, metrics_collect) estas son consultas
+# que no se estaban sondeando.
+sum by (site) (rate(rolodex_dns_blocking_stalls_total[5m]))
+
+# Costo del scrape como fracción de su intervalo: /metrics compitiendo con la
+# ruta de consulta por la misma conexión. Por encima de un pequeño porcentaje, amplía el intervalo.
+rate(rolodex_dns_blocking_duration_seconds_sum{site="metrics_collect"}[5m])
+  / rate(rolodex_dns_metrics_scrapes_total[5m])
+
+# Tiempo medio de verificar las firmas de un RRset, sobre todo el juego de llaves candidatas
+rate(rolodex_dns_blocking_duration_seconds_sum{site="dnssec_verify"}[5m])
+  / rate(rolodex_dns_blocking_duration_seconds_count{site="dnssec_verify"}[5m])
 ```
 
 Cada consulta de arriba está cubierta por una prueba que resuelve sus nombres de métrica y sus casadores de etiqueta contra la salida de exposición viva, así que una consulta documentada no puede referirse a una serie que no existe.

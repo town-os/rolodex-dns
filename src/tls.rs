@@ -157,7 +157,20 @@ impl TlsManager {
     /// Always `Ok(false)` for a manager serving generated material: there is no
     /// file behind it, so nothing on disk can change, and re-generating would
     /// hand every client a different self-signed certificate every poll.
+    /// The whole poll — two file reads, a SHA-256, and a PEM parse — is timed
+    /// against [`BLOCK_SITE_TLS_RELOAD`](crate::metrics::BLOCK_SITE_TLS_RELOAD).
+    /// The caller in [`Self::spawn_reloader`] already puts it on the blocking
+    /// pool precisely because the data directory can be removable media, so this
+    /// series is not measuring worker starvation; it is measuring whether that
+    /// precaution is still earning its keep, and whether a poll that logs
+    /// nothing is nonetheless taking seconds.
     pub fn reload_if_changed(&self) -> Result<bool> {
+        crate::metrics::time_blocking(crate::metrics::BLOCK_SITE_TLS_RELOAD, || {
+            self.reload_if_changed_inner()
+        })
+    }
+
+    fn reload_if_changed_inner(&self) -> Result<bool> {
         let material = load_material(&self.config)?;
         let Some(fingerprint) = material.fingerprint else {
             return Ok(false);

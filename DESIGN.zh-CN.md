@@ -1203,7 +1203,7 @@ DHCP 的分配会通过 `JoinNetwork` 链接到网络范围划分系统，为该
 
 ### 输出了什么
 
-80 个指标系列，全部以 `rolodex_dns_` 为前缀：
+82 个指标系列，全部以 `rolodex_dns_` 为前缀：
 
 | 领域 | 指标 |
 | ---- | ---- |
@@ -1218,8 +1218,32 @@ DHCP 的分配会通过 `JoinNetwork` 链接到网络范围划分系统，为该
 | DHCP | `dhcp_messages_total{message_type}`、`dhcp_leases{lease_state}`、`dhcp_pools`、`dhcp_allocation_failures_total`、`dhcp_sweeps_total` |
 | ACME | `acme_accounts`、`acme_certificates`、`acme_issued_total`、`acme_validations_total{result}` |
 | gRPC | `grpc_requests_total{method}`、`grpc_auth_failures_total` |
+| 运行期阻塞 | `blocking_duration_seconds{site}`（直方图）、`blocking_stalls_total{site}` |
 
 `dhcp_messages_total` 刻意没有 `nak` 标签：服务器从不发出 NAK，而一个永远停在零的系列读起来像是一个信号，实际上它只是一个未实现的分支。它的标签是 `message_type`，而 `dhcp_leases` 用的是 `lease_state`，而不是通用的 `type`／`state`——见上面的“子系统分离”。
+
+#### 运行期阻塞
+
+唯一一对关于进程本身而不是关于 DNS 的系列。服务器整体是 `async` 的，但它必须做的几件事是同步的：SQLite 位于单个 `std::sync::Mutex<Connection>` 之后、证书文件要从磁盘读出来、而签名运算就是运算。这些每一件都会在它执行的整段期间占住那条线程，而在 Tokio 工作线程上，那就是一条没有在轮询其他任何东西的线程——一个慢查询不只让它自己的调用者等，也让那条工作线程正在多路复用的每一个查询一起等。这种耦合在 `query_duration_seconds` 里是看不见的：它把症状摊在互不相干的名字上，也没有办法归因。
+
+`site` 是一个固定的枚举，只会往后追加、永远不会插入，因为这些值是一个预先分配好的数组里的位置：
+
+| `site` | 区段 | 线程 |
+| ------ | ---- | ---- |
+| `db_lock_wait` | 等待取得 SQLite 连接互斥锁 | 工作线程 |
+| `db_locked` | 持有它：语句本身，加上行的解码 | 工作线程 |
+| `db_open` | 启动时的打开、迁移与缓存加载 | 监听器之前 |
+| `metrics_collect` | 一次抓取所需的拉取式量表采样 | 工作线程 |
+| `tls_reload` | 证书重读、哈希与 PEM 解析 | 阻塞线程池 |
+| `dnssec_sign` | 生成一条 RRSIG | 工作线程 |
+| `dnssec_verify` | 验证一个 RRset 上的 RRSIG，含所有候选密钥 | 工作线程 |
+| `config_load` | 读取并解析配置文件 | 监听器之前 |
+
+`db_lock_wait` 与 `db_locked` 之所以分开，是因为它们的意思恰好相反：等待时间是*别人*让你付出的代价，持有时间是你让别人付出的代价。连接只有一条，所以这两者就是争用的全貌，而且两者都记录在 `Database::lock`——每一个碰 SQLite 的方法都会经过的那个唯一咽喉点，这也正是为什么之后新增的方法不需要任何人记得去测量就已经被测量了。持有时间是在守卫的 `Drop` 里取的，所以提前返回的错误路径，也会以它实际持有连接的时间被计入。
+
+`blocking_stalls_total` 计算的是达到或超过 10ms 的观测值（`metrics::BLOCKING_STALL_NANOS`）。直方图本来就带着整个分布；这个计数器存在，是为了让一条告警可以直接说“多常发生”，而不必再重述一次某个桶的边界。10ms 比一个热的本地答案高一个数量级，比每个名称服务器的上游超时低一个数量级——正好落在“被阻塞的工作线程开始拖累与那份工作毫不相干的查询”的区间里。
+
+有三个位置刻意不在工作线程上：`tls_reload` 跑在阻塞线程池上（数据目录可能是可移除介质），而 `db_open` 与 `config_load` 是在任何监听器绑定之前跑的。它们仍然被测量，因为“这够快了，不重要”是一个值得有一条系列去撑的主张，而不是一句断言它的注释。
 
 ### 常用 PromQL
 
@@ -1341,7 +1365,7 @@ dns:
 | `test`                | 运行所有测试：lint、Go 集成测试、Go 单元测试、Rust 测试（`cargo test`），以及 JavaScript 测试。 |
 | `test-log`            | 与 `test` 相同，但 tee 进 `/tmp/rolodex-dns/log` 底下带时间戳的日志文件（可用 `LOG_DIR` 覆盖）。即使运行失败，也会在结尾打印日志文件路径。 |
 | `rust-test`           | 运行 Rust 集成测试文件，接着运行 `cargo test`。 |
-| `rust-integration-test` | 先构建，然后逐一明确运行每个 Rust 集成测试文件（`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`blocklist_nxdomain_test`、`zonemd_test`、`dot_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`、`acme_tlsa_endpoints_test`，以及各 `security_*` 套件）。 |
+| `rust-integration-test` | 先构建，然后逐一明确运行每个 Rust 集成测试文件（`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`blocking_metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`blocklist_nxdomain_test`、`zonemd_test`、`dot_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`、`acme_tlsa_endpoints_test`，以及各 `security_*` 套件）。 |
 | `lint`                | 运行 `translation-check`、`cargo fmt -- --check` 与 `cargo clippy --all-targets -- -D warnings`。 |
 | `prometheus-test`     | 对一台容器化的 Prometheus（`quay.io/prometheus/prometheus`，可通过 `ROLODEX_PROMETHEUS_IMAGE` 覆盖）运行每一条文档中的 PromQL 查询。它是 `test` 的先决条件。需要 podman；没有它时测试会**大声跳过**而不是失败，因此没有容器运行环境的机器仍能得到绿色的 `make test`。`ROLODEX_PROMETHEUS_REQUIRED=1` 会把那个跳过变成失败，这正是 CI 应该设置的。 |
 | `deps`                | 安装构建依赖：Rust 的交叉编译工具链（`cross-deps`）、JavaScript 的开发依赖（在 `js/` 中运行 `npm install`），以及 `python-deps`。 |
@@ -1501,6 +1525,7 @@ Rust 测试（`cargo test`）包含单元测试与集成测试，涵盖 gRPC 操
 - **文档测试**（`tests/promql_docs_test.rs`）：`README.md` 与 `DESIGN.md` 中的每一个 ```promql 块都会被解析、抽取其指标名称与标签匹配条件，并逐一对照实际输出的内容解析。文档是指标变更中唯一没有其他东西会去验证的部分——把 `{type}` 改名为 `{message_type}` 会让代码照样编译、其他测试照样全绿，却悄悄把每一条文档中的仪表板查询变成查不到数据的查询，而运维人员要等到事故当中某块面板空白时才会发现。同一个文件也把文档中声称的**系列数量**钉在 `render` 实际输出的数量上（它早就已经飘掉了，文档写 73、实际输出 74），并保护那个代码围栏本身，因为一个被改标成 ` ```bash ` 的块会让整个文件不再检查任何东西。这个解析器是手写的而不是引入 `regex`，并且刻意对它看不懂的语法宽容、对它看得懂的标识符严格。
 - **PromQL 执行测试**（`tests/prometheus_integration_test.rs`）：同一批文档查询会通过一台正在抓取实际服务器的真正 Prometheus 运行，因为一个子串扫描器分辨不出一个格式良好的查询与 `rate(sum(x)[5m])` 的差别——后者指名的全是真实系列，却在运维人员粘贴它的那一刻就被拒绝。它由 `make prometheus-test` 运行，而 `make test` 依赖它，因此每一次完整运行都会跑到这些查询。那道关卡在两个方向上都维持诚实：必须设置 `ROLODEX_PROMETHEUS_TEST=1`（因此裸的 `cargo test` 绝不会在你背后启动容器），而缺少 podman 时会**大声跳过**而不是失败——在没有容器运行环境的机器上得到绿色的 `make test`，但绝不是安静的绿色，因为在测试摘要中，一项被跳过的检查与一项通过的检查看起来一模一样，而读者会默认是后者。`ROLODEX_PROMETHEUS_REQUIRED=1` 会把那个跳过提升为失败，供 CI 使用。这两层是互补的：这一层对语法有权威，另一层则是关于那些系列是否存在。
 - **端点与归因测试**（`tests/metrics_test.rs`）：路由器会在一个临时端口上提供服务，并以手写的 HTTP/1.1 请求通过真实的 TCP 套接字抓取——检查状态码、内容类型，以及每一个非注释行都能解析成 `name[{labels}] value` 且值为数值，因为单单一行格式错误就会让 Prometheus 拒绝整次抓取。查询路径的测试会断言一次本地命中、一次缓存命中、一次权威 NXDOMAIN、一个格式错误的查询与一个未知的查询类型各自落在正确的系列上；仪表值是在抓取当下采样的（监听器启动之后才加入的一行会出现）；那三种缓存清空理由保持彼此区分；以及一次封锁列表拒答会推进 `blocklist_refusals_total` 与 `refused` 这个查找结果，**而不会**同时推进 `listed`。由于注册表是进程级的全局，每个测试都持有一把共用锁并断言确切的差值——选择序列化而不是放宽成 `>=`，正是能抓到一次观测被记录**两次**的原因。较新的用例涵盖了后来新增的那些维度：一个被追踪的 TLD 会得到自己的系列，**以及**“一个未被追踪的 TLD 什么系列都不会产生”这个对照（基数限制正是重点所在，而一个只检查正面情况的测试，在限制被整个移除之后照样会通过）；一个专属 TLD 在从未被配置过的情况下仍被追踪；流量字节在两个方向上都与确切的线路长度相符，而 records-served 读的是 ANCOUNT 而不是每次查询算一条；每一道允许列表关卡各自推进而不牵动另外两道。
+- **阻塞区段测试**（`tests/blocking_metrics_test.rs`）：每一条被测量的路径，旁边都放着一条必须什么都不记录的对照路径。数据库案例驱动真实的 `Database`——用一般的方法做一次插入与一次查询，因为要证明的性质是 `Database::lock` 就是那个咽喉点，之后新增的方法不管有没有人记得去测量都会经过它——并与一次完全由内存中关联缓存服务的读取配对，后者两条系列都不得移动：一次从未取锁的读取若记下 `db_locked` 样本，就是在报告没有人正在经历的争用。阈值从两侧各检查一次，比 10ms 少一纳秒，以及正好等于 10ms，因为 `>=` 与 `>` 的差别恰好就是针对那个桶边界所写的告警会踩到的情况。站点索引以名称对索引逐一钉住，旁边再加一条长度断言：`BLOCK_SITE_*` 常量是预先分配数组里的位置，插入一个值会悄悄把它之后每一个已记录的样本改标签，而新增了站点却没有常量，则是一条没有人能写入的系列。输出格式测试要求在任何观测发生之前，每个站点就已经以零值出现——一个要等到非零才具体化的标签值，会让刚重启的进程上的 `rate()` 悄悄变成空的，也会让“我们从未在这里阻塞”与“这个站点不存在”无法区分——其中 100ns、10ms 与 `+Inf` 三个边界是逐字写出来的，而不是从边界数组推导出来的。其中两项测试建立私有的 `Metrics` 而不是使用进程层级的全局注册表，因为这个测试二进制文件里其他每一项测试都在写入全局注册表，对它做绝对值断言就是一场竞态；数据库测试做不到（`Database` 没有办法被交进一个注册表），所以它改用差值断言，跑在不会在主机上留下任何东西的内存数据库上。
 
 ### 解析器测试
 
@@ -1619,7 +1644,7 @@ Go 客户端有两层测试：
 - **单元测试**——通过 `bufconn` 使用一台进程内的模拟 gRPC 服务器，测试所有客户端方法、认证令牌的传递、传输模式、错误处理，以及边界情况（幂等的关闭、延迟拨号、自定义拨号选项）。
 - **集成测试**——以 `integration` 构建标签把关。每个测试都会以一个独有的临时目录、随机端口与隔离的数据库，启动一个真实的 Rolodex DNS 服务器子进程。测试涵盖记录的 CRUD、通配符筛选、转发器配置、封锁列表往返、缓存清空、Unix 套接字传输、认证失败、默认 TTL 行为、并发客户端（5 个同时）、网络范围划分、DNS64 与 TTL 漂移。
 
-`make test` 目标会运行完整的测试套件：lint、Go 集成测试、Go 单元测试、Rust 集成测试（逐一明确列出每个测试文件：`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`blocklist_nxdomain_test`、`zonemd_test`、`dot_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`、`acme_tlsa_endpoints_test`，以及各 `security_*` 套件）、通过 `cargo test` 运行的所有 Rust 测试（它也涵盖上面那套解析器测试），以及 JavaScript 的 lint／集成／单元测试。单独的目标也可以使用：`make go-integration-test`、`make go-test`、`make rust-integration-test`、`make rust-test`、`make js-integration-test`、`make js-test`。使用 `make test-log` 可把整轮运行捕获到一份带时间戳的日志文件中。`make translation-check` 会逐节比对每份翻译文档与英文原文，只要有落差就以非零状态退出；它是 `lint` 的前置依赖，因此会随 `make test` 一并运行，并在某个语系落后时让关卡失败。
+`make test` 目标会运行完整的测试套件：lint、Go 集成测试、Go 单元测试、Rust 集成测试（逐一明确列出每个测试文件：`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`blocking_metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`blocklist_nxdomain_test`、`zonemd_test`、`dot_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`、`acme_tlsa_endpoints_test`，以及各 `security_*` 套件）、通过 `cargo test` 运行的所有 Rust 测试（它也涵盖上面那套解析器测试），以及 JavaScript 的 lint／集成／单元测试。单独的目标也可以使用：`make go-integration-test`、`make go-test`、`make rust-integration-test`、`make rust-test`、`make js-integration-test`、`make js-test`。使用 `make test-log` 可把整轮运行捕获到一份带时间戳的日志文件中。`make translation-check` 会逐节比对每份翻译文档与英文原文，只要有落差就以非零状态退出；它是 `lint` 的前置依赖，因此会随 `make test` 一并运行，并在某个语系落后时让关卡失败。
 
 ## 主要依赖
 
