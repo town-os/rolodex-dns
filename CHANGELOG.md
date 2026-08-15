@@ -2,6 +2,26 @@
 
 > Languages: **English** | [繁體中文](CHANGELOG.zh-TW.md) | [简体中文](CHANGELOG.zh-CN.md) | [Español (España)](CHANGELOG.es-ES.md) | [Español (México)](CHANGELOG.es-MX.md) | [日本語](CHANGELOG.ja-JP.md)
 
+## v0.6.1 (2026-08-15)
+
+### Features
+
+- **The runtime's own blocking work is measured, and exposed as two new metric families** — `rolodex_dns_blocking_duration_seconds{site}` (a histogram) and `rolodex_dns_blocking_stalls_total{site}` — bringing the exposed families to 82. The server is `async` throughout, but several of the things it has to do are not: SQLite sits behind a single `std::sync::Mutex<Connection>`, certificate files are read off disk, and signature arithmetic is arithmetic. Each occupies the thread it runs on for its whole duration, and on a Tokio worker that is a thread not polling anything else — a slow statement does not only make its own caller wait, it makes every query that worker was multiplexing wait too. `query_duration_seconds` shows that as latency smeared across unrelated names, with no way to attribute it to what actually caused it.
+
+  Eight sites, a fixed enum appended to and never inserted into because the values are positions in a pre-allocated array: `db_lock_wait`, `db_locked`, `db_open`, `metrics_collect`, `tls_reload`, `dnssec_sign`, `dnssec_verify`, `config_load`. `db_lock_wait` and `db_locked` are separate because they mean opposite things — wait time is what *other* callers cost you, held time is what you cost them — and both are recorded from `Database::lock`, the single choke point every SQLite-touching method passes through, which is what instruments a method added later without anyone remembering to instrument it. Held time is taken in the guard's `Drop`, so a path that returns early with an error is measured for as long as it actually held the connection rather than not measured at all.
+
+  `blocking_stalls_total` counts the observations at or above 10ms (`metrics::BLOCKING_STALL_NANOS`), so an alert can ask "how often" without restating a bucket boundary; the histogram already carries the whole distribution. Those buckets are their own set, starting at 100ns rather than the query histogram's 50µs floor — an uncontended mutex acquisition is tens of nanoseconds, and a first bucket that already holds every healthy sample cannot show the day it stops being healthy. Three sites are deliberately not on a worker thread: `tls_reload` runs on the blocking pool, and `db_open` and `config_load` run before any listener is bound. They are measured anyway, because "this is fast enough not to matter" is a claim worth a series rather than a comment asserting it.
+
+  Nothing about how the server answers changes. There is no new configuration, no new dependency, and no new work on any path — the instrumentation is a timer and a `Drop` guard around regions that were already synchronous.
+
+### Testing
+
+- **`tests/blocking_metrics_test.rs`** (new, and named in the Makefile's `rust-integration-test` recipe) pairs every instrumented path with a control that must record nothing: an insert and a lookup through the real `Database`, against a read served entirely from the in-memory association cache, which must move neither series — a `db_locked` sample for a read that never took the lock would report contention nobody is experiencing. The stall threshold is checked from both sides, one nanosecond under 10ms and exactly on it, since `>=` and `>` differ by precisely the case an alert written against that boundary hits. Site indices are pinned name-to-index with a length assertion beside them, because the `BLOCK_SITE_*` constants are array positions and an insertion silently relabels every sample already recorded against the sites after it. And every site must be exported at zero before anything has been recorded: a label value that appears only once it is non-zero makes `rate()` over a freshly restarted process silently empty, and makes "we have never blocked here" indistinguishable from "this site does not exist".
+
+### Documentation
+
+- `DESIGN.md` gains a **Runtime blocking** subsection under the metrics chapter — the site table, which thread each region runs on, why the two database sites are separate, and why the three off-worker sites are measured at all — and a description of the new suite under Metrics Tests. `README.md` gains five cookbook queries for the new families. The documented family count moves from 80 to 82 in both, which `tests/promql_docs_test.rs` pins against what the registry actually emits, and every query in the new block is resolved against live exposition output by the same suite. All six locales are updated in step.
+
 ## v0.6.0 (2026-08-15)
 
 ### Breaking changes

@@ -2,6 +2,26 @@
 
 > Idiomas: [English](CHANGELOG.md) | [繁體中文](CHANGELOG.zh-TW.md) | [简体中文](CHANGELOG.zh-CN.md) | **Español (España)** | [Español (México)](CHANGELOG.es-MX.md) | [日本語](CHANGELOG.ja-JP.md)
 
+## v0.6.1 (2026-08-15)
+
+### Funcionalidades
+
+- **El propio trabajo bloqueante del runtime se mide, y se expone como dos familias de métricas nuevas** — `rolodex_dns_blocking_duration_seconds{site}` (un histograma) y `rolodex_dns_blocking_stalls_total{site}` —, con lo que las familias expuestas pasan a 82. El servidor es `async` de principio a fin, pero varias de las cosas que tiene que hacer no lo son: SQLite vive detrás de un único `std::sync::Mutex<Connection>`, los ficheros de certificado se leen del disco, y la aritmética de firmas es aritmética. Cada una de ellas ocupa el hilo en el que corre durante toda su duración, y en un worker de Tokio eso es un hilo que no está sondeando ninguna otra cosa — una sentencia lenta no solo hace esperar a quien la llamó, hace esperar también a cada consulta que ese worker estaba multiplexando. `query_duration_seconds` lo enseña como latencia embadurnada sobre nombres que no tienen nada que ver, sin manera de atribuirla a lo que realmente la causó.
+
+  Ocho sitios, un enum fijo al que se añade por el final y en el que nunca se inserta, porque los valores son posiciones dentro de un array preasignado: `db_lock_wait`, `db_locked`, `db_open`, `metrics_collect`, `tls_reload`, `dnssec_sign`, `dnssec_verify`, `config_load`. `db_lock_wait` y `db_locked` están separados porque significan cosas opuestas — el tiempo de espera es lo que te cuestan *otros* llamantes, el tiempo de tenencia es lo que tú les cuestas a ellos — y ambos se registran desde `Database::lock`, el único cuello de botella por el que pasa cada método que toca SQLite, que es lo que instrumenta un método añadido después sin que nadie se acuerde de instrumentarlo. El tiempo de tenencia se toma en el `Drop` del guarda, así que una ruta que retorna pronto con un error se mide por todo el tiempo que retuvo de verdad la conexión, en vez de no medirse en absoluto.
+
+  `blocking_stalls_total` cuenta las observaciones iguales o superiores a 10ms (`metrics::BLOCKING_STALL_NANOS`), para que una alerta pueda preguntar "con qué frecuencia" sin reescribir el límite de un bucket; el histograma ya lleva la distribución entera. Esos buckets son un juego propio, que arranca en 100ns en vez del suelo de 50µs del histograma de consultas — adquirir un mutex sin contención son decenas de nanosegundos, y un primer bucket que ya contiene toda muestra sana no puede enseñar el día en que deja de serlo. Tres sitios están deliberadamente fuera de un hilo worker: `tls_reload` corre en el pool de bloqueo, y `db_open` y `config_load` corren antes de que se ate ningún listener. Se miden igualmente, porque "esto es lo bastante rápido como para no importar" es una afirmación que merece una serie en vez de un comentario que la asegure.
+
+  Nada de cómo responde el servidor cambia. No hay configuración nueva, ni dependencia nueva, ni trabajo nuevo en ninguna ruta — la instrumentación es un cronómetro y un guarda `Drop` alrededor de regiones que ya eran síncronas.
+
+### Pruebas
+
+- **`tests/blocking_metrics_test.rs`** (nuevo, y nombrado en la receta `rust-integration-test` del Makefile) empareja cada ruta instrumentada con un control que no debe registrar nada: una inserción y una búsqueda por el `Database` real, frente a una lectura servida enteramente desde la caché de asociaciones en memoria, que no debe mover ninguna de las dos series — una muestra de `db_locked` para una lectura que nunca tomó el cerrojo informaría de una contención que nadie está sufriendo. El umbral de atasco se comprueba por los dos lados, un nanosegundo por debajo de 10ms y exactamente encima, ya que `>=` y `>` se diferencian precisamente en el caso que golpea una alerta escrita contra ese límite. Los índices de los sitios se fijan nombre a índice con una afirmación de longitud al lado, porque las constantes `BLOCK_SITE_*` son posiciones de un array y una inserción reetiqueta en silencio cada muestra ya registrada contra los sitios posteriores. Y cada sitio debe exportarse a cero antes de que se haya registrado nada: un valor de etiqueta que solo aparece cuando deja de ser cero deja vacío en silencio un `rate()` sobre un proceso recién reiniciado, y hace indistinguible "aquí nunca nos hemos bloqueado" de "este sitio no existe".
+
+### Documentación
+
+- `DESIGN.md` gana una subsección **Bloqueo del runtime** dentro del capítulo de métricas — la tabla de sitios, en qué hilo corre cada región, por qué los dos sitios de base de datos están separados, y por qué los tres que no van en un worker se miden igual — y una descripción de la nueva batería bajo Pruebas de métricas. `README.md` gana cinco consultas de recetario para las familias nuevas. El recuento documentado de familias pasa de 80 a 82 en ambos, que `tests/promql_docs_test.rs` fija contra lo que el registro emite de verdad, y cada consulta del bloque nuevo la resuelve esa misma batería contra la salida de exposición viva. Los seis idiomas se actualizan a la vez.
+
 ## v0.6.0 (2026-08-15)
 
 ### Cambios incompatibles
