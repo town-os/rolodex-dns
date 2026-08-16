@@ -273,7 +273,7 @@ Se aplica solo a la ruta iterativa (modo `recursive`, y el nivel de raíces de `
 ```yaml
 dnssec:
   trust_anchors:
-    - "257 3 15 <clave en base64>"     # una raíz privada; IANA NO se confía también
+    - "257 3 15 <llave en base64>"     # una raíz privada; IANA NO se confía también
 ```
 
 Un anclaje malformado hace fallar el arranque en lugar de recaer en IANA: un anclaje que no puede casar con un DNSKEY real hace que toda zona firmada falle sin que nada señale al anclaje como la causa.
@@ -313,7 +313,7 @@ Deja `recursion_cidrs` en paz salvo que la estés *acotando*. Ensancharla hacia 
 
 ### Listas de bloqueo (DNSBL)
 
-**DNSBL bloquea por nombre**, y se revisa antes de cualquier resolución externa. Viene desactivada por omisión con la lista de proveedores vacía, así que no se consulta nada y ningún nombre llega a manos del operador de una lista de bloqueo hasta que añades proveedores.
+**DNSBL bloquea por nombre**, y se revisa antes de cualquier resolución externa. Viene desactivada por omisión con la lista de proveedores vacía, así que no se consulta nada y ningún nombre llega a manos del operador de una lista de bloqueo hasta que agregas proveedores.
 
 ```yaml
 dnsbl:

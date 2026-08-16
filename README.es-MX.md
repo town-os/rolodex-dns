@@ -490,7 +490,7 @@ metrics:
 | `resolution.delegation_persist_min_ttl` | `300` | TTL mínimo para que una delegación aprendida se persista en SQLite |
 | `resolution.default_ttl` | `300` | TTL de reserva cuando un registro o respuesta no trae el suyo |
 | `dnssec.validate` | `true` | Valida DNSSEC en las respuestas resueltas iterativamente (modo `recursive` y el nivel de las raíces de `auto`). Los datos bogus e indeterminados pasan a ser SERVFAIL y no se cachean nunca |
-| `dnssec.trust_anchors` | `[]` (llaves raíz de IANA) | Anclas en forma de presentación DNSKEY, `"<flags> <protocolo> <algoritmo> <clave en base64>"` — los campos RDATA tal como los imprime `dig DNSKEY .`. Cada campo se valida al arrancar y uno incorrecto es un fallo duro. Una sustitución **reemplaza** las llaves de IANA en vez de agregarse a ellas |
+| `dnssec.trust_anchors` | `[]` (llaves raíz de IANA) | Anclas en forma de presentación DNSKEY, `"<flags> <protocolo> <algoritmo> <llave en base64>"` — los campos RDATA tal como los imprime `dig DNSKEY .`. Cada campo se valida al arrancar y uno incorrecto es un fallo duro. Una sustitución **reemplaza** las llaves de IANA en vez de agregarse a ellas |
 | `dns.bind` | `[{udp: "0.0.0.0:53"}, {tcp: "0.0.0.0:53"}]` | Escuchas DNS; lista de entradas `{udp: dirección}` / `{tcp: dirección}` |
 | `dns.auto_ptr` | `false` | Mantiene registros PTR inversos para los A/AAAA agregados por gRPC |
 | `dns.ingress_listen_port` | `53` | Puerto UDP/TCP para las escuchas de ingreso por TLD (la IP de ligadura es por TLD) |
@@ -1544,7 +1544,7 @@ Cómo se comporta en la práctica:
 
 Poner `dnssec.validate: false` resuelve exactamente como antes: sin bit DO saliente, sin cadena de confianza, sin SERVFAIL para los datos bogus.
 
-**Anclas de confianza.** `dnssec.trust_anchors` toma la forma de presentación DNSKEY — `"<flags> <protocolo> <algoritmo> <clave en base64>"`, los cuatro campos RDATA tal como los imprime `dig DNSKEY .`. Una sustitución **reemplaza** las llaves de IANA en vez de agregarse a ellas, así que una raíz privada queda anclada a su propia llave y a nada más. Cada campo se valida al arrancar y un ancla malformada es un fallo duro, no una reserva silenciosa — un ancla que no puede casar con un DNSKEY real hace que toda zona firmada falle sin que nada apunte al ancla como causa.
+**Anclas de confianza.** `dnssec.trust_anchors` toma la forma de presentación DNSKEY — `"<flags> <protocolo> <algoritmo> <llave en base64>"`, los cuatro campos RDATA tal como los imprime `dig DNSKEY .`. Una sustitución **reemplaza** las llaves de IANA en vez de agregarse a ellas, así que una raíz privada queda anclada a su propia llave y a nada más. Cada campo se valida al arrancar y un ancla malformada es un fallo duro, no una reserva silenciosa — un ancla que no puede casar con un DNSKEY real hace que toda zona firmada falle sin que nada apunte al ancla como causa.
 
 Los veredictos son visibles por Prometheus como `rolodex_dns_dnssec_verdicts_total{verdict}`, junto a `dnssec_servfail_total`, `dnssec_blamed_roots` y `key_cache_entries`.
 

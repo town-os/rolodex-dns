@@ -35,7 +35,7 @@ Cada uno de los seis tiene junto a él una traducción al chino tradicional (`.z
 - las pruebas deben incluir siempre las revisiones de linting
 - las revisiones de lint deben ser un conjunto de linters estándar de la comunidad de Rust, ejecutados mediante las tareas de make `lint`
 - nunca uses `let _ = expr;` para silenciar avisos de variables sin usar ni para sortear el *borrow checker*. Arregla el problema de verdad: usa la variable, elimina el parámetro o reestructura el código.
-- `#![deny(dead_code)]` y `#![deny(unsafe_code)]` están puestos a nivel de *crate* tanto en lib.rs como en main.rs. Nunca añadas `#[allow(dead_code)]` ni `#[allow(unsafe_code)]` para saltártelos: elimina el código muerto y usa abstracciones seguras (por ejemplo, el *crate* nix) en lugar de unsafe.
+- `#![deny(dead_code)]` y `#![deny(unsafe_code)]` están puestos a nivel de *crate* tanto en lib.rs como en main.rs. Nunca agregues `#[allow(dead_code)]` ni `#[allow(unsafe_code)]` para saltártelos: elimina el código muerto y usa abstracciones seguras (por ejemplo, el *crate* nix) en lugar de unsafe.
 - no modifiques el sistema más allá de configurar el hardware
 - nunca borres, muevas ni modifiques etiquetas de git salvo que se te indique explícitamente
 

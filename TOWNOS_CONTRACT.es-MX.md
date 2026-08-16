@@ -8,19 +8,19 @@ Esta es la lista autorizada de todo lo que cruza la frontera entre rolodex y Tow
 
 **Aquí no hay nada fijado a una revisión.** `make check-townos-sync` resuelve los checkouts que haya en la máquina en el momento en que se ejecuta. Una revisión anotada que ningún script lee es una afirmación que nadie mantiene, y un pin fallaría ruidosamente en commits de Town OS que no cambiaron nada de lo que rolodex depende — lo peor de ambos.
 
-| Comando | Contra qué comprueba | ¿Se salta? |
+| Comando | Contra qué revisa | ¿Se salta? |
 |---|---|---|
 | `make check-townos-sync` | checkouts locales (`TOWNOS_DIR=`, `INSTALL_DIR=`) | sí, si no están |
 
-Se ejecuta como parte de `make lint`, así que el desarrollo corriente obtiene la comprobación gratis y sigue funcionando en una máquina que solo tiene este repositorio.
+Se ejecuta como parte de `make lint`, así que el desarrollo corriente obtiene la revisión gratis y sigue funcionando en una máquina que solo tiene este repositorio.
 
-### Qué verifica realmente la comprobación
+### Qué verifica realmente la revisión
 
-Los nombres por sí solos no bastan — una constante que sigue existiendo pero se movió es exactamente el fallo que aquí queda en verde y se rompe en la máquina. La comprobación compara:
+Los nombres por sí solos no bastan — una constante que sigue existiendo pero se movió es exactamente el fallo que aquí queda en verde y se rompe en la máquina. La revisión compara:
 
-- **Que todo método que declara la interfaz `Client` de Town OS existe en el propio cliente Go de rolodex (`go/client.go`).** Esa, y no el proto, es la superficie a la que Town OS se ata: su propia estructura `client` delega directamente al paquete Go de este repositorio. Algunos de esos métodos son envoltorios de conveniencia y no rpcs distintos (`AddScopeTldWithListener` es `AddScopeTld` con `listen_ip` puesto), así que una comprobación solo contra el proto informa de una deriva que no existe y se pierde un envoltorio eliminado, que sí es deriva.
+- **Que todo método que declara la interfaz `Client` de Town OS existe en el propio cliente Go de rolodex (`go/client.go`).** Esa, y no el proto, es la superficie a la que Town OS se ata: su propia estructura `client` delega directamente al paquete Go de este repositorio. Algunos de esos métodos son envoltorios de conveniencia y no rpcs distintos (`AddScopeTldWithListener` es `AddScopeTld` con `listen_ip` puesto), así que una revisión solo contra el proto informa de una deriva que no existe y se pierde un envoltorio eliminado, que sí es deriva.
 - **Que los conjuntos de esquemas de reenviador de los dos analizadores son idénticos** — `src/forwarder.rs` aquí y `src/rolodex/forwarder.go` allí. Dos analizadores escritos a mano de la misma gramática, en repositorios que no pueden verse, es lo más nuevo y lo menos defendido de este documento.
-- **Que las direcciones fijas coinciden en los tres repositorios**: el backend DoH, el listener de métricas, el loopback que rolodex enlaza y el directorio TLS, como constante Go, como literal en el script de instalación y como valor por defecto aquí.
+- **Que las direcciones fijas coinciden en los tres repositorios**: el backend DoH, el listener de métricas, el loopback que rolodex enlaza y el directorio TLS, como constante Go, como literal en el script de instalación y como valor por omisión aquí.
 
 ## Alcance
 
@@ -39,7 +39,7 @@ Nada más cruza la frontera. En particular:
 
 `scripts/rolodex-config.sh` en `../install` es el único escritor. Lleva exactamente lo que no se puede fijar en un servidor en marcha:
 
-| Clave | Por qué no se puede programar |
+| Llave | Por qué no se puede programar |
 |---|---|
 | `dns.bind` | Los listeners tienen que existir antes de que ninguna llamada a la API pueda alcanzarlos |
 | `metrics.bind` | rolodex abre ese listener una sola vez al arrancar, por la presencia de la sección |
@@ -49,13 +49,13 @@ Nada más cruza la frontera. En particular:
 
 **Serde rechaza de plano un campo desconocido o ausente.** Un campo requerido en la revisión de la imagen y ausente del archivo — o presente en el archivo y desconocido para la imagen — es un `failed to parse config file` duro al arrancar, y bajo `Restart=always` eso es un ciclo de caídas con el DNS caído para todo lo que hay en la máquina. Ya ha pasado una vez, con el renombrado de `rbl` a `dnsbl`.
 
-La regla que se sigue: **el `rolodex-config.sh` del repositorio de instalación y la imagen publicada de rolodex se mueven juntos.** Una clave de configuración renombrada aquí sin el cambio correspondiente allí es una máquina rota, no un test fallido. `TestRolodexDohBackendMatchesTheInstallScript` en Town OS atrapa exactamente una dirección de esto, y solo donde `../install` está clonado.
+La regla que se sigue: **el `rolodex-config.sh` del repositorio de instalación y la imagen publicada de rolodex se mueven juntos.** Una llave de configuración renombrada aquí sin el cambio correspondiente allí es una máquina rota, no un test fallido. `TestRolodexDohBackendMatchesTheInstallScript` en Town OS atrapa exactamente una dirección de esto, y solo donde `../install` está clonado.
 
 ## Los ajustes viven solo en memoria
 
 rolodex **no** persiste nada de lo fijado por gRPC. Toma su semilla de `rolodex.yml` al arrancar y mantiene el resto en memoria, así que una caída bajo `Restart=always`, un cambio de concesión DHCP que reinicia la unidad, o un operador reiniciándolo a mano devuelven todos los ajustes que Town OS empujó a los valores de arranque.
 
-La obligación de Town OS, por tanto: **volver a empujar tras cada reinicio.** `ProgramRolodex` corre en un tick de 15 segundos y advierte un reinicio a través de `Manager.Generation` — la identidad del socket gRPC que rolodex enlaza al arrancar (dispositivo, inodo, mtime). Nada en rolodex anuncia un reinicio; la identidad del socket es la señal.
+La obligación de Town OS, por tanto: **volver a empujar después de cada reinicio.** `ProgramRolodex` corre en un tick de 15 segundos y advierte un reinicio a través de `Manager.Generation` — la identidad del socket gRPC que rolodex enlaza al arrancar (dispositivo, inodo, mtime). Nada en rolodex anuncia un reinicio; la identidad del socket es la señal.
 
 Dos consecuencias que conviene decir con claridad:
 
@@ -78,7 +78,7 @@ Dos consecuencias que conviene decir con claridad:
 
 Propiedades de las que el lado de Town OS depende exactamente:
 
-- **Un `ip:port` pelado es UDP en claro.** Todo llamante escrito antes de que los transportes fueran nombrables sigue funcionando, y el esquema es lo que un llamante añade para pedir otra cosa. Tanto `udp://` como la forma pelada se analizan hacia el mismo reenviador y llevan la misma etiqueta de métricas.
+- **Un `ip:port` pelado es UDP en claro.** Todo llamante escrito antes de que los transportes fueran nombrables sigue funcionando, y el esquema es lo que un llamante agrega para pedir otra cosa. Tanto `udp://` como la forma pelada se analizan hacia el mismo reenviador y llevan la misma etiqueta de métricas.
 - **La dirección es siempre un literal, nunca un nombre de host.** `name@ip` lleva la dirección a la que marcar y el nombre contra el que validar el certificado, en una sola cadena. Esta es la propiedad de arranque: un upstream cifrado que hubiera que resolver primero no podría ser lo que arregla una máquina sin DNS que funcione.
 - **En qué escalón cae un reenviador lo decide rolodex, no Town OS.** Se deriva del reenviador — cifrado, luego en claro privado, luego en claro público — así que Town OS no debe ordenar la lista para expresar preferencia, ni suponer que el orden que envió es el orden que se prueba.
 - **La validación es todo o nada.** `SetForwarders` reemplaza la lista, así que rolodex analiza cada entrada antes de aplicar ninguna, y Town OS valida antes de empujar. Una lista aceptada con una entrada descartada deja al resolvedor sosteniendo algo que nadie pidió.
@@ -103,14 +103,14 @@ Que sea `127.0.0.2` y no `127.0.0.1` evita el stub de systemd-resolved en `127.0
 
 ## Métricas
 
-rolodex sirve la exposición de texto de Prometheus en `127.0.0.2:9153`, abierta una sola vez al arrancar por la presencia de la sección `metrics`. Town OS configura el objetivo de recolección desde `rolodex.Manager.MetricsAddr()` en lugar de recomponerlo desde un valor por defecto, así que el objetivo y el enlace no pueden separarse.
+rolodex sirve la exposición de texto de Prometheus en `127.0.0.2:9153`, abierta una sola vez al arrancar por la presencia de la sección `metrics`. Town OS configura el objetivo de recolección desde `rolodex.Manager.MetricsAddr()` en lugar de recomponerlo desde un valor por omisión, así que el objetivo y el enlace no pueden separarse.
 
 Dos propiedades de las que depende la monitorización de Town OS:
 
 - **Toda dimensión de etiqueta está acotada.** Un enum fijo, o acotada por configuración. Cualquier cosa que un cliente controle se pliega en un valor general (`OTHER` para tipos de consulta, `other` para TLD). **Los nombres de consulta nunca son etiquetas.** `upstream_queries_total{server}` y `upstream_skipped_total{server}` están acotadas por la lista de reenviadores configurada.
-- **Los valores de etiqueta nuevos se añaden, nunca se insertan.** Las constantes del estilo `BLOCK_*` son posiciones en un array preasignado; una inserción reetiqueta en silencio todos los contadores existentes.
+- **Los valores de etiqueta nuevos se agregan, nunca se insertan.** Las constantes del estilo `BLOCK_*` son posiciones en un array preasignado; una inserción reetiqueta en silencio todos los contadores existentes.
 
-Añadir o renombrar una métrica implica actualizar el recuento de familias y las consultas afectadas en `README.md` y `DESIGN.md` — `tests/promql_docs_test.rs` fija el recuento documentado contra lo que el registro emite.
+Agregar o renombrar una métrica implica actualizar el recuento de familias y las consultas afectadas en `README.md` y `DESIGN.md` — `tests/promql_docs_test.rs` fija el recuento documentado contra lo que el registro emite.
 
 ## Exigido de Town OS: no reordenar, y no dar por supuesto Do53
 
@@ -127,7 +127,7 @@ Este es el único punto donde una decisión de Town OS/ttyforce desactiva en sil
 - `bootstrap-dns.sh` en `../install` apunta systemd-resolved a `127.0.0.2` siempre que rolodex está en marcha.
 - `/etc/resolv.conf` es el propio stub `127.0.0.53` de resolved.
 
-Los tres son loopback o inexistentes, y los tres se descartan correctamente como bucles de consulta. Así que `HostResolversFrom` de Town OS no encuentra **nada** en una máquina en marcha, y su descubrimiento de reenviadores locales tiene que leer la **pasarela por defecto** de `/proc/net/route` para encontrar algo siquiera. La puerta de enlace sobrevive porque viene de la opción *router* de la concesión DHCP y no de su opción DNS.
+Los tres son loopback o inexistentes, y los tres se descartan correctamente como bucles de consulta. Así que `HostResolversFrom` de Town OS no encuentra **nada** en una máquina en marcha, y su descubrimiento de reenviadores locales tiene que leer la **pasarela por omisión** de `/proc/net/route` para encontrar algo siquiera. La puerta de enlace sobrevive porque viene de la opción *router* de la concesión DHCP y no de su opción DNS.
 
 Cualquier cosa que cambie una de esas tres decisiones cambia qué puede encontrar el descubrimiento. Cámbialas juntas o no las cambies en absoluto.
 
@@ -135,7 +135,7 @@ Cualquier cosa que cambie una de esas tres decisiones cambia qué puede encontra
 
 Anotadas para que nadie las descubra depurando:
 
-- **La superficie gRPC de rolodex es mucho mayor que lo que Town OS usa.** El proto declara la API de gestión completa; la interfaz `Client` de Town OS es un subconjunto. La comprobación verifica que todo lo que Town OS declara existe aquí, no al revés — un rpc que ningún cliente de Town OS llama no es una deriva.
+- **La superficie gRPC de rolodex es mucho mayor que lo que Town OS usa.** El proto declara la API de administración completa; la interfaz `Client` de Town OS es un subconjunto. La revisión verifica que todo lo que Town OS declara existe aquí, no al revés — un rpc que ningún cliente de Town OS llama no es una deriva.
 - **`shared_secret` está vacío y la autenticación son los permisos del sistema de archivos.** El script de instalación escribe `grpc.tcp_bind: ""` y un socket Unix, así que el modo de ese socket es todo el control de acceso. Un bind TCP necesitaría el secreto, y nada en Town OS fija uno.
 - **`GetForwarders` no existe.** Town OS empuja incondicionalmente y no puede leer de vuelta lo que rolodex sostiene. Por eso `GET /dns/status` informa de lo que Town OS *programaría* en lugar de lo que rolodex tiene.
 - **Los reenviadores de scope/TLD son otra lista.** `SetScopeTldForwarders` es reenvío entre pares por scope y no es la lista global de reenviadores; es `ip:port` sin más y no admite la gramática de transportes de arriba.
@@ -148,4 +148,4 @@ Town OS se distribuye como imágenes de contenedor por arquitectura sin versión
 
 1. Ejecuta `make check-townos-sync` con `TOWNOS_DIR` e `INSTALL_DIR` apuntando a los checkouts.
 2. Reconcilia cualquier fallo actualizando el otro lado **y** este documento a la vez — nunca uno sin el otro.
-3. Si el cambio renombra o elimina una clave de `rolodex.yml`, el script de instalación y la imagen publicada tienen que salir juntos. No hay ningún saludo de versiones que lo atrape.
+3. Si el cambio renombra o elimina una llave de `rolodex.yml`, el script de instalación y la imagen publicada tienen que salir juntos. No hay ningún saludo de versiones que lo atrape.
