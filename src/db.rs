@@ -439,6 +439,25 @@ pub struct Database {
     authoritative_zones_cache: Arc<DashSet<String>>,
     /// In-memory cache of managed zones (derived from dns_records names).
     managed_zones_cache: Arc<DashSet<String>>,
+    /// Zones holding at least one active DNSSEC key, so the answer path can ask
+    /// "must this carry a signature?" without touching the unindexed
+    /// `dnssec_keys` table on every query. Kept in step by
+    /// [`Database::refresh_signed_zones`].
+    signed_zones_cache: Arc<DashSet<String>>,
+    /// Signed zones whose records have changed since they were last signed, and
+    /// whose NSEC chain and RRSIGs are therefore stale. Drained by the re-sign
+    /// loop; consulted by the answer path, which withholds a denial proof for a
+    /// zone in this set rather than serving one that describes the zone as it
+    /// used to be.
+    resign_pending: Arc<DashSet<String>>,
+    /// Zones with a signing pass in flight right now.
+    ///
+    /// A pass deletes every RRSIG and NSEC in the zone before rebuilding them,
+    /// and holds no lock across that window. Without this set the zone would
+    /// read as "signed and current" while half its signatures are gone, and both
+    /// answer paths would serve bare records from a DNSKEY-publishing zone —
+    /// which a validator reads as stripped signatures, not as an unsigned zone.
+    resign_active: Arc<DashSet<String>>,
     /// Maps a normalized owned TLD/zone ("office.") to the name of the scope that
     /// owns it. Populated from each scope's `home_domain` (implicit primary TLD)
     /// and the `scope_tlds` table. Drives the per-network resolution partition
@@ -546,6 +565,9 @@ impl Database {
             dnsbl_allowlist_cache: Arc::new(DashSet::new()),
             authoritative_zones_cache: Arc::new(DashSet::new()),
             managed_zones_cache: Arc::new(DashSet::new()),
+            signed_zones_cache: Arc::new(DashSet::new()),
+            resign_pending: Arc::new(DashSet::new()),
+            resign_active: Arc::new(DashSet::new()),
             tld_owner_cache: Arc::new(DashMap::new()),
             tld_forwarder_cache: Arc::new(DashMap::new()),
             tld_ingress_cache: Arc::new(DashMap::new()),
@@ -569,6 +591,9 @@ impl Database {
             dnsbl_allowlist_cache: Arc::new(DashSet::new()),
             authoritative_zones_cache: Arc::new(DashSet::new()),
             managed_zones_cache: Arc::new(DashSet::new()),
+            signed_zones_cache: Arc::new(DashSet::new()),
+            resign_pending: Arc::new(DashSet::new()),
+            resign_active: Arc::new(DashSet::new()),
             tld_owner_cache: Arc::new(DashMap::new()),
             tld_forwarder_cache: Arc::new(DashMap::new()),
             tld_ingress_cache: Arc::new(DashMap::new()),
@@ -1101,6 +1126,27 @@ impl Database {
             self.tld_owner_cache.insert(normalize_name(&tld), scope);
         }
 
+        // Zones with an active DNSSEC key.
+        //
+        // Every one of them is also marked for re-signing. The pending set lives
+        // only in memory, so a restart loses whatever was outstanding — and the
+        // mark is what withholds a stale denial proof. Without this, a mutation
+        // that landed seconds before a restart comes back as a zone that
+        // believes itself current and serves a *validly signed* proof that its
+        // own newest record does not exist, which is worse than the
+        // unauthenticated staleness this whole mechanism replaced. The same
+        // applies to anything that edited the database while the process was
+        // down. Re-signing every signed zone once at startup is cheap and makes
+        // the assumption unnecessary.
+        let mut stmt =
+            conn.prepare_cached("SELECT DISTINCT zone FROM dnssec_keys WHERE active = 1")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        for row in rows {
+            let zone = normalize_name(&row?);
+            self.signed_zones_cache.insert(zone.clone());
+            self.resign_pending.insert(zone);
+        }
+
         // Per-TLD peer forwarders.
         let mut stmt = conn
             .prepare_cached("SELECT scope_name, tld, forwarder_addr FROM scope_tld_forwarders")?;
@@ -1161,6 +1207,10 @@ impl Database {
         if let Some(zone) = extract_zone_from_name(&normalized) {
             self.managed_zones_cache.insert(zone);
         }
+        drop(conn);
+        if is_zone_content(record.record_type) {
+            self.mark_zone_resign_pending(&normalized);
+        }
         Ok(id)
     }
 
@@ -1218,6 +1268,15 @@ impl Database {
             self.managed_zones_cache.remove(&zone);
         }
 
+        drop(conn);
+        // A deletion invalidates the chain exactly as an insertion does: the
+        // removed name is still an NSEC owner, so the zone keeps asserting that
+        // a name it no longer serves exists, and the link that should now span
+        // the gap still stops short of it.
+        if count > 0 && record_type.map(is_zone_content).unwrap_or(true) {
+            self.mark_zone_resign_pending(&normalized);
+        }
+
         Ok(count)
     }
 
@@ -1249,6 +1308,334 @@ impl Database {
         )?;
         let found = stmt.exists(params![zone, pattern])?;
         Ok(found)
+    }
+
+    /// The RRSIGs at `name` that cover `covered`, ready to sit beside the RRset
+    /// they sign.
+    ///
+    /// The covered type lives inside the RRSIG's stored value rather than in a
+    /// column, so this reads every RRSIG at the name and filters in Rust. That is
+    /// the shape the storage format forces, and it is cheap in practice: the
+    /// index is on `(name, record_type)`, and the number of RRSIGs at one owner
+    /// is the number of distinct RRsets there — single digits in any real zone.
+    pub fn rrsigs_covering(&self, name: &str, covered: RecordKind) -> Result<Vec<DnsRecord>> {
+        // Exact owner only. `lookup` falls back to `*.parent` and rewrites the
+        // result's name to the queried one, so a wildcard-served name would come
+        // away carrying the wildcard's signature relabelled onto it. That
+        // signature does verify — a validator rebuilds `*.parent` from the RRSIG
+        // Labels field — but RFC 4035 §5.3.4 then requires an NSEC proving no
+        // closer match, and a positive answer built here carries none. Attaching
+        // it silently turns every wildcard-served name in a signed zone bogus.
+        let all = self.lookup_no_wildcard(name, Some(RecordKind::RRSIG))?;
+        Ok(all
+            .into_iter()
+            .filter(|r| {
+                crate::dnssec::Rrsig::parse(&r.value)
+                    .map(|sig| sig.type_covered == covered)
+                    .unwrap_or(false)
+            })
+            .collect())
+    }
+
+    /// The wildcard owner that would synthesize records for `name`, if one
+    /// exists — `*.<parent>` holding any record at all.
+    ///
+    /// RFC 4592 §2.2.1: a name a wildcard matches is *established* by it. So a
+    /// query for a type the wildcard does not carry is NODATA, not NXDOMAIN —
+    /// the name is real, it simply has no record of that type — and the DNSSEC
+    /// proof is the **wildcard's** NSEC rather than the queried name's, since
+    /// the queried name has no NSEC of its own to offer.
+    ///
+    /// Returning the owner rather than a bool is what lets the denial path find
+    /// that NSEC. Getting this wrong is not quiet under DNSSEC: an NXDOMAIN here
+    /// would need an NSEC covering `*.<parent>`, and no such record can exist
+    /// while the wildcard does, so the proof would go out one record short and
+    /// be rejected.
+    pub fn wildcard_owner_for(&self, name: &str) -> Result<Option<String>> {
+        let normalized = normalize_name(name);
+        let Some(wildcard) = make_wildcard_name(&normalized) else {
+            return Ok(None);
+        };
+        let conn = self.lock()?;
+        let found = Self::lookup_exact(&conn, &wildcard, None)?;
+        Ok((!found.is_empty()).then_some(wildcard))
+    }
+
+    /// [`Self::wildcard_owner_for`] within a network scope.
+    pub fn scoped_wildcard_owner_for(&self, scope_name: &str, name: &str) -> Option<String> {
+        let normalized = normalize_name(name);
+        let wildcard = make_wildcard_name(&normalized)?;
+        (!self
+            .lookup_scoped_no_wildcard(scope_name, &wildcard, None)
+            .is_empty())
+        .then_some(wildcard)
+    }
+
+    /// Marks the signed zone containing `name`, if any, as needing a re-sign.
+    ///
+    /// Called from every path that writes or deletes a record. A mutation to a
+    /// signed zone invalidates two things at once: the mutated RRset has no
+    /// valid signature, and — far worse — the NSEC chain still describes the
+    /// zone as it was, so a name just created falls inside some existing link's
+    /// range and the zone serves a *signed proof that its own record does not
+    /// exist*.
+    ///
+    /// Marking is cheap and unconditional; the expensive part is the re-sign,
+    /// which happens off the mutation path.
+    pub fn mark_zone_resign_pending(&self, name: &str) {
+        if let Some(zone) = self.find_signed_zone(name) {
+            self.resign_pending.insert(zone);
+        }
+    }
+
+    /// Whether `name` falls in a signed zone whose signatures cannot be trusted
+    /// right now — either stale (a mutation landed since the last pass) or
+    /// mid-rebuild (a pass is in flight and has already deleted them).
+    ///
+    /// Both answer paths consult this. A stale signature and a missing one are
+    /// the same failure to a validator — *bogus*, indistinguishable from an
+    /// attack — so both are answered unsigned instead, which is merely
+    /// *insecure*.
+    pub fn zone_signatures_stale(&self, name: &str) -> bool {
+        self.find_signed_zone(name).is_some_and(|zone| {
+            self.resign_pending.contains(&zone) || self.resign_active.contains(&zone)
+        })
+    }
+
+    /// Clears the pending mark for `zone`, at the start of a signing pass.
+    pub fn clear_zone_resign_pending(&self, zone: &str) {
+        self.resign_pending.remove(&normalize_name(zone));
+    }
+
+    /// Marks `zone` pending unconditionally, without asking whether it is signed.
+    ///
+    /// The conditional form goes through [`Self::find_signed_zone`], and a
+    /// re-mark after a *failed* pass must not depend on that: if the keys were
+    /// deleted concurrently, or the signed-zone cache is momentarily being
+    /// rebuilt, the mark would be silently dropped and the half-written zone
+    /// left with nothing scheduled to repair it.
+    pub fn force_zone_resign_pending(&self, zone: &str) {
+        self.resign_pending.insert(normalize_name(zone));
+    }
+
+    /// Marks every signed zone as needing a re-sign.
+    ///
+    /// Signatures expire — 30 days out — so a zone nobody touches still goes
+    /// bogus on a timer unless something refreshes it. This is that something,
+    /// called on a long interval; re-signing is idempotent, so a redundant pass
+    /// costs work and changes nothing.
+    pub fn mark_all_signed_zones_pending(&self) {
+        for zone in self.signed_zones_cache.iter() {
+            self.resign_pending.insert(zone.key().clone());
+        }
+    }
+
+    /// Records that a signing pass for `zone` has begun. Paired with
+    /// [`Self::end_zone_resign`], which must run on every exit including errors.
+    pub fn begin_zone_resign(&self, zone: &str) {
+        self.resign_active.insert(normalize_name(zone));
+    }
+
+    /// Records that a signing pass for `zone` has finished, successfully or not.
+    pub fn end_zone_resign(&self, zone: &str) {
+        self.resign_active.remove(&normalize_name(zone));
+    }
+
+    /// The zones currently awaiting a re-sign.
+    pub fn zones_awaiting_resign(&self) -> Vec<String> {
+        self.resign_pending
+            .iter()
+            .map(|z| z.key().clone())
+            .collect()
+    }
+
+    /// Every NSEC record in `zone` — the chain, unordered.
+    ///
+    /// Loaded whole because the covering record can only be found by comparing
+    /// in DNSSEC canonical order (RFC 4034 §6.1), which SQLite's byte collation
+    /// cannot express: an `ORDER BY name` here would return the chain in an
+    /// order that puts the apex in the wrong place. The cost is one indexed scan
+    /// of the zone's NSEC rows per proven NXDOMAIN, and the chain has one entry
+    /// per existing name.
+    pub fn zone_nsec_records(&self, zone: &str) -> Result<Vec<DnsRecord>> {
+        let apex = normalize_name(zone);
+        let pattern = format!("%.{}", like_escape(&apex));
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, name, record_type, value, ttl, priority FROM dns_records \
+             WHERE record_type = 'NSEC' AND (name = ?1 OR name LIKE ?2 ESCAPE '\\')",
+        )?;
+        let rows = stmt.query_map(params![apex, pattern], |row| {
+            Ok(DnsRecord {
+                id: Some(row.get(0)?),
+                name: row.get(1)?,
+                record_type: RecordKind::parse(&row.get::<_, String>(2)?).unwrap_or(RecordKind::A),
+                value: row.get(3)?,
+                ttl: row.get(4)?,
+                priority: row.get(5)?,
+            })
+        })?;
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(row?);
+        }
+        Ok(records)
+    }
+
+    /// Whether `name` falls inside a zone this server holds signing keys for.
+    ///
+    /// Read from the in-memory cache rather than SQLite: this is asked on every
+    /// answer that might carry a signature, and `dnssec_keys` has no index. The
+    /// cache is loaded at boot and updated by every key mutation, the same
+    /// contract the zone caches keep.
+    pub fn find_signed_zone(&self, name: &str) -> Option<String> {
+        let normalized = normalize_name(name);
+        if self.signed_zones_cache.contains(&normalized) {
+            return Some(normalized);
+        }
+        ancestor_names(&normalized)
+            .into_iter()
+            .find(|candidate| self.signed_zones_cache.contains(candidate))
+    }
+
+    /// Rebuilds the signed-zone cache from `dnssec_keys`.
+    ///
+    /// Called at boot and after every key mutation. A zone counts as signed once
+    /// it has an active key, because that is the point at which its records
+    /// acquire signatures a resolver will demand.
+    pub fn refresh_signed_zones(&self) -> Result<()> {
+        let zones: Vec<String> = {
+            let conn = self.lock()?;
+            let mut stmt =
+                conn.prepare_cached("SELECT DISTINCT zone FROM dnssec_keys WHERE active = 1")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            let mut zones = Vec::new();
+            for row in rows {
+                zones.push(normalize_name(&row?));
+            }
+            zones
+        };
+
+        // Applied as a diff rather than clear-then-fill. Readers take no lock —
+        // `find_signed_zone` is a bare DashSet lookup on the answer path — so a
+        // `clear()` opens a window in which every signed zone reads as unsigned.
+        // A mutation landing in that window asks "is this zone signed?", is told
+        // no, and never sets its re-sign mark; the zone then serves an
+        // authenticated proof that the new record does not exist. Adding first
+        // and removing after means the set is never smaller than the truth.
+        let wanted: std::collections::HashSet<&str> = zones.iter().map(String::as_str).collect();
+        for zone in &zones {
+            self.signed_zones_cache.insert(zone.clone());
+        }
+        self.signed_zones_cache
+            .retain(|zone| wanted.contains(zone.as_str()));
+        Ok(())
+    }
+
+    /// The SOA of the closest enclosing zone: the first SOA found walking from
+    /// `name` up through its ancestors, or empty if none exists.
+    ///
+    /// A negative answer must not read its SOA from the zone name that made the
+    /// server authoritative, because that name is not reliably the zone apex.
+    /// Managed zones are derived from the last two labels of a stored FQDN
+    /// ([`extract_zone_from_name`]), so storing `dns.home.` registers
+    /// `dns.home.` as a zone in its own right — *more specific* than the `home.`
+    /// that actually holds the SOA. Reading the apex from that hint finds
+    /// nothing, and the negative ships with no caching TTL for the single most
+    /// common shape there is: a host record one label under a zone apex.
+    ///
+    /// Walking up from the queried name instead is also what RFC 2308 §3 asks
+    /// for — the SOA of the zone the name belongs to — and it costs one indexed
+    /// lookup per label, on negative answers only.
+    pub fn closest_soa(&self, name: &str) -> Result<Vec<DnsRecord>> {
+        let conn = self.lock()?;
+        for candidate in ancestor_names(&normalize_name(name)) {
+            let found = Self::lookup_exact(&conn, &candidate, Some(RecordKind::SOA))?;
+            if !found.is_empty() {
+                return Ok(found);
+            }
+        }
+        Ok(Vec::new())
+    }
+
+    /// [`Self::closest_soa`] within a network scope.
+    pub fn closest_scoped_soa(&self, scope_name: &str, name: &str) -> Vec<DnsRecord> {
+        for candidate in ancestor_names(&normalize_name(name)) {
+            let found =
+                self.lookup_scoped_no_wildcard(scope_name, &candidate, Some(RecordKind::SOA));
+            if !found.is_empty() {
+                return found;
+            }
+        }
+        Vec::new()
+    }
+
+    /// Whether anything occupies `name` in the global namespace — a record at
+    /// the name itself, of any type, or a record beneath it.
+    ///
+    /// This is the existence test of RFC 1035 §3.1, and it is the only thing
+    /// separating the two negative answers an authoritative server may give.
+    /// NXDOMAIN asserts that the NAME does not exist, and is correct only when
+    /// this returns false. A name holding records of some other type exists, and
+    /// so does an empty non-terminal that merely has descendants; the answer
+    /// owed for either is NODATA — NOERROR with an empty answer section (RFC
+    /// 2308 §2.2).
+    ///
+    /// The descendant half is not an embellishment. `_tcp.example.com.` holds no
+    /// records of its own while `_https._tcp.example.com.` does, and answering
+    /// NXDOMAIN for the parent tells a resolver the child cannot exist either.
+    ///
+    /// Shares its statement with [`Self::zone_has_records`], which asks the
+    /// identical question of a zone apex; the escaping note there applies here
+    /// for the same reason, since `_` is both a LIKE wildcard and a legal label
+    /// character.
+    pub fn name_occupied(&self, name: &str) -> Result<bool> {
+        let conn = self.lock()?;
+        Self::zone_has_records_conn(&conn, &normalize_name(name))
+    }
+
+    /// [`Self::name_occupied`] within a network scope.
+    ///
+    /// Scoped records are held entirely in the in-memory cache rather than
+    /// re-queried per lookup (see [`Self::lookup_scoped_exact`], which never
+    /// falls back to SQL), so the cache is the authority on what exists and this
+    /// walks it. Keys are `<scope>:<name>:<type>`, which makes "a record at the
+    /// name" a prefix test; "a record beneath it" has to split the type off the
+    /// end first, or the suffix test would match a *type* ending in the name.
+    pub fn scoped_name_occupied(&self, scope_name: &str, name: &str) -> bool {
+        let normalized = normalize_name(name);
+        let at = format!("{}:{}:", scope_name, normalized);
+        let scope_prefix = format!("{}:", scope_name);
+        let beneath = format!(".{}", normalized);
+        self.scoped_record_cache.iter().any(|entry| {
+            let key = entry.key();
+            if key.starts_with(&at) {
+                return true;
+            }
+            let Some(rest) = key.strip_prefix(&scope_prefix) else {
+                return false;
+            };
+            let Some((record_name, _)) = rest.rsplit_once(':') else {
+                return false;
+            };
+            record_name.ends_with(&beneath)
+        })
+    }
+
+    /// Records at exactly `name`, with no wildcard fallback.
+    ///
+    /// [`Self::lookup`] substitutes the queried name onto a wildcard's results,
+    /// which is right for answering and wrong for anything that reasons about
+    /// *which owner* a record sits at. An NSEC read that way would be a proof
+    /// about `*.parent` wearing the queried name's label — a statement about a
+    /// different name entirely.
+    pub fn lookup_no_wildcard(
+        &self,
+        name: &str,
+        record_type: Option<RecordKind>,
+    ) -> Result<Vec<DnsRecord>> {
+        let conn = self.lock()?;
+        Self::lookup_exact(&conn, &normalize_name(name), record_type)
     }
 
     /// Looks up all records for a given name and optional type.
@@ -1811,6 +2198,22 @@ impl Database {
         }
 
         records
+    }
+
+    /// Scoped records at exactly `name`, with no wildcard fallback.
+    ///
+    /// Zone apex records are what need this. [`Self::lookup_scoped`] substitutes
+    /// the queried name onto a wildcard's results, so once returned a wildcard
+    /// hit is indistinguishable from a genuine apex record — and an SOA that is
+    /// not the zone's own would set the wrong negative-caching TTL for every
+    /// name beneath it.
+    pub fn lookup_scoped_no_wildcard(
+        &self,
+        scope_name: &str,
+        name: &str,
+        record_type: Option<RecordKind>,
+    ) -> Vec<DnsRecord> {
+        self.lookup_scoped_exact(scope_name, &normalize_name(name), record_type)
     }
 
     fn lookup_scoped_exact(
@@ -2972,6 +3375,18 @@ impl Database {
             ],
         )
         .context("failed to store DNSSEC key")?;
+        // The zone is signed from this moment, and the answer path reads that
+        // from the cache. Maintained here rather than in the gRPC handler so a
+        // second caller cannot acquire a key without the query path noticing —
+        // the same contract `add_record` keeps with `managed_zones_cache`.
+        //
+        // Marked for signing in the same breath. Acquiring a key flips the zone
+        // to "signed" for the answer path, which then expects signatures that do
+        // not exist yet; without the mark nothing would produce them until an
+        // operator remembered to call `SignZone` by hand.
+        let normalized = normalize_name(zone);
+        self.signed_zones_cache.insert(normalized.clone());
+        self.resign_pending.insert(normalized);
         Ok(conn.last_insert_rowid())
     }
 
@@ -3005,9 +3420,23 @@ impl Database {
     }
 
     /// Deletes a DNSSEC key by ID. Returns true if a key was deleted.
+    ///
+    /// The signed-zone cache is rebuilt rather than patched: a zone may hold
+    /// several keys (a KSK and a ZSK at minimum, and both again mid-rollover),
+    /// so removing one says nothing about whether the zone is still signed.
     pub fn delete_dnssec_key(&self, id: i64) -> Result<bool> {
-        let conn = self.lock()?;
-        let count = conn.execute("DELETE FROM dnssec_keys WHERE id = ?1", params![id])?;
+        let count = {
+            let conn = self.lock()?;
+            conn.execute("DELETE FROM dnssec_keys WHERE id = ?1", params![id])?
+        };
+        if count > 0 {
+            self.refresh_signed_zones()?;
+            // Re-sign whatever is left. A deleted key's DNSKEY and every RRSIG
+            // it produced stay published until a pass republishes the RRset from
+            // scratch, so without this a revoked key keeps being advertised and
+            // keeps validating.
+            self.mark_all_signed_zones_pending();
+        }
         Ok(count > 0)
     }
 
@@ -4283,6 +4712,48 @@ pub fn name_in_zone(name: &str, zone: &str) -> bool {
         return true;
     }
     name.ends_with(&format!(".{}", zone))
+}
+
+/// `name` followed by each of its ancestors, most specific first, stopping at
+/// the last label. `a.b.c.` yields `a.b.c.`, `b.c.`, `c.`.
+///
+/// The root is deliberately not yielded: a zone apex is a named zone, and a
+/// lookup at `.` would only ever match a root SOA this server does not serve.
+fn ancestor_names(normalized: &str) -> Vec<String> {
+    let trimmed = normalized.trim_end_matches('.');
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let mut names = vec![format!("{}.", trimmed)];
+    let mut rest = trimmed;
+    while let Some((_, parent)) = rest.split_once('.') {
+        if parent.is_empty() {
+            break;
+        }
+        names.push(format!("{}.", parent));
+        rest = parent;
+    }
+    names
+}
+
+/// [`ancestor_names`] for tests in sibling modules. The function itself stays
+/// private because the walk is an implementation detail of `closest_soa`.
+#[cfg(test)]
+pub fn ancestor_names_for_test(name: &str) -> Vec<String> {
+    ancestor_names(&normalize_name(name))
+}
+
+/// Whether a record type is zone *content* rather than a product of signing it.
+///
+/// A signing pass writes DNSKEY, NSEC and RRSIG records, and those writes go
+/// through the same `add_record`/`remove_records` that mark a zone as needing a
+/// re-sign. Without this distinction, signing a zone would dirty it again on its
+/// way out and the re-sign loop would never stop.
+fn is_zone_content(kind: RecordKind) -> bool {
+    !matches!(
+        kind,
+        RecordKind::DNSKEY | RecordKind::NSEC | RecordKind::RRSIG
+    )
 }
 
 /// Escapes a string for use inside a SQL `LIKE` pattern with `ESCAPE '\'`.

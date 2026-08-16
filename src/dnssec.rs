@@ -23,6 +23,8 @@ use anyhow::{Result, bail};
 use ring::rand::SystemRandom;
 use ring::signature::{self, KeyPair as _};
 use sha2::{Digest, Sha256};
+use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// DNSSEC algorithm identifiers.
@@ -430,6 +432,227 @@ fn character_strings(value: &str) -> Vec<u8> {
     out
 }
 
+/// Compares two owner names in DNSSEC canonical order (RFC 4034 §6.1).
+///
+/// Names sort as label sequences read **right to left**, each label compared as
+/// unsigned bytes with ASCII case folded away. This is not the same as sorting
+/// the strings: byte-wise, `a.example.com.` precedes `example.com.`, while
+/// canonically the apex comes first because its label sequence is a suffix of
+/// the other's. Getting this wrong does not fail loudly — it builds an NSEC
+/// chain whose ranges do not tile the zone, so a validator finds no record
+/// covering the name it asked about and calls a correct denial bogus.
+pub fn canonical_name_cmp(a: &str, b: &str) -> Ordering {
+    let a_labels: Vec<&str> = a.trim_end_matches('.').split('.').rev().collect();
+    let b_labels: Vec<&str> = b.trim_end_matches('.').split('.').rev().collect();
+    for (x, y) in a_labels.iter().zip(b_labels.iter()) {
+        // The root's empty label sorts before everything, which falls out of
+        // comparing an empty byte slice.
+        let ord = x
+            .bytes()
+            .map(|c| c.to_ascii_lowercase())
+            .cmp(y.bytes().map(|c| c.to_ascii_lowercase()));
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+    a_labels.len().cmp(&b_labels.len())
+}
+
+/// Encodes a set of RR type codes as an RFC 4034 §4.1.2 type bit map.
+///
+/// The wire form is a sequence of window blocks, each covering 256 type codes:
+/// a one-byte window number (the code's high byte), a one-byte length, then that
+/// many bytes of bitmap in which bit 0 of byte 0 is the window's lowest code.
+/// Windows with no types set are omitted entirely, and each window's length is
+/// trimmed to its highest set byte — a trailing zero byte would encode the same
+/// set as different bytes, and the signature is over the bytes.
+///
+/// Windows must be emitted in increasing order, and this sorts to guarantee it:
+/// a validator comparing our bitmap against its own reconstruction compares
+/// bytes, so "same set, different order" is a verification failure.
+pub fn encode_type_bitmap(types: &[u16]) -> Vec<u8> {
+    let mut windows: BTreeMap<u8, [u8; 32]> = BTreeMap::new();
+    for &code in types {
+        let window = (code >> 8) as u8;
+        let lo = (code & 0xff) as u8;
+        let block = windows.entry(window).or_insert([0u8; 32]);
+        // Bit 0 is the HIGH bit of the byte (RFC 4034 §4.1.2), not the low one.
+        block[(lo / 8) as usize] |= 0x80 >> (lo % 8);
+    }
+
+    let mut out = Vec::new();
+    for (window, block) in windows {
+        let len = match block.iter().rposition(|b| *b != 0) {
+            Some(last) => last + 1,
+            None => continue,
+        };
+        out.push(window);
+        // A window length is one byte and never exceeds 32 by construction.
+        out.push(len as u8);
+        out.extend_from_slice(&block[..len]);
+    }
+    out
+}
+
+/// The stored string form of an NSEC record: `"<next_owner> <TYPE> <TYPE> ..."`.
+///
+/// Types are stored by mnemonic rather than by code because every other stored
+/// value in this database is human-legible and an operator reading a zone dump
+/// should not have to decode `47` — and because [`RecordKind::parse`] already
+/// round-trips the mnemonics, so nothing new has to be kept in step.
+///
+/// A type this server has no [`RecordKind`] for cannot appear here, which is
+/// exactly right: the bitmap must list the types that exist at the name, and a
+/// type it cannot store cannot exist at one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Nsec {
+    pub next_owner: String,
+    pub types: Vec<RecordKind>,
+}
+
+impl Nsec {
+    /// Renders the stored form. Types are emitted in ascending wire-code order
+    /// so a chain rebuilt from the same zone is byte-identical to the last one —
+    /// a re-sign that reordered the mnemonics would rewrite every NSEC RDATA and
+    /// invalidate every NSEC signature for no reason.
+    pub fn to_value(&self) -> String {
+        let mut types = self.types.clone();
+        types.sort_by_key(RecordKind::wire_type);
+        types.dedup();
+        let mut out = String::with_capacity(self.next_owner.len() + 8 * types.len());
+        out.push_str(&self.next_owner);
+        for t in types {
+            out.push(' ');
+            out.push_str(t.as_str());
+        }
+        out
+    }
+
+    /// Parses the stored form. An unrecognized mnemonic is an error rather than
+    /// a skip: dropping it would silently narrow the bitmap, and a bitmap that
+    /// omits a type present at the name is a *proof that the type is absent* —
+    /// the validator would reject a perfectly good record as forged.
+    pub fn parse(value: &str) -> Result<Self> {
+        let mut fields = value.split_whitespace();
+        let next_owner = fields
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("NSEC value is empty"))?
+            .to_string();
+        let mut types = Vec::new();
+        for field in fields {
+            let kind = RecordKind::parse(field)
+                .ok_or_else(|| anyhow::anyhow!("unknown type {} in NSEC bitmap", field))?;
+            types.push(kind);
+        }
+        Ok(Self { next_owner, types })
+    }
+
+    /// Canonical RDATA: the uncompressed next owner name followed by the bitmap.
+    fn rdata(&self) -> Option<Vec<u8>> {
+        let mut types: Vec<u16> = self.types.iter().map(RecordKind::wire_type).collect();
+        types.sort_unstable();
+        types.dedup();
+        let mut out = canonical_name(&self.next_owner)?;
+        out.extend_from_slice(&encode_type_bitmap(&types));
+        Some(out)
+    }
+}
+
+/// Whether the NSEC at `owner`, pointing at `next`, proves `name` absent.
+///
+/// The range is the open interval `(owner, next)` in canonical order. The last
+/// NSEC in a chain wraps — its next owner is the apex, which sorts *before* it —
+/// and that entry covers everything after `owner` as well as everything before
+/// `next`, which is how the ring closes with no gap.
+///
+/// A name equal to `owner` is deliberately **not** covered: that name exists,
+/// and the record at it is a positive statement about it rather than a denial.
+pub fn nsec_covers(owner: &str, next: &str, name: &str) -> bool {
+    if canonical_name_cmp(next, owner) == Ordering::Greater {
+        canonical_name_cmp(owner, name) == Ordering::Less
+            && canonical_name_cmp(name, next) == Ordering::Less
+    } else {
+        // Wrapped: from `owner` to the end of the zone, and on from the apex.
+        canonical_name_cmp(owner, name) == Ordering::Less
+            || canonical_name_cmp(name, next) == Ordering::Less
+    }
+}
+
+/// Builds the NSEC chain for a zone from the records it holds.
+///
+/// Returns one `(owner, Nsec)` per name that exists in the zone, in canonical
+/// order, each pointing at the next — the last wrapping back to the apex so the
+/// ranges tile the whole name space with no gap.
+///
+/// Three things this has to get right, none of them optional:
+///
+/// - **Empty non-terminals get no NSEC.** RFC 4035 §2.3 gives one to "each owner
+///   name in the zone that has authoritative data or a delegation point NS
+///   RRset", and an ENT has neither; the same section forbids an NSEC being "the
+///   only RRset at any particular owner name", which is exactly what an ENT's
+///   would be. RFC 4034 §4.1.1 says the same from the other end — the Next
+///   Domain field names the next owner *with authoritative data*. Inserting ENTs
+///   is an NSEC**3** rule (RFC 5155 §7.1), not an NSEC one, and doing it here
+///   inflates every proof with links a validator is told to ignore. An ENT's
+///   NODATA is proved by the NSEC that covers it instead.
+/// - **Every NSEC bitmap includes NSEC and RRSIG**, because the chain adds both
+///   to every name it covers. A bitmap that omits them denies the very records
+///   carrying the denial.
+/// - **The apex additionally lists SOA and DNSKEY** when they are present, which
+///   they are by the time a zone is being signed. These fall out of reading the
+///   real records rather than being special-cased.
+///
+/// RRSIG rows are ignored as *input* — they are signatures over the set, not
+/// members of it — but RRSIG is still asserted in every bitmap, since signing
+/// this chain is what puts one at each name. ANAME is dropped from the bitmap
+/// too: it is a draft private-use code, and advertising it in a chain a
+/// validator treats as exhaustive claims a type no resolver can ask for.
+pub fn build_nsec_chain(zone: &str, records: &[DnsRecord]) -> Vec<(String, Nsec)> {
+    let apex = crate::db::normalize_name(zone);
+
+    // Types present at each name that actually holds records.
+    let mut by_name: BTreeMap<String, Vec<RecordKind>> = BTreeMap::new();
+    for record in records {
+        let name = crate::db::normalize_name(&record.name);
+        if !crate::db::name_in_zone(&name, &apex) {
+            continue;
+        }
+        match record.record_type {
+            // Not a member of any RRset it might be confused with, and never a
+            // reason for a name to exist on its own.
+            RecordKind::RRSIG | RecordKind::NSEC => {}
+            // A draft private-use code with no wire presence. Claiming it in a
+            // bitmap advertises a type nothing can query; the name still enters
+            // the chain, because the ANAME is authoritative data.
+            RecordKind::ANAME => {
+                by_name.entry(name).or_default();
+            }
+            kind => by_name.entry(name).or_default().push(kind),
+        }
+    }
+
+    // Only names with authoritative data are chained (RFC 4035 §2.3), so no
+    // ancestor walk: an empty non-terminal is deliberately absent and is proved
+    // by the link that covers it.
+    let mut names = by_name;
+    // The apex exists whether or not anything was stored at it.
+    names.entry(apex.clone()).or_default();
+
+    let mut ordered: Vec<String> = names.keys().cloned().collect();
+    ordered.sort_by(|a, b| canonical_name_cmp(a, b));
+
+    let mut chain = Vec::with_capacity(ordered.len());
+    for (i, owner) in ordered.iter().enumerate() {
+        // Wrap: the last name's next owner is the apex, closing the ring.
+        let next_owner = ordered.get(i + 1).unwrap_or(&ordered[0]).clone();
+        let mut types = names.get(owner).cloned().unwrap_or_default();
+        types.push(RecordKind::NSEC);
+        types.push(RecordKind::RRSIG);
+        chain.push((owner.clone(), Nsec { next_owner, types }));
+    }
+    chain
+}
+
 /// Encodes a stored record's value as canonical-form RDATA (RFC 4034 §6.2).
 ///
 /// Returns `None` for a record whose stored value cannot be expressed as wire
@@ -566,10 +789,15 @@ pub fn canonical_rdata(record: &DnsRecord) -> Option<Vec<u8>> {
             let rrsig = Rrsig::parse(value).ok()?;
             out.extend_from_slice(&rrsig.rdata()?);
         }
-        // ANAME is resolved at query time and never appears on the wire; NSEC,
-        // NSEC3 and NSEC3PARAM are not generated by this server, so there is no
-        // stored format to encode. Signing any of them would mean inventing one.
-        RecordKind::ANAME | RecordKind::NSEC | RecordKind::NSEC3 | RecordKind::NSEC3PARAM => {
+        RecordKind::NSEC => {
+            let nsec = Nsec::parse(value).ok()?;
+            out.extend_from_slice(&nsec.rdata()?);
+        }
+        // ANAME is resolved at query time and never appears on the wire. NSEC3
+        // and NSEC3PARAM are not generated by this server — denial of existence
+        // here is plain NSEC — so there is no stored format to encode, and
+        // signing one would mean inventing it.
+        RecordKind::ANAME | RecordKind::NSEC3 | RecordKind::NSEC3PARAM => {
             return None;
         }
     }
@@ -989,14 +1217,15 @@ mod tests {
 
     /// The types this server never generates have no stored wire format, so
     /// they must be skipped rather than approximated.
+    ///
+    /// NSEC is deliberately absent from this list. It used to be here, and
+    /// stopped belonging when the signer began building and signing the denial
+    /// chain: a type the server now generates and must sign is a type it has to
+    /// be able to encode. Keeping it would have asserted the property against
+    /// the one member of the set that no longer has it.
     #[test]
     fn canonical_rdata_refuses_types_it_cannot_encode() {
-        for kind in [
-            RecordKind::NSEC,
-            RecordKind::NSEC3,
-            RecordKind::NSEC3PARAM,
-            RecordKind::ANAME,
-        ] {
+        for kind in [RecordKind::NSEC3, RecordKind::NSEC3PARAM, RecordKind::ANAME] {
             let rec = record("example.com.", kind, "whatever");
             assert!(
                 canonical_rdata(&rec).is_none(),
@@ -1263,5 +1492,383 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    // ================================================================
+    // NSEC: bitmap, canonical ordering, chain
+    //
+    // Every expectation here is written out longhand rather than compared
+    // against another encoder. A bitmap checked against the function that
+    // produced it proves only that the function is deterministic; what has to
+    // hold is that the bytes match RFC 4034, because a validator reconstructs
+    // them independently and compares.
+    // ================================================================
+
+    /// RFC 4034 §4.1.2: window byte, length byte, then bitmap bytes in which
+    /// bit 0 is the HIGH bit. A (RFC code 1) is window 0, byte 0, bit 1 → 0x40.
+    #[test]
+    fn type_bitmap_sets_the_high_bit_first() {
+        assert_eq!(encode_type_bitmap(&[1]), vec![0x00, 0x01, 0x40]);
+        // Type 0 would be bit 0 of byte 0 — the top bit.
+        assert_eq!(encode_type_bitmap(&[0]), vec![0x00, 0x01, 0x80]);
+        // A (1), NS (2) and SOA (6) share byte 0: 0100_0010 | 0000_0010 = 0x62.
+        assert_eq!(encode_type_bitmap(&[1, 2, 6]), vec![0x00, 0x01, 0x62]);
+    }
+
+    /// The example from RFC 4034 §4.3: A, MX, RRSIG, NSEC — codes 1, 15, 46, 47.
+    /// Byte 0 holds A; byte 1 holds MX (15 → bit 7 of byte 1 → 0x01); byte 5
+    /// holds RRSIG (46 → bit 6) and NSEC (47 → bit 7) → 0x03.
+    #[test]
+    fn type_bitmap_matches_the_rfc_worked_example() {
+        assert_eq!(
+            encode_type_bitmap(&[1, 15, 46, 47]),
+            vec![0x00, 0x06, 0x40, 0x01, 0x00, 0x00, 0x00, 0x03],
+        );
+    }
+
+    /// Windows with nothing set are omitted, high windows are emitted in
+    /// ascending order, and each window is trimmed to its highest set byte.
+    #[test]
+    fn type_bitmap_omits_empty_windows_and_trims() {
+        // URI is 256 → window 1, byte 0, bit 0 → 0x80. A is window 0.
+        assert_eq!(
+            encode_type_bitmap(&[256, 1]),
+            vec![0x00, 0x01, 0x40, 0x01, 0x01, 0x80],
+            "windows ascend regardless of input order, and neither is padded"
+        );
+        assert!(encode_type_bitmap(&[]).is_empty());
+    }
+
+    /// RFC 4034 §6.1 sorts label sequences right to left, so a zone apex
+    /// precedes its own children — the reverse of a plain string sort, which is
+    /// what the signing loop uses for reproducibility and what would build a
+    /// chain whose ranges do not tile the zone.
+    #[test]
+    fn canonical_order_is_not_string_order() {
+        let mut names = vec![
+            "z.sub.example.com.".to_string(),
+            "a.example.com.".to_string(),
+            "example.com.".to_string(),
+            "sub.example.com.".to_string(),
+        ];
+        names.sort_by(|a, b| canonical_name_cmp(a, b));
+        assert_eq!(
+            names,
+            vec![
+                "example.com.",
+                "a.example.com.",
+                "sub.example.com.",
+                "z.sub.example.com.",
+            ],
+        );
+
+        // The control: plain string order really does disagree, so this test is
+        // not merely restating a sort that would have happened anyway.
+        let mut byte_order = names.clone();
+        byte_order.sort();
+        assert_ne!(byte_order, names);
+    }
+
+    /// Case folds away, and a name is never equal to a different name.
+    #[test]
+    fn canonical_order_folds_case() {
+        assert_eq!(
+            canonical_name_cmp("WWW.Example.COM.", "www.example.com."),
+            Ordering::Equal
+        );
+        assert_eq!(
+            canonical_name_cmp("a.example.com.", "b.example.com."),
+            Ordering::Less
+        );
+    }
+
+    fn nsec_record(name: &str, kind: RecordKind) -> DnsRecord {
+        record(name, kind, "192.0.2.1")
+    }
+
+    /// The chain covers every name, in canonical order, and the last entry wraps
+    /// to the apex so the ranges tile the zone with no gap.
+    #[test]
+    fn nsec_chain_is_canonically_ordered_and_wraps() {
+        let records = vec![
+            nsec_record("example.com.", RecordKind::SOA),
+            nsec_record("b.example.com.", RecordKind::A),
+            nsec_record("a.example.com.", RecordKind::A),
+        ];
+        let chain = build_nsec_chain("example.com.", &records);
+        let owners: Vec<&str> = chain.iter().map(|(o, _)| o.as_str()).collect();
+        assert_eq!(
+            owners,
+            vec!["example.com.", "a.example.com.", "b.example.com."]
+        );
+
+        assert_eq!(chain[0].1.next_owner, "a.example.com.");
+        assert_eq!(chain[1].1.next_owner, "b.example.com.");
+        assert_eq!(
+            chain[2].1.next_owner, "example.com.",
+            "the last name wraps to the apex, closing the ring"
+        );
+    }
+
+    /// Every bitmap asserts NSEC and RRSIG, because signing the chain puts both
+    /// at every name it covers. A bitmap that omitted them would deny the very
+    /// records carrying the denial.
+    #[test]
+    fn every_nsec_bitmap_claims_nsec_and_rrsig() {
+        let records = vec![nsec_record("a.example.com.", RecordKind::A)];
+        let chain = build_nsec_chain("example.com.", &records);
+        for (owner, nsec) in &chain {
+            assert!(
+                nsec.types.contains(&RecordKind::NSEC),
+                "{owner} bitmap omits NSEC"
+            );
+            assert!(
+                nsec.types.contains(&RecordKind::RRSIG),
+                "{owner} bitmap omits RRSIG"
+            );
+        }
+        // The control: a type that is genuinely absent is not claimed.
+        let a = chain
+            .iter()
+            .find(|(o, _)| o == "a.example.com.")
+            .expect("a");
+        assert!(a.1.types.contains(&RecordKind::A));
+        assert!(!a.1.types.contains(&RecordKind::MX));
+    }
+
+    /// Empty non-terminals get **no** NSEC, and are still covered.
+    ///
+    /// RFC 4035 §2.3 gives an NSEC to "each owner name in the zone that has
+    /// authoritative data or a delegation point NS RRset" — an ENT has neither —
+    /// and forbids an NSEC being "the only RRset at any particular owner name",
+    /// which is exactly what an ENT's would be. RFC 4034 §4.1.1 agrees from the
+    /// other end: Next Domain names the next owner *with authoritative data*.
+    /// Inserting ENTs is an NSEC**3** rule (RFC 5155 §7.1).
+    ///
+    /// The chain must still leave no hole: the ENT is covered by the link that
+    /// spans it, which is what proves NODATA for it.
+    #[test]
+    fn empty_non_terminals_get_no_nsec_but_stay_covered() {
+        let records = vec![nsec_record("_https._tcp.a.example.com.", RecordKind::TLSA)];
+        let chain = build_nsec_chain("example.com.", &records);
+        let owners: Vec<&str> = chain.iter().map(|(o, _)| o.as_str()).collect();
+        assert_eq!(
+            owners,
+            vec!["example.com.", "_https._tcp.a.example.com."],
+            "only names with authoritative data are chained"
+        );
+
+        // The ENTs are covered rather than chained — no gap, no link of their own.
+        for ent in ["a.example.com.", "_tcp.a.example.com."] {
+            let covering = chain
+                .iter()
+                .filter(|(owner, nsec)| nsec_covers(owner, &nsec.next_owner, ent))
+                .count();
+            assert_eq!(covering, 1, "{ent} must be covered by exactly one link");
+        }
+    }
+
+    /// ANAME is a draft private-use code with no wire presence, so it is never
+    /// claimed in a bitmap — a chain a validator treats as exhaustive must not
+    /// advertise a type nothing can query. The name still enters the chain,
+    /// because an ANAME is authoritative data.
+    #[test]
+    fn aname_is_chained_but_never_claimed_in_the_bitmap() {
+        let records = vec![
+            nsec_record("example.com.", RecordKind::SOA),
+            record("www.example.com.", RecordKind::ANAME, "target.example.com."),
+        ];
+        let chain = build_nsec_chain("example.com.", &records);
+        let www = chain
+            .iter()
+            .find(|(o, _)| o == "www.example.com.")
+            .expect("the ANAME name is in the chain");
+        assert!(!www.1.types.contains(&RecordKind::ANAME));
+
+        // The control: a real type at the same name IS claimed.
+        let records = vec![
+            nsec_record("example.com.", RecordKind::SOA),
+            nsec_record("www.example.com.", RecordKind::A),
+        ];
+        let chain = build_nsec_chain("example.com.", &records);
+        let www = chain
+            .iter()
+            .find(|(o, _)| o == "www.example.com.")
+            .expect("www");
+        assert!(www.1.types.contains(&RecordKind::A));
+    }
+
+    /// Names outside the zone are not chained, and stored RRSIG/NSEC rows are not
+    /// mistaken for reasons a name exists.
+    #[test]
+    fn nsec_chain_stops_at_the_zone_boundary() {
+        let records = vec![
+            nsec_record("a.example.com.", RecordKind::A),
+            nsec_record("evil.notexample.com.", RecordKind::A),
+            record(
+                "a.example.com.",
+                RecordKind::RRSIG,
+                "A 15 3 300 2 1 1 example.com. AA==",
+            ),
+        ];
+        let chain = build_nsec_chain("example.com.", &records);
+        let owners: Vec<&str> = chain.iter().map(|(o, _)| o.as_str()).collect();
+        assert_eq!(owners, vec!["example.com.", "a.example.com."]);
+
+        let a = chain
+            .iter()
+            .find(|(o, _)| o == "a.example.com.")
+            .expect("a");
+        // RRSIG is claimed because the chain adds one, not because a row existed.
+        assert!(a.1.types.contains(&RecordKind::A));
+    }
+
+    /// The stored form round-trips, and types are emitted in wire-code order so a
+    /// rebuilt chain is byte-identical rather than merely equivalent.
+    #[test]
+    fn nsec_value_round_trips_in_wire_code_order() {
+        let nsec = Nsec {
+            next_owner: "b.example.com.".to_string(),
+            types: vec![RecordKind::RRSIG, RecordKind::A, RecordKind::NSEC],
+        };
+        assert_eq!(nsec.to_value(), "b.example.com. A RRSIG NSEC");
+
+        let parsed = Nsec::parse(&nsec.to_value()).expect("parse");
+        assert_eq!(parsed.next_owner, "b.example.com.");
+        assert_eq!(
+            parsed.rdata(),
+            nsec.rdata(),
+            "the round trip is byte-identical, not merely equal as a set"
+        );
+    }
+
+    /// An unknown mnemonic is refused rather than dropped. Dropping it would
+    /// narrow the bitmap, and a narrowed bitmap is a signed proof that a type
+    /// present at the name is absent — the validator rejects a good record.
+    #[test]
+    fn nsec_parse_refuses_an_unknown_type() {
+        assert!(Nsec::parse("b.example.com. A WAT").is_err());
+        assert!(Nsec::parse("b.example.com. A RRSIG").is_ok());
+    }
+
+    /// The covering range is open at both ends, and the wrapping entry closes
+    /// the ring. Without the wrap arm, every name sorting after the zone's last
+    /// name would be covered by nothing and its denial would be unprovable.
+    #[test]
+    fn nsec_covers_the_open_range_and_wraps() {
+        // A normal link: (a, c) covers b but neither endpoint.
+        assert!(nsec_covers(
+            "a.example.com.",
+            "c.example.com.",
+            "b.example.com."
+        ));
+        assert!(!nsec_covers(
+            "a.example.com.",
+            "c.example.com.",
+            "a.example.com."
+        ));
+        assert!(!nsec_covers(
+            "a.example.com.",
+            "c.example.com.",
+            "c.example.com."
+        ));
+        assert!(!nsec_covers(
+            "a.example.com.",
+            "c.example.com.",
+            "d.example.com."
+        ));
+
+        // The wrapping link: last name -> apex covers everything past the last.
+        assert!(nsec_covers(
+            "z.example.com.",
+            "example.com.",
+            "zz.example.com."
+        ));
+        // ...and NOT a name sorting between the apex and the last name.
+        //
+        // The apex is the first name in the zone's canonical ordering, so
+        // nothing in-zone sorts before it and the wrap's range is "after the
+        // last name" alone. RFC 4035 §2 defines coverage as *after the owner
+        // and before the next owner*; reading the wrap as also covering
+        // `a.example.com.` would have this link claim a name absent that the
+        // apex's own link is responsible for, and a validator handed that proof
+        // rejects the response rather than accepting a wider one.
+        assert!(!nsec_covers(
+            "z.example.com.",
+            "example.com.",
+            "a.example.com."
+        ));
+        // The link that really covers it — so the ring is shown to be tiled,
+        // rather than this only asserting where the name is *not* proved.
+        assert!(nsec_covers(
+            "example.com.",
+            "z.example.com.",
+            "a.example.com."
+        ));
+        assert!(!nsec_covers(
+            "z.example.com.",
+            "example.com.",
+            "example.com."
+        ));
+    }
+
+    /// The chain a real zone produces actually tiles it: every name that does
+    /// not exist is covered by exactly one link.
+    ///
+    /// This is the property the whole design turns on, and it is the one a
+    /// hand-written `<` comparison silently breaks — so it is asserted over the
+    /// generated chain rather than over hand-picked pairs.
+    #[test]
+    fn the_generated_chain_covers_every_absent_name() {
+        let records = vec![
+            nsec_record("example.com.", RecordKind::SOA),
+            nsec_record("a.example.com.", RecordKind::A),
+            nsec_record("m.example.com.", RecordKind::A),
+            nsec_record("z.example.com.", RecordKind::A),
+        ];
+        let chain = build_nsec_chain("example.com.", &records);
+
+        for absent in [
+            "0.example.com.",
+            "b.example.com.",
+            "n.example.com.",
+            "zz.example.com.",
+            "deep.sub.example.com.",
+        ] {
+            let covering = chain
+                .iter()
+                .filter(|(owner, nsec)| nsec_covers(owner, &nsec.next_owner, absent))
+                .count();
+            assert_eq!(covering, 1, "{absent} must be covered by exactly one NSEC");
+        }
+
+        // The control: a name that DOES exist is covered by none of them, which
+        // is what stops the chain proving a real name absent.
+        for present in ["example.com.", "a.example.com.", "m.example.com."] {
+            let covering = chain
+                .iter()
+                .filter(|(owner, nsec)| nsec_covers(owner, &nsec.next_owner, present))
+                .count();
+            assert_eq!(covering, 0, "{present} exists and must be covered by none");
+        }
+    }
+
+    /// An NSEC can now be signed, which is the whole point of giving it a
+    /// canonical encoding — `canonical_rdata` returning `None` is what used to
+    /// make `sign_rrset` refuse it.
+    #[test]
+    fn an_nsec_record_is_now_canonically_encodable() {
+        let nsec = record(
+            "example.com.",
+            RecordKind::NSEC,
+            "a.example.com. A SOA RRSIG NSEC",
+        );
+        let encoded = canonical_rdata(&nsec).expect("NSEC must encode");
+        let mut expected = canonical_name("a.example.com.").expect("name");
+        expected.extend_from_slice(&encode_type_bitmap(&[1, 6, 46, 47]));
+        assert_eq!(encoded, expected);
+
+        // The control: NSEC3 still has no stored format and must stay refused.
+        assert!(canonical_rdata(&record("example.com.", RecordKind::NSEC3, "whatever")).is_none());
     }
 }

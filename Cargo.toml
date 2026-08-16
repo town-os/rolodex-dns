@@ -52,6 +52,7 @@ include = [
     "/CHANGELOG.md",
     "/DESIGN.md",
     "/CLAUDE.md",
+    "/TOWNOS_CONTRACT.md",
     "/*.zh-TW.md",
     "/*.zh-CN.md",
     "/*.es-ES.md",

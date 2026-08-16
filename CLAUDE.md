@@ -15,8 +15,9 @@ This file is the rules for working on it. It is deliberately short: **what the s
 | `CONFIGURATION.md` | Task-oriented configuration guide — worked deployment shapes, what needs a restart, troubleshooting by symptom. |
 | `CHANGELOG.md` | Release history. |
 | `CLAUDE.md` | This file. Development rules only. |
+| `TOWNOS_CONTRACT.md` | Everything that crosses the boundary with Town OS, the install image and ttyforce, in both directions. Verified by `make check-townos-sync`. Read it before changing the gRPC surface, the forwarder grammar, or any address written in more than one repository. |
 
-Each of the five has a Traditional Chinese (`.zh-TW.md`), Simplified Chinese (`.zh-CN.md`), European Spanish (`.es-ES.md`), Mexican Spanish (`.es-MX.md`) and Japanese (`.ja-JP.md`) translation alongside it. **English is the source of truth**: change it first, and treat the translations as needing a follow-up rather than as a second place to edit. Nothing verifies that they agree — `tests/promql_docs_test.rs` reads only the English `README.md` and `DESIGN.md`, so a PromQL block or a family count inside a translation is documentation, not a checked assertion.
+Each of the six has a Traditional Chinese (`.zh-TW.md`), Simplified Chinese (`.zh-CN.md`), European Spanish (`.es-ES.md`), Mexican Spanish (`.es-MX.md`) and Japanese (`.ja-JP.md`) translation alongside it. **English is the source of truth**: change it first, and treat the translations as needing a follow-up rather than as a second place to edit. Nothing verifies that they agree — `tests/promql_docs_test.rs` reads only the English `README.md` and `DESIGN.md`, so a PromQL block or a family count inside a translation is documentation, not a checked assertion.
 
 ## Rules
 

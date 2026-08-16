@@ -15,8 +15,9 @@ Este archivo contiene las reglas para trabajar en él. Es deliberadamente breve:
 | `CONFIGURATION.md` | Guía de configuración orientada a tareas: formas de despliegue resueltas, qué exige reiniciar y resolución de problemas por síntoma. |
 | `CHANGELOG.md` | Historial de versiones. |
 | `CLAUDE.md` | Este archivo. Solo reglas de desarrollo. |
+| `TOWNOS_CONTRACT.md` | Todo lo que cruza la frontera con Town OS, la imagen de instalación y ttyforce, en ambas direcciones. Verificado por `make check-townos-sync`. Léelo antes de cambiar la superficie gRPC, la gramática de reenviadores o cualquier dirección escrita en más de un repositorio. |
 
-Cada uno de los cinco tiene junto a él una traducción al chino tradicional (`.zh-TW.md`), al chino simplificado (`.zh-CN.md`), al español de España (`.es-ES.md`), al español de México (`.es-MX.md`) y al japonés (`.ja-JP.md`). **El inglés es la fuente de la verdad**: cámbialo primero y trata las traducciones como algo que hay que actualizar después, no como un segundo lugar donde editar. Nada verifica que coincidan: `tests/promql_docs_test.rs` lee únicamente el `README.md` y el `DESIGN.md` en inglés, así que un bloque de PromQL o un recuento de familias dentro de una traducción es documentación, no una aserción revisada.
+Cada uno de los seis tiene junto a él una traducción al chino tradicional (`.zh-TW.md`), al chino simplificado (`.zh-CN.md`), al español de España (`.es-ES.md`), al español de México (`.es-MX.md`) y al japonés (`.ja-JP.md`). **El inglés es la fuente de la verdad**: cámbialo primero y trata las traducciones como algo que hay que actualizar después, no como un segundo lugar donde editar. Nada verifica que coincidan: `tests/promql_docs_test.rs` lee únicamente el `README.md` y el `DESIGN.md` en inglés, así que un bloque de PromQL o un recuento de familias dentro de una traducción es documentación, no una aserción revisada.
 
 ## Reglas
 

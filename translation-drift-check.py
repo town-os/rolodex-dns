@@ -20,7 +20,7 @@ import sys
 
 LOCALES = ['zh-TW', 'zh-CN', 'es-ES', 'es-MX', 'ja-JP']
 DOCUMENTS = ['CHANGELOG.md', 'DESIGN.md', 'README.md',
-             'CONFIGURATION.md', 'CLAUDE.md']
+             'CONFIGURATION.md', 'CLAUDE.md', 'TOWNOS_CONTRACT.md']
 
 
 def sections(path):

@@ -807,6 +807,12 @@ pub enum AnswerSource {
     Refused,
     /// SERVFAIL, FORMERR, NOTIMP, BADVERS: the query never reached a lookup.
     Error,
+    /// Authoritative NODATA from a managed, authoritative, or owned zone: the
+    /// name exists, the queried type does not. Distinct from
+    /// [`Self::AuthoritativeNxdomain`] because the two make opposite assertions
+    /// about the name, and only one of them lets a resolver conclude anything
+    /// about the names beneath it.
+    AuthoritativeNodata,
 }
 
 /// Label values for `dnssec_validate::Verdict`, in the order its `index()`
@@ -839,7 +845,37 @@ pub const ANSWER_SOURCES: &[&str] = &[
     "authoritative_nxdomain",
     "refused",
     "error",
+    "authoritative_nodata",
 ];
+
+/// Label values for `rolodex_dns_authoritative_negative_total`, in the order the
+/// `NEGATIVE_*` constants below index them.
+///
+/// This family answers a question `rolodex_dns_answers_total` cannot: *why* a
+/// name this server is authoritative for went unanswered. The answer-source
+/// label says which stage produced the negative; these say what the stage found.
+pub const NEGATIVE_REASONS: &[&str] = &[
+    "name_absent",
+    "type_absent",
+    "unsupported_type",
+    "scope_hidden",
+];
+
+/// Nothing exists at the queried name or beneath it — a true NXDOMAIN.
+pub const NEGATIVE_NAME_ABSENT: usize = 0;
+/// The name exists with records of other types, or as an empty non-terminal.
+/// NODATA.
+pub const NEGATIVE_TYPE_ABSENT: usize = 1;
+/// The query type maps to no storable record kind, so no record of it can ever
+/// exist here. NODATA when the name exists, NXDOMAIN when it does not — this
+/// reason is recorded either way, because it is the one case where the negative
+/// is a property of the QUESTION rather than of the zone, and an operator
+/// watching it is watching for a type the server ought to support.
+pub const NEGATIVE_UNSUPPORTED_TYPE: usize = 2;
+/// The name falls under a TLD owned by a different network scope, and is hidden
+/// from the querying scope by the split-horizon partition. Always NXDOMAIN: the
+/// name may well exist, and saying so is precisely what the partition forbids.
+pub const NEGATIVE_SCOPE_HIDDEN: usize = 3;
 
 impl AnswerSource {
     /// Index into [`ANSWER_SOURCES`].
@@ -857,6 +893,7 @@ impl AnswerSource {
             AnswerSource::AuthoritativeNxdomain => 9,
             AnswerSource::Refused => 10,
             AnswerSource::Error => 11,
+            AnswerSource::AuthoritativeNodata => 12,
         }
     }
 
@@ -876,6 +913,7 @@ impl AnswerSource {
             8 => AnswerSource::Upstream,
             9 => AnswerSource::AuthoritativeNxdomain,
             10 => AnswerSource::Refused,
+            12 => AnswerSource::AuthoritativeNodata,
             _ => AnswerSource::Error,
         }
     }
@@ -1109,6 +1147,11 @@ pub struct Metrics {
     pub queries_by_tld: DynCounterVec,
     /// Which resolution stage produced the answer.
     pub answer_source: CounterVec,
+    /// Why a name this server is authoritative for went unanswered.
+    pub authoritative_negative: CounterVec,
+    /// Negatives that went out without their NSEC proof because the zone's
+    /// signatures were stale.
+    pub denial_proofs_withheld: Counter,
     /// DNS wire bytes received and sent.
     pub traffic_bytes: CounterVec,
     /// Resource records emitted in answer sections — the "positive record
@@ -1199,6 +1242,12 @@ pub struct Metrics {
     pub upstream_queries: DynCounterVec,
     /// Queries that exhausted every tier and became SERVFAIL.
     pub upstream_exhausted: Counter,
+    /// Upstream exchanges NOT attempted because the forwarder's circuit breaker
+    /// was open. This is the tier-walk cost that is no longer being paid: a
+    /// forwarder on a network that black-holes its transport shows up here
+    /// instead of in `upstream_queries_total`, once per query it would have
+    /// stalled.
+    pub upstream_skipped: DynCounterVec,
 
     // --- iterative resolver ---
     /// Client lookups that entered the iterative resolver.
@@ -1376,6 +1425,16 @@ impl Metrics {
                 "source",
                 ANSWER_SOURCES,
             ),
+            authoritative_negative: CounterVec::new(
+                "rolodex_dns_authoritative_negative_total",
+                "Negative answers from a zone this server is authoritative for, by what the lookup found.",
+                "reason",
+                NEGATIVE_REASONS,
+            ),
+            denial_proofs_withheld: Counter::new(
+                "rolodex_dns_denial_proofs_withheld_total",
+                "Negative answers served without their NSEC proof because the zone's signatures were stale. A signed zone answering insecure.",
+            ),
             traffic_bytes: CounterVec::new(
                 "rolodex_dns_traffic_bytes_total",
                 "DNS wire bytes received in queries and sent in responses. DNS only; DHCP is not counted.",
@@ -1550,6 +1609,11 @@ impl Metrics {
             upstream_exhausted: Counter::new(
                 "rolodex_dns_upstream_exhausted_total",
                 "Queries that exhausted every upstream tier and became SERVFAIL.",
+            ),
+            upstream_skipped: DynCounterVec::new(
+                "rolodex_dns_upstream_skipped_total",
+                "Upstream exchanges skipped because the forwarder was circuit-broken.",
+                "server",
             ),
 
             resolver_lookups: Counter::new(
@@ -1897,6 +1961,8 @@ impl Metrics {
         self.queries_by_type.encode(&mut out);
         self.queries_by_tld.encode(&mut out);
         self.answer_source.encode(&mut out);
+        self.authoritative_negative.encode(&mut out);
+        self.denial_proofs_withheld.encode(&mut out);
         self.traffic_bytes.encode(&mut out);
         self.records_served.encode(&mut out);
         self.query_duration.encode(&mut out);
@@ -1934,6 +2000,7 @@ impl Metrics {
         self.upstream_duration.encode(&mut out);
         self.upstream_queries.encode(&mut out);
         self.upstream_exhausted.encode(&mut out);
+        self.upstream_skipped.encode(&mut out);
 
         self.resolver_lookups.encode(&mut out);
         self.resolver_referrals.encode(&mut out);

@@ -538,24 +538,42 @@ async fn unencodable_types_are_skipped_and_reported() {
 
     db.add_record(&record("www.example.com.", RecordKind::A, "192.0.2.1"))
         .expect("add");
+    // ANAME is the example because it is still genuinely unencodable: it is
+    // resolved at query time and never appears on the wire, so there is no
+    // stored format to sign and `canonical_rdata` returns `None` for it.
+    //
+    // NSEC used to stand here and no longer can. It gained a canonical form
+    // when the signer started building and signing the denial chain, and a
+    // stored NSEC is now dropped before the signing loop even sees it — the
+    // previous run's chain is replaced wholesale — so it could not reach the
+    // skip branch under either half of that change. Keeping it would have left
+    // this test asserting the property against a type that no longer has it.
     db.add_record(&record(
-        "nsec.example.com.",
-        RecordKind::NSEC,
-        "next.example.com. A RRSIG",
+        "alias.example.com.",
+        RecordKind::ANAME,
+        "target.example.net.",
     ))
-    .expect("add NSEC");
+    .expect("add ANAME");
 
     let resp = sign_zone(&service, zone).await;
     assert!(resp.success);
     assert!(
-        resp.message.contains("nsec.example.com.") && resp.message.contains("skipped"),
+        resp.message.contains("alias.example.com.") && resp.message.contains("skipped"),
         "the skip must be reported, got {:?}",
         resp.message
     );
 
     let sigs = rrsigs_in_zone(&db, zone);
-    assert!(!sigs.iter().any(|(_, s)| s.type_covered == RecordKind::NSEC));
-    assert!(sigs.iter().any(|(_, s)| s.type_covered == RecordKind::A));
+    assert!(
+        !sigs
+            .iter()
+            .any(|(_, s)| s.type_covered == RecordKind::ANAME),
+        "an unencodable type must not be signed over an invented encoding"
+    );
+    assert!(
+        sigs.iter().any(|(_, s)| s.type_covered == RecordKind::A),
+        "skipping one RRset must not stop the rest of the zone being signed"
+    );
 }
 
 #[tokio::test]

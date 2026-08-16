@@ -1,16 +1,20 @@
-//! Encrypted DNS upstream clients: DNS-over-HTTPS (DoH, :443) and
-//! DNS-over-TLS (DoT, :853).
+//! Encrypted DNS upstream clients: DNS-over-HTTPS (DoH, :443), DNS-over-TLS
+//! (DoT, :853) and DNS-over-QUIC (DoQ, :853/UDP).
 //!
 //! Used by the `auto` resolution fallback chain (see [`crate::dns_server`]) to
-//! reach public resolvers over an encrypted transport when plaintext DNS (:53)
-//! is filtered. **DoH is preferred**: :443 looks like ordinary HTTPS and
-//! survives deep-packet-inspection filtering that blocks DoT's :853 (observed on
-//! real networks that let the TCP connect through but drop the DoT TLS session).
+//! reach resolvers over an encrypted transport when plaintext DNS (:53) is
+//! filtered. **DoH is preferred**: :443 looks like ordinary HTTPS and survives
+//! deep-packet-inspection filtering that blocks DoT's :853 (observed on real
+//! networks that let the TCP connect through but drop the DoT TLS session).
 //!
-//! Both transports send the caller's exact wire query and return the raw wire
-//! response, preserving EDNS/flags/rcode like the UDP/TCP forward paths.
+//! Every transport sends the caller's exact wire query and returns the raw wire
+//! response, preserving EDNS/flags/rcode like the UDP/TCP forward paths — with
+//! one documented exception, the DoQ message ID, described on [`query_doq`].
+//!
+//! The upstream itself is a [`Forwarder`]; this module is only the transports.
 
-use anyhow::{Context, Result, anyhow, bail};
+use crate::forwarder::{Forwarder, Transport};
+use anyhow::{Context, Result, bail};
 use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -20,64 +24,23 @@ use tokio_rustls::TlsConnector;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
-/// Encrypted transport for a secure upstream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Transport {
-    /// DNS-over-HTTPS (RFC 8484), HTTP POST of `application/dns-message` on :443.
-    Doh,
-    /// DNS-over-TLS (RFC 7858), length-prefixed wire messages on :853.
-    Dot,
-}
-
-/// A resolved encrypted upstream: an address dialed directly by IP (so it needs
-/// no prior DNS) plus the TLS server name its certificate is validated against.
-#[derive(Debug, Clone)]
-pub struct SecureUpstream {
-    pub transport: Transport,
-    pub addr: SocketAddr,
-    pub server_name: ServerName<'static>,
-    /// SNI / Host hostname string (e.g. `cloudflare-dns.com`).
-    pub hostname: String,
-    /// DoH request path (e.g. `/dns-query`); unused for DoT.
-    pub path: String,
-    /// Human-readable label for logging, e.g. `https://cloudflare-dns.com`.
-    pub label: String,
-}
-
-impl SecureUpstream {
-    /// Builds a secure upstream from a config entry. Returns an error for an
-    /// unsupported transport or an unparseable address/hostname so the caller
-    /// can warn and skip it rather than fail startup.
-    pub fn from_config(cfg: &crate::config::SecureUpstreamConfig) -> Result<Self> {
-        let transport = match cfg.transport.to_ascii_lowercase().as_str() {
-            "https" | "doh" => Transport::Doh,
-            "tls" | "dot" => Transport::Dot,
-            other => {
-                return Err(anyhow!(
-                    "unsupported secure upstream transport '{}' (use 'https'/DoH or 'tls'/DoT)",
-                    other
-                ));
-            }
-        };
-        let addr: SocketAddr = cfg
-            .addr
-            .parse()
-            .with_context(|| format!("invalid secure upstream address '{}'", cfg.addr))?;
-        let server_name = ServerName::try_from(cfg.hostname.clone())
-            .with_context(|| format!("invalid secure upstream hostname '{}'", cfg.hostname))?;
-        let scheme = match transport {
-            Transport::Doh => "https",
-            Transport::Dot => "tls",
-        };
-        Ok(Self {
-            transport,
-            addr,
-            server_name,
-            hostname: cfg.hostname.clone(),
-            path: cfg.path.clone(),
-            label: format!("{scheme}://{}", cfg.hostname),
-        })
-    }
+/// The TLS name and SNI string an encrypted forwarder validates against.
+///
+/// Every encrypted forwarder carries both — `Forwarder::parse` fills them in,
+/// defaulting to the dialed IP — so a missing one is a forwarder built by
+/// something other than the parser, and is a bug rather than a configuration
+/// error. It is reported rather than assumed away, because the alternative is
+/// skipping certificate validation.
+fn tls_identity(upstream: &Forwarder) -> Result<(ServerName<'static>, &str)> {
+    let name = upstream
+        .server_name
+        .clone()
+        .with_context(|| format!("{} has no TLS server name", upstream.label))?;
+    let hostname = upstream
+        .hostname
+        .as_deref()
+        .with_context(|| format!("{} has no TLS hostname", upstream.label))?;
+    Ok((name, hostname))
 }
 
 /// Builds a rustls client config with the given ALPN protocols, Mozilla webpki
@@ -115,25 +78,48 @@ fn doh_config() -> Arc<ClientConfig> {
         .clone()
 }
 
-/// Sends a wire DNS query to a secure upstream and returns the wire response,
-/// dispatching on the upstream's transport. Bounded by `timeout`.
-pub async fn query(
-    query_data: &[u8],
-    upstream: &SecureUpstream,
-    timeout: Duration,
-) -> Result<Vec<u8>> {
+/// Client config for DoQ (ALPN `doq`, RFC 9250 §4.1), built once.
+fn doq_config() -> Arc<ClientConfig> {
+    static CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
+    CONFIG
+        .get_or_init(|| build_client_config(&[b"doq"]))
+        .clone()
+}
+
+/// Sends a wire DNS query to an encrypted upstream and returns the wire
+/// response, dispatching on the upstream's transport. Bounded by `timeout`.
+///
+/// Plaintext transports are not handled here and are an error rather than a
+/// silent downgrade: they are forwarded by [`crate::dns_server`], which owns the
+/// UDP socket pool and the 0x20 query randomisation that go with them. Sending
+/// a query the caller believed was encrypted over plaintext would be the worst
+/// possible way to be helpful.
+pub async fn query(query_data: &[u8], upstream: &Forwarder, timeout: Duration) -> Result<Vec<u8>> {
     match upstream.transport {
         Transport::Doh => query_doh(query_data, upstream, timeout).await,
         Transport::Dot => query_dot(query_data, upstream, timeout).await,
+        Transport::Doq => query_doq(query_data, upstream, timeout).await,
+        Transport::Do53Udp | Transport::Do53Tcp => {
+            bail!(
+                "{} is a plaintext forwarder, not an encrypted upstream",
+                upstream.label
+            )
+        }
     }
 }
 
 /// DNS-over-HTTPS: HTTP/1.1 POST of the wire query as `application/dns-message`.
 pub async fn query_doh(
     query_data: &[u8],
-    upstream: &SecureUpstream,
+    upstream: &Forwarder,
     timeout: Duration,
 ) -> Result<Vec<u8>> {
+    let (server_name, hostname) = tls_identity(upstream)?;
+    let path = upstream
+        .path
+        .as_deref()
+        .unwrap_or(crate::forwarder::DEFAULT_DOH_PATH);
+
     tokio::time::timeout(timeout, async move {
         let tcp = TcpStream::connect(upstream.addr)
             .await
@@ -142,7 +128,7 @@ pub async fn query_doh(
 
         let connector = TlsConnector::from(doh_config());
         let mut tls = connector
-            .connect(upstream.server_name.clone(), tcp)
+            .connect(server_name, tcp)
             .await
             .with_context(|| format!("DoH TLS handshake with {} failed", upstream.label))?;
 
@@ -150,8 +136,8 @@ pub async fn query_doh(
         // keep-alive framing ambiguity.
         let mut req = format!(
             "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/dns-message\r\nAccept: application/dns-message\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            upstream.path,
-            upstream.hostname,
+            path,
+            hostname,
             query_data.len(),
         )
         .into_bytes();
@@ -221,11 +207,12 @@ pub async fn query_doh(
 /// DNS-over-TLS: length-prefixed wire message over TLS (RFC 7858).
 pub async fn query_dot(
     query_data: &[u8],
-    upstream: &SecureUpstream,
+    upstream: &Forwarder,
     timeout: Duration,
 ) -> Result<Vec<u8>> {
     let len =
         u16::try_from(query_data.len()).context("DNS query too large for DoT 2-byte framing")?;
+    let (server_name, _) = tls_identity(upstream)?;
 
     tokio::time::timeout(timeout, async move {
         let tcp = TcpStream::connect(upstream.addr)
@@ -235,7 +222,7 @@ pub async fn query_dot(
 
         let connector = TlsConnector::from(dot_config());
         let mut tls = connector
-            .connect(upstream.server_name.clone(), tcp)
+            .connect(server_name, tcp)
             .await
             .with_context(|| format!("DoT TLS handshake with {} failed", upstream.label))?;
 
@@ -261,6 +248,124 @@ pub async fn query_dot(
     })
     .await
     .with_context(|| format!("DoT query to {} timed out", upstream.label))?
+}
+
+/// The largest DoQ response accepted off a stream.
+///
+/// A DNS message is length-prefixed with two bytes, so 65535 is the most that
+/// can be described; the bound exists because `read_to_end` on a QUIC stream
+/// will otherwise buffer whatever a peer decides to send.
+const MAX_DOQ_RESPONSE: usize = 65535;
+
+/// A shared QUIC client endpoint per address family.
+///
+/// One endpoint owns one UDP socket and multiplexes every connection made
+/// through it, so building one per query would allocate a socket and a fresh
+/// congestion-control context each time. They are split by family because an
+/// endpoint bound to `0.0.0.0` cannot reach an IPv6 peer.
+fn doq_endpoint(ipv6: bool) -> Result<quinn::Endpoint> {
+    static V4: OnceLock<Result<quinn::Endpoint, String>> = OnceLock::new();
+    static V6: OnceLock<Result<quinn::Endpoint, String>> = OnceLock::new();
+
+    let slot = if ipv6 { &V6 } else { &V4 };
+    let bind: SocketAddr = if ipv6 {
+        SocketAddr::from(([0u16; 8], 0))
+    } else {
+        SocketAddr::from(([0u8; 4], 0))
+    };
+    slot.get_or_init(|| quinn::Endpoint::client(bind).map_err(|e| e.to_string()))
+        .clone()
+        .map_err(|e| anyhow::anyhow!("DoQ client endpoint bind failed: {e}"))
+}
+
+/// DNS-over-QUIC (RFC 9250): one query per bidirectional stream, length-prefixed
+/// like DoT.
+///
+/// **The message ID is zeroed on the wire and restored on the way back.** RFC
+/// 9250 §4.2.1 requires a DoQ query to carry ID 0 — QUIC streams already
+/// correlate the response, so the ID would be a second, redundant identifier
+/// whose only remaining effect is to leak a cross-transport fingerprint. Servers
+/// are entitled to reject a non-zero ID, so sending the caller's ID would make
+/// this transport fail against conforming resolvers. The caller's ID is put back
+/// before the response is returned, because everything above this function
+/// matches responses to queries by ID and would otherwise drop every answer.
+///
+/// Sending the stream FIN after the query is likewise required rather than
+/// polite: a DoQ server is entitled to wait for it before answering, so omitting
+/// it deadlocks against a conforming implementation until the timeout.
+pub async fn query_doq(
+    query_data: &[u8],
+    upstream: &Forwarder,
+    timeout: Duration,
+) -> Result<Vec<u8>> {
+    let len =
+        u16::try_from(query_data.len()).context("DNS query too large for DoQ 2-byte framing")?;
+    if query_data.len() < 2 {
+        bail!("DNS query too short to carry a message ID");
+    }
+    let (_, hostname) = tls_identity(upstream)?;
+
+    let mut framed = Vec::with_capacity(2 + query_data.len());
+    framed.extend_from_slice(&len.to_be_bytes());
+    framed.extend_from_slice(query_data);
+    // The two ID bytes sit at the start of the message, which is now offset by
+    // the two length bytes.
+    let original_id = [framed[2], framed[3]];
+    framed[2] = 0;
+    framed[3] = 0;
+
+    let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(doq_config())
+        .context("DoQ client crypto config is not QUIC-compatible")?;
+    let client_config = quinn::ClientConfig::new(Arc::new(crypto));
+    let endpoint = doq_endpoint(upstream.addr.is_ipv6())?;
+
+    tokio::time::timeout(timeout, async move {
+        let connection = endpoint
+            .connect_with(client_config, upstream.addr, hostname)
+            .with_context(|| format!("DoQ connect to {} failed", upstream.label))?
+            .await
+            .with_context(|| format!("DoQ handshake with {} failed", upstream.label))?;
+
+        let (mut send, mut recv) = connection
+            .open_bi()
+            .await
+            .with_context(|| format!("DoQ stream to {} failed", upstream.label))?;
+        send.write_all(&framed)
+            .await
+            .context("DoQ query write failed")?;
+        send.finish().context("DoQ stream finish failed")?;
+
+        let response = recv
+            .read_to_end(MAX_DOQ_RESPONSE)
+            .await
+            .context("DoQ response read failed")?;
+
+        // Two length bytes plus a header that has to be long enough to hold the
+        // ID that is about to be written back into it.
+        if response.len() < 4 {
+            bail!(
+                "DoQ upstream {} returned a truncated response",
+                upstream.label
+            );
+        }
+        let declared = usize::from(u16::from_be_bytes([response[0], response[1]]));
+        let mut message = response[2..].to_vec();
+        if message.len() < declared {
+            bail!(
+                "DoQ upstream {} response shorter than its length prefix",
+                upstream.label
+            );
+        }
+        message.truncate(declared);
+        if message.len() < 2 {
+            bail!("DoQ upstream {} returned no DNS header", upstream.label);
+        }
+        message[0] = original_id[0];
+        message[1] = original_id[1];
+        Ok(message)
+    })
+    .await
+    .with_context(|| format!("DoQ query to {} timed out", upstream.label))?
 }
 
 /// Decodes an HTTP/1.1 chunked-transfer body held entirely in memory.
@@ -297,56 +402,81 @@ fn find_crlf(data: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::SecureUpstreamConfig;
 
-    fn cfg(transport: &str, addr: &str, hostname: &str) -> SecureUpstreamConfig {
-        SecureUpstreamConfig {
-            transport: transport.to_string(),
-            addr: addr.to_string(),
-            hostname: hostname.to_string(),
-            path: "/dns-query".to_string(),
-        }
+    fn forwarder(spec: &str) -> Forwarder {
+        Forwarder::parse(spec).unwrap_or_else(|e| panic!("parse {spec}: {e}"))
     }
 
-    #[test]
-    fn from_config_parses_doh() {
-        let up = SecureUpstream::from_config(&cfg("https", "1.1.1.1:443", "cloudflare-dns.com"))
-            .unwrap();
-        assert_eq!(up.transport, Transport::Doh);
-        assert_eq!(up.addr, "1.1.1.1:443".parse().unwrap());
-        assert_eq!(up.label, "https://cloudflare-dns.com");
-        assert_eq!(up.path, "/dns-query");
-    }
-
-    #[test]
-    fn from_config_parses_dot() {
-        let up = SecureUpstream::from_config(&cfg("tls", "8.8.8.8:853", "dns.google")).unwrap();
-        assert_eq!(up.transport, Transport::Dot);
-        assert_eq!(up.label, "tls://dns.google");
-    }
-
-    #[test]
-    fn from_config_transport_is_case_insensitive() {
+    // Routing a plaintext forwarder into this module must fail loudly. Falling
+    // through to a plaintext send would be a silent downgrade of a query the
+    // caller asked to have encrypted.
+    #[tokio::test]
+    async fn query_refuses_a_plaintext_forwarder() {
+        let plaintext = forwarder("8.8.8.8:53");
+        let err = query(&[0u8; 12], &plaintext, Duration::from_millis(1))
+            .await
+            .expect_err("plaintext must not be sent by the encrypted client");
         assert!(
-            SecureUpstream::from_config(&cfg("HTTPS", "1.1.1.1:443", "cloudflare-dns.com")).is_ok()
+            err.to_string().contains("plaintext"),
+            "unhelpful error: {err}"
         );
-        assert!(SecureUpstream::from_config(&cfg("DoT", "8.8.8.8:853", "dns.google")).is_ok());
+    }
+
+    // The DoQ framing is built before any socket is touched, so the parts that
+    // RFC 9250 constrains can be checked without a server: the length prefix,
+    // the zeroed message ID, and the fact that the caller's ID is what comes
+    // back. This mirrors what query_doq does to the buffer.
+    #[test]
+    fn doq_framing_zeroes_the_message_id_and_restores_it() {
+        let query_data = {
+            let mut q = vec![0u8; 12];
+            q[0] = 0xAB;
+            q[1] = 0xCD;
+            q
+        };
+
+        let len = u16::try_from(query_data.len()).expect("length");
+        let mut framed = Vec::with_capacity(2 + query_data.len());
+        framed.extend_from_slice(&len.to_be_bytes());
+        framed.extend_from_slice(&query_data);
+        let original_id = [framed[2], framed[3]];
+        framed[2] = 0;
+        framed[3] = 0;
+
+        assert_eq!(&framed[..2], &[0x00, 0x0C], "two-byte length prefix");
+        assert_eq!(&framed[2..4], &[0x00, 0x00], "RFC 9250 requires ID 0");
+        assert_eq!(original_id, [0xAB, 0xCD], "caller's ID must be recoverable");
+
+        // What the response path then does with it.
+        let mut message = [0u8; 12];
+        message[0] = original_id[0];
+        message[1] = original_id[1];
+        assert_eq!(&message[..2], &[0xAB, 0xCD], "caller's ID must be restored");
     }
 
     #[test]
-    fn from_config_rejects_unknown_transport() {
-        assert!(SecureUpstream::from_config(&cfg("quic", "1.1.1.1:853", "dns.q")).is_err());
+    fn doq_rejects_a_query_too_short_to_hold_an_id() {
+        let short = [0u8];
+        let up = forwarder("quic://dns.adguard.com@94.140.14.14:853");
+        let result = futures_lite_block_on(query_doq(&short, &up, Duration::from_millis(1)));
+        assert!(result.is_err(), "a 1-byte query has no message ID to zero");
     }
 
-    #[test]
-    fn from_config_rejects_bad_address() {
-        assert!(SecureUpstream::from_config(&cfg("https", "nope", "cloudflare-dns.com")).is_err());
+    /// Minimal blocking driver so a test can assert on the pre-flight
+    /// validation of an async function without standing up a runtime that would
+    /// then try to open a socket.
+    fn futures_lite_block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(future)
     }
 
     #[test]
     fn dechunk_decodes_simple_body() {
         // "4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n" => "Wikipedia"
         let raw = b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n";
-        assert_eq!(dechunk(raw).unwrap(), b"Wikipedia");
+        assert_eq!(dechunk(raw).expect("dechunk"), b"Wikipedia");
     }
 }

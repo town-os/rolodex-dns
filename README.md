@@ -47,7 +47,7 @@ New here? Start with the **[Configuration Guide](CONFIGURATION.md)** — a task-
 - **Integrated DHCPv4 server**: Per-scope address pools with sticky MAC bindings, automatic A/PTR registration, certificate delivery via site-specific options, and a background lease sweep
 - **Automatic reverse PTR records**: Optional (`dns.auto_ptr`) maintenance of matching `in-addr.arpa`/`ip6.arpa` PTRs for A/AAAA records added through gRPC
 - **Proxy support**: Forward DNS queries through HTTP CONNECT, SOCKS5, or DoH proxy
-- **Prometheus metrics**: an optional, off-by-default `/metrics` endpoint exposing 82 metric families with bounded label cardinality — including per-stage answer attribution and per-TLD isolation, so the split-horizon pipeline is legible from outside. Query names are never labels
+- **Prometheus metrics**: an optional, off-by-default `/metrics` endpoint exposing 85 metric families with bounded label cardinality — including per-stage answer attribution and per-TLD isolation, so the split-horizon pipeline is legible from outside. Query names are never labels
 - **SQLite persistence**: DNS records persist across restarts
 - **TLS hot-reload**: certificate files are polled every 30 seconds and a renewed pair is served by DoT, DoH, DoQ, ACME and the enrollment portal within that window, with no restart and no dropped connections. A rebuild that fails — a truncated file, or a poll that landed between an ACME client's two writes — keeps the previous certificate serving and retries on the next poll
 - **Performance**: Multi-threaded tokio runtime, lock-free blocklist and resolver state (`AtomicBool` + `ArcSwap` + atomics), in-memory boot caches for scopes/zones/TLDs/blocklist entries, UDP socket pool for upstream forwarding, and DashMap/DashSet concurrent caching throughout
@@ -1612,9 +1612,9 @@ metrics:
 
 The endpoint is unauthenticated and carries only aggregate counts — no query names, no record values, no certificate material. Bind it to a private address; the default is loopback. TLS is deliberately not offered here, since it would mean shipping a self-signed certificate to every scraper for an endpoint that should not be publicly reachable in the first place.
 
-82 metric families are exposed, all prefixed `rolodex_dns_`, covering queries, the response cache, blocklists (including refusals and rotated-out providers), upstream tiers, the iterative resolver, DNSSEC verdicts, split-horizon state, DHCP, ACME, gRPC, and the runtime's own blocking work.
+85 metric families are exposed, all prefixed `rolodex_dns_`, covering queries, the response cache, blocklists (including refusals and rotated-out providers), upstream tiers, the iterative resolver, DNSSEC verdicts, split-horizon state, DHCP, ACME, gRPC, and the runtime's own blocking work.
 
-The one worth knowing about is `rolodex_dns_answers_total{source}`, which reports which stage of the resolution order produced each answer — `cache`, `local`, `scoped`, `scope_fallback`, `tld_peer`, `blocklist`, `reverse_blocklist`, `dns64`, `upstream`, `authoritative_nxdomain`, `refused`, `error`. Its total equals the query total, which is what makes the split-horizon pipeline legible from outside:
+The one worth knowing about is `rolodex_dns_answers_total{source}`, which reports which stage of the resolution order produced each answer — `cache`, `local`, `scoped`, `scope_fallback`, `tld_peer`, `blocklist`, `reverse_blocklist`, `dns64`, `upstream`, `authoritative_nxdomain`, `authoritative_nodata`, `refused`, `error`. Its total equals the query total, which is what makes the split-horizon pipeline legible from outside:
 
 ```
 curl -s http://127.0.0.1:9153/metrics | grep answers_total

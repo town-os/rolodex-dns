@@ -204,7 +204,8 @@ async fn any_secure_endpoint_reachable(addrs: &[&str]) -> bool {
 #[tokio::test]
 async fn secure_live_query_public() {
     use rolodex_dns::config::SecureUpstreamConfig;
-    use rolodex_dns::secure_client::{SecureUpstream, query};
+    use rolodex_dns::forwarder::Forwarder;
+    use rolodex_dns::secure_client::query;
 
     // (transport, addr, hostname) — DoH (:443) preferred, DoT (:853) as fallback.
     let candidates = [
@@ -227,7 +228,7 @@ async fn secure_live_query_public() {
 
     let mut last_err = None;
     for (transport, addr, hostname) in candidates {
-        let up = SecureUpstream::from_config(&SecureUpstreamConfig {
+        let up = Forwarder::from_secure_config(&SecureUpstreamConfig {
             transport: transport.to_string(),
             addr: addr.to_string(),
             hostname: hostname.to_string(),

@@ -47,7 +47,7 @@ Rolodex DNS 另外支援用於垃圾郵件／惡意程式過濾的網域封鎖�
 - **整合的 DHCPv4 伺服器**：逐範圍的位址池、黏著的 MAC 綁定、自動的 A/PTR 註冊、透過站台專用選項交付憑證，以及背景租約清掃
 - **自動反向 PTR 記錄**：可選（`dns.auto_ptr`）為透過 gRPC 新增的 A/AAAA 記錄維護對應的 `in-addr.arpa`／`ip6.arpa` PTR
 - **代理支援**：透過 HTTP CONNECT、SOCKS5 或 DoH 代理轉送 DNS 查詢
-- **Prometheus 指標**：一個選用、預設關閉的 `/metrics` 端點，輸出 82 個具備有界標籤基數的指標系列——包含逐階段的答案歸因與逐 TLD 隔離，讓分割視域管線從外面看得懂。查詢名稱永遠不會成為標籤
+- **Prometheus 指標**：一個選用、預設關閉的 `/metrics` 端點，輸出 85 個具備有界標籤基數的指標系列——包含逐階段的答案歸因與逐 TLD 隔離，讓分割視域管線從外面看得懂。查詢名稱永遠不會成為標籤
 - **SQLite 持久化**：DNS 記錄跨重啟保存
 - **TLS 熱重載**：憑證檔每 30 秒被輪詢一次，續期後的一對會在該窗口內由 DoT、DoH、DoQ、ACME 與登記入口網站提供出去，無需重新啟動，也不會掉連線。重建失敗——檔案被截斷，或者輪詢恰好落在 ACME 用戶端的兩次寫入之間——會讓先前的憑證繼續提供，並在下一次輪詢時重試
 - **效能**：多執行緒 tokio 執行環境、無鎖的封鎖清單與解析器狀態（`AtomicBool` + `ArcSwap` + 原子操作）、範圍／區域／TLD／封鎖項目的開機記憶體內快取、供上游轉送使用的 UDP socket 池，以及全面採用的 DashMap/DashSet 並行快取
@@ -1612,9 +1612,9 @@ metrics:
 
 這個端點不做認證，且只承載彙總計數——沒有查詢名稱、沒有記錄值、沒有憑證材料。請把它綁在私有位址上；預設是 loopback。這裡刻意不提供 TLS，因為那會意味著要把一張自簽憑證發給每一個抓取端，而這個端點本來就不該對外可達。
 
-輸出 82 個指標系列，全部以 `rolodex_dns_` 為前綴，涵蓋查詢、回應快取、封鎖清單（包含拒答與被移出輪替的供應商）、上游層級、迭代解析器、DNSSEC 判定、分割視域狀態、DHCP、ACME、gRPC 與執行期本身的阻塞工作。
+輸出 85 個指標系列，全部以 `rolodex_dns_` 為前綴，涵蓋查詢、回應快取、封鎖清單（包含拒答與被移出輪替的供應商）、上游層級、迭代解析器、DNSSEC 判定、分割視域狀態、DHCP、ACME、gRPC 與執行期本身的阻塞工作。
 
-其中最值得認識的是 `rolodex_dns_answers_total{source}`，它回報解析順序中的哪個階段產生了每個答案——`cache`、`local`、`scoped`、`scope_fallback`、`tld_peer`、`blocklist`、`reverse_blocklist`、`dns64`、`upstream`、`authoritative_nxdomain`、`refused`、`error`。它的總數等於查詢總數，而這正是讓分割視域管線從外面看得懂的關鍵：
+其中最值得認識的是 `rolodex_dns_answers_total{source}`，它回報解析順序中的哪個階段產生了每個答案——`cache`、`local`、`scoped`、`scope_fallback`、`tld_peer`、`blocklist`、`reverse_blocklist`、`dns64`、`upstream`、`authoritative_nxdomain`、`authoritative_nodata`、`refused`、`error`。它的總數等於查詢總數，而這正是讓分割視域管線從外面看得懂的關鍵：
 
 ```
 curl -s http://127.0.0.1:9153/metrics | grep answers_total

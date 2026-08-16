@@ -132,7 +132,26 @@ message ListRecordsResponse {
 
 // SetForwarderRequest configures upstream DNS forwarders.
 message SetForwarderRequest {
-  // List of upstream DNS server addresses (e.g. "8.8.8.8:53")
+  // Upstream forwarders, each naming a transport.
+  //
+  // A bare "ip:port" is plaintext UDP, which is what this field has always
+  // carried and still means — every caller written before transports were
+  // nameable keeps working unchanged. A scheme selects anything else:
+  //
+  //   8.8.8.8:53                                    plaintext UDP
+  //   tcp://8.8.8.8:53                              plaintext TCP
+  //   tls://cloudflare-dns.com@1.1.1.1:853          DoT
+  //   https://cloudflare-dns.com@1.1.1.1/dns-query  DoH
+  //   quic://dns.adguard.com@94.140.14.14:853       DoQ
+  //
+  // The "name@ip" authority carries both halves an encrypted upstream needs —
+  // the address to dial and the name to validate its certificate against — so
+  // nothing has to resolve a hostname before it can reach a resolver. Omit the
+  // "name@" half only where the address is itself the certificate's identity.
+  //
+  // Which tier of "auto" a forwarder lands in is derived from the forwarder,
+  // not from this list's position: encrypted upstreams are tried first, then
+  // plaintext to a private address, then plaintext to a public one.
   repeated string forwarders = 1;
   // Shared secret for authentication
   string auth_token = 2;

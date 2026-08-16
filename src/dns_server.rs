@@ -49,6 +49,21 @@ const FLUSH_MUTATION: usize = 0;
 const FLUSH_EXPLICIT: usize = 1;
 const FLUSH_TIER_SWITCH: usize = 2;
 
+/// How often the re-sign loop looks for zones whose signatures have gone stale.
+///
+/// Short enough that a record added over the control plane is provably present
+/// within the minute, long enough that a burst of registrations — how Town OS
+/// populates a zone at boot — is absorbed into one signing pass instead of one
+/// per record.
+const RESIGN_INTERVAL_SECS: u64 = 30;
+
+/// How often every signed zone is re-signed regardless of whether it changed.
+///
+/// Signatures carry a 30-day validity (`RRSIG_VALIDITY_SECS`), so a zone nobody
+/// edits still goes bogus on a timer. Six hours leaves an enormous margin and
+/// costs one idempotent pass per zone per quarter-day.
+const RESIGN_REFRESH_INTERVAL_SECS: u64 = 6 * 60 * 60;
+
 /// Carries what only `resolve_query` knows out to the metrics wrapper: which
 /// stage of the resolution order answered, and — where the wire form is
 /// ambiguous — the response code.
@@ -61,6 +76,69 @@ const FLUSH_TIER_SWITCH: usize = 2;
 ///
 /// Atomics rather than `Cell` because a `Cell` borrow held across an `await`
 /// would make the query future `!Send`, and every listener spawns its queries.
+/// What a zone knows about a queried name, which is what decides the negative.
+#[derive(Debug, Clone)]
+enum Presence {
+    /// Records exist at the name, or beneath it (an empty non-terminal).
+    Real,
+    /// Nothing at the name, but a wildcard at its parent synthesizes for it.
+    /// RFC 4592 §2.2.1 has such a name *established* by the wildcard, so a
+    /// missing type is NODATA — and the denial proof is the wildcard's own NSEC,
+    /// carried here, because the queried name has none of its own.
+    Wildcard(String),
+    /// Nothing at the name, beneath it, or matching it. The only NXDOMAIN.
+    Absent,
+}
+
+impl Presence {
+    /// Whether the name exists at all — by record or by synthesis.
+    fn exists(&self) -> bool {
+        !matches!(self, Presence::Absent)
+    }
+}
+
+/// Everything [`DnsServer::authoritative_negative`] needs to decide which
+/// negative a name is owed, and where to read its SOA from.
+struct Negative<'a> {
+    /// The queried name.
+    qname: &'a str,
+    /// The zone this server is authoritative for that contains it. Names the
+    /// apex whose SOA goes in the authority section.
+    zone: &'a str,
+    /// Global database, or one scope's partition of it.
+    ns: Namespace<'a>,
+    /// False when the query type maps to no storable record kind, so no record
+    /// of it can exist here whatever the name holds.
+    qtype_supported: bool,
+}
+
+/// Which namespace an authoritative answer is being decided in.
+///
+/// Split horizon means the same name can exist in one of these and not the
+/// other, so "does this name exist?" — the question that separates NXDOMAIN
+/// from NODATA — has no answer until you say where you are asking. Global
+/// records live in SQLite; scoped records live in the in-memory scoped cache.
+#[derive(Debug, Clone, Copy)]
+enum Namespace<'a> {
+    /// The global database: what a trusted local client (loopback, LAN, bridge)
+    /// resolves against.
+    Global,
+    /// One network scope's partition, named by scope. Strict: a scoped client
+    /// under an owned TLD or a scoped managed zone never reaches the global
+    /// records, so the scope alone decides whether a name exists.
+    Scope(&'a str),
+    /// The global database unioned with one scope's partition — what the LAN
+    /// fallback (resolution step 5) actually resolves against.
+    ///
+    /// Both halves have to be consulted or the fallback denies names it serves.
+    /// A LAN client reaches this branch only after the *global* lookup missed,
+    /// and that lookup was keyed by type: a dual-homed name with a global A and
+    /// no AAAA misses on AAAA, arrives here, misses in the scope too, and would
+    /// be called nonexistent on the strength of the scope alone — while its A
+    /// record answers from the global table one query later.
+    LanFallback(&'a str),
+}
+
 struct QueryTag {
     /// An [`AnswerSource::index`].
     source: AtomicUsize,
@@ -234,7 +312,7 @@ pub const MAX_TCP_CONNECTIONS: usize = 1024;
 pub struct DnsServer {
     db: Database,
     dnsbl: Arc<DnsblChecker>,
-    forwarders: Arc<ArcSwap<Vec<SocketAddr>>>,
+    forwarders: Arc<ArcSwap<Vec<crate::forwarder::Forwarder>>>,
     /// Optional DNS response cache for privacy-first resolution.
     dns_cache: Option<Arc<DnsCache>>,
     /// Whether DNS64 AAAA synthesis is on.
@@ -261,10 +339,19 @@ pub struct DnsServer {
     resolution_mode: Arc<ArcSwap<ResolutionMode>>,
     /// Iterative resolver used in recursive/auto mode.
     resolver: Arc<ArcSwap<crate::resolver::IterativeResolver>>,
-    /// Encrypted (DoH/DoT) upstreams for the auto-mode secure tier.
-    secure_upstreams: Arc<ArcSwap<Vec<crate::secure_client::SecureUpstream>>>,
-    /// Plaintext public resolvers for the auto-mode last-resort tier.
-    public_fallback: Arc<ArcSwap<Vec<SocketAddr>>>,
+    /// Encrypted (DoH/DoT/DoQ) upstreams from `secure_upstreams:`.
+    secure_upstreams: Arc<ArcSwap<Vec<crate::forwarder::Forwarder>>>,
+    /// Plaintext public resolvers from `public_fallback:`.
+    public_fallback: Arc<ArcSwap<Vec<crate::forwarder::Forwarder>>>,
+    /// The three forwarding tiers of `auto`, derived from every configured
+    /// forwarder by [`crate::forwarder::by_preference`] and recomputed whenever
+    /// any of the three source lists is set.
+    ///
+    /// Derived rather than stored per source list, because which tier a
+    /// forwarder belongs in is a property of the forwarder — a DoH entry typed
+    /// into `forwarders:` is an encrypted upstream and belongs in the encrypted
+    /// tier, not in the tier named after the key it was written under.
+    forwarder_tiers: Arc<ArcSwap<[Vec<crate::forwarder::Forwarder>; 3]>>,
     /// Auto mode: index of the currently committed resolution tier.
     active_tier: AtomicUsize,
     /// Auto mode: consecutive deciding queries whose winner deviated from the
@@ -351,6 +438,13 @@ impl DnsServer {
         let forward_sockets = (0..FORWARD_POOL_SIZE)
             .map(|_| Arc::new(tokio::sync::Mutex::new(None)))
             .collect();
+        // A bare socket address is a plaintext UDP forwarder, which is what
+        // every caller predating typed forwarders means by one. The tiers are
+        // derived here so a server is never briefly configured with forwarders
+        // that no tier can reach.
+        let forwarders: Vec<crate::forwarder::Forwarder> =
+            forwarders.into_iter().map(Into::into).collect();
+        let forwarder_tiers = crate::forwarder::by_preference(&forwarders);
         Self {
             db,
             dnsbl,
@@ -371,6 +465,7 @@ impl DnsServer {
             )),
             secure_upstreams: Arc::new(ArcSwap::from_pointee(Vec::new())),
             public_fallback: Arc::new(ArcSwap::from_pointee(Vec::new())),
+            forwarder_tiers: Arc::new(ArcSwap::from_pointee(forwarder_tiers)),
             active_tier: AtomicUsize::new(TIER_ROOTS),
             deviation_streak: AtomicUsize::new(0),
             last_probe: AtomicU64::new(0),
@@ -398,6 +493,13 @@ impl DnsServer {
         let forward_sockets = (0..FORWARD_POOL_SIZE)
             .map(|_| Arc::new(tokio::sync::Mutex::new(None)))
             .collect();
+        // A bare socket address is a plaintext UDP forwarder, which is what
+        // every caller predating typed forwarders means by one. The tiers are
+        // derived here so a server is never briefly configured with forwarders
+        // that no tier can reach.
+        let forwarders: Vec<crate::forwarder::Forwarder> =
+            forwarders.into_iter().map(Into::into).collect();
+        let forwarder_tiers = crate::forwarder::by_preference(&forwarders);
         Self {
             db,
             dnsbl,
@@ -420,6 +522,7 @@ impl DnsServer {
             )),
             secure_upstreams: Arc::new(ArcSwap::from_pointee(Vec::new())),
             public_fallback: Arc::new(ArcSwap::from_pointee(Vec::new())),
+            forwarder_tiers: Arc::new(ArcSwap::from_pointee(forwarder_tiers)),
             active_tier: AtomicUsize::new(TIER_ROOTS),
             deviation_streak: AtomicUsize::new(0),
             last_probe: AtomicU64::new(0),
@@ -700,13 +803,22 @@ impl DnsServer {
     }
 
     /// Sets the auto-mode encrypted (DoH/DoT) upstreams (the secure tier).
-    pub fn set_secure_upstreams(&self, upstreams: Vec<crate::secure_client::SecureUpstream>) {
-        self.secure_upstreams.store(Arc::new(upstreams));
+    pub fn set_secure_upstreams(&self, upstreams: Vec<crate::forwarder::Forwarder>) {
+        self.store_forwarders(&self.secure_upstreams, upstreams);
     }
 
     /// Sets the auto-mode plaintext public resolvers (the last-resort tier).
     pub fn set_public_fallback(&self, targets: Vec<SocketAddr>) {
-        self.public_fallback.store(Arc::new(targets));
+        self.set_typed_public_fallback(targets.into_iter().map(Into::into).collect());
+    }
+
+    /// Sets the auto-mode public fallback from typed forwarders.
+    ///
+    /// The name is historical: an entry here that names an encrypted transport
+    /// lands in the encrypted tier like any other, because the tier comes from
+    /// the forwarder rather than from the list it was written in.
+    pub fn set_typed_public_fallback(&self, targets: Vec<crate::forwarder::Forwarder>) {
+        self.store_forwarders(&self.public_fallback, targets);
     }
 
     /// Sets the auto-mode tuning: failure grace before a downward switch, and how
@@ -776,6 +888,18 @@ impl DnsServer {
                     }
                     v6
                 }
+                // A signature travels with the RRset it covers, so a filtered-out
+                // family takes its RRSIG with it. Leaving one behind hands a
+                // validator a signature over an RRset that is not in the message
+                // — which is what a stripping attack looks like, and it fails the
+                // response *bogus* rather than merely leaving it unsigned. The
+                // filter breaks the signature either way (RFC 4035 wants the
+                // whole RRset), so the honest outcome is no signature at all.
+                RecordType::RRSIG => match rrsig_covered_type(r) {
+                    Some(RecordType::A) => v4,
+                    Some(RecordType::AAAA) => v6,
+                    _ => true,
+                },
                 _ => true,
             })
             .collect();
@@ -856,12 +980,62 @@ impl DnsServer {
 
     /// Updates the upstream forwarder list.
     pub async fn set_forwarders(&self, forwarders: Vec<SocketAddr>) {
-        self.forwarders.store(Arc::new(forwarders));
+        self.set_typed_forwarders(forwarders.into_iter().map(Into::into).collect());
     }
 
-    /// Returns the current forwarder list.
+    /// Replaces the forwarder list with typed forwarders, which may name any
+    /// transport rather than plaintext UDP alone.
+    pub fn set_typed_forwarders(&self, forwarders: Vec<crate::forwarder::Forwarder>) {
+        self.store_forwarders(&self.forwarders, forwarders);
+    }
+
+    /// Returns the current forwarder list as plaintext socket addresses.
+    ///
+    /// Encrypted forwarders have no socket-address spelling and are omitted, so
+    /// this reports less than the server holds. It is kept for callers that
+    /// predate typed forwarders; [`Self::get_forwarder_specs`] is the one that
+    /// answers the question completely.
     pub async fn get_forwarders(&self) -> Vec<SocketAddr> {
-        self.forwarders.load().as_ref().clone()
+        self.forwarders
+            .load()
+            .iter()
+            .filter(|f| !f.transport.is_encrypted())
+            .map(|f| f.addr)
+            .collect()
+    }
+
+    /// Returns the current forwarder list in the string form it was configured
+    /// with, encrypted upstreams included.
+    pub fn get_forwarder_specs(&self) -> Vec<String> {
+        self.forwarders.load().iter().map(|f| f.to_spec()).collect()
+    }
+
+    /// Stores one of the three forwarder source lists and rebuilds the derived
+    /// tiers.
+    ///
+    /// Health is carried across the replacement by label. Without that the
+    /// circuit breaker could never open on a box whose controller re-pushes an
+    /// identical forwarder list every few seconds: each push would hand the
+    /// server fresh health and reset the failure count before it could reach
+    /// the threshold.
+    fn store_forwarders(
+        &self,
+        slot: &ArcSwap<Vec<crate::forwarder::Forwarder>>,
+        mut incoming: Vec<crate::forwarder::Forwarder>,
+    ) {
+        crate::forwarder::carry_health(&slot.load(), &mut incoming);
+        slot.store(Arc::new(incoming));
+        self.rebuild_forwarder_tiers();
+    }
+
+    /// Recomputes the derived tiers from every configured forwarder.
+    fn rebuild_forwarder_tiers(&self) {
+        let mut all = Vec::new();
+        all.extend(self.secure_upstreams.load().iter().cloned());
+        all.extend(self.forwarders.load().iter().cloned());
+        all.extend(self.public_fallback.load().iter().cloned());
+        self.forwarder_tiers
+            .store(Arc::new(crate::forwarder::by_preference(&all)));
     }
 
     /// Sets the proxy configuration for upstream forwarding.
@@ -1152,6 +1326,13 @@ impl DnsServer {
             )
             .await?;
         let response = self.apply_family_filter(response);
+        // UDP only, and after the family filter so the measurement is of what
+        // actually goes on the wire.
+        let response = if matches!(proto, Proto::Udp) {
+            truncate_for_udp(response, query_data)
+        } else {
+            response
+        };
 
         metrics().observe_query(QueryObservation {
             proto,
@@ -1169,6 +1350,411 @@ impl DnsServer {
         });
 
         Ok(response)
+    }
+
+    /// The RRSIGs covering the RRset just answered, for the answer section
+    /// beside it (RFC 4035 §3.1.1 puts a signature in the same section as the
+    /// records it signs).
+    ///
+    /// Empty unless the client set DO **and** the name falls in a zone this
+    /// server holds keys for. Both halves matter: a signature nobody asked for
+    /// roughly triples the size of an A answer, and a large answer to a small
+    /// question is the amplification shape the recursion CIDRs exist to close.
+    ///
+    /// A wildcard-derived answer gets no signature here, and that is now
+    /// enforced rather than assumed. The lookup goes through
+    /// `Database::rrsigs_covering`, which reads the **exact** owner —
+    /// `Database::lookup` would have fallen back to `*.parent` and rewritten the
+    /// result onto the queried name, handing back the wildcard's signature
+    /// wearing a label it was not made under. That signature actually verifies
+    /// (a validator rebuilds `*.parent` from the RRSIG Labels field), which is
+    /// what makes it dangerous: RFC 4035 §5.3.4 then requires an NSEC proving no
+    /// closer match existed, and this path emits none, so every wildcard-served
+    /// name in a signed zone would fail *bogus*. Without the signature the same
+    /// answer is merely unsigned.
+    fn answer_signatures(
+        &self,
+        qname: &str,
+        kind: RecordKind,
+        edns_ctx: Option<&crate::edns::EdnsContext>,
+    ) -> Vec<Record> {
+        if !edns_ctx.is_some_and(|ctx| ctx.dnssec_ok) {
+            return Vec::new();
+        }
+        if self.db.find_signed_zone(qname).is_none() {
+            return Vec::new();
+        }
+        // The same gate the denial path uses, for the same reason. A mutation
+        // since the last pass leaves the stored RRSIG covering an RRset that no
+        // longer matches — two A records answered under a signature made over
+        // one — and a signature that does not verify is *bogus*, which is worse
+        // than the *insecure* of no signature at all.
+        if self.db.zone_signatures_stale(qname) {
+            metrics().denial_proofs_withheld.inc();
+            return Vec::new();
+        }
+        match self.db.rrsigs_covering(qname, kind) {
+            Ok(sigs) => sigs.iter().filter_map(db_record_to_dns_record).collect(),
+            Err(e) => {
+                warn!("RRSIG lookup for {} {:?} failed: {}", qname, kind, e);
+                Vec::new()
+            }
+        }
+    }
+
+    /// The SOA for the authority section of a negative answer about `qname`.
+    ///
+    /// Walked up from the queried name rather than read at the zone name that
+    /// made this server authoritative, because those are not the same thing. A
+    /// managed zone is derived from the last two labels of a stored FQDN, so a
+    /// record at `dns.home.` registers `dns.home.` as a zone — more specific
+    /// than the `home.` holding the SOA — and reading the apex from that hint
+    /// finds nothing at all. See `Database::closest_soa`.
+    ///
+    /// Read without the wildcard fallback: a wildcard substitutes the queried
+    /// name onto its results, so once returned it is indistinguishable from a
+    /// genuine apex record, and an SOA that is not the zone's own sets the wrong
+    /// negative-caching TTL for every name beneath it. An empty result stays
+    /// normal rather than exceptional — a zone may be served here without its
+    /// apex ever having been populated, and a negative with no SOA is still a
+    /// correct negative, merely one a resolver applies its own default TTL to.
+    fn negative_soa(&self, qname: &str, ns: Namespace<'_>) -> Vec<Record> {
+        let global = || self.db.closest_soa(qname).unwrap_or_default();
+        let scoped = |scope: &str| self.db.closest_scoped_soa(scope, qname);
+        let records = match ns {
+            Namespace::Global => global(),
+            Namespace::Scope(scope) => scoped(scope),
+            // The scope's apex first: the enclosing zone here is that scope's
+            // own owned TLD, so a scoped SOA is the authoritative one and a
+            // global record under the TLD is the exception rather than the
+            // definition of the zone.
+            Namespace::LanFallback(scope) => match scoped(scope) {
+                found if !found.is_empty() => found,
+                _ => global(),
+            },
+        };
+        records.iter().filter_map(db_record_to_dns_record).collect()
+    }
+
+    /// The NSEC records proving this negative, with their signatures, for the
+    /// authority section (RFC 4035 §3.1.3).
+    ///
+    /// Two shapes, because the two negatives assert different things:
+    ///
+    /// - **NODATA** — the name exists, so its own NSEC is the proof: its type
+    ///   bitmap lists what is there, and the queried type's absence from that
+    ///   list is the denial. One record.
+    /// - **NXDOMAIN** — the name does not exist, which takes two proofs: the
+    ///   chain link whose range covers the name, and the link covering
+    ///   `*.<closest encloser>`. Without the second, a validator cannot rule out
+    ///   that a wildcard would have synthesized an answer, and RFC 4035 §5.4
+    ///   has it reject the denial. The two are frequently the same record, which
+    ///   is why the result is deduplicated by owner rather than concatenated.
+    ///
+    /// Returns nothing when the client did not set DO or the zone is unsigned —
+    /// and nothing, rather than a partial proof, if the chain has no covering
+    /// link. A missing NSEC leaves a validator at "insecure"; a proof that does
+    /// not cover the name it claims to leaves it at "bogus".
+    fn denial_proof(
+        &self,
+        qname: &str,
+        presence: &Presence,
+        edns_ctx: Option<&crate::edns::EdnsContext>,
+    ) -> Vec<Record> {
+        if !edns_ctx.is_some_and(|ctx| ctx.dnssec_ok) {
+            return Vec::new();
+        }
+        let Some(zone) = self.db.find_signed_zone(qname) else {
+            return Vec::new();
+        };
+        // A zone whose records changed since it was last signed has a chain that
+        // describes the zone as it *was*. Serving it would prove a name absent
+        // that was created a moment ago — so withhold the proof until the
+        // re-sign loop catches up. The negative still goes out, unsigned: that
+        // leaves a validator at "insecure", where a stale proof would leave it
+        // at "bogus" and take the whole zone down with it.
+        if self.db.zone_signatures_stale(qname) {
+            metrics().denial_proofs_withheld.inc();
+            return Vec::new();
+        };
+
+        let chain = match self.db.zone_nsec_records(&zone) {
+            Ok(chain) => chain,
+            Err(e) => {
+                warn!("NSEC chain read for {} failed: {}", zone, e);
+                return Vec::new();
+            }
+        };
+        let covering = |name: &str| -> Option<String> {
+            chain
+                .iter()
+                .find(|r| {
+                    crate::dnssec::Nsec::parse(&r.value)
+                        .map(|nsec| crate::dnssec::nsec_covers(&r.name, &nsec.next_owner, name))
+                        .unwrap_or(false)
+                })
+                .map(|r| r.name.clone())
+        };
+        let chained = |name: &str| -> bool { chain.iter().any(|r| r.name == name) };
+        let normalized = crate::db::normalize_name(qname);
+
+        // Each arm lists every owner RFC 4035 §3.1.3 requires, and `None`
+        // anywhere means the proof cannot be completed. Sending the subset that
+        // *was* found is the worst option available: a partial proof is not a
+        // weaker assertion, it is a rejected one, and it takes the answer from
+        // "unsigned" to "bogus".
+        let required: Option<Vec<String>> = match presence {
+            // §3.1.3.1 NODATA. The name's own NSEC lists the types it has — its
+            // bitmap is the denial. An empty non-terminal has no NSEC of its own
+            // (see `build_nsec_chain`), and is proved by the link covering it.
+            Presence::Real => {
+                if chained(&normalized) {
+                    Some(vec![normalized.clone()])
+                } else {
+                    covering(&normalized).map(|c| vec![c])
+                }
+            }
+            // §3.1.3.4 wildcard NODATA. TWO records: the wildcard's own NSEC,
+            // showing it carries no record of the queried type, AND one proving
+            // no closer match exists — without which a validator cannot rule out
+            // a name between the wildcard and the query that would have won.
+            Presence::Wildcard(owner) => {
+                covering(&normalized).map(|closer| vec![owner.clone(), closer])
+            }
+            // §3.1.3.2 name error. The link covering the name, AND the link
+            // covering `*.<closest encloser>` — the source of synthesis, whose
+            // absence is what rules out a wildcard having answered.
+            Presence::Absent => {
+                let wildcard = format!("*.{}", self.closest_encloser(qname, &zone));
+                // A wildcard that EXISTS cannot be proven absent, and the link
+                // at its own name would prove the opposite of what this response
+                // says. That combination means the answer itself is wrong — the
+                // wildcard should have synthesized — so withhold rather than
+                // contradict ourselves in a signature.
+                if chained(&wildcard) {
+                    None
+                } else {
+                    match (covering(&normalized), covering(&wildcard)) {
+                        (Some(a), Some(b)) => Some(vec![a, b]),
+                        _ => None,
+                    }
+                }
+            }
+        };
+
+        let Some(mut owners) = required else {
+            metrics().denial_proofs_withheld.inc();
+            return Vec::new();
+        };
+        // The same link frequently covers both, so dedup by owner rather than
+        // sending it twice.
+        owners.dedup();
+        let owners: Vec<String> = {
+            let mut seen = Vec::new();
+            for o in owners {
+                if !seen.contains(&o) {
+                    seen.push(o);
+                }
+            }
+            seen
+        };
+
+        let mut out = Vec::new();
+        for owner in owners {
+            // Read without the wildcard fallback: `lookup` would substitute a
+            // `*.parent` NSEC under the queried owner's name, which is a proof
+            // about a different name wearing this one's label.
+            let nsec = match self.db.lookup_no_wildcard(&owner, Some(RecordKind::NSEC)) {
+                Ok(records) => records,
+                Err(e) => {
+                    warn!("NSEC read for {} failed: {}", owner, e);
+                    metrics().denial_proofs_withheld.inc();
+                    return Vec::new();
+                }
+            };
+            let sigs = self.answer_signatures(&owner, RecordKind::NSEC, edns_ctx);
+            if nsec.is_empty() || sigs.is_empty() {
+                // An unsigned NSEC proves nothing to the client that asked for
+                // proof, and a missing one leaves the set incomplete. Either way
+                // the whole proof goes rather than part of it.
+                metrics().denial_proofs_withheld.inc();
+                return Vec::new();
+            }
+            out.extend(nsec.iter().filter_map(db_record_to_dns_record));
+            out.extend(sigs);
+        }
+        out
+    }
+
+    /// The longest ancestor of `qname` that exists, down to the zone apex.
+    ///
+    /// This is the RFC 4592 §3.3.1 closest encloser, and it names the only place
+    /// a wildcard could have matched: synthesis happens at
+    /// `*.<closest encloser>`, so that is the name whose absence has to be
+    /// proven alongside the queried one. Falls back to the apex, which always
+    /// exists in a zone being served.
+    fn closest_encloser(&self, qname: &str, zone: &str) -> String {
+        let apex = crate::db::normalize_name(zone);
+        let normalized = crate::db::normalize_name(qname);
+        let mut rest = normalized.trim_end_matches('.');
+        while let Some((_, parent)) = rest.split_once('.') {
+            if parent.is_empty() {
+                break;
+            }
+            let candidate = format!("{}.", parent);
+            if !crate::db::name_in_zone(&candidate, &apex) {
+                break;
+            }
+            // A read error must not read as "absent": that walks past a real
+            // encloser and denies the WRONG wildcard, producing a proof a
+            // validator rejects. Stop at the candidate instead — the caller
+            // withholds the whole proof if its wildcard cannot be covered, which
+            // is the safe direction.
+            match self.db.name_occupied(&candidate) {
+                Ok(true) => return candidate,
+                Ok(false) => rest = parent,
+                Err(e) => {
+                    warn!("closest-encloser probe for {} failed: {}", candidate, e);
+                    return candidate;
+                }
+            }
+        }
+        apex
+    }
+
+    /// The negative answer owed for `qname` inside `zone`, a zone this server is
+    /// authoritative for.
+    ///
+    /// Every authoritative miss used to leave here as NXDOMAIN, and that is a
+    /// protocol error whenever the name exists. RFC 1035 §3.1 and RFC 2308 §2
+    /// give the two negatives different meanings: NXDOMAIN asserts that the NAME
+    /// does not exist, while NODATA — NOERROR with an empty answer section —
+    /// asserts that it does and that the queried TYPE does not. A host with an A
+    /// record and no AAAA is the ordinary case, and answering NXDOMAIN for its
+    /// AAAA contradicts the A answer given a moment earlier from the same zone.
+    ///
+    /// The consequence is not cosmetic. Under RFC 8020 a resolver that caches
+    /// NXDOMAIN for a name may synthesize NXDOMAIN for every name beneath it, so
+    /// one AAAA query for a v4-only host is enough to take out its entire
+    /// subtree; and a client that sees NXDOMAIN and NOERROR for the same name in
+    /// one lookup pair has been handed a self-contradiction, which is what a
+    /// stub resolver's retry-and-downgrade machinery exists to react to.
+    ///
+    /// `qtype_supported` is false when the query type maps to no storable record
+    /// kind. Such a query cannot match anything here, but that is a fact about
+    /// the question rather than about the name, so it still gets NODATA when the
+    /// name exists — the previous behaviour skipped the database entirely and
+    /// returned NXDOMAIN for a name it had never looked up.
+    fn authoritative_negative(
+        &self,
+        message: &hickory_proto::op::Message,
+        neg: Negative<'_>,
+        edns_ctx: Option<&crate::edns::EdnsContext>,
+        tag: &QueryTag,
+    ) -> Vec<u8> {
+        let Negative {
+            qname,
+            zone,
+            ns,
+            qtype_supported,
+        } = neg;
+        // Degrade a failed existence check to the stricter answer rather than
+        // guessing NODATA. A spurious NODATA hides a name that really is gone; a
+        // spurious NXDOMAIN is exactly what this path returned before the
+        // existence check existed at all.
+        let global_occupied = || match self.db.name_occupied(qname) {
+            Ok(occupied) => occupied,
+            Err(e) => {
+                warn!(
+                    "existence check for {} failed ({}), answering NXDOMAIN",
+                    qname, e
+                );
+                false
+            }
+        };
+        let global_wildcard = || match self.db.wildcard_owner_for(qname) {
+            Ok(owner) => owner,
+            Err(e) => {
+                warn!("wildcard check for {} failed ({})", qname, e);
+                None
+            }
+        };
+        // Order matters: a real name is a stronger statement than a synthesized
+        // one, and only a real name has an NSEC of its own to prove with.
+        let presence = match ns {
+            Namespace::Global => {
+                if global_occupied() {
+                    Presence::Real
+                } else {
+                    global_wildcard().map_or(Presence::Absent, Presence::Wildcard)
+                }
+            }
+            Namespace::Scope(scope) => {
+                if self.db.scoped_name_occupied(scope, qname) {
+                    Presence::Real
+                } else {
+                    self.db
+                        .scoped_wildcard_owner_for(scope, qname)
+                        .map_or(Presence::Absent, Presence::Wildcard)
+                }
+            }
+            Namespace::LanFallback(scope) => {
+                if self.db.scoped_name_occupied(scope, qname) || global_occupied() {
+                    Presence::Real
+                } else {
+                    self.db
+                        .scoped_wildcard_owner_for(scope, qname)
+                        .or_else(global_wildcard)
+                        .map_or(Presence::Absent, Presence::Wildcard)
+                }
+            }
+        };
+        let occupied = presence.exists();
+
+        let reason = if qtype_supported {
+            if occupied {
+                crate::metrics::NEGATIVE_TYPE_ABSENT
+            } else {
+                crate::metrics::NEGATIVE_NAME_ABSENT
+            }
+        } else {
+            crate::metrics::NEGATIVE_UNSUPPORTED_TYPE
+        };
+        metrics().authoritative_negative.inc(reason);
+
+        let (rcode, source) = if occupied {
+            (ResponseCode::NoError, AnswerSource::AuthoritativeNodata)
+        } else {
+            (ResponseCode::NXDomain, AnswerSource::AuthoritativeNxdomain)
+        };
+        debug!(
+            "Authoritative {} for {} (zone {}, ns {:?})",
+            if occupied { "NODATA" } else { "NXDOMAIN" },
+            qname,
+            zone,
+            ns
+        );
+        tag.set(source);
+
+        // The authority section carries the SOA (RFC 2308 §3, the negative TTL)
+        // and, for a signed zone asked by a DO client, the NSEC proof and its
+        // signatures (RFC 4035 §3.1.3). The SOA's own RRSIG goes with it: a
+        // validator authenticates the negative TTL from the same section it
+        // reads it in, and an unsigned SOA beside a signed NSEC is a mixed
+        // authority section that fails as a whole.
+        let mut authority = self.negative_soa(qname, ns);
+        if matches!(ns, Namespace::Global)
+            && let Some(zone_apex) = self.db.find_signed_zone(qname)
+        {
+            let soa_owner = authority
+                .first()
+                .map(|r| r.name().to_string())
+                .unwrap_or(zone_apex);
+            authority.extend(self.answer_signatures(&soa_owner, RecordKind::SOA, edns_ctx));
+            authority.extend(self.denial_proof(qname, &presence, edns_ctx));
+        }
+
+        build_response_edns_auth(message, rcode, vec![], authority, true, edns_ctx)
     }
 
     /// Core DNS resolution logic with optional network scope context and the
@@ -1422,25 +2008,31 @@ impl DnsServer {
                 }
             }
 
-            // Check CNAME in scoped records
-            if record_kind.is_some() {
-                let cname_records = self
-                    .db
-                    .lookup_scoped(scope, &qname, Some(RecordKind::CNAME));
-                if !cname_records.is_empty() {
-                    let dns_records = cname_records
-                        .iter()
-                        .filter_map(db_record_to_dns_record)
-                        .collect();
-                    tag.set(AnswerSource::Scoped);
-                    return Ok(build_response_edns(
-                        &message,
-                        ResponseCode::NoError,
-                        dns_records,
-                        true,
-                        edns_ctx.as_ref(),
-                    ));
-                }
+            // Check CNAME in scoped records.
+            //
+            // Unconditional in the query type, deliberately. RFC 1034 §3.6.2
+            // makes a CNAME the answer to *every* type asked at that name — the
+            // alias is a property of the name, not of the type — and the guard
+            // that used to stand here (`record_kind.is_some()`) excluded exactly
+            // the types with no `RecordKind` mapping. So a CAA or NAPTR query at
+            // an aliased name was told the alias did not apply to it, which is
+            // the one answer RFC 1034 rules out.
+            let cname_records = self
+                .db
+                .lookup_scoped(scope, &qname, Some(RecordKind::CNAME));
+            if !cname_records.is_empty() {
+                let dns_records = cname_records
+                    .iter()
+                    .filter_map(db_record_to_dns_record)
+                    .collect();
+                tag.set(AnswerSource::Scoped);
+                return Ok(build_response_edns(
+                    &message,
+                    ResponseCode::NoError,
+                    dns_records,
+                    true,
+                    edns_ctx.as_ref(),
+                ));
             }
 
             // Check DNAME in scoped records (walk up labels)
@@ -1469,24 +2061,34 @@ impl DnsServer {
                         tag.set(AnswerSource::TldPeer);
                         return Ok(resp);
                     }
-                    debug!(
-                        "Scoped authoritative NXDOMAIN for {} (scope {} owns tld {}, no local/peer answer)",
-                        qname, scope, owned_tld
-                    );
-                    tag.set(AnswerSource::AuthoritativeNxdomain);
-                    return Ok(build_response_edns(
+                    return Ok(self.authoritative_negative(
                         &message,
-                        ResponseCode::NXDomain,
-                        vec![],
-                        true,
+                        Negative {
+                            qname: &qname,
+                            zone: &owned_tld,
+                            ns: Namespace::Scope(scope),
+                            qtype_supported: record_kind.is_some(),
+                        },
                         edns_ctx.as_ref(),
+                        tag,
                     ));
                 }
                 // Owned by a DIFFERENT network — hide it from this network.
+                //
+                // Deliberately NXDOMAIN even when the name exists over there,
+                // which is the one place this file returns NXDOMAIN without
+                // asking whether the name exists. NODATA would assert that the
+                // name is real and only the type is missing, and that assertion
+                // is exactly what the partition exists to withhold: it would let
+                // any scope enumerate a sibling network's names by watching
+                // which ones answered NODATA instead of NXDOMAIN.
                 debug!(
                     "Hiding {} from scope {} (owned by scope {} tld {})",
                     qname, scope, owner, owned_tld
                 );
+                metrics()
+                    .authoritative_negative
+                    .inc(crate::metrics::NEGATIVE_SCOPE_HIDDEN);
                 tag.set(AnswerSource::AuthoritativeNxdomain);
                 return Ok(build_response_edns(
                     &message,
@@ -1506,17 +2108,16 @@ impl DnsServer {
                     if crate::db::name_in_zone(&qname, zone) {
                         let zone_records = self.db.lookup_scoped(scope, zone, None);
                         if !zone_records.is_empty() {
-                            debug!(
-                                "Scoped authoritative NXDOMAIN for {} (scope {} zone {} exists)",
-                                qname, scope, zone
-                            );
-                            tag.set(AnswerSource::AuthoritativeNxdomain);
-                            return Ok(build_response_edns(
+                            return Ok(self.authoritative_negative(
                                 &message,
-                                ResponseCode::NXDomain,
-                                vec![],
-                                true,
+                                Negative {
+                                    qname: &qname,
+                                    zone,
+                                    ns: Namespace::Scope(scope),
+                                    qtype_supported: record_kind.is_some(),
+                                },
                                 edns_ctx.as_ref(),
+                                tag,
                             ));
                         }
                     }
@@ -1564,7 +2165,17 @@ impl DnsServer {
                         qtype,
                         cached.len()
                     );
-                    let dns_records = cached.iter().filter_map(db_record_to_dns_record).collect();
+                    let mut dns_records: Vec<Record> =
+                        cached.iter().filter_map(db_record_to_dns_record).collect();
+                    // Signatures are attached here too, not only on the database
+                    // path. The cache stores records and is keyed without the DO
+                    // bit, so one non-DO query populates it and every DO query
+                    // behind it would otherwise be answered bare — from a zone
+                    // whose apex publishes DNSKEY, which reads as stripped
+                    // signatures rather than as an unsigned zone, for the whole
+                    // cache TTL. The RRSIGs are read separately by owner and
+                    // type, so nothing had to be cached alongside them.
+                    dns_records.extend(self.answer_signatures(&qname, kind, edns_ctx.as_ref()));
                     tag.set(AnswerSource::Cache);
                     return Ok(build_response_edns(
                         &message,
@@ -1601,7 +2212,14 @@ impl DnsServer {
                         cache.invalidate_negative(&qname);
                         cache.insert_local(&qname, Some(kind), records.clone());
                     }
-                    let dns_records = records.iter().filter_map(db_record_to_dns_record).collect();
+                    let mut dns_records: Vec<Record> =
+                        records.iter().filter_map(db_record_to_dns_record).collect();
+                    // RFC 4035 §3.1.1: the signature travels in the same section
+                    // as the records it covers. Without this the zone publishes
+                    // DNSKEYs promising every answer is signed and then serves
+                    // them bare, which a validator reads as stripped signatures
+                    // — an attack — rather than as an unsigned zone.
+                    dns_records.extend(self.answer_signatures(&qname, kind, edns_ctx.as_ref()));
                     tag.set(AnswerSource::Local);
                     return Ok(build_response_edns(
                         &message,
@@ -1639,11 +2257,16 @@ impl DnsServer {
 
                 // CNAME chain
                 if !result.cname.is_empty() {
-                    let dns_records = result
+                    let mut dns_records: Vec<Record> = result
                         .cname
                         .iter()
                         .filter_map(db_record_to_dns_record)
                         .collect();
+                    dns_records.extend(self.answer_signatures(
+                        &qname,
+                        RecordKind::CNAME,
+                        edns_ctx.as_ref(),
+                    ));
                     tag.set(AnswerSource::Local);
                     return Ok(build_response_edns(
                         &message,
@@ -1654,6 +2277,35 @@ impl DnsServer {
                     ));
                 }
             }
+        } else if let Ok(cname_records) = self.db.lookup(&qname, Some(RecordKind::CNAME))
+            && !cname_records.is_empty()
+        {
+            // A query type with no `RecordKind` mapping still gets the alias.
+            //
+            // The block above is the whole local lookup, and it is gated on a
+            // mapped type — so CAA, NAPTR and every other unmapped type used to
+            // skip the CNAME check with it. RFC 1034 §3.6.2 makes a CNAME the
+            // answer to every type asked at that name except CNAME itself
+            // (which maps, and is therefore handled above), so skipping it told
+            // an ACME client that an aliased name published no CAA policy of its
+            // own rather than pointing it at the target that holds one.
+            let mut dns_records: Vec<Record> = cname_records
+                .iter()
+                .filter_map(db_record_to_dns_record)
+                .collect();
+            dns_records.extend(self.answer_signatures(
+                &qname,
+                RecordKind::CNAME,
+                edns_ctx.as_ref(),
+            ));
+            tag.set(AnswerSource::Local);
+            return Ok(build_response_edns(
+                &message,
+                ResponseCode::NoError,
+                dns_records,
+                is_authoritative,
+                edns_ctx.as_ref(),
+            ));
         }
 
         // LAN/loopback source (scope_name == None): the global lookup above found
@@ -1719,17 +2371,16 @@ impl DnsServer {
                 tag.set(AnswerSource::TldPeer);
                 return Ok(resp);
             }
-            debug!(
-                "LAN fallback authoritative NXDOMAIN for {} (owning scope {} owns tld {})",
-                qname, owner, owned_tld
-            );
-            tag.set(AnswerSource::AuthoritativeNxdomain);
-            return Ok(build_response_edns(
+            return Ok(self.authoritative_negative(
                 &message,
-                ResponseCode::NXDomain,
-                vec![],
-                true,
+                Negative {
+                    qname: &qname,
+                    zone: &owned_tld,
+                    ns: Namespace::LanFallback(&owner),
+                    qtype_supported: record_kind.is_some(),
+                },
                 edns_ctx.as_ref(),
+                tag,
             ));
         }
 
@@ -1755,33 +2406,31 @@ impl DnsServer {
         // the only way it could have gone stale — and it restores the hot path to
         // the O(labels) DashSet lookup the cache exists to provide.
         if let Some(zone) = self.db.find_managed_zone(&qname) {
-            debug!(
-                "Authoritative NXDOMAIN for {} (managed zone {})",
-                qname, zone
-            );
-            tag.set(AnswerSource::AuthoritativeNxdomain);
-            return Ok(build_response_edns(
+            return Ok(self.authoritative_negative(
                 &message,
-                ResponseCode::NXDomain,
-                vec![],
-                true,
+                Negative {
+                    qname: &qname,
+                    zone: &zone,
+                    ns: Namespace::Global,
+                    qtype_supported: record_kind.is_some(),
+                },
                 edns_ctx.as_ref(),
+                tag,
             ));
         }
 
         // Check explicit authoritative zones (O(labels) via DashSet lookup)
         if let Some(zone) = self.db.find_authoritative_zone(&qname) {
-            debug!(
-                "Authoritative NXDOMAIN for {} (authoritative zone {})",
-                qname, zone
-            );
-            tag.set(AnswerSource::AuthoritativeNxdomain);
-            return Ok(build_response_edns(
+            return Ok(self.authoritative_negative(
                 &message,
-                ResponseCode::NXDomain,
-                vec![],
-                true,
+                Negative {
+                    qname: &qname,
+                    zone: &zone,
+                    ns: Namespace::Global,
+                    qtype_supported: record_kind.is_some(),
+                },
                 edns_ctx.as_ref(),
+                tag,
             ));
         }
 
@@ -2222,6 +2871,89 @@ impl DnsServer {
     /// learns is cached or served to a client.
     ///
     /// Never returns; spawn it.
+    /// Re-signs zones whose records have changed since they were last signed.
+    ///
+    /// Always spawned, and a no-op on a box with no signed zones. It exists
+    /// because signing is not a state a zone stays in: `SignZone` produces a set
+    /// of RRSIGs and an NSEC chain that describe the zone at that instant, and
+    /// the very next `AddRecord` makes both wrong. The chain is the dangerous
+    /// half — a name added after signing sits inside an existing link's range,
+    /// so the zone answers a query about its own new record with a *signed proof
+    /// that the record does not exist*.
+    ///
+    /// Off the mutation path on purpose. Signing is O(zone), and Town OS
+    /// registers records in bursts at boot; re-signing synchronously would pay
+    /// that cost once per record instead of once per burst. The cost of the
+    /// delay is bounded and visible: until the pass runs, denial proofs are
+    /// withheld rather than served stale (`denial_proofs_withheld`).
+    pub async fn resign_loop(self: Arc<Self>) {
+        let mut since_refresh = 0u64;
+        loop {
+            tokio::time::sleep(Duration::from_secs(RESIGN_INTERVAL_SECS)).await;
+
+            // Signatures expire on a timer whether or not anything touches the
+            // zone, so a mutation-driven loop alone leaves an untouched zone
+            // going bogus 30 days after its last pass, silently. Every
+            // `RESIGN_REFRESH_INTERVAL_SECS` the whole signed set is marked;
+            // signing is idempotent, so a redundant pass costs work and changes
+            // nothing.
+            since_refresh += RESIGN_INTERVAL_SECS;
+            if since_refresh >= RESIGN_REFRESH_INTERVAL_SECS {
+                since_refresh = 0;
+                self.db.mark_all_signed_zones_pending();
+            }
+
+            // Signing is CPU-bound (a public-key operation per RRset) and does
+            // blocking SQLite work under the connection mutex. Running it on a
+            // runtime worker stalls that worker for the whole pass and queues
+            // every query behind it.
+            let server = Arc::clone(&self);
+            if let Err(e) = tokio::task::spawn_blocking(move || server.resign_once()).await {
+                warn!("re-sign task failed to run: {}", e);
+            }
+        }
+    }
+
+    /// One re-sign pass. Split out from the loop so tests can drive it directly
+    /// instead of waiting on a timer.
+    pub fn resign_once(&self) {
+        for zone in self.db.zones_awaiting_resign() {
+            match crate::zone_signer::sign_zone(&self.db, &zone) {
+                Ok(crate::zone_signer::SignOutcome::Signed(summary)) => {
+                    debug!(
+                        "Re-signed {} ({} RRsets, {} NSEC)",
+                        zone, summary.signed_rrsets, summary.nsec_records
+                    );
+                    // Signing rewrote records; the cache must not keep serving
+                    // the versions from before them.
+                    self.flush_cache();
+                }
+                Ok(crate::zone_signer::SignOutcome::NotSigned(why)) => {
+                    // The zone lost its keys between the mark and now. Clear the
+                    // mark rather than retrying every interval forever — an
+                    // unsigned zone has nothing to re-sign.
+                    warn!("Not re-signing {}: {}", zone, why);
+                    self.db.clear_zone_resign_pending(&zone);
+                }
+                Err(e) => {
+                    // Put the mark back so the next pass retries. `sign_zone`
+                    // clears it up front (so a mutation landing mid-pass is not
+                    // lost), which means a failure would otherwise leave the
+                    // zone believing itself current with a half-written chain.
+                    // Proofs stay withheld meanwhile, the safe direction.
+                    //
+                    // Forced rather than conditional: the conditional form asks
+                    // the signed-zone cache first, and a key deleted
+                    // concurrently — or that cache mid-rebuild — would drop the
+                    // re-mark and leave the half-written zone with nothing
+                    // scheduled to repair it.
+                    warn!("Re-signing {} failed: {:#}", zone, e);
+                    self.db.force_zone_resign_pending(&zone);
+                }
+            }
+        }
+    }
+
     pub async fn recovery_probe_loop(self: Arc<Self>) {
         loop {
             // Re-read every pass so a runtime config change takes effect without
@@ -2402,15 +3134,14 @@ impl DnsServer {
     ) -> Option<Vec<u8>> {
         match tier {
             TIER_ROOTS => self.tier_roots(message, edns_ctx).await,
-            TIER_SECURE => self.tier_secure(query_data).await,
-            TIER_LOCAL => {
-                let targets = self.forwarders.load();
-                self.tier_forward(query_data, &targets).await
-            }
-            TIER_PUBLIC => {
-                let targets = self.public_fallback.load();
-                self.tier_forward(query_data, &targets).await
-            }
+            // Every forwarding tier is now the same code over a different slice
+            // of the same list. Which slice is decided by
+            // `crate::forwarder::by_preference` from the forwarders themselves,
+            // so a DoT upstream reaches the encrypted tier whichever config key
+            // it was written under.
+            TIER_SECURE => self.tier_forward(query_data, 0).await,
+            TIER_LOCAL => self.tier_forward(query_data, 1).await,
+            TIER_PUBLIC => self.tier_forward(query_data, 2).await,
             _ => None,
         }
     }
@@ -2477,46 +3208,75 @@ impl DnsServer {
         }
     }
 
-    /// Secure tier: DoH/DoT to each configured encrypted upstream in order
-    /// (DoH first by default — :443 survives filtering that blocks DoT's :853).
-    async fn tier_secure(&self, query_data: &[u8]) -> Option<Vec<u8>> {
-        let upstreams = self.secure_upstreams.load();
-        for up in upstreams.iter() {
-            metrics().upstream_queries.inc(&up.label);
-            match crate::secure_client::query(query_data, up, SECURE_TIER_TIMEOUT).await {
-                Ok(resp) if response_is_definitive(&resp) => return Some(resp),
-                Ok(_) => continue,
+    /// Tries every forwarder in one derived tier, in order, skipping the ones
+    /// whose circuit breaker is open.
+    ///
+    /// Skipping is what makes a dead tier cheap. `auto` walks the whole chain
+    /// before it can answer SERVFAIL, so on a network that black-holes a
+    /// transport outright every query used to pay the full per-forwarder
+    /// timeout for every address in two tiers that were never going to answer —
+    /// six seconds of a seven-and-a-half-second failure, spent proving
+    /// something the previous three queries had already established. A
+    /// forwarder that has failed `FAILURE_THRESHOLD` times in a row is passed
+    /// over until its cooldown elapses, so the tier fails immediately instead.
+    ///
+    /// Health is recorded from the *transport*, not from the rcode: a SERVFAIL
+    /// that arrived is a working forwarder answering a question badly, and
+    /// opening the breaker on it would evict a healthy resolver over one bad
+    /// zone. Only a failure to get an answer at all counts against it.
+    async fn tier_forward(&self, query_data: &[u8], tier: usize) -> Option<Vec<u8>> {
+        let tiers = self.forwarder_tiers.load();
+        let forwarders = tiers.get(tier)?;
+
+        for forwarder in forwarders.iter() {
+            if !forwarder.is_usable() {
+                metrics().upstream_skipped.inc(&forwarder.label);
+                debug!(
+                    "auto: skipping {} ({} consecutive failures)",
+                    forwarder.label,
+                    forwarder.health.failures()
+                );
+                continue;
+            }
+
+            metrics().upstream_queries.inc(&forwarder.label);
+            let result = self.query_forwarder(query_data, forwarder).await;
+            match result {
+                Ok(resp) => {
+                    forwarder.health.record_success();
+                    if response_is_definitive(&resp) {
+                        return Some(resp);
+                    }
+                }
                 Err(e) => {
-                    debug!("auto: secure upstream {} failed: {}", up.label, e);
-                    continue;
+                    forwarder.health.record_failure();
+                    debug!("auto: forward to {} failed: {}", forwarder.label, e);
                 }
             }
         }
         None
     }
 
-    /// Forwarding tier: plaintext Do53 to each target in order (used for both the
-    /// local-forwarder and public-fallback tiers).
-    async fn tier_forward(&self, query_data: &[u8], targets: &[SocketAddr]) -> Option<Vec<u8>> {
-        for target in targets {
-            let label = target.to_string();
-            match self.forward_one(query_data, target).await {
-                Ok(resp) if response_is_definitive(&resp) => {
-                    metrics().upstream_queries.inc(&label);
-                    return Some(resp);
-                }
-                Ok(_) => {
-                    metrics().upstream_queries.inc(&label);
-                    continue;
-                }
-                Err(e) => {
-                    metrics().upstream_queries.inc(&label);
-                    debug!("auto: forward to {} failed: {}", target, e);
-                    continue;
-                }
+    /// Sends one wire query over whichever transport a forwarder names.
+    ///
+    /// Plaintext stays here rather than moving into `secure_client` because it
+    /// is the transport with state: the UDP socket pool and the 0x20 query
+    /// randomisation both belong to this server.
+    async fn query_forwarder(
+        &self,
+        query_data: &[u8],
+        forwarder: &crate::forwarder::Forwarder,
+    ) -> Result<Vec<u8>> {
+        use crate::forwarder::Transport;
+        match forwarder.transport {
+            Transport::Do53Udp => self.forward_one(query_data, &forwarder.addr).await,
+            Transport::Do53Tcp => {
+                forward_tcp(query_data, &forwarder.addr, SECURE_TIER_TIMEOUT).await
+            }
+            Transport::Dot | Transport::Doh | Transport::Doq => {
+                crate::secure_client::query(query_data, forwarder, SECURE_TIER_TIMEOUT).await
             }
         }
-        None
     }
 
     /// Resolves a query iteratively starting at the root servers.
@@ -2730,16 +3490,23 @@ impl DnsServer {
             return Ok(make_error_response(query_data, ResponseCode::ServFail));
         }
 
-        // Try each forwarder in order
+        // Try each forwarder in order. Unlike the auto chain this does not skip
+        // an unhealthy forwarder: in `forward` mode these are the only
+        // upstreams there are, so passing over one on a bad streak would be
+        // refusing to resolve rather than falling back to something better.
+        // Health is still recorded, because the same forwarder may be in the
+        // auto chain the next time the mode changes.
         for forwarder in forwarders.iter() {
-            metrics().upstream_queries.inc(&forwarder.to_string());
-            match self.forward_one(query_data, forwarder).await {
+            metrics().upstream_queries.inc(&forwarder.label);
+            match self.query_forwarder(query_data, forwarder).await {
                 Ok(response) => {
+                    forwarder.health.record_success();
                     self.cache_from_wire(&response);
                     return Ok(response);
                 }
                 Err(e) => {
-                    warn!("Forward to {} failed: {}", forwarder, e);
+                    forwarder.health.record_failure();
+                    warn!("Forward to {} failed: {}", forwarder.label, e);
                     continue;
                 }
             }
@@ -2925,6 +3692,60 @@ fn unix_now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Forwards a wire query over plaintext TCP (RFC 7766), for a `tcp://`
+/// forwarder.
+///
+/// A free function rather than a method because, unlike the UDP path, it holds
+/// no server state: there is no socket pool to draw from, and no 0x20
+/// randomisation — that exists to add entropy to an *off-path* attacker's
+/// forgery, and buys nothing on a connection an attacker would have to be
+/// on-path to interfere with at all.
+///
+/// This is a transport an operator asks for, not the UDP path's truncation
+/// retry. Somebody writing `tcp://` is doing it because UDP :53 is being
+/// dropped or mangled on their network, so trying UDP first would defeat the
+/// reason they asked.
+async fn forward_tcp(query_data: &[u8], target: &SocketAddr, timeout: Duration) -> Result<Vec<u8>> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let len =
+        u16::try_from(query_data.len()).context("DNS query too large for TCP 2-byte framing")?;
+
+    tokio::time::timeout(timeout, async move {
+        let mut stream = tokio::net::TcpStream::connect(target)
+            .await
+            .with_context(|| format!("TCP connect to {target} failed"))?;
+        stream.set_nodelay(true).ok();
+
+        let mut framed = Vec::with_capacity(2 + query_data.len());
+        framed.extend_from_slice(&len.to_be_bytes());
+        framed.extend_from_slice(query_data);
+        stream
+            .write_all(&framed)
+            .await
+            .context("TCP forward write failed")?;
+        stream.flush().await.context("TCP forward flush failed")?;
+
+        let mut len_buf = [0u8; 2];
+        stream
+            .read_exact(&mut len_buf)
+            .await
+            .context("TCP forward response length read failed")?;
+        let resp_len = usize::from(u16::from_be_bytes(len_buf));
+        if resp_len == 0 {
+            anyhow::bail!("TCP forwarder {target} returned an empty response");
+        }
+        let mut resp = vec![0u8; resp_len];
+        stream
+            .read_exact(&mut resp)
+            .await
+            .context("TCP forward response body read failed")?;
+        Ok(resp)
+    })
+    .await
+    .with_context(|| format!("TCP forward to {target} timed out"))?
 }
 
 /// Whether a raw wire response is a definitive answer for auto-mode tier
@@ -3245,11 +4066,19 @@ fn db_record_to_dns_record(db_rec: &crate::db::DnsRecord) -> Option<Record> {
                 RData::SVCB(svcb)
             }
         }
-        RecordKind::DNSKEY | RecordKind::DS | RecordKind::RRSIG => opaque_rdata(db_rec)?,
-        RecordKind::NSEC | RecordKind::NSEC3 | RecordKind::NSEC3PARAM => {
-            // Never generated by this server, so there is no stored format to
-            // encode. Serving them as TXT would answer a DNSSEC query with
-            // something that is not the type asked for.
+        // NSEC joins these for the same reason the others are here: it is served
+        // through the encoder that signed it, so the bytes a validator hashes
+        // are the bytes the signature was computed over. Building it as a native
+        // hickory `NSEC` instead would put two encoders on one record, which is
+        // the disagreement this function exists to make impossible.
+        RecordKind::DNSKEY | RecordKind::DS | RecordKind::RRSIG | RecordKind::NSEC => {
+            opaque_rdata(db_rec)?
+        }
+        RecordKind::NSEC3 | RecordKind::NSEC3PARAM => {
+            // Denial of existence here is plain NSEC, so these are never
+            // generated and have no stored format to encode. Serving them as TXT
+            // would answer a DNSSEC query with something that is not the type
+            // asked for.
             return None;
         }
     };
@@ -3338,6 +4167,25 @@ fn build_response_edns(
     authoritative: bool,
     edns_ctx: Option<&crate::edns::EdnsContext>,
 ) -> Vec<u8> {
+    build_response_edns_auth(query, rcode, answers, vec![], authoritative, edns_ctx)
+}
+
+/// [`build_response_edns`], plus an AUTHORITY section.
+///
+/// Negative answers are what need one. RFC 2308 §3 puts the zone's SOA in the
+/// authority section of both NXDOMAIN and NODATA, and its MINIMUM field — capped
+/// by the record's own TTL — is how a resolver learns how long it may cache the
+/// negative. Omitting it does not make the answer wrong, but it does hand every
+/// downstream resolver a bare rcode and let it pick its own duration, so the
+/// zone loses all say in how long its absences persist.
+fn build_response_edns_auth(
+    query: &hickory_proto::op::Message,
+    rcode: ResponseCode,
+    answers: Vec<Record>,
+    authority: Vec<Record>,
+    authoritative: bool,
+    edns_ctx: Option<&crate::edns::EdnsContext>,
+) -> Vec<u8> {
     let mut response = hickory_proto::op::Message::new();
     response.set_id(query.id());
     response.set_message_type(MessageType::Response);
@@ -3364,12 +4212,56 @@ fn build_response_edns(
         response.add_answer(answer);
     }
 
+    for record in authority {
+        if !dnssec_records_wanted(&record, qtype, dnssec_ok) {
+            continue;
+        }
+        response.add_name_server(record);
+    }
+
     // If the query included EDNS, add OPT record to the response
     if let Some(ctx) = edns_ctx {
         crate::edns::add_edns_to_response(&mut response, ctx.max_payload, ctx.dnssec_ok);
     }
 
     response.to_bytes().unwrap_or_default()
+}
+
+/// Sheds the authority section and sets TC when a **UDP** response will not fit
+/// in the client's stated budget.
+///
+/// RFC 4035 §3.1.3 ends each denial rule with "if space does not permit
+/// inclusion of these NSEC and RRSIG RRs, the name server MUST set the TC bit".
+/// TC is what tells a resolver to retry over TCP; without it an oversized
+/// datagram is dropped somewhere on the path and the client waits out a timeout
+/// with no idea a larger answer exists. This server set TC nowhere at all, and a
+/// signed NXDOMAIN measures over 512 bytes with ECDSA P-256 — while `edns.rs`
+/// echoes the client's 512 straight back at it.
+///
+/// UDP only. A TCP response has a 65535-octet frame and no such limit, and
+/// truncating one would turn a perfectly deliverable answer into a pointless
+/// second round trip.
+///
+/// The authority section goes first because it is the optional part — the rcode
+/// and the answer are the response. If it still does not fit, TC stands with the
+/// answer left in place: a truncated reply that names the question is what tells
+/// a resolver to come back over TCP.
+fn truncate_for_udp(response: Vec<u8>, query_data: &[u8]) -> Vec<u8> {
+    let budget = hickory_proto::op::Message::from_bytes(query_data)
+        .ok()
+        .and_then(|q| crate::edns::EdnsContext::from_message(&q))
+        .map_or(512usize, |ctx| ctx.max_payload.max(512) as usize);
+    if response.len() <= budget {
+        return response;
+    }
+    let Ok(mut msg) = hickory_proto::op::Message::from_bytes(&response) else {
+        return response;
+    };
+    msg.take_name_servers();
+    msg.set_truncated(true);
+    let shed = msg.to_bytes().unwrap_or(response);
+    metrics().responses_truncated.inc();
+    shed
 }
 
 /// Whether a record may be included in a response to this client.
@@ -3533,6 +4425,43 @@ fn wire_question_is_arpa(query: &[u8]) -> bool {
 /// Reads the RCODE nibble from a response header.
 fn wire_rcode(response: &[u8]) -> u8 {
     response.get(3).map(|b| b & 0x0f).unwrap_or(0)
+}
+
+/// The type an RRSIG covers, read from the first two octets of its RDATA.
+///
+/// RRSIGs are served as `RData::Unknown` carrying the canonical wire encoding
+/// (see `opaque_rdata`), so the covered type is not available as a typed field
+/// and has to come off the wire form — where RFC 4034 §3.1 puts it first.
+/// Returns `None` for anything that is not a wire-form RRSIG, which the caller
+/// treats as "leave it alone".
+fn rrsig_covered_type(record: &Record) -> Option<RecordType> {
+    // An RRSIG reaches this function in either of two representations, and both
+    // have to be read or the answer is wrong in the direction that matters.
+    //
+    // The response builder emits RRSIG as opaque RDATA, because the signature
+    // is stored as bytes and is copied to the wire without being understood.
+    // But every caller here works on a message that has been *re-parsed* from
+    // those bytes, and hickory decodes RRSIG natively — so the parsed form is
+    // the one that actually shows up, and reading only the opaque form silently
+    // answered `None` for every real signature.
+    //
+    // `None` is not inert: the family filter treats an RRSIG whose covered type
+    // it cannot determine as one to keep, so this left the signature of a
+    // filtered-out AAAA RRset in the answer with the RRset gone. To a validator
+    // that is a signature over records that are not in the message, which is
+    // indistinguishable from a stripping attack and fails the response *bogus*
+    // rather than merely leaving it unsigned.
+    if let Some(sig) = record.data().as_dnssec().and_then(|d| d.as_rrsig()) {
+        return Some(sig.type_covered());
+    }
+    let RData::Unknown { rdata, .. } = record.data() else {
+        return None;
+    };
+    let bytes = rdata.anything();
+    if bytes.len() < 2 {
+        return None;
+    }
+    Some(RecordType::from(u16::from_be_bytes([bytes[0], bytes[1]])))
 }
 
 /// Whether a response has the TC (truncated) bit set.
@@ -7287,5 +8216,534 @@ mod tests {
 
         server.set_recursion_cidrs(vec![]);
         assert!(!server.may_recurse("127.0.0.1".parse().unwrap()));
+    }
+
+    // ================================================================
+    // NXDOMAIN vs NODATA (RFC 2308 §2)
+    //
+    // The distinction these tests pin is between two assertions about a NAME,
+    // not about a record: NXDOMAIN says the name does not exist, NODATA says it
+    // does and the type does not. Every test here therefore carries its own
+    // control — a name that genuinely does not exist, asked in the same zone by
+    // the same code path — because a server that answered NODATA for everything
+    // would satisfy the positive half on its own and be just as wrong.
+    // ================================================================
+
+    /// A zone with an SOA at the apex and one v4-only host under it.
+    fn nodata_zone() -> Database {
+        let db = Database::open_memory().unwrap();
+        db.add_authoritative_zone("home.").unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "home.".to_string(),
+            record_type: RecordKind::SOA,
+            value: "ns1.home. hostmaster.home. 1 7200 3600 1209600 3600".to_string(),
+            ttl: 3600,
+            priority: 0,
+        })
+        .unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "dns.home.".to_string(),
+            record_type: RecordKind::A,
+            value: "192.168.122.50".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+        db
+    }
+
+    async fn ask(server: &Arc<DnsServer>, name: &str, qtype: RecordType) -> Message {
+        let bytes = server
+            .handle_query(&build_query(name, qtype))
+            .await
+            .unwrap();
+        Message::from_bytes(&bytes).unwrap()
+    }
+
+    /// The reported bug, at its smallest: a host with an A record and no AAAA.
+    ///
+    /// `host dns.home` asks A, AAAA and MX and prints an NXDOMAIN line for each
+    /// of the last two. The A answer proves the name exists, so NXDOMAIN — which
+    /// asserts it does not — contradicts an answer the same server gave a
+    /// moment earlier.
+    #[tokio::test]
+    async fn a_name_with_only_an_a_record_gives_nodata_for_other_types() {
+        let server = make_test_server(nodata_zone());
+
+        let a = ask(&server, "dns.home.", RecordType::A).await;
+        assert_eq!(a.response_code(), ResponseCode::NoError);
+        assert_eq!(a.answers().len(), 1, "the control: the name does exist");
+
+        for qtype in [RecordType::AAAA, RecordType::MX, RecordType::TXT] {
+            let resp = ask(&server, "dns.home.", qtype).await;
+            assert_eq!(
+                resp.response_code(),
+                ResponseCode::NoError,
+                "{qtype:?} at a name that exists must be NODATA, not NXDOMAIN"
+            );
+            assert!(
+                resp.answers().is_empty(),
+                "{qtype:?} NODATA carries no answer records"
+            );
+        }
+    }
+
+    /// The control for the test above. A name with nothing at it is still
+    /// NXDOMAIN — the fix must not turn every negative into NOERROR, which is
+    /// the failure mode that would satisfy the positive assertion trivially.
+    #[tokio::test]
+    async fn a_name_that_does_not_exist_is_still_nxdomain() {
+        let server = make_test_server(nodata_zone());
+
+        for qtype in [RecordType::A, RecordType::AAAA, RecordType::MX] {
+            let resp = ask(&server, "absent.home.", qtype).await;
+            assert_eq!(
+                resp.response_code(),
+                ResponseCode::NXDomain,
+                "{qtype:?} at a name with nothing at or beneath it is NXDOMAIN"
+            );
+        }
+    }
+
+    /// The zone apex is the worst case of the bug: `home. SOA` and `home. NS`
+    /// answer NOERROR while `home. A` answered NXDOMAIN, so the server denied
+    /// the existence of a name it was simultaneously serving records for.
+    #[tokio::test]
+    async fn the_zone_apex_does_not_deny_its_own_existence() {
+        let server = make_test_server(nodata_zone());
+
+        let soa = ask(&server, "home.", RecordType::SOA).await;
+        assert_eq!(soa.response_code(), ResponseCode::NoError);
+        assert_eq!(soa.answers().len(), 1, "the control: the apex has an SOA");
+
+        let a = ask(&server, "home.", RecordType::A).await;
+        assert_eq!(
+            a.response_code(),
+            ResponseCode::NoError,
+            "an apex that serves an SOA cannot answer NXDOMAIN for its own name"
+        );
+        assert!(a.answers().is_empty());
+    }
+
+    /// An empty non-terminal exists. `_tcp.example.` holds no records while
+    /// `_https._tcp.example.` does, and NXDOMAIN for the parent tells an RFC
+    /// 8020 resolver the child cannot exist either — which would take out the
+    /// very name that proves the parent real.
+    #[tokio::test]
+    async fn an_empty_non_terminal_is_nodata_not_nxdomain() {
+        let db = Database::open_memory().unwrap();
+        db.add_authoritative_zone("home.").unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "_https._tcp.gitea.home.".to_string(),
+            record_type: RecordKind::TLSA,
+            value: "3 1 1 abcdef".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+        let server = make_test_server(db);
+
+        let ent = ask(&server, "_tcp.gitea.home.", RecordType::A).await;
+        assert_eq!(
+            ent.response_code(),
+            ResponseCode::NoError,
+            "a name with descendants exists, even holding no records itself"
+        );
+
+        // The control: a sibling with neither records nor descendants.
+        let absent = ask(&server, "_udp.gitea.home.", RecordType::A).await;
+        assert_eq!(absent.response_code(), ResponseCode::NXDomain);
+    }
+
+    /// A query type the server has no record kind for used to skip the database
+    /// entirely and return NXDOMAIN for a name it never looked up. CAA is the
+    /// case that matters in practice: an ACME client reads it before issuing,
+    /// and NXDOMAIN for a host that exists is a different answer from "this host
+    /// publishes no CAA policy".
+    #[tokio::test]
+    async fn an_unsupported_query_type_does_not_deny_the_name() {
+        let server = make_test_server(nodata_zone());
+
+        let caa = ask(&server, "dns.home.", RecordType::CAA).await;
+        assert_eq!(
+            caa.response_code(),
+            ResponseCode::NoError,
+            "CAA maps to no record kind, but the NAME still exists"
+        );
+        assert!(caa.answers().is_empty());
+
+        // The control: the same unsupported type at a name that does not exist.
+        let absent = ask(&server, "absent.home.", RecordType::CAA).await;
+        assert_eq!(absent.response_code(), ResponseCode::NXDomain);
+    }
+
+    /// RFC 2308 §3: both negatives carry the zone's SOA in the authority
+    /// section, and its MINIMUM is how a resolver learns how long to cache the
+    /// negative. Without it every downstream resolver applies its own default.
+    #[tokio::test]
+    async fn negative_answers_carry_the_zone_soa() {
+        let server = make_test_server(nodata_zone());
+
+        for (name, expected) in [
+            ("dns.home.", ResponseCode::NoError),
+            ("absent.home.", ResponseCode::NXDomain),
+        ] {
+            let resp = ask(&server, name, RecordType::AAAA).await;
+            assert_eq!(resp.response_code(), expected);
+            let soa: Vec<_> = resp
+                .name_servers()
+                .iter()
+                .filter(|r| r.record_type() == RecordType::SOA)
+                .collect();
+            assert_eq!(
+                soa.len(),
+                1,
+                "{name} negative must carry exactly one SOA in AUTHORITY"
+            );
+            assert_eq!(
+                soa[0].name().to_string(),
+                "home.",
+                "the SOA names the zone, not the queried name"
+            );
+        }
+    }
+
+    /// A zone with no SOA at its apex still answers, and answers *negatively* —
+    /// the SOA lookup is best-effort, not a precondition. The control here is
+    /// the rcode: if a missing SOA had turned into an error or a positive
+    /// answer, this would not be NXDOMAIN.
+    #[tokio::test]
+    async fn a_zone_without_an_soa_still_answers_negatively() {
+        let db = Database::open_memory().unwrap();
+        db.add_authoritative_zone("home.").unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "dns.home.".to_string(),
+            record_type: RecordKind::A,
+            value: "192.168.122.50".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+        let server = make_test_server(db);
+
+        let nodata = ask(&server, "dns.home.", RecordType::AAAA).await;
+        assert_eq!(nodata.response_code(), ResponseCode::NoError);
+        assert!(nodata.name_servers().is_empty());
+
+        let nxdomain = ask(&server, "absent.home.", RecordType::AAAA).await;
+        assert_eq!(nxdomain.response_code(), ResponseCode::NXDomain);
+        assert!(nxdomain.name_servers().is_empty());
+    }
+
+    /// Both negatives are still authoritative answers. The AA bit is what tells
+    /// a resolver the negative is worth believing rather than worth retrying
+    /// elsewhere, and NODATA must not quietly drop it.
+    #[tokio::test]
+    async fn both_negatives_stay_authoritative() {
+        let server = make_test_server(nodata_zone());
+
+        assert!(
+            ask(&server, "dns.home.", RecordType::AAAA)
+                .await
+                .authoritative()
+        );
+        assert!(
+            ask(&server, "absent.home.", RecordType::AAAA)
+                .await
+                .authoritative()
+        );
+    }
+
+    /// `name_occupied` is the whole decision, so it gets pinned directly: at the
+    /// name, beneath the name, and neither.
+    #[test]
+    fn name_occupied_sees_records_at_and_beneath_a_name() {
+        let db = nodata_zone();
+
+        assert!(db.name_occupied("dns.home.").unwrap(), "record at the name");
+        assert!(db.name_occupied("home.").unwrap(), "records beneath it");
+        assert!(!db.name_occupied("absent.home.").unwrap(), "neither");
+    }
+
+    /// The scoped half of the same decision, over the in-memory scoped cache
+    /// rather than SQLite. Keys there are `<scope>:<name>:<type>`, so the
+    /// "beneath" test has to split the type off the end first — without that, a
+    /// record *type* ending in the queried name would read as a descendant.
+    #[test]
+    fn scoped_name_occupied_is_scoped_and_sees_descendants() {
+        let db = Database::open_memory().unwrap();
+        db.create_network_scope(&crate::db::NetworkScope {
+            name: "office".to_string(),
+            home_domain: "office.home.".to_string(),
+        })
+        .unwrap();
+        db.create_network_scope(&crate::db::NetworkScope {
+            name: "lab".to_string(),
+            home_domain: "lab.home.".to_string(),
+        })
+        .unwrap();
+        db.add_scoped_record(
+            "office",
+            &DnsRecord {
+                id: None,
+                name: "gitea.office.home.".to_string(),
+                record_type: RecordKind::A,
+                value: "10.0.0.9".to_string(),
+                ttl: 300,
+                priority: 0,
+            },
+        )
+        .unwrap();
+
+        assert!(db.scoped_name_occupied("office", "gitea.office.home."));
+        assert!(
+            db.scoped_name_occupied("office", "office.home."),
+            "the apex has a descendant"
+        );
+        assert!(!db.scoped_name_occupied("office", "absent.office.home."));
+        assert!(
+            !db.scoped_name_occupied("lab", "gitea.office.home."),
+            "a sibling scope's record is not this scope's"
+        );
+    }
+
+    /// The LAN fallback resolves the union of the global table and the owning
+    /// scope, so a name recorded in only one half still exists.
+    ///
+    /// A scope-only check gets this wrong in a way that hides: the fallback is
+    /// reached only after the *global* lookup missed, and that lookup was keyed
+    /// by type. A global A record with no AAAA misses on AAAA, misses in the
+    /// scope, and would be denied — while its A answers from the global table.
+    #[tokio::test]
+    async fn the_lan_fallback_counts_global_records_as_existence() {
+        let db = Database::open_memory().unwrap();
+        db.create_network_scope(&crate::db::NetworkScope {
+            name: "office".to_string(),
+            home_domain: "office.home.".to_string(),
+        })
+        .unwrap();
+        // Global only — nothing scoped for this name.
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "nas.office.home.".to_string(),
+            record_type: RecordKind::A,
+            value: "192.168.1.20".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+        let server = make_test_server(db);
+
+        let a = ask(&server, "nas.office.home.", RecordType::A).await;
+        assert_eq!(a.response_code(), ResponseCode::NoError);
+        assert_eq!(a.answers().len(), 1, "the control: the LAN resolves it");
+
+        let nodata = ask(&server, "nas.office.home.", RecordType::AAAA).await;
+        assert_eq!(
+            nodata.response_code(),
+            ResponseCode::NoError,
+            "the scope alone must not deny a name the global table serves"
+        );
+
+        let nxdomain = ask(&server, "absent.office.home.", RecordType::AAAA).await;
+        assert_eq!(
+            nxdomain.response_code(),
+            ResponseCode::NXDomain,
+            "the control: absent in both halves"
+        );
+    }
+
+    /// A name a wildcard matches **exists**, so a type the wildcard does not
+    /// carry is NODATA rather than NXDOMAIN.
+    ///
+    /// RFC 4592 §2.2.1: the wildcard establishes the name. Denying it outright
+    /// contradicts the positive answer the very same wildcard gives one query
+    /// earlier — and under DNSSEC the NXDOMAIN is not merely wrong but
+    /// unprovable, because that proof needs an NSEC covering `*.example.com.`
+    /// and no such record can exist while the wildcard does.
+    #[tokio::test]
+    async fn a_wildcard_matched_name_is_nodata_not_nxdomain() {
+        let db = Database::open_memory().unwrap();
+        db.add_authoritative_zone("home.").unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "*.home.".to_string(),
+            record_type: RecordKind::A,
+            value: "192.0.2.5".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+        let server = make_test_server(db);
+
+        // The control: the wildcard does answer for this name.
+        let a = ask(&server, "anything.home.", RecordType::A).await;
+        assert_eq!(a.response_code(), ResponseCode::NoError);
+        assert_eq!(a.answers().len(), 1, "the wildcard synthesizes an A");
+
+        let aaaa = ask(&server, "anything.home.", RecordType::AAAA).await;
+        assert_eq!(
+            aaaa.response_code(),
+            ResponseCode::NoError,
+            "a name the wildcard establishes must not be denied for a missing type"
+        );
+        assert!(aaaa.answers().is_empty());
+    }
+
+    /// ...and the control that keeps the rule from swallowing everything: a
+    /// wildcard covers one label, so a name two levels down matches nothing and
+    /// is still NXDOMAIN.
+    #[test]
+    fn a_wildcard_establishes_only_the_names_it_matches() {
+        let db = Database::open_memory().unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "*.home.".to_string(),
+            record_type: RecordKind::A,
+            value: "192.0.2.5".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        assert_eq!(
+            db.wildcard_owner_for("anything.home.").unwrap(),
+            Some("*.home.".to_string()),
+        );
+        assert_eq!(
+            db.wildcard_owner_for("deep.anything.home.").unwrap(),
+            None,
+            "`*.home.` does not match a name two labels down"
+        );
+        assert_eq!(
+            db.wildcard_owner_for("elsewhere.test.").unwrap(),
+            None,
+            "and not another zone at all"
+        );
+    }
+
+    /// An alias answers every type asked at its name, including the types this
+    /// server has no `RecordKind` for.
+    ///
+    /// RFC 1034 §3.6.2: a CNAME is a property of the NAME, so it is the answer
+    /// to any query type except CNAME itself. The local-lookup block is gated on
+    /// a mapped type, so CAA and NAPTR used to skip the CNAME check along with
+    /// it — telling an ACME client that an aliased name published no CAA policy
+    /// rather than sending it to the target that holds one.
+    #[tokio::test]
+    async fn an_unsupported_type_still_follows_a_cname() {
+        let db = Database::open_memory().unwrap();
+        db.add_authoritative_zone("home.").unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "alias.home.".to_string(),
+            record_type: RecordKind::CNAME,
+            value: "target.home.".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+        let server = make_test_server(db);
+
+        // The control: a mapped type follows the alias, and always did.
+        let a = ask(&server, "alias.home.", RecordType::A).await;
+        assert_eq!(a.response_code(), ResponseCode::NoError);
+        assert_eq!(a.answers().len(), 1);
+        assert_eq!(a.answers()[0].record_type(), RecordType::CNAME);
+
+        // The fix: an unmapped type follows it too.
+        let caa = ask(&server, "alias.home.", RecordType::CAA).await;
+        assert_eq!(caa.response_code(), ResponseCode::NoError);
+        assert_eq!(
+            caa.answers().len(),
+            1,
+            "CAA at an aliased name must be answered with the alias"
+        );
+        assert_eq!(caa.answers()[0].record_type(), RecordType::CNAME);
+
+        // The second control: an unmapped type at a name with NO alias is still
+        // NODATA, so this is not "CAA always answers something".
+        let plain = ask(&server, "alias.home.", RecordType::CNAME).await;
+        assert_eq!(
+            plain.answers().len(),
+            1,
+            "CNAME itself is answered directly"
+        );
+    }
+
+    /// The SOA is found by walking up from the queried name, not by reading the
+    /// zone name that made the server authoritative.
+    ///
+    /// Those differ constantly, and in the most ordinary case there is. A
+    /// managed zone is derived from the last two labels of a stored FQDN, so the
+    /// record at `dns.home.` registers `dns.home.` as a zone of its own —
+    /// matched *before* `home.` when the negative is decided — and an apex read
+    /// at that name finds nothing. A host one label under its zone apex is the
+    /// commonest shape in any zone, so this would have silently stripped the
+    /// negative TTL from nearly every NODATA the server produces.
+    #[test]
+    fn the_soa_comes_from_the_enclosing_zone_not_the_matched_zone_name() {
+        let db = nodata_zone();
+
+        // The heuristic really does register the host name as its own zone —
+        // this is the precondition, not an assumption.
+        assert_eq!(
+            db.find_managed_zone("dns.home."),
+            Some("dns.home.".to_string()),
+            "the last-two-labels heuristic matches the host name itself"
+        );
+        assert!(
+            db.lookup("dns.home.", Some(RecordKind::SOA))
+                .unwrap()
+                .is_empty(),
+            "and that name holds no SOA, which is the trap"
+        );
+
+        let soa = db.closest_soa("dns.home.").unwrap();
+        assert_eq!(soa.len(), 1, "the walk finds the apex above it");
+        assert_eq!(soa[0].name, "home.");
+
+        // The control: a name under no zone with an SOA gets none.
+        assert!(
+            db.closest_soa("nothing.example.invalid.")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// `ancestor_names` is the walk itself: most specific first, stopping at the
+    /// last label rather than descending to the root.
+    #[test]
+    fn ancestor_names_walks_most_specific_first() {
+        assert_eq!(
+            crate::db::ancestor_names_for_test("a.b.c."),
+            vec!["a.b.c.", "b.c.", "c."],
+        );
+        assert_eq!(crate::db::ancestor_names_for_test("home."), vec!["home."]);
+        assert!(crate::db::ancestor_names_for_test(".").is_empty());
+    }
+
+    /// `_` is a LIKE wildcard and a legal DNS label character at once. Without
+    /// escaping, `_x.home.` would match `ax.home.` and a name that does not
+    /// exist would answer NODATA.
+    #[test]
+    fn name_occupied_does_not_treat_underscore_as_a_wildcard() {
+        let db = Database::open_memory().unwrap();
+        db.add_record(&DnsRecord {
+            id: None,
+            name: "ax.home.".to_string(),
+            record_type: RecordKind::A,
+            value: "192.0.2.1".to_string(),
+            ttl: 300,
+            priority: 0,
+        })
+        .unwrap();
+
+        assert!(db.name_occupied("ax.home.").unwrap(), "the control");
+        assert!(!db.name_occupied("_x.home.").unwrap());
     }
 }

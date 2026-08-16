@@ -98,10 +98,29 @@ async fn main() -> Result<()> {
     // here (before the RBL checker) so blocklist lookups can resolve the same way
     // rolodex does — from the roots, then the forwarder — instead of via the
     // local stub (which points back at rolodex and loops; see RecursiveDnsblResolver).
-    let forwarders: Vec<SocketAddr> = config
+    // `forwarders:` entries are typed: a bare `ip:port` is plaintext UDP, and a
+    // scheme names any other transport (`tls://`, `https://`, `quic://`,
+    // `tcp://`). A bad entry is warned about and skipped rather than fatal —
+    // this is the box's only resolver, and refusing to start over one typo'd
+    // forwarder takes DNS down for everything on it.
+    let forwarders: Vec<rolodex_dns::forwarder::Forwarder> = config
         .forwarders
         .iter()
-        .filter_map(|f| f.parse().ok())
+        .filter_map(|f| match rolodex_dns::forwarder::Forwarder::parse(f) {
+            Ok(forwarder) => Some(forwarder),
+            Err(e) => {
+                warn!("Skipping forwarder '{}': {}", f, e);
+                None
+            }
+        })
+        .collect();
+    // The DNSBL resolver speaks plaintext DNS directly and has no encrypted
+    // client, so it gets the subset it can actually use rather than a list it
+    // would have to silently ignore entries from.
+    let plaintext_forwarders: Vec<SocketAddr> = forwarders
+        .iter()
+        .filter(|f| !f.transport.is_encrypted())
+        .map(|f| f.addr)
         .collect();
     let root_hint_ips: Vec<IpAddr> = config
         .resolution
@@ -114,7 +133,7 @@ async fn main() -> Result<()> {
     // that silently does not apply means the provider's "stop querying me"
     // answer reads as a listing and NXDOMAINs every name checked against it.
     let dnsbl = Arc::new(DnsblChecker::with_resolver(Arc::new(
-        RecursiveDnsblResolver::new(root_hint_ips.clone(), forwarders.clone()),
+        RecursiveDnsblResolver::new(root_hint_ips.clone(), plaintext_forwarders.clone()),
     )));
     dnsbl.set_refusal_cooldown(config.dnsbl.refusal_cooldown_secs);
 
@@ -162,11 +181,15 @@ async fn main() -> Result<()> {
     let dns_server = Arc::new(DnsServer::new_with_options(
         db.clone(),
         dnsbl.clone(),
-        forwarders,
+        Vec::new(),
         Some(Arc::clone(&dns_cache)),
         dns64_prefix,
         config.security.qname_case_randomization,
     ));
+    // Installed after construction rather than through the constructor, whose
+    // parameter is plaintext-only: an encrypted forwarder has no socket-address
+    // spelling to pass through it.
+    dns_server.set_typed_forwarders(forwarders);
 
     // Configure upstream resolution mode (auto fallback chain by default).
     let resolution_mode = match config.resolution.mode.to_ascii_lowercase().as_str() {
@@ -230,7 +253,7 @@ async fn main() -> Result<()> {
         .secure_upstreams
         .iter()
         .filter_map(
-            |c| match rolodex_dns::secure_client::SecureUpstream::from_config(c) {
+            |c| match rolodex_dns::forwarder::Forwarder::from_secure_config(c) {
                 Ok(u) => Some(u),
                 Err(e) => {
                     warn!("Skipping secure upstream: {}", e);
@@ -239,11 +262,11 @@ async fn main() -> Result<()> {
             },
         )
         .collect();
-    let public_fallback: Vec<SocketAddr> = config
+    let public_fallback: Vec<rolodex_dns::forwarder::Forwarder> = config
         .resolution
         .public_fallback
         .iter()
-        .filter_map(|f| match f.parse() {
+        .filter_map(|f| match rolodex_dns::forwarder::Forwarder::parse(f) {
             Ok(a) => Some(a),
             Err(e) => {
                 warn!("Skipping public fallback '{}': {}", f, e);
@@ -261,7 +284,7 @@ async fn main() -> Result<()> {
         );
     }
     dns_server.set_secure_upstreams(secure_upstreams);
-    dns_server.set_public_fallback(public_fallback);
+    dns_server.set_typed_public_fallback(public_fallback);
     dns_server.set_auto_params(
         config.resolution.switch_grace_failures,
         config.resolution.recovery_probe_secs,
@@ -377,6 +400,15 @@ async fn main() -> Result<()> {
     let probe_server = Arc::clone(&dns_server);
     tokio::spawn(async move {
         probe_server.recovery_probe_loop().await;
+    });
+
+    // Re-sign zones whose records changed since they were last signed. Always
+    // spawned and a no-op with no signed zones, the same shape as the loop
+    // above: a zone that acquires keys at runtime must not need a restart before
+    // its signatures start being maintained.
+    let resign_server = Arc::clone(&dns_server);
+    tokio::spawn(async move {
+        resign_server.resign_loop().await;
     });
 
     // Shard every UDP listener across SO_REUSEPORT sockets so receive and send

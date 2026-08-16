@@ -73,7 +73,7 @@ LOG_DIR := /tmp/rolodex-dns/log
 export LOG_DIR
 
 .PHONY: help test test-log build clean go-test go-integration-test dev dev-release install lint bench
-.PHONY: rust-test rust-integration-test prometheus-test translation-check
+.PHONY: rust-test rust-integration-test prometheus-test translation-check check-townos-sync
 .PHONY: deps python-deps js-lint js-test js-integration-test
 .PHONY: image push push-arch push-rc push-release manifest manifest-rc manifest-release quay-login clean-containers
 .PHONY: image-amd64 push-rc-amd64 push-release-amd64 push-rc-all push-release-all cross-deps
@@ -86,7 +86,7 @@ help: ## Show this help
 
 ##@ Build & Test
 
-lint: translation-check ## Run the translation drift check, cargo fmt --check and clippy -D warnings
+lint: translation-check check-townos-sync ## Run the translation and contract checks, cargo fmt --check and clippy -D warnings
 	cargo fmt -- --check
 	cargo clippy --all-targets -- -D warnings
 
@@ -101,6 +101,18 @@ lint: translation-check ## Run the translation drift check, cargo fmt --check an
 # counts. Pure Python with no network and no containers; needs python3 on PATH.
 translation-check: python-deps ## Check the translated docs against English for dropped content
 	python3 translation-drift-check.py
+
+# Verifies TOWNOS_CONTRACT.md against the ../town-os and ../install checkouts on
+# this machine: the methods Town OS's rolodex client declares, the forwarder
+# scheme sets in the two hand-written parsers, and the fixed addresses each of
+# the three repositories writes independently.
+#
+# Nothing is pinned to a revision — a pin goes stale silently and fails loudly on
+# commits that changed nothing rolodex depends on. It SKIPS when neither checkout
+# is present, so this repository still builds on a machine that has only it.
+# Override the locations with TOWNOS_DIR= and INSTALL_DIR=.
+check-townos-sync: ## Check TOWNOS_CONTRACT.md against local town-os/install checkouts
+	bash make/check-townos-sync.sh
 
 # Runs the documented PromQL through a real Prometheus, which is the only way to
 # catch a query that is malformed *as PromQL* rather than merely naming a series
@@ -134,6 +146,7 @@ rust-integration-test: build ## Run each Rust integration test file
 	cargo test --test dhcp_integration_test
 	cargo test --test acme_issuer_test
 	cargo test --test auto_resolution_test
+	cargo test --test forwarder_transport_test
 	cargo test --test metrics_test
 	cargo test --test blocking_metrics_test
 	cargo test --test promql_docs_test
@@ -143,10 +156,12 @@ rust-integration-test: build ## Run each Rust integration test file
 	cargo test --test prometheus_integration_test
 	cargo test --test blocklist_refusal_test
 	cargo test --test dnssec_signing_test
+	cargo test --test dnssec_serving_test
 	cargo test --test dnssec_validation_test
 	cargo test --test dnssec_hidden_cut_test
 	cargo test --test arpa_refusal_test
 	cargo test --test blocklist_nxdomain_test
+	cargo test --test nodata_test
 	cargo test --test zonemd_test
 	cargo test --test dot_test
 	cargo test --test doq_test

@@ -15,8 +15,9 @@ Rolodex DNS 是一套分割視域（split-horizon）DNS 伺服器與遞迴／轉
 | `CONFIGURATION.md` | 任務導向的設定指南——實際部署形態、哪些設定需要重啟、依症狀查找的疑難排解。 |
 | `CHANGELOG.md` | 版本歷史。 |
 | `CLAUDE.md` | 本檔案。只放開發規則。 |
+| `TOWNOS_CONTRACT.md` | 與 Town OS、安裝映像檔以及 ttyforce 之間雙向跨越邊界的所有事物。由 `make check-townos-sync` 驗證。在改動 gRPC 表面、轉發器文法，或任何寫在不只一個儲存庫裡的位址之前，請先讀它。 |
 
-這五份文件每一份都各有繁體中文（`.zh-TW.md`）、簡體中文（`.zh-CN.md`）、歐洲西班牙文（`.es-ES.md`）、墨西哥西班牙文（`.es-MX.md`）與日文（`.ja-JP.md`）譯本並列。**英文版是唯一的真實來源**：請先改英文版，並把譯本視為需要後續補上的工作，而不是第二個可以編輯的地方。沒有任何東西會驗證它們彼此一致——`tests/promql_docs_test.rs` 只讀英文的 `README.md` 與 `DESIGN.md`，因此譯本中的 PromQL 區塊或系列數量是文件，而不是一項受檢查的斷言。
+這六份文件每一份都各有繁體中文（`.zh-TW.md`）、簡體中文（`.zh-CN.md`）、歐洲西班牙文（`.es-ES.md`）、墨西哥西班牙文（`.es-MX.md`）與日文（`.ja-JP.md`）譯本並列。**英文版是唯一的真實來源**：請先改英文版，並把譯本視為需要後續補上的工作，而不是第二個可以編輯的地方。沒有任何東西會驗證它們彼此一致——`tests/promql_docs_test.rs` 只讀英文的 `README.md` 與 `DESIGN.md`，因此譯本中的 PromQL 區塊或系列數量是文件，而不是一項受檢查的斷言。
 
 ## 規則
 

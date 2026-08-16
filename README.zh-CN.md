@@ -47,7 +47,7 @@ Rolodex DNS 另外支持用于垃圾邮件／恶意软件过滤的域名封锁�
 - **集成的 DHCPv4 服务器**：逐范围的地址池、粘滞的 MAC 绑定、自动的 A/PTR 注册、通过站点专用选项交付证书，以及后台租约清扫
 - **自动反向 PTR 记录**：可选（`dns.auto_ptr`）为通过 gRPC 新增的 A/AAAA 记录维护对应的 `in-addr.arpa`／`ip6.arpa` PTR
 - **代理支持**：通过 HTTP CONNECT、SOCKS5 或 DoH 代理转发 DNS 查询
-- **Prometheus 指标**：一个可选、默认关闭的 `/metrics` 端点，输出 82 个具备有界标签基数的指标系列——包含逐阶段的答案归因与逐 TLD 隔离，让分割视域流水线从外面看得懂。查询名称永远不会成为标签
+- **Prometheus 指标**：一个可选、默认关闭的 `/metrics` 端点，输出 85 个具备有界标签基数的指标系列——包含逐阶段的答案归因与逐 TLD 隔离，让分割视域流水线从外面看得懂。查询名称永远不会成为标签
 - **SQLite 持久化**：DNS 记录跨重启保存
 - **TLS 热重载**：证书文件每 30 秒被轮询一次，续期后的一对会在该窗口内由 DoT、DoH、DoQ、ACME 与登记门户提供出去，无需重启，也不会掉连接。重建失败——文件被截断，或者轮询恰好落在 ACME 客户端的两次写入之间——会让此前的证书继续提供，并在下一次轮询时重试
 - **性能**：多线程 tokio 运行时、无锁的封锁列表与解析器状态（`AtomicBool` + `ArcSwap` + 原子操作）、范围／区域／TLD／封锁条目的开机内存缓存、供上游转发使用的 UDP 套接字池，以及全面采用的 DashMap/DashSet 并发缓存
@@ -1612,9 +1612,9 @@ metrics:
 
 这个端点不做认证，且只承载汇总计数——没有查询名称、没有记录值、没有证书材料。请把它绑在私有地址上；默认是 loopback。这里刻意不提供 TLS，因为那会意味着要把一张自签证书发给每一个抓取端，而这个端点本来就不该对外可达。
 
-输出 82 个指标系列，全部以 `rolodex_dns_` 为前缀，涵盖查询、响应缓存、封锁列表（包含拒答与被移出轮换的提供方）、上游层级、迭代解析器、DNSSEC 判定、分割视域状态、DHCP、ACME、gRPC 与运行期本身的阻塞工作。
+输出 85 个指标系列，全部以 `rolodex_dns_` 为前缀，涵盖查询、响应缓存、封锁列表（包含拒答与被移出轮换的提供方）、上游层级、迭代解析器、DNSSEC 判定、分割视域状态、DHCP、ACME、gRPC 与运行期本身的阻塞工作。
 
-其中最值得认识的是 `rolodex_dns_answers_total{source}`，它报告解析顺序中的哪个阶段产生了每个答案——`cache`、`local`、`scoped`、`scope_fallback`、`tld_peer`、`blocklist`、`reverse_blocklist`、`dns64`、`upstream`、`authoritative_nxdomain`、`refused`、`error`。它的总数等于查询总数，而这正是让分割视域流水线从外面看得懂的关键：
+其中最值得认识的是 `rolodex_dns_answers_total{source}`，它报告解析顺序中的哪个阶段产生了每个答案——`cache`、`local`、`scoped`、`scope_fallback`、`tld_peer`、`blocklist`、`reverse_blocklist`、`dns64`、`upstream`、`authoritative_nxdomain`、`authoritative_nodata`、`refused`、`error`。它的总数等于查询总数，而这正是让分割视域流水线从外面看得懂的关键：
 
 ```
 curl -s http://127.0.0.1:9153/metrics | grep answers_total
