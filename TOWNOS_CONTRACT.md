@@ -101,6 +101,19 @@ Each of these is written in more than one repository, and each pair has been wro
 
 `127.0.0.2` rather than `127.0.0.1` avoids systemd-resolved's stub on `127.0.0.53` and anything else on `127.0.0.1`; it is also the address `bootstrap-dns.sh` points resolved at, so it is the one bind the box's own resolution cannot work without.
 
+### What the ingress serves while the DoH backend is down
+
+Town OS fronts `127.0.0.2:4443` as a path backend on an ordinary ingress vhost, and that ingress answers a backend which is unreachable — or which answered `5xx` — with a retry page of its own: a `503` that says the service is unavailable and reloads itself every five seconds, instead of Caddy's bare `502`. rolodex restarts are exactly when it fires.
+
+**It is gated on the request, and a DoH client never matches the gate.** The page is served only to `GET`/`HEAD` requests whose `Accept` carries `text/html`. An RFC 8484 client sends `application/dns-message`, and as often as not sends `POST`, so:
+
+- a `5xx` from rolodex reaches the client verbatim — status, body and headers copied through,
+- a rolodex that is not listening yields `503` with `Retry-After` from the ingress rather than `502`.
+
+The second is the only observable change on this path, and it is one rolodex cannot see from its own side, because it happens when rolodex is not running. It is recorded here because "what a DoH client gets while the resolver is restarting" is a Town OS decision that surfaces as a rolodex bug report.
+
+**The gate is the part that is contractual**, not the page behind it: a change on the Town OS side that dropped the `Accept` test would start answering `/dns-query` with an HTML page, and every DoH client on the box would fail to parse a DNS message it was never sent.
+
 ## Metrics
 
 rolodex serves Prometheus text exposition on `127.0.0.2:9153`, opened once at startup from the presence of the `metrics` section. Town OS configures the scrape target from `rolodex.Manager.MetricsAddr()` rather than recomposing it from a default, so the target and the bind cannot drift.

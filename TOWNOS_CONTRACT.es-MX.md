@@ -101,6 +101,19 @@ Que sea `4443` y no `443` es determinante: el ingress se publica en `0.0.0.0:443
 
 Que sea `127.0.0.2` y no `127.0.0.1` evita el stub de systemd-resolved en `127.0.0.53` y cualquier otra cosa en `127.0.0.1`; es además la dirección a la que `bootstrap-dns.sh` apunta resolved, así que es el único enlace sin el cual la resolución de la propia máquina no puede funcionar.
 
+### Qué sirve el ingress mientras el backend DoH está caído
+
+Town OS pone `127.0.0.2:4443` enfrente como path backend de un vhost común del ingress, y ese ingress le responde a un backend inalcanzable — o que contestó `5xx` — con una página de reintento propia: un `503` que dice que el servicio no está disponible y se recarga solo cada cinco segundos, en vez del `502` pelón de Caddy. Los reinicios de rolodex son justo cuando eso se dispara.
+
+**Está condicionada a la petición, y un cliente DoH nunca cumple la condición.** La página se sirve solo a peticiones `GET`/`HEAD` cuyo `Accept` traiga `text/html`. Un cliente RFC 8484 manda `application/dns-message`, y tantas veces como no manda `POST`, así que:
+
+- un `5xx` de rolodex le llega al cliente tal cual — estado, cuerpo y encabezados copiados,
+- un rolodex que no está escuchando produce un `503` con `Retry-After` desde el ingress en lugar de un `502`.
+
+Lo segundo es el único cambio observable en esta ruta, y es uno que rolodex no puede ver desde su lado, porque pasa cuando rolodex no está corriendo. Queda escrito aquí porque «qué recibe un cliente DoH mientras el resolutor se reinicia» es una decisión de Town OS que sale a flote como un reporte de error de rolodex.
+
+**Lo contractual es la condición, no la página que está detrás**: un cambio del lado de Town OS que dejara ir la comprobación de `Accept` empezaría a responder `/dns-query` con una página HTML, y todos los clientes DoH de la máquina fallarían al parsear un mensaje DNS que nunca se les mandó.
+
 ## Métricas
 
 rolodex sirve la exposición de texto de Prometheus en `127.0.0.2:9153`, abierta una sola vez al arrancar por la presencia de la sección `metrics`. Town OS configura el objetivo de recolección desde `rolodex.Manager.MetricsAddr()` en lugar de recomponerlo desde un valor por omisión, así que el objetivo y el enlace no pueden separarse.

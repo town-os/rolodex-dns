@@ -101,6 +101,19 @@ Town OS 那一侧精确依赖的性质：
 
 用 `127.0.0.2` 而不是 `127.0.0.1`，可以避开 systemd-resolved 在 `127.0.0.53` 上的 stub 以及 `127.0.0.1` 上的任何其他东西；它同时也是 `bootstrap-dns.sh` 把 resolved 指向的地址，因此它是这台机器自身的解析少了就无法工作的那一个绑定。
 
+### DoH 后端宕机时，ingress 会端出什么
+
+Town OS 把 `127.0.0.2:4443` 作为一个普通 ingress vhost 上的 path backend 放在前面，而那个 ingress 现在会对一个连不上、或者返回了 `5xx` 的后端给出它自己的重试页面：一个说明服务不可用、并每五秒自行重新加载的 `503`，而不是 Caddy 光秃秃的 `502`。rolodex 重启的那几秒，正是它出场的时候。
+
+**它以请求为闸门，而 DoH 客户端永远不会命中这道闸门。** 该页面只提供给 `Accept` 中带有 `text/html` 的 `GET`／`HEAD` 请求。RFC 8484 的客户端发送的是 `application/dns-message`，而且十有八九用的是 `POST`，因此：
+
+- rolodex 返回的 `5xx` 会原样到达客户端——状态码、正文与响应头都被照抄过去；
+- 没有在监听的 rolodex，会由 ingress 给出带 `Retry-After` 的 `503`，而不是 `502`。
+
+后者是这条路径上唯一可观测的变化，而且是 rolodex 从自己这一侧看不到的变化——因为它发生在 rolodex 没有运行的时候。之所以记在这里，是因为「解析器重启期间 DoH 客户端拿到什么」是一个 Town OS 的决定，而它浮现出来的形态是一份 rolodex 的问题报告。
+
+**具有契约性质的是那道闸门，而不是它后面的页面**：Town OS 那侧若有改动丢掉了 `Accept` 判断，`/dns-query` 就会开始以 HTML 页面作答，而这台机器上的每一个 DoH 客户端都会去解析一份从未发给它的 DNS 报文。
+
 ## Metrics
 
 rolodex 在 `127.0.0.2:9153` 上提供 Prometheus 文本输出，依 `metrics` 这一节的存在，在启动时只打开一次。Town OS 是从 `rolodex.Manager.MetricsAddr()` 配置抓取目标，而不是从某个默认值重新组出来，因此目标与绑定不可能漂移。
