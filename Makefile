@@ -184,6 +184,19 @@ rust-integration-test: build ## Run each Rust integration test file
 	cargo test --test security_dhcp_hostname_test
 	cargo test --test security_tcp_limits_test
 	cargo test --test security_dot_limits_test
+	# The resolver suite. Named here for the same reason as everything above:
+	# a file only picked up by the trailing `cargo test` stops being visible as
+	# its own step, and a failure inside it reads as a failure of everything.
+	cargo test --test delegation_cache_test
+	cargo test --test delegation_flush_test
+	cargo test --test delegation_persist_test
+	cargo test --test record_cache_test
+	cargo test --test negative_ttl_test
+	cargo test --test resolver_selection_test
+	cargo test --test root_balance_test
+	cargo test --test root_priming_test
+	cargo test --test query_budget_test
+	cargo test --test recovery_probe_test
 
 build: ## Compile binaries for TARGET (debug natively; cross-compiled release for a foreign TARGET)
 	@$(if $(CROSS),make/cross.sh build $(BUILD_ARCH),cargo build)

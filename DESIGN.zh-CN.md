@@ -29,6 +29,7 @@ Rolodex DNS 是一套分割视域（split-horizon）DNS 服务器与递归／转
 | `src/metrics.rs` | 手工打造的 Prometheus 注册表与文本输出格式渲染器 |
 | `src/config.rs` | 配置类型、默认值，以及在配置不安全时拒绝启动的验证逻辑 |
 | `src/cidr.rs` / `src/probe.rs` / `src/edns.rs` / `src/ttl_drift.rs` | 来源分类、地址族可路由性探测、EDNS 上下文、TTL 漂移 |
+| `src/svcb.rs` | SVCB/HTTPS 记录值（RFC 9460），以其存储时所用的表示格式——DDR 指定即是由这个类型构成的 |
 | `src/bin/rolodex-dns-cli.rs` | CLI 客户端 |
 
 ## DNS 解析
@@ -1447,8 +1448,9 @@ dns:
 | `test`                | 运行所有测试：lint、Go 集成测试、Go 单元测试、Rust 测试（`cargo test`），以及 JavaScript 测试。 |
 | `test-log`            | 与 `test` 相同，但 tee 进 `/tmp/rolodex-dns/log` 底下带时间戳的日志文件（可用 `LOG_DIR` 覆盖）。即使运行失败，也会在结尾打印日志文件路径。 |
 | `rust-test`           | 运行 Rust 集成测试文件，接着运行 `cargo test`。 |
-| `rust-integration-test` | 先构建，然后逐一明确运行每个 Rust 集成测试文件（`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`blocking_metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`blocklist_nxdomain_test`、`zonemd_test`、`dot_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`、`acme_tlsa_endpoints_test`，以及各 `security_*` 套件）。 |
-| `lint`                | 运行 `translation-check`、`cargo fmt -- --check` 与 `cargo clippy --all-targets -- -D warnings`。 |
+| `rust-integration-test` | 先构建，然后逐一明确运行**每一个** Rust 集成测试文件——`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`forwarder_transport_test`、`metrics_test`、`blocking_metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_serving_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`arpa_refusal_test`、`blocklist_nxdomain_test`、`nodata_test`、`zonemd_test`、`dot_test`、`doq_test`、`doh_h3_test`、`ddr_follow_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`、`acme_tlsa_endpoints_test`、各 `security_*` 套件，以及解析器套件（`delegation_cache_test`、`delegation_flush_test`、`delegation_persist_test`、`record_cache_test`、`negative_ttl_test`、`resolver_selection_test`、`root_balance_test`、`root_priming_test`、`query_budget_test`、`recovery_probe_test`）。仅靠末尾的 `cargo test` 带到的文件，就不再是自己的一个步骤，其中的失败读起来会像是全部都失败了。 |
+| `lint`                | 运行 `translation-check`、`check-townos-sync`、`cargo fmt -- --check` 与 `cargo clippy --all-targets -- -D warnings`。 |
+| `check-townos-sync`   | 以机器上现有的 Town OS、安装镜像与 ttyforce 检出来验证 `TOWNOS_CONTRACT.md`——不锁定任何修订版本，而缺失的检出会被跳过而非判定失败。它是 `lint` 的前置条件。 |
 | `prometheus-test`     | 对一台容器化的 Prometheus（`quay.io/prometheus/prometheus`，可通过 `ROLODEX_PROMETHEUS_IMAGE` 覆盖）运行每一条文档中的 PromQL 查询。它是 `test` 的先决条件。需要 podman；没有它时测试会**大声跳过**而不是失败，因此没有容器运行环境的机器仍能得到绿色的 `make test`。`ROLODEX_PROMETHEUS_REQUIRED=1` 会把那个跳过变成失败，这正是 CI 应该设置的。 |
 | `deps`                | 安装构建依赖：Rust 的交叉编译工具链（`cross-deps`）、JavaScript 的开发依赖（在 `js/` 中运行 `npm install`），以及 `python-deps`。 |
 | `cross-deps`          | 安装 Rust 交叉工具链：对两个目标三元组运行 `rustup target add`、`cargo-zigbuild` 与 zig。不需要 root——见“交叉编译”。 |
@@ -1616,6 +1618,7 @@ Rust 测试（`cargo test`）包含单元测试与集成测试，涵盖 gRPC 操
 | 测试文件 | 它钉住了什么 |
 | -------- | ------------ |
 | `tests/auto_resolution_test.rs` | `auto` 层级链：根递归指向 loopback 以便迅速失败、空的安全层级、供明文层级使用的模拟 UDP 上游——像在一个过滤对外 `:53` 的网络上那样操练“确定性答案／往下落”的逻辑。 |
+| `tests/forwarder_transport_test.rs` | 为转发器标定类型所要保障的两个性质，各自附上其对照组：打进明文列表里的加密上游会落在**安全**层（旧的形状根本无法表达这个归属），而被黑洞掉的转发器会停止被**拨号**——这是以一个永不回应的回环 socket 上的连接次数来断言的，因为“最后会回 SERVFAIL”这种测试，不论断路器在不在都会通过。 |
 | `tests/recovery_probe_test.rs` | 层级**恢复**，对照已签名的层级：通过验证的根服务器会被夺回，而那些连得上但未签名、由外来密钥签名或已过期的则不会——外加“绝不把客户端查询拿去探测”这道保障。它刻意涵盖两个方向：一道永不开启的关卡能通过所有负面测试，一道永远开启的关卡能通过所有正面测试。 |
 | `tests/delegation_cache_test.rs` | N 个冷名称必须只花**一次**根查询，而不是 N 次。 |
 | `tests/delegation_flush_test.rs` | `flush_cache()`（从 15 个以上的 gRPC 变更点被调用）**不可**抹掉委派；只有 `flush_upstream_state()` 可以。新增一个包不可以把每一个名称都送回根服务器。 |
@@ -1736,7 +1739,7 @@ Go 客户端有两层测试：
 - **单元测试**——通过 `bufconn` 使用一台进程内的模拟 gRPC 服务器，测试所有客户端方法、认证令牌的传递、传输模式、错误处理，以及边界情况（幂等的关闭、延迟拨号、自定义拨号选项）。
 - **集成测试**——以 `integration` 构建标签把关。每个测试都会以一个独有的临时目录、随机端口与隔离的数据库，启动一个真实的 Rolodex DNS 服务器子进程。测试涵盖记录的 CRUD、通配符筛选、转发器配置、封锁列表往返、缓存清空、Unix 套接字传输、认证失败、默认 TTL 行为、并发客户端（5 个同时）、网络范围划分、DNS64 与 TTL 漂移。
 
-`make test` 目标会运行完整的测试套件：lint、Go 集成测试、Go 单元测试、Rust 集成测试（逐一明确列出每个测试文件：`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`blocking_metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`blocklist_nxdomain_test`、`zonemd_test`、`dot_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`、`acme_tlsa_endpoints_test`，以及各 `security_*` 套件）、通过 `cargo test` 运行的所有 Rust 测试（它也涵盖上面那套解析器测试），以及 JavaScript 的 lint／集成／单元测试。单独的目标也可以使用：`make go-integration-test`、`make go-test`、`make rust-integration-test`、`make rust-test`、`make js-integration-test`、`make js-test`。使用 `make test-log` 可把整轮运行捕获到一份带时间戳的日志文件中。`make translation-check` 会逐节比对每份翻译文档与英文原文，只要有落差就以非零状态退出；它是 `lint` 的前置依赖，因此会随 `make test` 一并运行，并在某个语系落后时让关卡失败。
+`make test` 目标会运行完整的测试套件：lint、Go 集成测试、Go 单元测试、Rust 集成测试（逐一明确运行每一个测试文件——清单见上方 `rust-integration-test` 那一行，其中也包含解析器套件）、通过 `cargo test` 运行的所有 Rust 测试，以及 JavaScript 的 lint／集成／单元测试。单独的目标也可以使用：`make go-integration-test`、`make go-test`、`make rust-integration-test`、`make rust-test`、`make js-integration-test`、`make js-test`。使用 `make test-log` 可把整轮运行捕获到一份带时间戳的日志文件中。`make translation-check` 会逐节比对每份翻译文档与英文原文，只要有落差就以非零状态退出；它是 `lint` 的前置依赖，因此会随 `make test` 一并运行，并在某个语系落后时让关卡失败。
 
 ## 主要依赖
 

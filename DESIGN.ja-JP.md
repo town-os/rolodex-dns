@@ -29,6 +29,7 @@ Rolodex DNS は、gRPC によるリモート管理を備えたスプリットホ
 | `src/metrics.rs` | 手書きの Prometheus レジストリとテキスト公開形式のレンダラー |
 | `src/config.rs` | 設定型、既定値、そして安全でない設定を拒む起動時の検証 |
 | `src/cidr.rs` / `src/probe.rs` / `src/edns.rs` / `src/ttl_drift.rs` | 送信元の分類、アドレスファミリーの経路到達性プローブ、EDNS コンテキスト、TTL ドリフト |
+| `src/svcb.rs` | SVCB/HTTPS レコード値（RFC 9460）を、保存に用いる表現形式のまま扱う——DDR の指定はこの型でできている |
 | `src/bin/rolodex-dns-cli.rs` | CLI クライアント |
 
 ## DNS 解決
@@ -1447,8 +1448,9 @@ dns:
 | `test`                | すべてのテストを実行します：lint、Go の統合テスト、Go のユニットテスト、Rust のテスト（`cargo test`）、JavaScript のテスト。 |
 | `test-log`            | `test` と同じで、出力を `/tmp/rolodex-dns/log` 以下のタイムスタンプ付きログファイルへ tee します（`LOG_DIR` で上書き可能）。実行が失敗しても最後にログのパスが表示されます。 |
 | `rust-test`           | Rust の統合テストファイルを実行し、続いて `cargo test` を実行します。 |
-| `rust-integration-test` | ビルドしてから、Rust の統合テストファイルを一つずつ明示的に実行します（`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`blocking_metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`arpa_refusal_test`、`blocklist_nxdomain_test`、`zonemd_test`、`dot_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`、`acme_tlsa_endpoints_test`、および `security_*` の各スイート）。 |
-| `lint`                | `translation-check`、`cargo fmt -- --check`、`cargo clippy --all-targets -- -D warnings` を実行します。 |
+| `rust-integration-test` | ビルドしてから、Rust の統合テストファイルを**すべて**一つずつ明示的に実行します——`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`forwarder_transport_test`、`metrics_test`、`blocking_metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_serving_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`arpa_refusal_test`、`blocklist_nxdomain_test`、`nodata_test`、`zonemd_test`、`dot_test`、`doq_test`、`doh_h3_test`、`ddr_follow_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`、`acme_tlsa_endpoints_test`、`security_*` の各スイート、そしてリゾルバスイート（`delegation_cache_test`、`delegation_flush_test`、`delegation_persist_test`、`record_cache_test`、`negative_ttl_test`、`resolver_selection_test`、`root_balance_test`、`root_priming_test`、`query_budget_test`、`recovery_probe_test`）。末尾の `cargo test` にしか拾われないファイルは独立したステップとして見えなくなり、その中の失敗が全体の失敗のように読めてしまいます。 |
+| `lint`                | `translation-check`、`check-townos-sync`、`cargo fmt -- --check`、`cargo clippy --all-targets -- -D warnings` を実行します。 |
+| `check-townos-sync`   | マシン上にある Town OS・インストールイメージ・ttyforce のチェックアウトに対して `TOWNOS_CONTRACT.md` を検証します——リビジョンは一切固定せず、存在しないチェックアウトは失敗ではなくスキップされます。`lint` の前提条件です。 |
 | `prometheus-test`     | 文書化されたすべての PromQL クエリを、コンテナ化された Prometheus（`quay.io/prometheus/prometheus`、`ROLODEX_PROMETHEUS_IMAGE` で上書き可能）に対して実行します。`test` の前提条件です。podman が必要で、無ければテストは失敗ではなく**大きな声でスキップ**するので、コンテナランタイムの無いマシンでも `make test` は緑になります。`ROLODEX_PROMETHEUS_REQUIRED=1` はそのスキップを失敗に変えます。CI はこれを設定すべきです。 |
 | `deps`                | ビルドの依存物をインストールします：Rust のクロスコンパイル用ツールチェーン（`cross-deps`）、JavaScript の開発依存物（`js/` での `npm install`）、そして `python-deps`。 |
 | `cross-deps`          | Rust のクロスツールチェーンをインストールします：両方のトリプルへの `rustup target add`、`cargo-zigbuild`、zig。root 不要——「クロスコンパイル」を参照。 |
@@ -1616,6 +1618,7 @@ Rust のテスト（`cargo test`）には、gRPC の操作、DNS の解決（UDP
 | テストファイル | 何を固定するか |
 | -------------- | -------------- |
 | `tests/auto_resolution_test.rs` | `auto` の階層チェーン：ルートの再帰をループバックに向けて即座に失敗させ、セキュア階層は空、平文階層にはモックの UDP 上流——外向きの `:53` をフィルターするネットワーク上と同じように、決定的な答えと落ちる論理を動かします。 |
+| `tests/forwarder_transport_test.rs` | フォワーダーに型を与えることが担保する二つの性質を、それぞれ対照とともに固定します：平文リストに書かれた暗号化アップストリームが**セキュア**層に届くこと（旧来の形ではそもそも表現できなかった配置）と、ブラックホール化されたフォワーダーが*ダイヤルされなくなる*こと——後者は、決して応答しないループバックソケットへの接続回数として表明します。最終的に SERVFAIL になるという検査は、ブレーカーがあってもなくても通ってしまうからです。 |
 | `tests/recovery_probe_test.rs` | 階層の*復旧*、署名済み階層に対して：検証を通ったルートは奪還され、到達はできるが未署名・他者署名・失効のルートは奪還されません——加えて、クライアントのクエリが探索に費やされないというガード。意図的に両方向を覆います：決して開かないゲートはすべての否定テストを通り、常に開くゲートはすべての肯定テストを通ります。 |
 | `tests/delegation_cache_test.rs` | N 個のコールドな名前は、N 回ではなく**一回**のルートクエリで済まねばなりません。 |
 | `tests/delegation_flush_test.rs` | `flush_cache()`（15 箇所以上の gRPC 変更点から呼ばれます）は委任を消しては**なりません**。消してよいのは `flush_upstream_state()` だけです。パッケージを一つ追加しただけで、すべての名前がルートへ送り返されてはなりません。 |
@@ -1736,7 +1739,7 @@ Go クライアントには二層のテストがあります：
 - **ユニットテスト** — `bufconn` によるプロセス内のモック gRPC サーバーを使い、すべてのクライアントメソッド、認証トークンの伝播、トランスポートのモード、エラー処理、そして端のケース（冪等な close、遅延ダイヤル、独自のダイヤルオプション）をテストします。
 - **統合テスト** — `integration` ビルドタグで有効化されます。各テストは、一意の一時ディレクトリ、ランダムなポート、隔離されたデータベースを持つ本物の Rolodex DNS サーバーのサブプロセスを起動します。テストはレコードの CRUD、ワイルドカードの絞り込み、フォワーダーの設定、ブロックリストの往復、キャッシュのフラッシュ、Unix ソケットのトランスポート、認証の失敗、既定 TTL の挙動、同時クライアント（5 並行）、ネットワークスコープ、DNS64、TTL ドリフトを覆います。
 
-`make test` ターゲットはテストスイート全体を実行します：lint、Go の統合テスト、Go のユニットテスト、Rust の統合テスト（各テストファイルを明示的に：`integration_test`、`new_features_test`、`cli_integration_test`、`dhcp_integration_test`、`acme_issuer_test`、`auto_resolution_test`、`metrics_test`、`blocking_metrics_test`、`promql_docs_test`、`prometheus_integration_test`、`blocklist_refusal_test`、`dnssec_signing_test`、`dnssec_validation_test`、`dnssec_hidden_cut_test`、`arpa_refusal_test`、`blocklist_nxdomain_test`、`zonemd_test`、`dot_test`、`doq_test`、`proxy_test`、`tls_reload_test`、`acme_admin_test`、`acme_tlsa_endpoints_test`、および `security_*` の各スイート）、`cargo test` によるすべての Rust テスト（上記のリゾルバースイートも覆います）、そして JavaScript の lint／統合／ユニットテスト。個別のターゲットも利用できます：`make go-integration-test`、`make go-test`、`make rust-integration-test`、`make rust-test`、`make js-integration-test`、`make js-test`。実行全体をタイムスタンプ付きのログファイルに取るには `make test-log` を使ってください。`make translation-check` は翻訳された各文書を英語と節ごとに突き合わせ、ずれがあれば非ゼロで終了します。`lint` の前提条件なので `make test` の一部として走り、どれかの言語が遅れていればゲートを落とします。
+`make test` ターゲットはテストスイート全体を実行します：lint、Go の統合テスト、Go のユニットテスト、Rust の統合テスト（すべてのテストファイルを明示的に——一覧は上の `rust-integration-test` の行にあり、リゾルバースイートも含みます）、`cargo test` によるすべての Rust テスト、そして JavaScript の lint／統合／ユニットテスト。個別のターゲットも利用できます：`make go-integration-test`、`make go-test`、`make rust-integration-test`、`make rust-test`、`make js-integration-test`、`make js-test`。実行全体をタイムスタンプ付きのログファイルに取るには `make test-log` を使ってください。`make translation-check` は翻訳された各文書を英語と節ごとに突き合わせ、ずれがあれば非ゼロで終了します。`lint` の前提条件なので `make test` の一部として走り、どれかの言語が遅れていればゲートを落とします。
 
 ## 主要な依存物
 

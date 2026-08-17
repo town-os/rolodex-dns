@@ -12,7 +12,7 @@ Las respuestas resueltas desde las raíces se **validan con DNSSEC** contra las 
 
 Rolodex DNS admite además listas de bloqueo de dominios (DNSBL) para filtrar spam y malware, firma DNSSEC de zonas, asociación de certificados DANE TLSA, una autoridad de certificación ACME integrada, síntesis AAAA de DNS64, particionado del DNS por red, y un servidor DHCPv4 integrado.
 
-¿Nuevo por aquí? Empieza por la **[Guía de configuración](CONFIGURATION.es-ES.md)** — un recorrido orientado a tareas desde una configuración mínima que funciona hasta cada subsistema, con un ejemplo resuelto por forma de despliegue.
+¿Nuevo por aquí? Empieza por la **[Guía de configuración](CONFIGURATION.es-MX.md)** — un recorrido orientado a tareas desde una configuración mínima que funciona hasta cada subsistema, con un ejemplo resuelto por forma de despliegue.
 
 ## Funcionalidades
 
@@ -25,11 +25,11 @@ Rolodex DNS admite además listas de bloqueo de dominios (DNSBL) para filtrar sp
 - **Conciencia de la familia de direcciones**: una sonda de fondo prueba la alcanzabilidad real de internet por IPv4/IPv6 y suprime las respuestas A o AAAA de una familia que el equipo no puede enrutar, así los clientes recurren a la otra en vez de atascarse en una pila muerta
 - **Resolvedor reenviador**: reenviadores DNS upstream configurables, usables en exclusiva con `resolution.mode: forward`
 - **Superposición de TLD/dominios**: agrega registros en cualquier nivel (incluidos TLD) para sustituir el DNS público
-- **Firma DNSSEC**: generación de llaves Ed25519 (preferido) y ECDSA P-256/P-384, firma de zonas y cálculo de registros DS. RSA/SHA-256 es verificable pero no se puede generar (`ring` no genera llaves RSA), y la denegación autenticada (NSEC/NSEC3) no se produce
+- **Firma DNSSEC**: generación de llaves Ed25519 (preferido) y ECDSA P-256/P-384, firma de zonas, cálculo de registros DS y una cadena NSEC para la denegación autenticada. RSA/SHA-256 es verificable pero no se puede generar (`ring` no genera llaves RSA). Las firmas y las pruebas se sirven a los clientes que ponen DO, y un bucle de refirmado mantiene firmada una zona mutada en lugar de dejarlo a un `sign-zone` manual
 - **Validación DNSSEC**: las respuestas resueltas iterativamente se validan contra las anclas de confianza de la raíz de IANA, activo por omisión (`dnssec.validate`). La cadena se construye de arriba abajo junto al recorrido de delegaciones, así que un DS no cuesta ninguna consulta extra; una delegación sin firmar debe *demostrar* que lo está (NSEC/NSEC3 firmado), de modo que arrancar firmas no es una degradación. Los datos bogus son SERVFAIL y no se cachean nunca, y AD se pone solo para respuestas genuinamente Secure
 - **DANE TLSA + emisor ACME**: generación de registros TLSA a partir de certificados, una autoridad de certificación ACME integrada (CA intermedias por zona), generación de CA raíz autofirmada, manejo del desafío DNS-01 de ACME (sirve registros TXT `_acme-challenge` de forma nativa)
 - **Distribución de la CA por DNS**: la cadena de CA raíz e intermedia por zona se publica como registros `CERT` (RFC 4398) con una reserva `TXT` troceada, así cualquier cliente que pueda resolver la zona puede obtener y confiar en la CA — sin necesidad de acceso al portal (véase [Distribuir y confiar en la CA](#distribuir-y-confiar-en-la-ca))
-- **22 tipos de registro**: A, AAAA, CNAME, MX, TXT, NS, SOA, SRV, PTR, URI, SSHFP, DNAME, ANAME, ZONEMD, TLSA, CERT, DNSKEY, DS, RRSIG, NSEC, NSEC3, NSEC3PARAM. Los 22 se pueden almacenar y listar; NSEC, NSEC3 y NSEC3PARAM no se generan ni se sirven nunca (véase [DNSSEC](#dnssec))
+- **24 tipos de registro**: A, AAAA, CNAME, MX, TXT, NS, SOA, SRV, PTR, URI, SSHFP, DNAME, ANAME, ZONEMD, TLSA, CERT, DNSKEY, DS, RRSIG, NSEC, NSEC3, NSEC3PARAM, SVCB, HTTPS. Los 24 se pueden almacenar y listar; NSEC lo genera la firma de zona y se sirve como prueba de denegación, mientras que NSEC3 y NSEC3PARAM son almacenables pero nunca se generan (véase [DNSSEC](#dnssec))
 - **Comodines DNS**: coincidencia de comodines conforme al RFC 4592 (`*.example.com.` casa sustituciones de una sola etiqueta; la coincidencia exacta tiene prioridad)
 - **DNS autoritativo**: imposición del bit AA para las zonas locales y para las zonas declaradas autoritativas explícitamente
 - **EDNS (RFC 6891)**: soporte del registro OPT, negociación del tamaño de payload, bit DO para DNSSEC, BADVERS para versión > 0
@@ -255,7 +255,7 @@ make clean-containers
 
 Rolodex DNS lee la configuración de un archivo YAML (por omisión: `rolodex-dns.yml`, sustituible con `-c`/`--config`). Toda sección es opcional — si falta el archivo, el servidor arranca con los valores por omisión.
 
-Para un recorrido que construye una configuración subsistema a subsistema, con un ejemplo resuelto por forma de despliegue, consulta la **[Guía de configuración](CONFIGURATION.es-ES.md)**. La referencia de abajo es la lista completa de campos.
+Para un recorrido que construye una configuración subsistema a subsistema, con un ejemplo resuelto por forma de despliegue, consulta la **[Guía de configuración](CONFIGURATION.es-MX.md)**. La referencia de abajo es la lista completa de campos.
 
 ### Sintaxis de las direcciones de ligadura
 
@@ -306,12 +306,19 @@ dns:
 # Ruta del archivo de base de datos
 database_path: rolodex-dns.db
 
-# Reenviadores DNS upstream (formato dirección:puerto). Se usan como el nivel
-# "local" de la cadena auto, o como único upstream cuando resolution.mode es "forward".
+# Reenviadores DNS upstream. Un dirección:puerto a secas es UDP en claro,
+# igual que antes; un esquema selecciona el transporte, y la autoridad name@ip
+# da tanto la dirección a marcar como el nombre contra el que validar el
+# certificado. En qué nivel de auto cae una entrada se deriva de su transporte,
+# no de esta llave: un reenviador cifrado aquí se prueba en el nivel seguro.
 # Ponlo a lista vacía (con resolution.mode: forward) para un servidor puramente autoritativo
 forwarders:
   - "8.8.8.8:53"
   - "8.8.4.4:53"
+  # - "tcp://8.8.8.8:53"
+  # - "tls://cloudflare-dns.com@1.1.1.1:853"
+  # - "https://cloudflare-dns.com@1.1.1.1/dns-query"
+  # - "quic://dns.adguard.com@94.140.14.14:853"
 
 # Estrategia de resolución upstream (todos los campos opcionales; se muestran los valores por omisión)
 resolution:
@@ -480,7 +487,7 @@ metrics:
 | Opción | Por omisión | Descripción |
 |--------|---------|-------------|
 | `database_path` | `"rolodex-dns.db"` | Ruta al archivo de base de datos SQLite |
-| `forwarders` | `["8.8.8.8:53", "8.8.4.4:53"]` | Direcciones de los resolvedores DNS upstream (el nivel `local` en modo `auto`; el único upstream en modo `forward`) |
+| `forwarders` | `["8.8.8.8:53", "8.8.4.4:53"]` | Reenviadores DNS upstream, cada uno un `dirección:puerto` a secas (UDP en claro) o una especificación con esquema — `tcp://`, `tls://`, `https://`, `quic://` (véase [Especificaciones de reenviador](#especificaciones-de-reenviador)). En modo `forward` son el único upstream; en modo `auto` cada entrada cae en el nivel que implica su transporte, así que una cifrada se prueba en el nivel `secure` y no en el `local` |
 | `resolution.mode` | `"auto"` | Estrategia upstream: `"auto"` (cadena de niveles), `"recursive"` (solo raíces), `"forward"` (solo reenviadores). **Solo semilla de arranque** — `SetResolutionMode` cambia el modo en un servidor en marcha sin reiniciarlo, y `GetResolutionMode` informa de lo que está de verdad en vigor |
 | `resolution.root_hints` | `[]` (raíces de IANA integradas) | Sustituye las pistas de servidores raíz usadas en modo `recursive`/`auto` |
 | `resolution.secure_upstreams` | Cloudflare + Google por DoH | Upstreams cifrados para el nivel `secure`: `{transport, addr, hostname, path}` |
@@ -769,7 +776,7 @@ rolodex-dns-cli set-forwarders -f <ADDR>...
 
 | Opción | Por omisión | Descripción |
 |--------|---------|-------------|
-| `-f, --forwarders <ADDR>...` | -- | Direcciones de los servidores DNS upstream en formato `"host:puerto"`. Varias direcciones separadas por espacios |
+| `-f, --forwarders <ADDR>...` | -- | Especificaciones de reenviador upstream: un `"host:puerto"` a secas para UDP en claro, o una especificación con esquema para un upstream cifrado o TCP (véase [Especificaciones de reenviador](#especificaciones-de-reenviador)). Varias especificaciones separadas por espacios |
 
 Ejemplos:
 ```bash
@@ -779,9 +786,19 @@ rolodex-dns-cli set-forwarders -f 8.8.8.8:53 1.1.1.1:53
 # Fija un único reenviador
 rolodex-dns-cli set-forwarders -f 9.9.9.9:53
 
+# Upstreams cifrados, alcanzables sin resolver antes un nombre de host.
+# Caen en el nivel seguro de la cadena auto, no en el local
+rolodex-dns-cli set-forwarders -f tls://cloudflare-dns.com@1.1.1.1:853 \
+                                  https://dns.google@8.8.8.8/dns-query
+
 # Elimina todos los reenviadores (modo puramente autoritativo)
 rolodex-dns-cli set-forwarders -f ""
 ```
+
+Esta es la única forma de reconfigurar un upstream cifrado en un servidor en
+marcha: `resolution.secure_upstreams` se lee una sola vez al arrancar y no tiene
+método de escritura, así que en una red que filtra el `:53` saliente el único
+nivel que funcionaba era el único que nada podía cambiar sin reiniciar la caja.
 
 ##### `set-resolution-mode`
 
@@ -1073,10 +1090,10 @@ Consulta la base de datos DNS local con filtros opcionales.
 
 **Ruta:** `/rolodex_dns.RolodexDnsService/SetForwarders`
 
-Configura los reenviadores DNS upstream en tiempo de ejecución.
+Configura los reenviadores DNS upstream en tiempo de ejecución. Reemplaza la lista entera.
 
 **Parámetros:**
-- `forwarders` (repeated string): lista de direcciones de servidores DNS upstream en formato `"host:puerto"` (p. ej. `"8.8.8.8:53"`)
+- `forwarders` (repeated string): especificaciones de reenviador upstream. Un `"host:puerto"` a secas es UDP en claro (p. ej. `"8.8.8.8:53"`); un esquema selecciona el transporte — `"tcp://8.8.8.8:53"`, `"tls://cloudflare-dns.com@1.1.1.1:853"`, `"https://cloudflare-dns.com@1.1.1.1/dns-query"`, `"quic://dns.adguard.com@94.140.14.14:853"` (véase [Especificaciones de reenviador](#especificaciones-de-reenviador)). La lista entera se analiza antes de aplicar nada de ella, y una especificación mal formada hace fallar la llamada con `INVALID_ARGUMENT`: una lista instalada a medias porque su cuarta entrada tenía una errata deja el resolvedor en un estado que quien llamó ni pidió ni puede ver
 - `auth_token` (string): secreto compartido para la autenticación
 
 **Respuesta:**
@@ -1370,6 +1387,26 @@ También están disponibles los métodos siguientes. Véase `proto/rolodex_dns.p
 | 22 | `SVCB` | Vinculación de servicio (RFC 9460). El valor es una línea de formato de presentación: `"<prioridad> <destino> [llave=valor ...]"` — p. ej. `"1 dns.home. alpn=dot port=853"`. Es el tipo con el que se publica una designación DDR en `_dns.resolver.arpa.` (RFC 9462) |
 | 23 | `HTTPS` | La forma SVCB específica de HTTPS (RFC 9460 §9). Mismo formato de valor que `SVCB` |
 
+## Respuestas negativas
+
+Cuando el servidor es autoritativo para la zona de un nombre y no tiene nada con qué responder, **cuál de los dos negativos devuelve lo decide el nombre, nunca el tipo por el que se preguntó**:
+
+- **NXDOMAIN** afirma que el nombre consultado no existe. Solo se devuelve cuando no vive nada en el nombre ni por debajo de él.
+- **NODATA** — NOERROR con la sección de respuesta vacía — afirma que el nombre existe y el tipo consultado no. Cubre cualquier otra falla autoritativa: un nombre que tiene registros de otros tipos, y un no-terminal vacío que no tiene ninguno propio pero sí descendientes.
+
+Ambos llevan el SOA del ápice de la zona que los engloba en la **sección de autoridad** (RFC 2308 §3), hallado subiendo desde el nombre consultado. Su MINIMUM, acotado por el TTL del propio registro, es como un resolvedor aprende cuánto tiempo puede cachear la ausencia en vez de elegir un valor por omisión suyo. Ambos se marcan como autoritativos, que es lo que le dice a un resolvedor que el negativo merece creerse en lugar de merecer preguntárselo a otro.
+
+La distinción no es cosmética. Un host con registro A y sin AAAA debe responder NOERROR a uno y NODATA — no NXDOMAIN — al otro, porque bajo RFC 8020 un resolvedor que cachea un NXDOMAIN para un nombre puede sintetizar NXDOMAIN para **todos los nombres por debajo de él**, así que una sola consulta AAAA para un host solo-v4 puede borrar su subárbol entero de la vista de ese resolvedor.
+
+Dos casos que conviene conocer:
+
+- **Un nombre que un comodín empareja existe.** RFC 4592 §2.2.1 hace que el comodín *establezca* el nombre, así que pedirle un tipo que el comodín no lleva es NODATA. Negarlo de plano contradiría la respuesta positiva que ese mismo comodín da una consulta antes. Un comodín empareja una etiqueta, así que un nombre dos niveles por debajo no lo establece nada y es NXDOMAIN.
+- **Un TLD propiedad de otro ámbito de red se niega haya lo que haya allí.** Es el único lugar donde el servidor devuelve NXDOMAIN para un nombre que conoce, y es la partición de horizonte dividido funcionando según lo diseñado: NODATA afirmaría que el nombre es real y que solo falta el tipo, que es exactamente lo que dejaría a un ámbito enumerar los nombres de una red hermana mirando cuáles vuelven como NODATA en lugar de NXDOMAIN.
+
+Para una zona firmada, un cliente que puso DO recibe además la prueba NSEC de la denegación — véase [Qué recibe un cliente](#qué-recibe-un-cliente).
+
+`rolodex_dns_authoritative_negative_total{reason}` informa de lo que encontró la búsqueda: `name_absent`, `type_absent`, `unsupported_type` o `scope_hidden`.
+
 ## Cacheado con la privacidad por delante
 
 Rolodex DNS cachea las respuestas DNS localmente, de modo que las consultas repetidas para el mismo nombre se responden sin contactar con ningún reenviador upstream. Esto evita la fuga de consultas DNS: una vez cacheado un registro, ningún observador externo puede ver que la consulta se volvió a hacer.
@@ -1415,11 +1452,39 @@ Los niveles se prueban empezando por el más preferido (el más fiable):
 | Nivel | Camino | Por qué |
 | ---- | ---- | --- |
 | 0 | Iterativo desde los servidores raíz | Ningún tercero ve tus consultas |
-| 1 | DoH (`:443`) o DoT (`:853`) a `resolution.secure_upstreams` | Cifrado, y usa puertos que sobreviven al filtrado de `:53` |
-| 2 | Do53 en claro a `forwarders` | El resolvedor local o provisto por DHCP |
-| 3 | Do53 en claro a `resolution.public_fallback` | Último recurso |
+| 1 | Cualquier reenviador **cifrado**: DoH (`:443`), DoT (`:853`) o DoQ (`:853/UDP`) | Cifrado, y usa puertos que sobreviven al filtrado de `:53` |
+| 2 | Reenviador en claro que apunta a una dirección **privada** | El resolvedor local o provisto por DHCP |
+| 3 | Reenviador en claro que apunta a una dirección **pública** | Último recurso |
 
-Se prefiere DoH a DoT porque el `:443` parece HTTPS corriente y sobrevive a la inspección profunda de paquetes que deja abrir una conexión DoT pero tira su sesión TLS. Los upstreams seguros se marcan **por IP**, con el certificado validado contra el `hostname` configurado, así que el nivel no necesita DNS previo para arrancar.
+Se prefiere DoH a DoT porque el `:443` parece HTTPS corriente y sobrevive a la inspección profunda de paquetes que deja abrir una conexión DoT pero tira su sesión TLS. Los upstreams cifrados se marcan **por IP**, con el certificado validado contra el nombre dado en la especificación, así que el nivel no necesita DNS previo para arrancar.
+
+**En qué nivel cae un upstream se deriva de lo que es, no de bajo qué llave se escribió.** `forwarders`, `resolution.secure_upstreams` y `resolution.public_fallback` se analizan todos como el mismo tipo de reenviador, y cada uno se archiva por su transporte y su dirección: cifrado, en-claro-privado o en-claro-público. Una entrada DoH escrita en `forwarders:` se prueba primero porque está cifrada; una de `public_fallback` que apunta a la LAN se trata como reenviador local.
+
+#### Especificaciones de reenviador
+
+Un `ip:puerto` a secas sigue significando UDP en claro, así que todo archivo de configuración y todo cliente de la API escritos antes de esto se analizan sin cambios:
+
+| Especificación | Transporte |
+| -------------- | ---------- |
+| `8.8.8.8:53` | UDP en claro (Do53) |
+| `tcp://8.8.8.8:53` | TCP en claro (RFC 7766) |
+| `tls://cloudflare-dns.com@1.1.1.1:853` | DoT (RFC 7858) |
+| `https://cloudflare-dns.com@1.1.1.1/dns-query` | DoH (RFC 8484) |
+| `quic://dns.adguard.com@94.140.14.14:853` | DoQ (RFC 9250) |
+
+La autoridad `name@ip` lleva en una sola cadena las dos mitades que necesita un upstream cifrado: la dirección a marcar y el nombre contra el que validar su certificado. Eso es lo que conserva la propiedad de arranque de que no haga falta resolver ningún nombre de host antes de poder alcanzar un resolvedor. Omitir `name@` valida contra los IP SAN de la propia dirección, que es una comprobación real y no una dispensa.
+
+La misma gramática la aceptan `SetForwarders` y `rolodex-dns-cli set-forwarders`, que es lo que hace que los upstreams cifrados sean reconfigurables en caliente.
+
+#### Un reenviador que falla una y otra vez deja de intentarse
+
+Cada reenviador lleva un cortacircuitos: tres fallas **de transporte** consecutivas lo abren, sigue abierto 30 segundos, luego se deja pasar una consulta para ver si se recuperó, y un éxito lo cierra del todo.
+
+- **La salud se registra desde el transporte, no desde el rcode.** Un SERVFAIL que llegó es un resolvedor que funciona respondiendo mal a una pregunta, y expulsarlo por una zona rota sería peor que no tener cortacircuitos.
+- **La salud sobrevive a la reprogramación.** Volver a empujar una lista de reenviadores idéntica — cosa que un controlador puede hacer cada pocos segundos — traslada la salud existente a la lista nueva, en vez de entregarle al servidor un cortacircuitos limpio más rápido de lo que tres fallas pueden dispararlo.
+- **El modo `forward` nunca se salta uno.** Allí los reenviadores son los únicos upstreams que hay, así que pasar de uno por una mala racha sería negarse a resolver en lugar de recurrir a algo mejor. La salud se sigue registrando, para cuando el modo vuelva a cambiar.
+
+Esto es lo que abarata un nivel muerto. `auto` recorre la cadena entera antes de poder responder SERVFAIL, así que en una red que agujerea un transporte cada consulta pagaba el tiempo de espera completo de 1.5 s por cada dirección de dos niveles que nunca iban a responder. Los intercambios omitidos se cuentan en `rolodex_dns_upstream_skipped_total{server}`.
 
 Un nivel solo «gana» cuando el transporte tuvo éxito y el rcode es NoError o NXDOMAIN; SERVFAIL, REFUSED y las respuestas no interpretables caen al siguiente. El nivel ganador es **pegajoso**, así que las consultas no pagan un tiempo de espera en un camino muerto cada vez. Recuperar un nivel más preferido ocurre de inmediato; degradar a uno menor solo se confirma después de `resolution.switch_grace_failures` consultas divergentes consecutivas, así que una consulta inestable no puede hacer oscilar el resolvedor. **Las consultas de cliente nunca sondean**: el nivel de partida es siempre el nivel confirmado. Una tarea de fondo vuelve a probar los niveles por encima cada `resolution.recovery_probe_secs` con su propio canario desechable, y reclamar el nivel 0 exige una respuesta validada con DNSSEC para el propio `DNSKEY` de la zona raíz — la mera alcanzabilidad dejaría que cualquier caja intermedia que secuestre el `:53` se instalase como el nivel más fiable. Todo cambio de nivel confirmado vacía el caché DNS, así que las respuestas de un nivel no pueden quedarse después de un cambio a otro.
 
@@ -1501,11 +1566,32 @@ Ed448 no está soportado por una limitación del crate de criptografía ring.
 
 3. Obtén los registros DS para tu registrador. No hay subórden de CLI para esto — llama al método gRPC `GetDsRecords` (p. ej. mediante el `GetDsRecords(ctx, zone)` del cliente Go), o consulta los registros DS de la zona con cualquier cliente DNS.
 
-La firma vuelve a publicar el RRset DNSKEY del ápice y produce un RRSIG por RRset. Vuelve a ejecutar `sign-zone` después de agregar o modificar registros; los RRSIG existentes se reemplazan en vez de acumularse.
-
-**La denegación autenticada no se genera.** NSEC, NSEC3 y NSEC3PARAM son tipos de registro almacenables y listables, pero `sign-zone` ni los genera ni los sirve, así que una zona firmada aquí demuestra lo que existe y no lo que no.
+La firma vuelve a publicar el RRset DNSKEY del ápice, produce un RRSIG por RRset y construye y firma la **cadena NSEC** de la zona en la misma pasada. Los RRSIG existentes se reemplazan en lugar de acumularse.
 
 DNSKEY, DS y RRSIG se sirven bajo sus propios códigos de tipo, con RDATA producido por el mismo codificador canónico que el firmante trocea — lo que va por el cable es byte a byte lo que se firmó.
+
+NSEC3 y NSEC3PARAM siguen siendo tipos de registro almacenables y listables, pero nada los genera: la denegación autenticada aquí es NSEC.
+
+#### Qué recibe un cliente
+
+Las firmas y las pruebas se sirven bajo dos condiciones, y ninguna es opcional: el cliente puso el **bit DO**, y el nombre cae dentro de una zona para la que este servidor tiene llaves. Una firma que nadie pidió casi triplica el tamaño de una respuesta A, y una respuesta grande a una pregunta pequeña es la forma de amplificación que `security.recursion_cidrs` existe para cerrar.
+
+- **Las respuestas positivas** llevan los RRSIG que cubren el RRset, junto a él en la sección de respuesta (RFC 4035 §3.1.1).
+- **NODATA** lleva el NSEC del propio nombre consultado, cuyo mapa de bits de tipos lista lo que sí está presente: la ausencia del tipo consultado en esa lista es la denegación.
+- **NXDOMAIN** lleva dos pruebas: el eslabón de la cadena que cubre el nombre, y el que cubre `*.<encerrador más próximo>`. Sin la segunda, un validador no puede descartar que un comodín hubiera sintetizado una respuesta, y RFC 4035 §5.4 hace que rechace la denegación.
+- **El SOA de un negativo también va firmado**, ya que un validador autentica el TTL negativo desde la misma sección en la que lo lee, y una sección de autoridad mixta falla como un todo.
+- **Las respuestas positivas derivadas de un comodín no llevan firma**, deliberadamente. Los registros viven en `*.parent` y se reescriben al nombre consultado, así que el RRSIG que los cubre está en el dueño del comodín. Servir el RRset sin firma deja a un validador en *insegura*; servirlo bajo una firma cuyo dueño no cuadra lo dejaría en *bogus*, que es estrictamente peor.
+- **Los registros con ámbito nunca se firman ni se prueban.** La firma opera sobre la tabla global, así que un negativo con ámbito lleva su SOA y nada más.
+
+#### Mantener firmada una zona firmada
+
+**Firmar es una instantánea, y una zona no sigue firmada por sí sola.** Un registro agregado después de `sign-zone` no tiene RRSIG — que un validador lee como una firma *arrancada* y no como un nombre sin firmar — y la cadena NSEC sigue describiendo la zona tal como era, así que la zona serviría una prueba firmada de que su propio registro nuevo no existe. Nada de eso es visible para quien agregó el registro.
+
+No hace falta volver a ejecutar `sign-zone` por esto. Cada mutación de registro marca su zona, y un **bucle de refirmado vacía las marcas cada 30 segundos**. Va fuera de la ruta de mutación porque firmar es O(zona) y los registros llegan en ráfagas, de modo que una ráfaga cuesta una pasada de firma en lugar de una por registro. Una pasada fallida deja la marca puesta y la siguiente reintenta.
+
+Mientras una zona está marcada, **los negativos salen sin su prueba en lugar de con una obsoleta**: un negativo sin probar deja a un validador en *insegura*, mientras que una cadena anterior a la mutación lo dejaría en *bogus* y tumbaría la zona entera. Vigila `rolodex_dns_denial_proofs_withheld_total`: es la métrica que dice que una zona firmada está respondiendo sin probar ahora mismo.
+
+Volver a ejecutar `sign-zone` a mano sigue siendo la forma de forzar una pasada inmediata, y es lo que quieres tras un cambio de llaves.
 
 ### Validación del upstream
 
@@ -1983,12 +2069,12 @@ Eso hace tres cosas:
 4. Revisar los registros con ámbito del ámbito del cliente
 5. Revisar los registros CNAME con ámbito
 6. Revisar los registros DNAME con ámbito (reescritura de subárbol)
-7. Revisar si el nombre está bajo una zona administrada con ámbito (NXDOMAIN autoritativo)
+7. Revisar si el nombre está bajo una zona administrada con ámbito (negativo autoritativo: NXDOMAIN o NODATA, véase [Respuestas negativas](#respuestas-negativas))
 8. Revisar los registros globales de la base de datos
 9. Revisar los registros CNAME globales
 10. Revisar los registros DNAME globales (reescritura de subárbol)
 11. Revisar los registros ANAME (resolver el alias en el ápice de la zona)
-12. Revisar si el nombre está bajo una zona administrada global (NXDOMAIN autoritativo)
+12. Revisar si el nombre está bajo una zona administrada global (negativo autoritativo: NXDOMAIN o NODATA, véase [Respuestas negativas](#respuestas-negativas))
 13. Revisar los registros comodín (`*.zone.`)
 14. Revisar la lista de bloqueo local y los proveedores DNSBL (un nombre listado es NXDOMAIN, con prioridad sobre cualquier respuesta externa)
 15. Imponer `security.recursion_cidrs` — un origen fuera de ella recibe REFUSED antes de que nada salga de la máquina
@@ -2330,7 +2416,7 @@ Orden de resolución (cuando no hay ámbitos de red configurados):
 5. Buscar registros CNAME en la base de datos local
 6. Buscar registros DNAME (reescritura de subárbol)
 7. Revisar los registros ANAME (resolución del alias en el ápice de la zona)
-8. Si el nombre está bajo una zona administrada pero no se encuentra, devolver NXDOMAIN autoritativo
+8. Si el nombre está bajo una zona administrada pero no se encuentra, devolver un negativo autoritativo: NXDOMAIN cuando no vive nada en el nombre ni por debajo, NODATA en caso contrario
 9. Revisar los registros comodín
 10. Revisar la lista de bloqueo local y los proveedores DNSBL (NXDOMAIN si está listado, por delante de cualquier respuesta externa)
 11. Imponer `security.recursion_cidrs` — un origen fuera de ella recibe REFUSED antes de que nada salga de la máquina

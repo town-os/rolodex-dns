@@ -2,7 +2,7 @@
 
 > Idiomas: [English](CONFIGURATION.md) | [繁體中文](CONFIGURATION.zh-TW.md) | [简体中文](CONFIGURATION.zh-CN.md) | [Español (España)](CONFIGURATION.es-ES.md) | **Español (México)** | [日本語](CONFIGURATION.ja-JP.md)
 
-Este es un recorrido orientado a tareas: cómo conseguir un servidor que funcione y, después, cómo encender cada subsistema y por qué querrías hacerlo. Para la lista exhaustiva de campos, consulta [Opciones de configuración](README.es-ES.md#opciones-de-configuración) en el README.
+Este es un recorrido orientado a tareas: cómo conseguir un servidor que funcione y, después, cómo encender cada subsistema y por qué querrías hacerlo. Para la lista exhaustiva de campos, consulta [Opciones de configuración](README.es-MX.md#opciones-de-configuración) en el README.
 
 - [Cómo se carga la configuración](#cómo-se-carga-la-configuración)
 - [La configuración mínima que funciona](#la-configuración-mínima-que-funciona)
@@ -221,14 +221,30 @@ resolution:
 
 Los *upstreams* seguros se marcan por **IP** y el certificado se valida contra `hostname`, de modo que el nivel arranca sin DNS propio. Ten en cuenta que una cadena `auto` degradada más allá del nivel 0 **no** está validada por DNSSEC (una respuesta reenviada es el resumen de otro), y lo dice dejando AD sin marcar.
 
+`secure_upstreams` se lee una sola vez al arrancar. Para cambiar el nivel
+cifrado en una máquina en marcha — que en una red así es justo la máquina que no
+puedes darte el lujo de reiniciar — empuja esos mismos ascendentes como
+reenviadores con esquema:
+```bash
+rolodex-dns-cli set-forwarders -f tls://cloudflare-dns.com@1.1.1.1:853 \
+                                  https://dns.google@8.8.8.8/dns-query
+```
+
+Caen en el nivel seguro porque están cifrados, no por la clave bajo la que
+llegaron. DoQ (`quic://…:853`) también está disponible aquí.
+
 ## Subsistemas
 
 ### Resolución ascendente
 
 ```yaml
-forwarders:                       # el nivel "local", y el único upstream en modo forward
-  - "8.8.8.8:53"
+forwarders:                       # el único upstream en modo forward; en modo auto
+  - "8.8.8.8:53"                  # cada entrada cae en el nivel que implica su transporte
   - "8.8.4.4:53"
+  # - "tcp://8.8.8.8:53"                                  # TCP en texto plano
+  # - "tls://cloudflare-dns.com@1.1.1.1:853"              # DoT   -> nivel seguro
+  # - "https://cloudflare-dns.com@1.1.1.1/dns-query"      # DoH   -> nivel seguro
+  # - "quic://dns.adguard.com@94.140.14.14:853"           # DoQ   -> nivel seguro
 
 resolution:
   mode: auto                      # auto | recursive | forward
@@ -255,6 +271,28 @@ hay en ella, que es justo la razón de que exista la RPC. A diferencia del archi
 RPC **rechaza** un modo no reconocido en lugar de avisar y caer a `auto`.
 
 `default_ttl` es un **valor de reserva, no un suelo**. Un TTL que viene presente se respeta exactamente como se envió, incluido el TTL negativo del SOA de una zona. Si lo que buscas es acortar o alargar TTL en vivo, eso es la [deriva de TTL](#dns64-deriva-de-ttl-familia-de-direcciones), no esto.
+
+**Un reenviador lleva consigo su transporte, y el nivel se deriva de él.** Un
+`ip:port` a secas es UDP en texto plano, igual que antes, así que una
+configuración existente se analiza sin cambios. Un esquema selecciona otra cosa,
+y la autoridad `name@ip` da a la vez la dirección a marcar y el nombre contra el
+que validar el certificado, así que un ascendente cifrado sigue sin necesitar DNS
+para arrancar. La pertenencia a un nivel se deriva de lo que el reenviador *es*,
+no de la clave bajo la que se escribió: una entrada cifrada en `forwarders:` se
+prueba en el nivel seguro, y una de `public_fallback` que apunta a la LAN se
+trata como local. La gramática está en [Especificaciones](README.es-MX.md#especificaciones-de-reenviador).
+
+Eso importa sobre todo para la forma de abajo: `secure_upstreams` no tiene
+método de escritura y se lee una sola vez al arrancar, así que antes de esto el
+único nivel que funcionaba en una red que filtra `:53` era también el único que
+nada podía cambiar sin reiniciar. `set-forwarders` con `tls://`, `https://` o `quic://` lo cambia en caliente.
+
+**Un reenviador que falla una y otra vez deja de intentarse.** Tres fallas
+*de transporte* consecutivas abren un cortacircuitos de 30 segundos sobre ese
+reenviador; luego se deja pasar una consulta para ver si se recuperó, y un
+éxito lo cierra. Un SERVFAIL que llegó no cuenta: eso es un resolutor que
+funciona respondiendo mal a una pregunta. El modo `forward` nunca se salta uno.
+Vigila `rolodex_dns_upstream_skipped_total{server}`.
 
 ### DNSSEC
 
@@ -287,7 +325,9 @@ $CLI generate-dnssec-key --zone example.com. --algorithm ED25519 --key-type ZSK
 $CLI sign-zone --zone example.com.
 ```
 
-Vuelve a ejecutar `sign-zone` después de cambiar registros. Las firmas se reemplazan, no se acumulan. RSA (algoritmo 8) se rechaza en la generación de llaves —`ring` no puede generar llaves RSA— y la denegación autenticada (NSEC/NSEC3) se valida pero nunca se genera.
+La firma también construye y firma la **cadena NSEC** de la zona, así que la zona demuestra lo que no existe además de lo que sí. Las firmas se reemplazan, no se acumulan. RSA (algoritmo 8) se rechaza en la generación de claves —`ring` no puede generar claves RSA— y NSEC3 se valida pero nunca se genera.
+
+**No hace falta volver a ejecutar `sign-zone` tras cada cambio de registro.** Una mutación marca su zona y un bucle de refirmado vacía las marcas cada 30 segundos. Hasta que lo hace, los negativos de esa zona salen *sin* su prueba en lugar de con una obsoleta: sin prueba, un validador se queda en insegura; con una cadena anterior a la mutación, la declara bogus y tumba la zona entera. `rolodex_dns_denial_proofs_withheld_total` es la métrica de esa ventana. Volver a ejecutar `sign-zone` a mano fuerza una pasada inmediata, y es lo que quieres tras un cambio de claves.
 
 ### Seguridad: las dos listas de CIDR
 
@@ -330,7 +370,7 @@ Tres cosas que conviene saber antes de encenderlas:
 
 1. **Los registros locales siempre ganan.** Una lista de bloqueo se ejecuta después de los registros locales y las zonas administradas, así que un listado de terceros nunca puede tumbar un servicio interno. Se ejecuta *antes* que el caché de respuestas y que el resolvedor, así que un listado surte efecto incluso para un nombre que se cacheó antes.
 2. **El bloqueo es por nombre consultado, no por sufijo.** Que `doubleclick.net` esté listado no bloquea `stats.g.doubleclick.net`: el proveedor tiene que listarlo también. La lista de permitidos *sí* casa por sufijo, porque una vía de escape que se dejara los subdominios no lo sería.
-3. **Los códigos de rechazo importan a volumen.** Una lista de bloqueo te dice «has superado tu cuota» con el mismo tipo de registro `A` que usa para «listado». La administración de rechazos está activada por omisión con un conjunto de códigos integrado; la única razón para configurar `refusal_codes` es una lista de bloqueo privada cuyos listados reales colisionen con uno (`refusal_codes: ["none"]`), o el deseo de acotar el conjunto. Véase [Códigos de rechazo y rotación de proveedores](README.es-ES.md#códigos-de-rechazo-y-rotación-de-proveedores).
+3. **Los códigos de rechazo importan a volumen.** Una lista de bloqueo te dice «has superado tu cuota» con el mismo tipo de registro `A` que usa para «listado». La administración de rechazos está activada por omisión con un conjunto de códigos integrado; la única razón para configurar `refusal_codes` es una lista de bloqueo privada cuyos listados reales colisionen con uno (`refusal_codes: ["none"]`), o el deseo de acotar el conjunto. Véase [Códigos de rechazo y rotación de proveedores](README.es-MX.md#códigos-de-rechazo-y-rotación-de-proveedores).
 
 Las entradas locales y la lista de permitidos son estado en caliente, no configuración:
 
@@ -526,5 +566,9 @@ Un **enlace que se resuelve pero falla en el sistema operativo** —el puerto es
 | Un cliente DoT informa de discrepancia de nombre para el nombre de host o la dirección LAN del equipo | El certificado generado nombra solo el conjunto de loopback y las direcciones de ligadura del *listener*, y una ligadura comodín no aporta nada. Agrega el nombre a `dot.tls.self_signed_sans` y reinicia. Esto es distinto de confiar en el certificado, que un autofirmado sigue exigiendo |
 | Un cliente DoT falla el saludo con `no_application_protocol` | Está ofreciendo un protocolo ALPN distinto de `dot`. El *listener* anuncia `dot` y rechaza a un cliente que ofrece solo otra cosa; un cliente que no ofrece ALPN alguno se sirve con normalidad |
 | Un *listener* de ingreso nunca se levantó | Su IP no existía en el arranque. Vuelve a agregar el TLD una vez levantada la interfaz |
+| Los negativos de una zona firmada llegan sin registros NSEC, y `rolodex_dns_denial_proofs_withheld_total` sube | Se agregó o quitó un registro y la zona espera al bucle de refirmado (hasta 30 s). Servir la cadena obsoleta sería peor: negaría el registro recién agregado. Si no se despeja nunca, la pasada está fallando; la bitácora dice por qué. `sign-zone` fuerza una |
+| Un reenviador dejó de consultarse por completo, y `rolodex_dns_upstream_skipped_total` lo está contando | Su cortacircuitos está abierto: tres fallas de transporte consecutivas, reabriéndose 30 s cada vez hasta que una consulta de sondeo tenga éxito. Es el transporte lo que falla, no las respuestas: un rcode nunca abre el cortacircuitos |
+| Un reenviador cifrado falla con un error de certificado | El certificado se valida contra la autoridad `name@ip`, y omitir `name@` lo valida contra los IP SAN de la propia dirección. `tls://1.1.1.1:853` y `tls://cloudflare-dns.com@1.1.1.1:853` son comprobaciones distintas |
+| Un nombre con registro A responde NXDOMAIN a AAAA | Corregido: ahora es NODATA (NOERROR, sección de respuesta vacía). Si todavía lo ves, el nombre no está bajo una zona para la que este servidor sea autoritativo, y el NXDOMAIN vino de arriba |
 
-Para la referencia completa de campos, véase [Opciones de configuración](README.es-ES.md#opciones-de-configuración).
+Para la referencia completa de campos, véase [Opciones de configuración](README.es-MX.md#opciones-de-configuración).

@@ -221,14 +221,30 @@ resolution:
 
 Secure upstreams are dialed by **IP** with the certificate validated against `hostname`, so the tier bootstraps with no DNS of its own. Note that an `auto` chain degraded past tier 0 is **not** DNSSEC-validated (a forwarded answer is somebody else's summary), and it says so by leaving AD clear.
 
+`secure_upstreams` is read once at startup. To change the encrypted tier on a
+running box — which is exactly the box you cannot afford to restart on a network
+like this — push the same upstreams as scheme-typed forwarders instead:
+
+```bash
+rolodex-dns-cli set-forwarders -f tls://cloudflare-dns.com@1.1.1.1:853 \
+                                  https://dns.google@8.8.8.8/dns-query
+```
+
+They land in the secure tier because they are encrypted, not because of which
+key they arrived under. DoQ (`quic://…:853`) is available here too.
+
 ## Subsystems
 
 ### Upstream resolution
 
 ```yaml
-forwarders:                       # the "local" tier, and the only upstream in forward mode
-  - "8.8.8.8:53"
+forwarders:                       # the only upstream in forward mode; in auto mode
+  - "8.8.8.8:53"                  # each entry lands in the tier its transport implies
   - "8.8.4.4:53"
+  # - "tcp://8.8.8.8:53"                                  # plaintext TCP
+  # - "tls://cloudflare-dns.com@1.1.1.1:853"              # DoT   -> secure tier
+  # - "https://cloudflare-dns.com@1.1.1.1/dns-query"      # DoH   -> secure tier
+  # - "quic://dns.adguard.com@94.140.14.14:853"           # DoQ   -> secure tier
 
 resolution:
   mode: auto                      # auto | recursive | forward
@@ -255,6 +271,28 @@ exists. Unlike the file, the RPC **rejects** an unrecognized mode rather than wa
 and falling back to `auto`.
 
 `default_ttl` is a **fallback, not a floor**. A TTL that is present is honoured exactly as sent, including a zone's SOA negative TTL. If you are trying to shorten or lengthen live TTLs, that is [TTL drift](#dns64-ttl-drift-address-family), not this.
+
+**A forwarder carries its transport, and the tier follows from it.** A bare
+`ip:port` is plaintext UDP, exactly as before, so an existing config parses
+unchanged. A scheme selects something else, and the `name@ip` authority gives
+both the address to dial and the name to validate the certificate against — so
+an encrypted upstream still needs no DNS to bootstrap. Tier membership is then
+derived from what the forwarder *is* rather than which key it was written under:
+an encrypted entry in `forwarders:` is tried in the secure tier, and a
+`public_fallback` entry pointing at the LAN is treated as a local forwarder. The
+full grammar is in [Forwarder Specs](README.md#forwarder-specs).
+
+That matters most for the shape below: `secure_upstreams` has no setter and is
+read once at startup, so before this the only tier that worked on a
+`:53`-filtered network was also the one nothing could change without a restart.
+`set-forwarders` with a `tls://`, `https://` or `quic://` spec changes it live.
+
+**A forwarder that keeps failing stops being tried.** Three consecutive
+*transport* failures open a 30-second circuit breaker on that forwarder, then one
+query is let through and a success closes it. A SERVFAIL that arrived does not
+count — that is a working resolver answering one question badly. `forward` mode
+never skips, since there the forwarders are the only upstreams there are. Watch
+`rolodex_dns_upstream_skipped_total{server}` for exchanges the breaker saved.
 
 ### DNSSEC
 
@@ -287,7 +325,9 @@ $CLI generate-dnssec-key --zone example.com. --algorithm ED25519 --key-type ZSK
 $CLI sign-zone --zone example.com.
 ```
 
-Re-run `sign-zone` after changing records. Signatures are replaced, not accumulated. RSA (algorithm 8) is refused at key generation — `ring` cannot generate RSA keys — and authenticated denial (NSEC/NSEC3) is validated but never generated.
+Signing also builds and signs the zone's **NSEC chain**, so the zone proves what does not exist as well as what does. Signatures are replaced, not accumulated. RSA (algorithm 8) is refused at key generation — `ring` cannot generate RSA keys — and NSEC3 is validated but never generated.
+
+**You do not have to re-run `sign-zone` after every record change.** A mutation marks its zone and a re-sign loop drains the marks every 30 seconds. Until it does, negatives from that zone go out *without* their proof rather than with a stale one — unproven leaves a validator at insecure, a chain that predates the mutation leaves it at bogus and takes the zone down. `rolodex_dns_denial_proofs_withheld_total` is the metric for that window. Re-running `sign-zone` by hand forces a pass immediately, and is what you want after a key change.
 
 ### Security: the two CIDR lists
 
@@ -526,5 +566,9 @@ A **bind that resolves but fails at the OS** — the port is taken, or the addre
 | A DoT client reports a certificate name mismatch for the box's hostname or LAN address | The generated certificate names the loopback set and the listener's bind addresses only, and a wildcard bind contributes nothing. Add the name to `dot.tls.self_signed_sans` and restart. This is separate from trusting the certificate at all, which self-signed still requires |
 | A DoT client fails the handshake with `no_application_protocol` | It is offering an ALPN protocol other than `dot`. The listener advertises `dot` and refuses a client that offers only something else; a client offering no ALPN at all is served normally |
 | Ingress listener never came up | Its IP did not exist at boot. Re-add the TLD once the interface is up |
+| A signed zone's negatives arrive without NSEC records, and `rolodex_dns_denial_proofs_withheld_total` is climbing | A record was added or removed and the zone is waiting on the re-sign loop (up to 30s). Serving the stale chain would be worse — it would deny the record that was just added. If it never clears, the pass is failing; the log says why. `sign-zone` forces one |
+| A forwarder stopped being queried entirely, and `rolodex_dns_upstream_skipped_total` is counting it | Its circuit breaker is open — three consecutive transport failures, reopening for 30s at a time until one probe query succeeds. That is the transport failing, not the answers: an rcode never opens the breaker |
+| An encrypted forwarder fails with a certificate error | The `name@ip` authority is what the certificate is validated against, and omitting `name@` validates against the address's own IP SANs instead. `tls://1.1.1.1:853` and `tls://cloudflare-dns.com@1.1.1.1:853` are different checks |
+| A name with an A record answers NXDOMAIN for AAAA | Fixed — that is now NODATA (NOERROR, empty answer). If you still see it, the name is not under a zone this server is authoritative for, and the NXDOMAIN came from upstream |
 
 For the complete field reference, see [Configuration Options](README.md#configuration-options).
